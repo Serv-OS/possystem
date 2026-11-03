@@ -27,6 +27,7 @@ import { normalisePath } from '../../../../surfaces/website/routes.js';
 import { pagePath } from '../../../../surfaces/website/resolveHref.js';
 import { CUSTOMER_ROOT } from '../../../../lib/env';
 import { MAX_SHOTS, shrinkImage } from './screenshots.js';
+import { Icon } from '../../../../components/ServOSIcons';
 
 // The site stylesheet is scoped to .w-site, so one copy in the Back Office document is harmless.
 function ensureSiteCss() {
@@ -377,7 +378,7 @@ export default function Designer(props) {
           )}
           <div style={D.inputRow}>
             <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { addShots(e.target.files); e.target.value = ''; }} />
-            <button type="button" style={{ ...W.ghost, minHeight: 52 }} disabled={busy || shots.length >= MAX_SHOTS} title="Attach screenshots of a site or look you like" onClick={() => fileRef.current?.click()}>📷 Screenshots</button>
+            <button type="button" style={{ ...W.ghost, minHeight: 52, display: 'inline-flex', alignItems: 'center', gap: 6 }} disabled={busy || shots.length >= MAX_SHOTS} title="Attach screenshots of a site or look you like" onClick={() => fileRef.current?.click()}><Icon name="camera" size={14}/>Screenshots</button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}

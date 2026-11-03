@@ -14,6 +14,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 import { flowOrderedMods } from '../../lib/optionFlow';
 import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
 import { subitemNameIndex } from '../../lib/menuRules';
@@ -280,7 +281,7 @@ export default function MItemDetail({ item, onClose, onAdded }) {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={Sx.hTitle}>{item?.name}</div>
           {item?.allergens?.length > 0 && (
-            <div style={{ ...Sx.hSub, color:'var(--red)' }}>⚠ {item.allergens.map(a => a.toUpperCase()).join(' · ')}</div>
+            <div style={{ ...Sx.hSub, color:'var(--red)', display:'flex', alignItems:'center', gap:4 }}><Icon name="warn" size={12} /> {item.allergens.map(a => a.toUpperCase()).join(' · ')}</div>
           )}
         </div>
         <div style={{ fontSize:14, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>

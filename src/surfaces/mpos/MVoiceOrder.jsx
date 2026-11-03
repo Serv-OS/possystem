@@ -20,6 +20,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import MBottomSheet from './MBottomSheet';
+import { Icon } from '../../components/ServOSIcons';
 import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
 
 const SpeechRecognitionImpl =
@@ -261,8 +262,9 @@ export default function MVoiceOrder({ onClose }) {
                 boxShadow: phase === 'listening' ? '0 0 0 8px rgba(239,68,68,0.2), 0 0 0 24px rgba(239,68,68,0.1)' : '0 6px 22px rgba(0,0,0,.35)',
                 animation: phase === 'listening' ? 'mpos-pulse 1.6s infinite' : 'none',
                 transition:'background .18s',
+                display:'flex', alignItems:'center', justifyContent:'center',
               }}>
-              {phase === 'listening' ? '■' : '🎤'}
+              {phase === 'listening' ? '■' : <Icon name="mic" size={48} />}
             </button>
           </div>
         )}
@@ -300,7 +302,7 @@ export default function MVoiceOrder({ onClose }) {
           <div>
             {parsed.clarification && (
               <div style={{ padding:'10px 12px', borderRadius:10, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)', fontSize:12, marginBottom:10, fontWeight:700, display:'flex', gap:8, alignItems:'flex-start' }}>
-                <span>❓</span><span>{parsed.clarification}</span>
+                <span style={{ flexShrink:0, marginTop:1 }}><Icon name="help" size={14} /></span><span>{parsed.clarification}</span>
               </div>
             )}
 
@@ -363,8 +365,8 @@ export default function MVoiceOrder({ onClose }) {
                   const item = menuItems.find(m => m.id === p.item_id);
                   if (!item) {
                     return (
-                      <div key={i} style={{ padding:'10px 12px', background:'var(--red-d)', borderRadius:11, border:'1px solid var(--red-b)', marginBottom:6, fontSize:12, color:'var(--red)' }}>
-                        ⚠ Couldn't find item id "{p.item_id}" — skipped
+                      <div key={i} style={{ padding:'10px 12px', background:'var(--red-d)', borderRadius:11, border:'1px solid var(--red-b)', marginBottom:6, fontSize:12, color:'var(--red)', display:'flex', alignItems:'center', gap:6 }}>
+                        <Icon name="warn" size={14} /> Couldn't find item id "{p.item_id}" — skipped
                       </div>
                     );
                   }
@@ -408,7 +410,7 @@ export default function MVoiceOrder({ onClose }) {
                         {!isParentVariant && (p.mod_labels || []).length > 0 && (
                           <div style={{ fontSize:11, color:'var(--t4)', fontStyle:'italic', marginTop:1 }}>{p.mod_labels.join(' · ')}</div>
                         )}
-                        {!isParentVariant && p.notes && <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>📝 {p.notes}</div>}
+                        {!isParentVariant && p.notes && <div style={{ fontSize:11, color:'var(--acc)', marginTop:1, display:'flex', alignItems:'center', gap:4 }}><Icon name="note" size={12} /> {p.notes}</div>}
                       </div>
                       {!isParentVariant && (
                         <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
@@ -419,8 +421,8 @@ export default function MVoiceOrder({ onClose }) {
                   );
                 })}
                 {parsed.order_note && (
-                  <div style={{ padding:'8px 12px', borderRadius:10, background:'var(--acc-d)', border:'1px solid var(--acc-b)', marginTop:8, fontSize:12, color:'var(--acc)' }}>
-                    📝 Order note: {parsed.order_note}
+                  <div style={{ padding:'8px 12px', borderRadius:10, background:'var(--acc-d)', border:'1px solid var(--acc-b)', marginTop:8, fontSize:12, color:'var(--acc)', display:'flex', alignItems:'center', gap:6 }}>
+                    <Icon name="note" size={14} /> Order note: {parsed.order_note}
                   </div>
                 )}
               </>
@@ -439,8 +441,8 @@ export default function MVoiceOrder({ onClose }) {
         <div style={{ marginTop:'auto', paddingTop:14 }}>
           {phase === 'listening' && (
             <>
-              <button onClick={stopAndParse} disabled={!liveText} style={{ ...Sx.btnPrim, opacity: liveText ? 1 : .5 }}>
-                ⏹ Stop & use text
+              <button onClick={stopAndParse} disabled={!liveText} style={{ ...Sx.btnPrim, opacity: liveText ? 1 : .5, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+                <Icon name="square" size={16} /> Stop & use text
               </button>
               <button onClick={cancelRecording} style={{ ...Sx.btnGhost, marginTop:8 }}>
                 Cancel — start again
@@ -453,13 +455,13 @@ export default function MVoiceOrder({ onClose }) {
             </button>
           )}
           {phase === 'confirm' && (!parsed?.items?.length) && (
-            <button onClick={() => { setParsed(null); setTranscriptUI(''); transcriptRef.current=''; setPhaseSafe('ready'); }} style={Sx.btnPrim}>
-              🎤 Try again
+            <button onClick={() => { setParsed(null); setTranscriptUI(''); transcriptRef.current=''; setPhaseSafe('ready'); }} style={{ ...Sx.btnPrim, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+              <Icon name="mic" size={18} /> Try again
             </button>
           )}
           {phase === 'error' && (
-            <button onClick={() => { setError(null); setPhaseSafe('ready'); transcriptRef.current=''; setTranscriptUI(''); }} style={Sx.btnPrim}>
-              🎤 Try again
+            <button onClick={() => { setError(null); setPhaseSafe('ready'); transcriptRef.current=''; setTranscriptUI(''); }} style={{ ...Sx.btnPrim, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+              <Icon name="mic" size={18} /> Try again
             </button>
           )}
           {phase !== 'listening' && (

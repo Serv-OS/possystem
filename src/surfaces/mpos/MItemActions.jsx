@@ -9,6 +9,7 @@ import { Sx, money } from './MShellStyles';
 import { venueDiscountList, NO_DISCOUNTS_TEXT } from '../../lib/venueDiscounts';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
 import MBottomSheet from './MBottomSheet';
+import { Icon, hasIcon } from '../../components/ServOSIcons';
 
 const COURSES = [
   { id:0, label:'Immediate' },
@@ -102,11 +103,11 @@ export default function MItemActions({ item, onClose }) {
 
         {view === 'main' && (
           <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-            {!sent && !hideCourses && <ActionRow icon="⏱" label="Change course" sub={`Currently course ${item.course ?? 1}`} onClick={() => setView('course')} />}
-            <ActionRow icon="📝" label={item.notes ? 'Edit note' : 'Add note'} sub={item.notes || 'Special instruction for this item'} onClick={() => { setDraftNote(item.notes || ''); setView('note'); }} />
-            <ActionRow icon="💸" label={item.discount ? 'Change discount' : 'Apply discount'} sub={item.discount ? `${item.discount.label} active` : 'Pick from preset list'} onClick={() => setView('discount')} />
+            {!sent && !hideCourses && <ActionRow icon="clock" label="Change course" sub={`Currently course ${item.course ?? 1}`} onClick={() => setView('course')} />}
+            <ActionRow icon="note" label={item.notes ? 'Edit note' : 'Add note'} sub={item.notes || 'Special instruction for this item'} onClick={() => { setDraftNote(item.notes || ''); setView('note'); }} />
+            <ActionRow icon="money" label={item.discount ? 'Change discount' : 'Apply discount'} sub={item.discount ? `${item.discount.label} active` : 'Pick from preset list'} onClick={() => setView('discount')} />
             {item.discount && <ActionRow icon="✕" label="Remove discount" onClick={clearDiscount} />}
-            <ActionRow icon={sent ? '🗑' : '−'} label={sent ? 'Void item' : 'Remove from order'} sub={sent ? 'Already sent — kitchen will be notified' : 'Pending only'} dangerous onClick={doVoid} />
+            <ActionRow icon={sent ? 'trash' : '−'} label={sent ? 'Void item' : 'Remove from order'} sub={sent ? 'Already sent — kitchen will be notified' : 'Pending only'} dangerous onClick={doVoid} />
             <button onClick={close} style={{ ...Sx.btnGhost, marginTop:8 }}>Cancel</button>
           </div>
         )}
@@ -216,7 +217,7 @@ function ActionRow({ icon, label, sub, onClick, dangerous }) {
       cursor:'pointer', fontFamily:'inherit', textAlign:'left',
       display:'flex', alignItems:'center', gap:12, minHeight:54,
     }}>
-      <div style={{ fontSize:20, width:32, textAlign:'center', flexShrink:0 }}>{icon}</div>
+      <div style={{ fontSize:20, width:32, textAlign:'center', flexShrink:0, display:'flex', justifyContent:'center', color: dangerous ? 'var(--red)' : 'var(--t2)' }}>{hasIcon(icon) ? <Icon name={icon} size={20} /> : icon}</div>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:14, fontWeight:700, color: dangerous ? 'var(--red)' : 'var(--t1)' }}>{label}</div>
         {sub && <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>{sub}</div>}

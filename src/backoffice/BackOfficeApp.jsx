@@ -152,81 +152,81 @@ const MOCK_STOCK_SCOPE = Object.freeze({ ready: true, failed: false, orgId: null
 const MOCK_MSM_ACCESS = Object.freeze({ installed: true, enabled: true, role: 'editor', orgId: 'org-demo', orgName: 'Demo company', canOpen: true, canEdit: true, companies: [], reason: null });
 
 const NAV = [
-  { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
-  { id:'menu',       label:'Menu manager',    icon:'🍽',  group:'Configuration' },
+  { id:'overview',   label:'Overview',        icon:'home',  group:'Dashboard' },
+  { id:'menu',       label:'Menu manager',    icon:'utensils',  group:'Configuration' },
   // The top bar title only: the sidebar row comes from NAV_IA and shows only to people ServOS added.
-  { id:'multi-site-menu', label:'Multi site menu', icon:'🍽', group:'Configuration' },
-  { id:'floorplan',  label:'Floor plan',      icon:'⬚',  group:'Configuration' },
-  { id:'stock-overview', label:'Stock overview', icon:'📦',  group:'Configuration' },
-  { id:'inventory',  label:'Daily counts',    icon:'📦',  group:'Configuration' },
-  { id:'stock-counts', label:'Stock counts',  icon:'📋',  group:'Configuration' },
-  { id:'wastage',    label:'Wastage',         icon:'🗑',  group:'Configuration' },
-  { id:'stock-reports', label:'Stock reports', icon:'📊',  group:'Configuration' },
-  { id:'stock-items', label:'Stock items',     icon:'📦',  group:'Configuration' },
-  { id:'stock-areas', label:'Stock areas',     icon:'🗄',  group:'Configuration' },
-  { id:'stock-transfers', label:'Transfers',   icon:'🔁',  group:'Configuration' },
-  { id:'recipes',    label:'Recipes',         icon:'📖',  group:'Configuration' },
-  { id:'batches',    label:'Batches',         icon:'🍲',  group:'Configuration' },
-  { id:'ops-overview',    label:'Compliance overview', icon:'🌡', group:'Operations' },
-  { id:'ops-temperature', label:'Temperature units',   icon:'🌡', group:'Operations' },
-  { id:'ops-checklists',  label:'Checklists',          icon:'☑', group:'Operations' },
-  { id:'ops-prep',        label:'Prep schedule',       icon:'🍳', group:'Operations' },
-  { id:'ops-maintenance', label:'Maintenance',         icon:'🛠', group:'Operations' },
-  { id:'ops-notifications', label:'Alert rules',       icon:'🔔', group:'Operations' },
-  { id:'ops-compliance',  label:'Compliance calendar', icon:'📅', group:'Operations' },
-  { id:'ops-devices',     label:'Devices',             icon:'📱', group:'Operations' },
-  { id:'ops-documents',   label:'Documents',           icon:'📄', group:'Operations' },
-  { id:'ops-forms',       label:'Forms',               icon:'📝', group:'Operations' },
-  { id:'order-pad',  label:'Order pad',       icon:'🛒',  group:'Configuration' },
-  { id:'central-kitchen', label:'Central kitchen', icon:'🍲', group:'Configuration' },
-  { id:'due-to-order', label:'Due to order', icon:'🛒', group:'Configuration' },
-  { id:'forecast',   label:'Forecast',        icon:'📈',  group:'Configuration' },
-  { id:'stock-deliveries', label:'Deliveries', icon:'🚚', group:'Configuration' },
-  { id:'credits',    label:'Credits',         icon:'🧾',  group:'Configuration' },
-  { id:'budgets',    label:'Budgets',         icon:'📈',  group:'Configuration' },
-  { id:'suppliers',  label:'Suppliers',       icon:'🚚',  group:'Configuration' },
-  { id:'purchase-orders', label:'Orders', icon:'🧾', group:'Configuration' },
-  { id:'price-changes', label:'Price changes', icon:'📈', group:'Configuration' },
-  { id:'invoices',   label:'Invoices',        icon:'📄',  group:'Configuration' },
-  { id:'profiles',   label:'Device profiles', icon:'📋',  group:'Devices' },
-  { id:'devices',    label:'Devices',         icon:'📱',  group:'Devices' },
-  { id:'kiosks',      label:'Kiosks',           icon:'🖥️',  group:'Devices' },
-  { id:'online',     label:'Online ordering',  icon:'🌐',  group:'Devices' },
-  { id:'printers',   label:'Printers',        icon:'🖨',  group:'Devices' },
-  { id:'cardreaders',label:'Card readers',    icon:'💳',  group:'Devices' },
-  { id:'cashdrawers', label:'Cash drawers',       icon:'\u{1F4B0}', group:'Devices' },
-  { id:'staff',      label:'Staff & access',  icon:'👥',  group:'Configuration' },
-  { id:'printing',   label:'Production printing',   icon:'🖨',  group:'Configuration' },
-  { id:'reports',    label:'Reports',           icon:'📊',  group:'Analytics' },
+  { id:'multi-site-menu', label:'Multi site menu', icon:'utensils', group:'Configuration' },
+  { id:'floorplan',  label:'Floor plan',      icon:'floor',  group:'Configuration' },
+  { id:'stock-overview', label:'Stock overview', icon:'package',  group:'Configuration' },
+  { id:'inventory',  label:'Daily counts',    icon:'package',  group:'Configuration' },
+  { id:'stock-counts', label:'Stock counts',  icon:'clipboard',  group:'Configuration' },
+  { id:'wastage',    label:'Wastage',         icon:'trash',  group:'Configuration' },
+  { id:'stock-reports', label:'Stock reports', icon:'chart',  group:'Configuration' },
+  { id:'stock-items', label:'Stock items',     icon:'package',  group:'Configuration' },
+  { id:'stock-areas', label:'Stock areas',     icon:'archive',  group:'Configuration' },
+  { id:'stock-transfers', label:'Transfers',   icon:'repeat',  group:'Configuration' },
+  { id:'recipes',    label:'Recipes',         icon:'book',  group:'Configuration' },
+  { id:'batches',    label:'Batches',         icon:'cookingPot',  group:'Configuration' },
+  { id:'ops-overview',    label:'Compliance overview', icon:'thermo', group:'Operations' },
+  { id:'ops-temperature', label:'Temperature units',   icon:'thermo', group:'Operations' },
+  { id:'ops-checklists',  label:'Checklists',          icon:'checkSquare', group:'Operations' },
+  { id:'ops-prep',        label:'Prep schedule',       icon:'cookingPot', group:'Operations' },
+  { id:'ops-maintenance', label:'Maintenance',         icon:'tools', group:'Operations' },
+  { id:'ops-notifications', label:'Alert rules',       icon:'bell', group:'Operations' },
+  { id:'ops-compliance',  label:'Compliance calendar', icon:'calendar', group:'Operations' },
+  { id:'ops-devices',     label:'Devices',             icon:'phone', group:'Operations' },
+  { id:'ops-documents',   label:'Documents',           icon:'fileText', group:'Operations' },
+  { id:'ops-forms',       label:'Forms',               icon:'note', group:'Operations' },
+  { id:'order-pad',  label:'Order pad',       icon:'cart',  group:'Configuration' },
+  { id:'central-kitchen', label:'Central kitchen', icon:'cookingPot', group:'Configuration' },
+  { id:'due-to-order', label:'Due to order', icon:'cart', group:'Configuration' },
+  { id:'forecast',   label:'Forecast',        icon:'trendUp',  group:'Configuration' },
+  { id:'stock-deliveries', label:'Deliveries', icon:'truck', group:'Configuration' },
+  { id:'credits',    label:'Credits',         icon:'receipt',  group:'Configuration' },
+  { id:'budgets',    label:'Budgets',         icon:'trendUp',  group:'Configuration' },
+  { id:'suppliers',  label:'Suppliers',       icon:'truck',  group:'Configuration' },
+  { id:'purchase-orders', label:'Orders', icon:'receipt', group:'Configuration' },
+  { id:'price-changes', label:'Price changes', icon:'trendUp', group:'Configuration' },
+  { id:'invoices',   label:'Invoices',        icon:'fileText',  group:'Configuration' },
+  { id:'profiles',   label:'Device profiles', icon:'clipboard',  group:'Devices' },
+  { id:'devices',    label:'Devices',         icon:'phone',  group:'Devices' },
+  { id:'kiosks',      label:'Kiosks',           icon:'monitor',  group:'Devices' },
+  { id:'online',     label:'Online ordering',  icon:'globe',  group:'Devices' },
+  { id:'printers',   label:'Printers',        icon:'print',  group:'Devices' },
+  { id:'cardreaders',label:'Card readers',    icon:'card',  group:'Devices' },
+  { id:'cashdrawers', label:'Cash drawers',       icon:'money', group:'Devices' },
+  { id:'staff',      label:'Staff & access',  icon:'users',  group:'Configuration' },
+  { id:'printing',   label:'Production printing',   icon:'print',  group:'Configuration' },
+  { id:'reports',    label:'Reports',           icon:'chart',  group:'Analytics' },
   // v5.11.92 (multi site stock Drop 4a): the head office reports, under Reports for a multi site company.
-  { id:'stock-gp', label:'Stock and GP', icon:'📊', group:'Analytics' },
-  { id:'card-payments', label:'Card payments',  icon:'💳',  group:'Analytics' },
-  { id:'shift',      label:'Shift',             icon:'⏱', group:'Analytics' },
-  { id:'eod',        label:'Close day',        icon:'🔒',  group:'Analytics' },
-  { id:'pettycash',  label:'Petty cash',        icon:'\u{1F4B0}', group:'Analytics' },
-  { id:'customers',  label:'Customers',         icon:'\u{1F465}', group:'Analytics' },
-  { id:'tax',        label:'Tax & VAT',          icon:'%',   group:'Analytics' },
-  { id:'ai',         label:'AI Assistant',      icon:'✦',   group:'Analytics' },
-  { id:'network',    label:'Network & Sync',     icon:'📡',  group:'Analytics' },
-  { id:'location',   label:'Location settings', icon:'⚙️',  group:'Analytics' },
-  { id: 'discounts', label: 'Discounts',     icon: '🏷', group: 'Configuration' },
-  { id: 'receipt', label: 'Receipt', icon: '🧾', group: 'Configuration' },
-  { id: 'challenge21', label: 'Challenge ID', icon: '\u{1F4AA}', group: 'Configuration' },
-  { id: 'giftcards', label: 'Gift Cards', icon: '\u{1F381}', group: 'Analytics' },
-  { id: 'loyalty', label: 'Loyalty', icon: '\u{2B50}', group: 'Analytics' },
-  { id: 'messages', label: 'Messages', icon: '\u{1F4AC}', group: 'Configuration' },
-  { id: 'reviews', label: 'Reviews', icon: '\u{2B50}', group: 'Analytics' },
-  { id: 'wifi', label: 'WiFi', icon: '\u{1F4F6}', group: 'Analytics' },
-  { id: 'promotions', label: 'Promotions', icon: '\u{1F3AB}', group: 'Analytics' },
-  { id: 'segments', label: 'Segments', icon: '\u{1F465}', group: 'Analytics' },
-  { id: 'campaigns', label: 'Campaigns', icon: '\u{1F4E3}', group: 'Analytics' },
-  { id: 'quicksend', label: 'Quick send', icon: '\u{1F4EC}', group: 'Analytics' },
-  { id: 'workflows', label: 'Automations', icon: '\u{1F500}', group: 'Analytics' },
-  { id: 'marketing-forms', label: 'Forms', icon: '\u{1F4DD}', group: 'Analytics' },
-  { id: 'marketing-reports', label: 'Marketing report', icon: '\u{1F4C8}', group: 'Analytics' },
-  { id: 'compliance', label: 'Marketing compliance', icon: '\u{1F6E1}', group: 'Analytics' },
-  { id: 'security', label: 'Sign in security', icon: '\u{1F510}', group: 'Settings' },
-  { id: 'servos-messages', label: 'Messages from ServOS', icon: '\u{1F514}', group: 'Settings' },
+  { id:'stock-gp', label:'Stock and GP', icon:'chart', group:'Analytics' },
+  { id:'card-payments', label:'Card payments',  icon:'card',  group:'Analytics' },
+  { id:'shift',      label:'Shift',             icon:'clock', group:'Analytics' },
+  { id:'eod',        label:'Close day',        icon:'lock',  group:'Analytics' },
+  { id:'pettycash',  label:'Petty cash',        icon:'money', group:'Analytics' },
+  { id:'customers',  label:'Customers',         icon:'users', group:'Analytics' },
+  { id:'tax',        label:'Tax & VAT',          icon:'percent',   group:'Analytics' },
+  { id:'ai',         label:'AI Assistant',      icon:'ai',   group:'Analytics' },
+  { id:'network',    label:'Network & Sync',     icon:'radio',  group:'Analytics' },
+  { id:'location',   label:'Location settings', icon:'settings',  group:'Analytics' },
+  { id: 'discounts', label: 'Discounts',     icon: 'tag', group: 'Configuration' },
+  { id: 'receipt', label: 'Receipt', icon: 'receipt', group: 'Configuration' },
+  { id: 'challenge21', label: 'Challenge ID', icon: 'idCard', group: 'Configuration' },
+  { id: 'giftcards', label: 'Gift Cards', icon: 'gift', group: 'Analytics' },
+  { id: 'loyalty', label: 'Loyalty', icon: 'star', group: 'Analytics' },
+  { id: 'messages', label: 'Messages', icon: 'chat', group: 'Configuration' },
+  { id: 'reviews', label: 'Reviews', icon: 'star', group: 'Analytics' },
+  { id: 'wifi', label: 'WiFi', icon: 'signal', group: 'Analytics' },
+  { id: 'promotions', label: 'Promotions', icon: 'ticket', group: 'Analytics' },
+  { id: 'segments', label: 'Segments', icon: 'users', group: 'Analytics' },
+  { id: 'campaigns', label: 'Campaigns', icon: 'megaphone', group: 'Analytics' },
+  { id: 'quicksend', label: 'Quick send', icon: 'mail', group: 'Analytics' },
+  { id: 'workflows', label: 'Automations', icon: 'repeat', group: 'Analytics' },
+  { id: 'marketing-forms', label: 'Forms', icon: 'note', group: 'Analytics' },
+  { id: 'marketing-reports', label: 'Marketing report', icon: 'trendUp', group: 'Analytics' },
+  { id: 'compliance', label: 'Marketing compliance', icon: 'shield', group: 'Analytics' },
+  { id: 'security', label: 'Sign in security', icon: 'lock', group: 'Settings' },
+  { id: 'servos-messages', label: 'Messages from ServOS', icon: 'bell', group: 'Settings' },
 ];
 
 // 8 Oct 2026: the sidebar list (NAV_IA) moved to src/lib/boSections.js, unchanged, so the
@@ -343,13 +343,14 @@ function SaveHealthBanner() {
       fontSize:13.5, fontWeight:800, textAlign:'center', lineHeight:1.45,
       boxShadow:'0 2px 18px rgba(0,0,0,.45)',
     }}>
+      <Icon name="warn" size={16} style={{ display:'inline-block', verticalAlign:'-3px', marginRight:6 }} />
       {health.offline
-        ? '⚠ NO CONNECTION TO THE SERVER — the last change did not reach us and was not saved. Check this device\u2019s internet; we keep trying, and this bar clears the moment a save gets through.'
+        ? 'NO CONNECTION TO THE SERVER — the last change did not reach us and was not saved. Check this device\u2019s internet; we keep trying, and this bar clears the moment a save gets through.'
         : health.denied
-          ? '⚠ YOU ARE NOT SET UP FOR THIS VENUE — nothing you change here can save. This is not a fault: your login has not been given this venue. Switch back to your own venue, or ask the owner to add you to this one.'
+          ? 'YOU ARE NOT SET UP FOR THIS VENUE — nothing you change here can save. This is not a fault: your login has not been given this venue. Switch back to your own venue, or ask the owner to add you to this one.'
           : health.authy
-            ? '⚠ YOUR CHANGES ARE NOT SAVING — your sign-in has expired. Refresh this page and sign in again, then REDO the change you just made.'
-            : `⚠ YOUR CHANGES ARE NOT SAVING — ${health.message || 'database write failed'}. Redo the change once this clears.`}
+            ? 'YOUR CHANGES ARE NOT SAVING — your sign-in has expired. Refresh this page and sign in again, then REDO the change you just made.'
+            : `YOUR CHANGES ARE NOT SAVING — ${health.message || 'database write failed'}. Redo the change once this clears.`}
       <span style={{ fontWeight:500, opacity:.9 }}> Anything edited while this bar is showing will be lost.</span>
     </div>
   );
@@ -935,7 +936,7 @@ export default function BackOfficeApp() {
   );
   if (!isMock && authUser && orgCtx && !orgCtx.boAccess) return (
     <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t1)', padding:32, gap:18 }}>
-      <div style={{ fontSize:36 }}>🔒</div>
+      <Icon name="lock" size={36} />
       <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)' }}>No back-office access</div>
       <div style={{ fontSize:13, color:'var(--t3)', textAlign:'center', maxWidth:360, lineHeight:1.5 }}>
         Your account ({authUser.email}) doesn't have permission to use the back office.
@@ -1846,7 +1847,7 @@ function BOOverview({ setSection, canOpen = () => true, orgCtx }) {
       {/* No location warning */}
       {!orgCtx?.locationId && !isMock && (
         <div style={{ padding:'14px 18px', borderRadius:10, background:'#fef9c3', border:'1px solid #fde047', marginBottom:20, fontSize:13 }}>
-          <strong>⚠️ No location assigned to your account.</strong>{' '}
+          <strong><Icon name="warn" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:6 }} />No location assigned to your account.</strong>{' '}
           {canOpen('admin')
             ? <>Go to <button onClick={() => setSection('admin')} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--acc)', fontWeight:700, fontSize:13, padding:0, textDecoration:'underline' }}>Company Admin</button> → create an organisation and location first.</>
             : 'Ask the owner to add you to a venue.'}
@@ -1999,7 +2000,7 @@ function OnlineOrderingSection({ setSection }) {
 
   return (
     <div style={{ padding:'32px 40px', maxWidth:880 }}>
-      <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>🌐 Online ordering</div>
+      <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)', marginBottom:4, display:'flex', alignItems:'center', gap:8 }}><Icon name="globe" size={20} />Online ordering</div>
       <div style={{ fontSize:13, color:'var(--t3)', marginBottom:24 }}>
         Customer-facing surfaces for online (collection / delivery) and QR table-side ordering.
       </div>
@@ -2017,7 +2018,8 @@ function OnlineOrderingSection({ setSection }) {
           {/* Status grid */}
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:14, marginBottom:24 }}>
             <StatusCard
-              title="🌐 Online ordering"
+              title="Online ordering"
+              icon="globe"
               enabled={onlineEnabled}
               slug={slug}
               urlSuffix=""
@@ -2025,7 +2027,8 @@ function OnlineOrderingSection({ setSection }) {
               desc="Remote orders — collection / delivery, customer details, Adyen checkout."
               setSection={setSection}/>
             <StatusCard
-              title="📱 QR table-side"
+              title="QR table-side"
+              icon="phone"
               enabled={qrEnabled}
               slug={slug}
               urlSuffix="/t/<table-id>"
@@ -2089,12 +2092,12 @@ function OnlineOrderingSection({ setSection }) {
   );
 }
 
-function StatusCard({ title, enabled, slug, urlSuffix, root, desc, setSection }) {
+function StatusCard({ title, icon, enabled, slug, urlSuffix, root, desc, setSection }) {
   const url = slug ? `https://${slug}.${root}${urlSuffix}` : `(slug).${root}${urlSuffix}`;
   return (
     <div style={{ padding:'18px 20px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14 }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
-        <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{title}</div>
+        <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', display:'flex', alignItems:'center', gap:7 }}>{icon && <Icon name={icon} size={16} />}{title}</div>
         <span style={{
           padding:'3px 10px', borderRadius:99, fontSize:10, fontWeight:800, letterSpacing:'.04em', textTransform:'uppercase',
           background: enabled ? 'var(--grn-d)' : 'var(--bg3)',

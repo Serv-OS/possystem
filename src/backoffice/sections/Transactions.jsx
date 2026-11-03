@@ -27,6 +27,7 @@ import { useRefundCardLegs } from '../../lib/payments/useRefundCardLegs';
 import { modsText } from '../../lib/reportText';
 import { isSplit, actionLock } from '../../lib/reportSplit.js';
 import { totalsByCurrency, totalsWords } from '../../lib/reportScope.js';
+import { Icon, hasIcon } from '../../components/ServOSIcons';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 // timeZone: only passed when several sites are listed, so each row reads on its own site's
@@ -530,7 +531,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                       const canRetry = (r.legs || []).some(l => l?.status === 'failed');
                                       return (
                                         <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px dashed #fecaca' }}>
-                                          <div style={{ fontSize: 11, fontWeight: 700, color: meta.color }}>{meta.icon} {meta.label}</div>
+                                          <div style={{ fontSize: 11, fontWeight: 700, color: meta.color }}>{hasIcon(meta.icon) ? <Icon name={meta.icon} size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} /> : `${meta.icon} `}{meta.label}</div>
                                           {(r.legs || []).map((l, li) => (
                                             <div key={li} style={{ fontSize: 11, color: '#7f1d1d', marginTop: 2 }}>
                                               {l.brand || 'card'}{l.last4 ? ` ····${l.last4}` : ''} {fmt((l.amountMinor || 0) / 100)} · {l.processor} · {l.status}
@@ -629,7 +630,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                   onClick={(e) => { e.stopPropagation(); openEmailForm(c); }}
                                   style={{ ...btnOutline, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
                                 >
-                                  {'✉'} Email receipt
+                                  <Icon name="mail" size={14} />Email receipt
                                 </button>
                               )}
                             </div>}
@@ -914,9 +915,9 @@ function MoneyField({ label, hint, value, max, disabled, onChange, onReset, over
 // like a finished job.
 const CARD_STATUS_META = {
   succeeded: { label: 'Returned to card', color: '#16a34a', icon: '✓' },
-  accepted:  { label: 'Accepted by processor, settling', color: '#d97706', icon: '⏳' },
-  partial:   { label: 'SOME CARDS NOT REVERSED', color: '#dc2626', icon: '⚠' },
-  failed:    { label: 'CARD REVERSAL FAILED — no money returned', color: '#dc2626', icon: '⚠' },
-  pending:   { label: 'Reversal not confirmed', color: '#d97706', icon: '⏳' },
+  accepted:  { label: 'Accepted by processor, settling', color: '#d97706', icon: 'clock' },
+  partial:   { label: 'SOME CARDS NOT REVERSED', color: '#dc2626', icon: 'warn' },
+  failed:    { label: 'CARD REVERSAL FAILED — no money returned', color: '#dc2626', icon: 'warn' },
+  pending:   { label: 'Reversal not confirmed', color: '#d97706', icon: 'clock' },
   none:      { label: 'No card reversal — handle manually', color: '#6b7280', icon: '·' },
 };

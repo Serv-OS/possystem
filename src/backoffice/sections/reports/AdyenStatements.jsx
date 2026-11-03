@@ -147,11 +147,11 @@ export default function AdyenStatements() {
       </div>
 
       {loading && <div style={{ padding: 24, color: 'var(--t3)' }}>Building statement…</div>}
-      {!loading && error && <EmptyState icon="⚠️" message={error} />}
-      {!loading && !error && data?.mock && <EmptyState icon="📄" message="Statements are live only. View them on the deployed app." />}
+      {!loading && error && <EmptyState icon="warn" message={error} />}
+      {!loading && !error && data?.mock && <EmptyState icon="fileText" message="Statements are live only. View them on the deployed app." />}
 
       {!loading && !error && data && !data.mock && !hasPayments && (
-        <EmptyState icon="📄" message={`No card payments in ${formatMonthLabel(shownMonth)}.`} />
+        <EmptyState icon="fileText" message={`No card payments in ${formatMonthLabel(shownMonth)}.`} />
       )}
 
       {!loading && !error && data && !data.mock && hasPayments && (

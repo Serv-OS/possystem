@@ -4,6 +4,7 @@ import { printService } from '../lib/printer';
 import { useStore } from '../store';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { money } from '../lib/currency';
+import { Icon } from './ServOSIcons';
 // v5.7.34 rate-null guards: per-unit entries book rate: null in the breakdown —
 // breakdownLabel prints name + amount with no percent, breakdownIsExclusive
 // treats them as added-on. Byte-identical strings for every rate-backed entry.
@@ -93,9 +94,9 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
             <span>${money((price*item.qty))}</span>
           </div>
           ${item.mods?.length ? `<div class="muted" style="padding-left:12px">${item.mods.map(m=>m.label).join(', ')}</div>` : ''}
-          ${item.notes ? `<div class="muted" style="padding-left:12px">📝 ${item.notes}</div>` : ''}
-          ${disc ? `<div class="muted" style="padding-left:12px">🏷 ${disc.label} (−${money((item.price*item.qty - price*item.qty))})</div>` : ''}
-          ${item.allergens?.length ? `<div class="allergen">⚠ ALLERGENS: ${item.allergens.map(a=>a.toUpperCase()).join(', ')}</div>` : ''}
+          ${item.notes ? `<div class="muted" style="padding-left:12px">${item.notes}</div>` : ''}
+          ${disc ? `<div class="muted" style="padding-left:12px">${disc.label} (−${money((item.price*item.qty - price*item.qty))})</div>` : ''}
+          ${item.allergens?.length ? `<div class="allergen">ALLERGENS: ${item.allergens.map(a=>a.toUpperCase()).join(', ')}</div>` : ''}
         `;
       }).join('')}
       <div class="line"></div>
@@ -126,7 +127,7 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
         <div style={{padding:'16px 20px 12px',borderBottom:'1px solid var(--bdr)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div style={{fontSize:15,fontWeight:700,color:'var(--t1)'}}>Check</div>
           <div style={{display:'flex',gap:8}}>
-            <button onClick={handlePrint} disabled={printing} style={{padding:'6px 14px',borderRadius:8,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0e0f14',fontSize:12,fontWeight:700}}>{printing ? '…' : '🖨 Print'}</button>
+            <button onClick={handlePrint} disabled={printing} style={{padding:'6px 14px',borderRadius:8,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0e0f14',fontSize:12,fontWeight:700,display:'inline-flex',alignItems:'center',gap:6}}>{printing ? '…' : <><Icon name="print" size={14} />Print</>}</button>
             <button onClick={onClose} style={{background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:22}}>×</button>
           </div>
         </div>
@@ -155,9 +156,9 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
                   <span>{money((price*item.qty))}</span>
                 </div>
                 {item.mods?.length>0&&<div style={{fontSize:10,color:'var(--t3)',paddingLeft:12}}>{item.mods.map(m=>m.label).join(', ')}</div>}
-                {item.notes&&<div style={{fontSize:10,color:'#f97316',paddingLeft:12}}>📝 {item.notes}</div>}
-                {disc&&<div style={{fontSize:10,color:'var(--grn)',paddingLeft:12}}>🏷 {disc.label} −{money((item.price*item.qty-price*item.qty))}</div>}
-                {item.allergens?.length>0&&<div style={{fontSize:10,color:'var(--red)',paddingLeft:12,fontWeight:600}}>⚠ {item.allergens.map(a=>a.toUpperCase()).join(' · ')}</div>}
+                {item.notes&&<div style={{fontSize:10,color:'#f97316',paddingLeft:12,display:'flex',alignItems:'center',gap:4}}><Icon name="note" size={11} />{item.notes}</div>}
+                {disc&&<div style={{fontSize:10,color:'var(--grn)',paddingLeft:12,display:'flex',alignItems:'center',gap:4}}><Icon name="tag" size={11} />{disc.label} −{money((item.price*item.qty-price*item.qty))}</div>}
+                {item.allergens?.length>0&&<div style={{fontSize:10,color:'var(--red)',paddingLeft:12,fontWeight:600,display:'flex',alignItems:'center',gap:4}}><Icon name="warn" size={11} />{item.allergens.map(a=>a.toUpperCase()).join(' · ')}</div>}
               </div>
             );
           })}
@@ -251,7 +252,7 @@ export function ReprintModal({ items, tableLabel, onClose, onReprint }) {
             disabled={selected.size===0}
             onClick={()=>{ onReprint([...selected]); onClose(); }}
           >
-            🖨 Reprint {selected.size} item{selected.size!==1?'s':''}
+            <span style={{display:'inline-flex',alignItems:'center',gap:6}}><Icon name="print" size={16} />Reprint {selected.size} item{selected.size!==1?'s':''}</span>
           </button>
         </div>
       </div>

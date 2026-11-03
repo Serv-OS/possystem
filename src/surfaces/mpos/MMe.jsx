@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { Sx } from './MShellStyles';
+import { Icon, hasIcon } from '../../components/ServOSIcons';
 import { currencySymbol } from '../../lib/currency';
 import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
 import { resolveSelfHostedAdyenTerminal } from '../../lib/payments/localTerminalIdentity';
@@ -39,7 +40,7 @@ export default function MMe({ onOpenHistory }) {
             <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)' }}>{staff?.name || 'Unknown'}</div>
             <div style={{ fontSize:12, color:'var(--t3)', textTransform:'capitalize' }}>{staff?.role || 'Staff'}</div>
             {deviceConfig?.profileName && (
-              <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>📱 {deviceConfig.profileName}{deviceConfig?.runnerMode ? ' · Runner' : ''}</div>
+              <div style={{ fontSize:11, color:'var(--t4)', marginTop:2, display:'flex', alignItems:'center', gap:4 }}><Icon name="phone" size={12} /> {deviceConfig.profileName}{deviceConfig?.runnerMode ? ' · Runner' : ''}</div>
             )}
           </div>
         </div>
@@ -55,17 +56,17 @@ export default function MMe({ onOpenHistory }) {
       {/* Actions */}
       <div style={{ padding:'8px 14px' }}>
         <Action
-          icon="🧾" title="Closed orders"
+          icon="receipt" title="Closed orders"
           desc="Reprint receipts, email a copy, refund items"
           onClick={() => onOpenHistory?.()}
         />
         <Action
-          icon="🏢" title="Back office"
+          icon="building" title="Back office"
           desc="Reports, menu, staff (opens in browser)"
           onClick={() => { window.location.href = '?mode=office'; }}
         />
         <Action
-          icon="🔄" title="Switch device mode"
+          icon="refresh" title="Switch device mode"
           desc="Use this device as a regular POS instead"
           onClick={() => {
             if (confirm('Switch this device out of MPOS mode? You\'ll need to pick a new mode.')) {
@@ -134,7 +135,7 @@ function LocalReaderCard() {
         borderRadius:12, padding:'14px 12px',
       }}>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom: state ? 10 : 0 }}>
-          <div style={{ fontSize:22 }}>💳</div>
+          <div style={{ fontSize:22, color:'var(--t2)' }}><Icon name="card" size={22} /></div>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>Card reader on this terminal</div>
             <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
@@ -191,7 +192,7 @@ function Action({ icon, title, desc, onClick, dangerous }) {
       cursor:'pointer', fontFamily:'inherit', textAlign:'left',
       display:'flex', alignItems:'center', gap:12, marginBottom:8, minHeight:64,
     }}>
-      <div style={{ fontSize:22, flexShrink:0 }}>{icon}</div>
+      <div style={{ fontSize:22, flexShrink:0, color: dangerous ? 'var(--red)' : 'var(--t2)' }}>{hasIcon(icon) ? <Icon name={icon} size={22} /> : icon}</div>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:14, fontWeight:700, color: dangerous ? 'var(--red)' : 'var(--t1)' }}>{title}</div>
         <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>{desc}</div>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ALLERGENS, MENU_ITEMS, STEAK_MODS } from '../data/seed';
 import { money, currencySymbol } from '../lib/currency';
+import { Icon } from './ServOSIcons';
 
 // ── Allergen warning modal ────────────────────────────────────────────────────
 export function AllergenModal({ item, activeAllergens, onConfirm, onCancel }) {
@@ -18,8 +19,8 @@ export function AllergenModal({ item, activeAllergens, onConfirm, onCancel }) {
           width:52, height:52, borderRadius:'50%',
           background:'var(--c-red-dim)', border:'2px solid var(--c-red-bdr)',
           display:'flex', alignItems:'center', justifyContent:'center',
-          fontSize:22, margin:'0 auto 16px',
-        }}>⚠</div>
+          fontSize:22, margin:'0 auto 16px', color:'var(--c-red)',
+        }}><Icon name="warn" size={22}/></div>
 
         <div style={{ fontSize:18, fontWeight:600, textAlign:'center', marginBottom:4 }}>Allergen warning</div>
         <div style={{ fontSize:13, color:'var(--c-text2)', textAlign:'center', marginBottom:20 }}>

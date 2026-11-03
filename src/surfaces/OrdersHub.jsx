@@ -25,7 +25,7 @@ import { hubrisePushStatus } from '../lib/hubrise';
 import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
-import { Icon } from '../components/ServOSIcons';
+import { Icon, hasIcon } from '../components/ServOSIcons';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import { buildChannelCloseFields, foldLineMods } from '../lib/channelMoney';
 import { placedOrderForTill } from '../lib/orderPlacedFrom';
@@ -49,18 +49,21 @@ import { taxCtxHasConfig } from '../lib/taxCompute';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { holdPaymentBusy } from '../lib/paymentBusy';
 
+// Inline icon before text
+const ICON_INLINE = { display:'inline-block', verticalAlign:'-2px', marginRight:4 };
+
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
   { id:'all',        label:'All orders',  icon:'⊞' },
   { id:'table',      label:'Tables',      icon:'⬚',  color:'#3b82f6' },
-  { id:'bar',        label:'Bar tabs',    icon:'🍸',  color:'#a855f7' },
-  { id:'dine-in',    label:'Counter',     icon:'🏷',  color:'#22d3ee' },
-  { id:'takeaway',   label:'Takeaway',    icon:'🥡',  color:'#e8a020' },
-  { id:'collection', label:'Collection',  icon:'📦',  color:'#22c55e' },
-  { id:'delivery',   label:'Delivery',    icon:'🛵',  color:'#ef4444' },
+  { id:'bar',        label:'Bar tabs',    icon:'cocktail',  color:'#a855f7' },
+  { id:'dine-in',    label:'Counter',     icon:'tag',  color:'#22d3ee' },
+  { id:'takeaway',   label:'Takeaway',    icon:'takeaway',  color:'#e8a020' },
+  { id:'collection', label:'Collection',  icon:'package',  color:'#22c55e' },
+  { id:'delivery',   label:'Delivery',    icon:'scooter',  color:'#ef4444' },
   // Drive thru (16 Sep 2026): pink, the one hue none of the six tabs above use. The tab is
   // rendered only where the till's profile enables drive thru or a drive thru order exists.
-  { id:'drive-thru', label:'Drive thru',  icon:'🚗',  color:'#ec4899' },
+  { id:'drive-thru', label:'Drive thru',  icon:'car',  color:'#ec4899' },
 ];
 
 const SECTION_COLORS = {
@@ -587,7 +590,7 @@ export default function OrdersHub() {
       // VAT from the lines or refuses the save by name, lib/saleVatGuard.js).
       const { error: ccErr } = await writeClosedCheckRow(supabase, check, { tag: 'OrdersHub short close' });
       if (ccErr && String(ccErr.code || '') !== '23505') {
-        showToast(`⚠ The tab is closed but its sale did not save to history: ${ccErr.message || 'unknown error'}`, 'error', 12000);
+        showToast(`The tab is closed but its sale did not save to history: ${ccErr.message || 'unknown error'}`, 'error', 12000);
       } else {
         if (!ccErr) earnQrSale(check);   // v5.11.81: the tab earns (never twice: a duplicate close books nothing)
         showToast(`Table ${tab.tableLabel}: closed, ${money(short.paidMinor / 100)} booked from the guest's card`
@@ -795,7 +798,7 @@ export default function OrdersHub() {
       }
       if (closedCheckError) {
         showToast(
-          `⚠ Capture succeeded but order didn't save to history: ${closedCheckError}`,
+          `Capture succeeded but order didn't save to history: ${closedCheckError}`,
           'error', 12000
         );
       }
@@ -1115,7 +1118,7 @@ export default function OrdersHub() {
                 border:`1.5px solid ${myOrders ? 'var(--acc)' : 'var(--bdr)'}`,
                 color:myOrders ? 'var(--acc)' : 'var(--t3)',
               }}>
-                👤 My orders
+                <Icon name="user" size={12} style={ICON_INLINE} />My orders
               </button>
             )}
             {/* Show completed */}
@@ -1125,7 +1128,7 @@ export default function OrdersHub() {
             </label>
             {/* Search */}
             <div style={{ position:'relative' }}>
-              <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', pointerEvents:'none' }}>🔍</span>
+              <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', pointerEvents:'none', display:'flex' }}><Icon name="search" size={12} /></span>
               <input
                 style={{ background:'var(--bg3)', border:'1px solid var(--bdr2)', borderRadius:9, padding:'6px 10px 6px 26px', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none', width:180 }}
                 placeholder="Search…"
@@ -1150,7 +1153,7 @@ export default function OrdersHub() {
                 fontSize:12, fontWeight:active ? 800 : 500, whiteSpace:'nowrap',
                 borderRadius:'8px 8px 0 0', transition:'all .1s',
               }}>
-                {tab.icon} {tab.label}
+                {hasIcon(tab.icon) ? <Icon name={tab.icon} size={13} style={ICON_INLINE} /> : <>{tab.icon} </>}{tab.label}
                 {n > 0 && (
                   <span style={{ marginLeft:5, fontSize:10, fontWeight:800, padding:'1px 5px', borderRadius:8, background:active?color:'var(--bg3)', color:active?'#0b0c10':'var(--t4)' }}>
                     {n}
@@ -1192,7 +1195,7 @@ export default function OrdersHub() {
               </Section>
             )}
             {barOrders.length > 0 && (
-              <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
+              <Section title="Bar tabs" icon="cocktail" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
                   {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
@@ -1202,7 +1205,7 @@ export default function OrdersHub() {
                 per tab even if the customer added multiple rounds — Force
                 close & charge captures the SUM across all rounds. */}
             {qrTabs.length > 0 && (
-              <Section title="📱 Open QR tabs" icon="📱" color="#10b981" count={qrTabs.length}>
+              <Section title="Open QR tabs" icon="phone" color="#10b981" count={qrTabs.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:10 }}>
                   {qrTabs.map(t => (
                     <QrTabCard key={t.key}
@@ -1220,7 +1223,7 @@ export default function OrdersHub() {
               </Section>
             )}
             {queueOrders.length > 0 && (
-              <Section title={driveThruOn ? 'Walk-in / Takeaway / Drive thru / Delivery' : 'Walk-in / Takeaway / Delivery'} icon="🏷" color="#22d3ee" count={queueOrders.length}>
+              <Section title={driveThruOn ? 'Walk-in / Takeaway / Drive thru / Delivery' : 'Walk-in / Takeaway / Delivery'} icon="tag" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
                   {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
@@ -1260,7 +1263,7 @@ export default function OrdersHub() {
               {viewOrder.ref} · {ezcaterBadge(viewOrder) || cateringChannelLabel(viewOrder) || viewOrder.channel}
               {viewOrder.customer?.event_date ? ` · ${viewOrder.customer.event_date}${(viewOrder.customer?.event_time || viewOrder.collectionTime) ? ` at ${viewOrder.customer.event_time || viewOrder.collectionTime}` : ''}` : ''}
             </div>
-            {ezcaterFlagText(viewOrder) && <div style={{ fontSize:12.5, fontWeight:800, color:'#ef4444', marginBottom:10 }}>⚠ {ezcaterFlagText(viewOrder)}</div>}
+            {ezcaterFlagText(viewOrder) && <div style={{ fontSize:12.5, fontWeight:800, color:'#ef4444', marginBottom:10 }}><Icon name="warn" size={13} style={ICON_INLINE} />{ezcaterFlagText(viewOrder)}</div>}
             {isAwaitingEzcaterAcceptance(viewOrder) && <div style={{ fontSize:12.5, fontWeight:700, color:'#f59e0b', marginBottom:10 }}>{AWAITING_LABEL}: it will not go to the kitchen until ezCater accepts it.</div>}
             {viewOrder.customer && (viewOrder.customer.name || viewOrder.customer.phone || viewOrder.customer.address) && (
               <div style={{ fontSize:12.5, color:'var(--t2)', marginBottom:12, lineHeight:1.5 }}>
@@ -1270,7 +1273,7 @@ export default function OrdersHub() {
                 {viewOrder.customer.address && <div>{typeof viewOrder.customer.address === 'string' ? viewOrder.customer.address : [viewOrder.customer.address.line1, viewOrder.customer.address.line2, viewOrder.customer.address.city, viewOrder.customer.address.postcode].filter(Boolean).join(', ')}</div>}
                 {(viewOrder.type === 'delivery' || viewOrder.customer.delivery_fee != null) && (
                   <div style={{ color:'var(--t3)', marginTop:2 }}>
-                    🚗 Delivery{viewOrder.customer.delivery_mode ? ` · ${viewOrder.customer.delivery_mode === 'uber' ? 'Courier' : 'Self-delivery'}` : ''}{viewOrder.customer.delivery_fee != null ? ` · fee ${money(Number(viewOrder.customer.delivery_fee))}` : ''}
+                    <Icon name="car" size={13} style={ICON_INLINE} />Delivery{viewOrder.customer.delivery_mode ? ` · ${viewOrder.customer.delivery_mode === 'uber' ? 'Courier' : 'Self-delivery'}` : ''}{viewOrder.customer.delivery_fee != null ? ` · fee ${money(Number(viewOrder.customer.delivery_fee))}` : ''}
                   </div>
                 )}
                 {/* Expected collection / delivery time so staff know when it's needed. */}
@@ -1280,7 +1283,7 @@ export default function OrdersHub() {
                   const asap = viewOrder.isASAP ?? raw.is_asap;
                   if (!ct && !asap) return null;
                   const isDel = viewOrder.channel === 'delivery' || raw.type === 'delivery' || viewOrder.customer.delivery_mode != null;
-                  return <div style={{ color:'var(--t3)', marginTop:2 }}>🕒 {isDel ? 'Deliver' : 'Collect'}: {asap ? `ASAP${ct ? ` (ready ~${ct})` : ''}` : (ct || '—')}</div>;
+                  return <div style={{ color:'var(--t3)', marginTop:2 }}><Icon name="clock" size={13} style={ICON_INLINE} />{isDel ? 'Deliver' : 'Collect'}: {asap ? `ASAP${ct ? ` (ready ~${ct})` : ''}` : (ct || '—')}</div>;
                 })()}
               </div>
             )}
@@ -1351,7 +1354,7 @@ export default function OrdersHub() {
                       {legRow(legs.pickup)}
                       {legRow(legs.dropoff)}
                       {readyTime && <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>Kitchen ready ~{readyTime}</div>}
-                      {late.known && !late.onTime && phase !== 'done' && <div style={{ fontSize:11.5, color:'#ef4444', fontWeight:700, marginTop:4 }}>⚠ Running ~{late.lateMins} min late</div>}
+                      {late.known && !late.onTime && phase !== 'done' && <div style={{ fontSize:11.5, color:'#ef4444', fontWeight:700, marginTop:4 }}><Icon name="warn" size={12} style={ICON_INLINE} />Running ~{late.lateMins} min late</div>}
                       {phase === 'done' && <div style={{ fontSize:11.5, color:'#16a34a', fontWeight:700, marginTop:4 }}>Delivered{legs.dropoff.time ? ` ${legs.dropoff.time}` : ''}{late.known ? (late.onTime ? ' · on time' : ` · ${late.lateMins} min late`) : ''}</div>}
                     </div>
                   )}
@@ -1372,11 +1375,11 @@ export default function OrdersHub() {
                     </div>
                   )}
                   {!hasRow && isScheduledOrder && (
-                    <div style={{ fontSize:11.5, color:'var(--t3)', marginTop:8 }}>🗓 Scheduled{readyTime ? ` for ${readyTime}` : ''} — a courier is arranged automatically nearer the time.</div>
+                    <div style={{ fontSize:11.5, color:'var(--t3)', marginTop:8 }}><Icon name="calendar" size={12} style={ICON_INLINE} />Scheduled{readyTime ? ` for ${readyTime}` : ''} — a courier is arranged automatically nearer the time.</div>
                   )}
                   {canSend && (
                     <button onClick={sendToCourier} disabled={delBusy} style={{ width:'100%', marginTop:10, padding:10, borderRadius:9, background: (!hasRow && isScheduledOrder) ? 'var(--bg3)' : 'var(--acc)', border: (!hasRow && isScheduledOrder) ? '1px solid var(--bdr2)' : 'none', color: (!hasRow && isScheduledOrder) ? 'var(--t1)' : '#0b0c10', fontWeight:800, cursor: delBusy?'wait':'pointer', fontFamily:'inherit', opacity: delBusy?0.6:1 }}>
-                      {delBusy ? 'Sending…' : st === 'failed' ? '↻ Retry — send to Stuart' : (!hasRow && isScheduledOrder) ? '🚗 Send to courier now' : '🚗 Send to Stuart courier'}
+                      {delBusy ? 'Sending…' : st === 'failed' ? '↻ Retry — send to Stuart' : (!hasRow && isScheduledOrder) ? <><Icon name="car" size={14} style={ICON_INLINE} />Send to courier now</> : <><Icon name="car" size={14} style={ICON_INLINE} />Send to Stuart courier</>}
                     </button>
                   )}
                 </div>
@@ -1388,10 +1391,10 @@ export default function OrdersHub() {
                 <button onClick={sendToKitchenAgain} disabled={kitchenBusy}
                   title="Print the kitchen ticket and put it on the KDS again, e.g. if the ticket never arrived"
                   style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor: kitchenBusy?'wait':'pointer', fontFamily:'inherit', opacity: kitchenBusy?0.6:1 }}>
-                  {kitchenBusy ? 'Sending…' : '🍳 Send to kitchen again'}
+                  {kitchenBusy ? 'Sending…' : <><Icon name="cookingPot" size={13} style={ICON_INLINE} />Send to kitchen again</>}
                 </button>
               )}
-              <button onClick={printReceipt} disabled={printBusy} style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor: printBusy?'wait':'pointer', fontFamily:'inherit', opacity: printBusy?0.6:1 }}>{printBusy ? 'Printing…' : '🧾 Print receipt'}</button>
+              <button onClick={printReceipt} disabled={printBusy} style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor: printBusy?'wait':'pointer', fontFamily:'inherit', opacity: printBusy?0.6:1 }}>{printBusy ? 'Printing…' : <><Icon name="receipt" size={14} style={ICON_INLINE} />Print receipt</>}</button>
             </div>
             {isPaymentChecking(viewOrder) ? (
               <div style={{ marginTop:10, padding:'10px 12px', borderRadius:10, background:'#f59e0b18', border:'1px solid #f59e0b66' }}>
@@ -1440,16 +1443,16 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
     }}>
       <div style={{ height:3, background:`linear-gradient(90deg,${headerColor},${headerColor}88)` }}/>
       <div style={{ padding:'12px 14px', display:'flex', alignItems:'flex-start', gap:10 }}>
-        <span style={{ fontSize:22 }}>📱</span>
+        <span style={{ display:'flex', color:headerColor }}><Icon name="phone" size={22} /></span>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:'flex', gap:8, alignItems:'baseline', flexWrap:'wrap' }}>
             <span style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>Table {tab.tableLabel}</span>
             <span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{tab.isOpenTab ? 'tab' : 'pay-now'}</span>
           </div>
           <div style={{ display:'flex', gap:10, marginTop:3, flexWrap:'wrap', fontSize:11, color:'var(--t3)' }}>
-            <span>👤 {tab.customerName}</span>
-            {tab.customerPhone && <span>📞 ··{(tab.customerPhone.replace(/\D/g, '').slice(-4))}</span>}
-            <span>⏱ {ageMin} min open</span>
+            <span><Icon name="user" size={12} style={ICON_INLINE} />{tab.customerName}</span>
+            {tab.customerPhone && <span><Icon name="phoneCall" size={12} style={ICON_INLINE} />··{(tab.customerPhone.replace(/\D/g, '').slice(-4))}</span>}
+            <span><Icon name="clock" size={12} style={ICON_INLINE} />{ageMin} min open</span>
           </div>
         </div>
         {tab.isOpenTab && shortLine ? (
@@ -1507,7 +1510,7 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
               background:'#f59e0b', border:'none', color:'#0b0c10',
               fontSize:12, fontWeight:800, opacity: closingTab ? 0.6 : 1,
             }}>
-              {shortLine ? (closingTab ? 'Closing…' : 'Close (already charged)') : (closingTab ? 'Capturing…' : '🔒 Close & charge')}
+              {shortLine ? (closingTab ? 'Closing…' : 'Close (already charged)') : (closingTab ? 'Capturing…' : <><Icon name="lock" size={12} style={ICON_INLINE} />Close & charge</>)}
             </button>
           </>
         ) : (
@@ -1549,7 +1552,7 @@ function Section({ title, icon, color, count, children }) {
         style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10, cursor:'pointer', userSelect:'none' }}>
         <div style={{ height:2, flex:1, background:`${color}40`, borderRadius:1 }} />
         <div style={{ display:'flex', alignItems:'center', gap:7, padding:'4px 12px', borderRadius:20, background:`${color}18`, border:`1px solid ${color}44` }}>
-          <span>{icon}</span>
+          <span style={{ display:'flex', color }}>{hasIcon(icon) ? <Icon name={icon} size={14} /> : icon}</span>
           <span style={{ fontSize:12, fontWeight:800, color }}>{title}</span>
           <span style={{ fontSize:11, fontWeight:700, padding:'0 5px', borderRadius:8, background:color, color:'#0b0c10' }}>{count}</span>
         </div>
@@ -1639,7 +1642,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
 
       {/* Header */}
       <div style={{ padding:'10px 13px', display:'flex', gap:10, alignItems:'flex-start' }}>
-        <span style={{ fontSize:20 }}>{tab.icon}</span>
+        <span style={{ fontSize:20, display:'flex', color }}>{hasIcon(tab.icon) ? <Icon name={tab.icon} size={20} /> : tab.icon}</span>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:'flex', gap:6, alignItems:'baseline', flexWrap:'wrap' }}>
             <span style={{ fontSize:13, fontWeight:800, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:150 }}>
@@ -1662,12 +1665,12 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {/* v5.5.850: a HubRise partial payment no longer reads as PAID — amber badge with the balance due */}
             {!(order.paid || order.customer?.paid) && Number(order.customer?.paidAmount) > 0 && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#f59e0b' }}>PART-PAID · {money(Number(order.customer?.due) || 0)} due</span>}
           </div>
-          {ezcaterFlagText(order) && <div style={{ marginTop:4, fontSize:11, fontWeight:800, color:'#ef4444' }}>⚠ {ezcaterFlagText(order)}</div>}
+          {ezcaterFlagText(order) && <div style={{ marginTop:4, fontSize:11, fontWeight:800, color:'#ef4444' }}><Icon name="warn" size={12} style={ICON_INLINE} />{ezcaterFlagText(order)}</div>}
           <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
-            {order.server  && <span style={{ fontSize:10, color:'var(--t3)' }}>👤 {order.server}</span>}
-            {order.covers  && <span style={{ fontSize:10, color:'var(--t3)' }}>🧑 {order.covers}</span>}
-            {el            && <span style={{ fontSize:10, color:'var(--t4)' }}>⏱ {el}</span>}
-            {order.collectionTime && <span style={{ fontSize:10, fontWeight:700, color:'var(--acc)' }}>{order.isASAP ? '⚡ ASAP' : `⏰ ${order.whenLabel || order.collectionTime}`}</span>}
+            {order.server  && <span style={{ fontSize:10, color:'var(--t3)' }}><Icon name="user" size={11} style={ICON_INLINE} />{order.server}</span>}
+            {order.covers  && <span style={{ fontSize:10, color:'var(--t3)' }}><Icon name="users" size={11} style={ICON_INLINE} />{order.covers}</span>}
+            {el            && <span style={{ fontSize:10, color:'var(--t4)' }}><Icon name="clock" size={11} style={ICON_INLINE} />{el}</span>}
+            {order.collectionTime && <span style={{ fontSize:10, fontWeight:700, color:'var(--acc)' }}>{order.isASAP ? <><Icon name="bolt" size={11} style={ICON_INLINE} />ASAP</> : <><Icon name="clock" size={11} style={ICON_INLINE} />{order.whenLabel || order.collectionTime}</>}</span>}
           </div>
         </div>
         <span style={{ fontSize:10, fontWeight:700, padding:'3px 8px', borderRadius:12, background:`${statusColor}18`, color:statusColor, border:`1px solid ${statusColor}40`, whiteSpace:'nowrap', flexShrink:0 }}>
@@ -1752,7 +1755,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
               fontFamily:'inherit', background:'#f59e0b', border:'none', color:'#0b0c10',
               fontSize:11, fontWeight:800, opacity: closingTab ? 0.6 : 1,
             }}>
-              {closingTab ? 'Capturing…' : '🔒 Close & charge'}
+              {closingTab ? 'Capturing…' : <><Icon name="lock" size={12} style={ICON_INLINE} />Close & charge</>}
             </button>
           )}
           {isHubriseNew && (
@@ -1766,7 +1769,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
               <button onClick={() => setDelayOpen(v => !v)} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit',
                 background: delayOpen ? 'var(--bg1)' : 'transparent', border:`1px solid ${delayOpen ? 'var(--acc)' : 'var(--bdr)'}`,
                 color: delayOpen ? 'var(--acc)' : 'var(--t1)', fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
-                ⏱ Delay
+                <Icon name="clock" size={12} style={ICON_INLINE} />Delay
               </button>
               {delayOpen && [10, 15, 20, 30].map(m => (
                 <button key={m} onClick={() => { setDelayOpen(false); onAcceptDelay?.(m); }}
@@ -1810,8 +1813,8 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
 // ── Empty state ───────────────────────────────────────────────────────────────
 function EmptyState({ filter, search, myOrders, staff }) {
   const tab = FILTER_TABS.find(t => t.id === filter);
-  if (search)   return <Blank icon="🔍" title={`No results for "${search}"`} sub="Try a different name or order reference" />;
-  if (myOrders) return <Blank icon="👤" title={`No active orders for ${staff?.name || 'you'}`} sub="Your orders will appear here once sent" />;
+  if (search)   return <Blank icon="search" title={`No results for "${search}"`} sub="Try a different name or order reference" />;
+  if (myOrders) return <Blank icon="user" title={`No active orders for ${staff?.name || 'you'}`} sub="Your orders will appear here once sent" />;
   if (filter !== 'all') return <Blank icon={tab?.icon || '⊞'} title={`No active ${tab?.label || ''} orders`} sub="Orders will appear here once sent" />;
   return <Blank icon="⊞" title="No active orders" sub="Orders from all terminals appear here once sent to kitchen" />;
 }
@@ -1819,7 +1822,7 @@ function EmptyState({ filter, search, myOrders, staff }) {
 function Blank({ icon, title, sub }) {
   return (
     <div style={{ textAlign:'center', padding:'64px 20px', color:'var(--t4)' }}>
-      <div style={{ fontSize:40, marginBottom:14, opacity:.15 }}>{icon}</div>
+      <div style={{ fontSize:40, marginBottom:14, opacity:.15, display:'flex', justifyContent:'center' }}>{hasIcon(icon) ? <Icon name={icon} size={40} /> : icon}</div>
       <div style={{ fontSize:14, fontWeight:700, color:'var(--t2)', marginBottom:6 }}>{title}</div>
       {sub && <div style={{ fontSize:12, lineHeight:1.6 }}>{sub}</div>}
     </div>

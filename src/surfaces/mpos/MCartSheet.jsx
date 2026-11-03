@@ -17,6 +17,7 @@ import { lineAfterItemDiscount } from '../../lib/taxBasis';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
 import MOrderActions from './MOrderActions';
+import { Icon } from '../../components/ServOSIcons';
 
 // 19 Oct 2026 (v5.11.78, channel parity): the cart shows, prints and MTender charges ONE bill, the
 // till's own (store.getPOSTotals, payments/checkTotals.computeCheckTotals): item discounts of
@@ -208,7 +209,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
       <div style={Sx.scroller}>
         {items.length === 0 ? (
           <div style={Sx.emptyBlock}>
-            <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🧾</div>
+            <div style={{ marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="receipt" size={36} /></div>
             <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>This order is empty</div>
             <div style={{ fontSize:12 }}>Tap Add items to start.</div>
           </div>
@@ -288,7 +289,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
                 WebkitTapHighlightColor: 'transparent',
               }}
             >
-              {printing ? '⏳ Sending…' : printable.ok ? '🧾 Print bill' : '🧾 No printer set'}
+              {printing ? <><Icon name="clock" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />Sending…</> : printable.ok ? <><Icon name="receipt" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />Print bill</> : <><Icon name="receipt" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />No printer set</>}
             </button>
             <button onClick={onAddMore} style={{ ...Sx.btnGhost, flex:1 }}>+ Add items</button>
           </div>
@@ -347,7 +348,7 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
             </div>
           )}
           {item.notes && (
-            <div style={{ fontSize:11, color:'var(--acc)', marginTop:2, lineHeight:1.4 }}>📝 {item.notes}</div>
+            <div style={{ fontSize:11, color:'var(--acc)', marginTop:2, lineHeight:1.4 }}><Icon name="note" size={12} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{item.notes}</div>
           )}
           {item.discount && (
             <div style={{ marginTop:6, display:'inline-block' }}>

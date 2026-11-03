@@ -145,7 +145,7 @@ export function checkoutLoyaltyView(data) {
   if (!member) return null;
   const parts = [];
   if (pointsOn) parts.push(`${points} point${points === 1 ? '' : 's'}`);
-  for (const s of stamps) parts.push(`${s.icon} ${s.name} ${s.have}/${s.need}`);
+  for (const s of stamps) parts.push(`${s.name} ${s.have}/${s.need}`);
   parts.push(rewardCount > 0 ? `${rewardCount} reward${rewardCount === 1 ? '' : 's'} to redeem` : 'Nothing to redeem yet');
   return { pointsOn, stampsOn, points, stamps, rewardCount, line: parts.join(' · ') };
 }

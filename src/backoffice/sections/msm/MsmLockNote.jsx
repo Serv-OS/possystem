@@ -8,6 +8,7 @@
 
 import { useState } from 'react';
 import { LOCK_WORDS, lockWord } from '../../../lib/msm/msmLock.js';
+import { Icon } from '../../../components/ServOSIcons';
 
 const box = {
   padding: '9px 11px', borderRadius: 9, fontSize: 11.5, lineHeight: 1.5, color: 'var(--t2)',
@@ -25,7 +26,7 @@ export function MsmLockBanner({ kind = 'product', kept = new Set(), onOpen = nul
   const keptWords = [...new Set([...kept].map(lockWord))];
   return (
     <div role="note" data-testid="msm-lock-banner" style={{ ...box, marginBottom: 12 }}>
-      <div style={{ fontWeight: 800, color: 'var(--t1)', marginBottom: 2 }}>🔒 {kind === 'group' ? 'Managed by head office' : 'Set by head office'}</div>
+      <div style={{ fontWeight: 800, color: 'var(--t1)', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="lock" size={14} />{kind === 'group' ? 'Managed by head office' : 'Set by head office'}</div>
       <div>{kind === 'group' ? LOCK_WORDS.group : LOCK_WORDS.product}</div>
       {kind === 'product' && <div style={{ marginTop: 3, color: 'var(--t3)' }}>{LOCK_WORDS.stillYours}</div>}
       {kind === 'group' && <div style={{ marginTop: 3, color: 'var(--t3)' }}>86 still works here, and you can put it on this site's own products.</div>}
@@ -55,7 +56,7 @@ export function MsmLocked({ on, children, label = null }) {
     <div style={{ position: 'relative' }}>
       <fieldset disabled aria-disabled="true" style={{ border: 'none', padding: 0, margin: 0, minWidth: 0, opacity: 0.62 }}>{children}</fieldset>
       <button type="button" onClick={() => setWhy((v) => !v)} title={LOCK_WORDS.product} aria-label={`${label || 'This field'} is set by head office`}
-        style={{ position: 'absolute', top: -2, right: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '0 2px', color: 'var(--t3)' }}>🔒</button>
+        style={{ position: 'absolute', top: -2, right: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '0 2px', color: 'var(--t3)' }}><Icon name="lock" size={13} /></button>
       {why && <div style={{ ...box, marginTop: 6 }}>{label ? `${label}: ` : ''}{LOCK_WORDS.product}</div>}
     </div>
   );

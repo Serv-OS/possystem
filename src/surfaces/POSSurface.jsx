@@ -56,7 +56,8 @@ import { needsFlagPrompt, flagTableLabel, defaultOrderTypeFor } from '../lib/til
 import { promptsOnTypeChange, sendsWithoutPrompt } from '../lib/customerDetailsRule';
 import { money, getActiveCurrencyCode } from '../lib/currency';
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';   // v5.7.34: rate-null guards
-import { Icon, emojiToIcon } from '../components/ServOSIcons';
+import { Icon, EmojiIcon } from '../components/ServOSIcons';
+import { stripEmoji } from '../lib/emojiIcons';
 import { customerInitials, customerLabel } from '../lib/customerInitials';
 import { stampSummary, stampChip } from '../lib/stampSummary';
 import { announceOrderCustomer } from '../lib/orderCustomerLoyalty';
@@ -418,7 +419,7 @@ export default function POSSurface() {
     () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
     [menuCategories, deviceMenuId, _categoryLinks]);
   // Drive thru (16 Sep 2026) shows only when the device profile ticks it, like every type here.
-  const ALL_ORDER_TYPES = [['dine-in','🍽','Dine in'],['takeaway','🥡','Takeaway'],['collection','📦','Collect'],['drive-thru','🚗','Drive thru']];
+  const ALL_ORDER_TYPES = [['dine-in','dinein','Dine in'],['takeaway','takeaway','Takeaway'],['collection','collect','Collect'],['drive-thru','drivethru','Drive thru']];
   const visibleOrderTypes = ALL_ORDER_TYPES.filter(([t]) => allowedOrderTypes.includes(t));
   // The order header, reprint title and send toast print the raw key ('takeaway'), which
   // reads fine until a key carries a hyphen. Only drive thru is mapped so no other venue
@@ -1201,12 +1202,12 @@ export default function POSSurface() {
       <div style={{background:'var(--bg3)',borderRadius:10,padding:'8px 12px',marginTop:8,display:'flex',alignItems:'center',gap:10,border:'1px solid var(--bdr)'}}>
         <div style={{width:32,height:32,borderRadius:'50%',background:'var(--acc-d)',border:'1.5px solid var(--acc-b)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:800,color:'var(--acc)',flexShrink:0}}>{customerInitials(customer.name, customer.phone)}</div>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customerLabel(customer.name)}{stampChip(customer.stampSummary) ? <span style={{fontSize:11,fontWeight:800,color:'var(--acc)',marginLeft:6}}>{stampChip(customer.stampSummary)}</span> : null}</div>
-          <div style={{fontSize:11,color:'var(--t3)'}}>{customer.phone}{orderType==='collection'?` · ${customer.isASAP?'⚡ ASAP':`🕐 ${customer.collectionTime}`}`:orderType==='dine-in'?(activeTableId?' · Guest':' · Named order'):''}</div>
+          <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customerLabel(customer.name)}{stampChip(customer.stampSummary) ? <span style={{fontSize:11,fontWeight:800,color:'var(--acc)',marginLeft:6,display:'inline-flex',alignItems:'center',gap:3,verticalAlign:'-1px'}}><EmojiIcon value={customer.stampSummary[0]?.icon} fallback="cup" size={12} />{stripEmoji(stampChip(customer.stampSummary))}</span> : null}</div>
+          <div style={{fontSize:11,color:'var(--t3)'}}>{customer.phone}{orderType==='collection'?<> · {customer.isASAP?<><Icon name="bolt" size={11} style={{display:'inline-block',verticalAlign:'-2px',marginRight:4}} />ASAP</>:<><Icon name="clock" size={11} style={{display:'inline-block',verticalAlign:'-2px',marginRight:4}} />{customer.collectionTime}</>}</>:orderType==='dine-in'?(activeTableId?' · Guest':' · Named order'):''}</div>
           {/* v5.5.894: persistent allergy warning — the attach toast is only ~3s */}
           {Array.isArray(customer.allergens)&&customer.allergens.length>0&&(
             <div style={{fontSize:11,fontWeight:800,color:'var(--red)',marginTop:2}}>
-              ⚠ ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
+              <Icon name="warn" size={12} style={{display:'inline-block',verticalAlign:'-2px',marginRight:4}} />ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
             </div>
           )}
           <TillGuestTags customer={customer} />
@@ -1523,7 +1524,7 @@ export default function POSSurface() {
                     tells the server exactly that. */}
                 {session?.booking?.prepayUnpaid && (
                   <div style={{fontSize:10.5,fontWeight:700,color:'var(--orn)',marginTop:2}}>
-                    ⚠ {session.booking.packageName || 'Package'} unpaid, full prices apply
+                    <Icon name="warn" size={11} style={{display:'inline-block',verticalAlign:'-2px',marginRight:4}} />{session.booking.packageName || 'Package'} unpaid, full prices apply
                   </div>
                 )}
               </div>
@@ -1875,7 +1876,7 @@ export default function POSSurface() {
         </div>
         <div style={{flex:1,overflowY:'auto',padding:compact?'4px':'6px 7px'}}>
           {/* Quick screen always first */}
-          {[{ id:'quick', label:'Quick', icon:'⚡', color:'var(--acc)' }].concat(
+          {[{ id:'quick', label:'Quick', icon:'bolt', color:'var(--acc)' }].concat(
             // v4.7.6: cat is in this menu if its primary menu_id matches OR it's joined via menu_category_links
           menuCategories.filter(c => !c.parentId && !c.isSpecial && !optionOnlyCats.has(c.id) && categoryVisibleInMenu(c, deviceMenuId, _linkedCatIdsForDeviceMenu)).sort((a,b) => (a.sortOrder||0)-(b.sortOrder||0))
           ).map(c => {
@@ -1902,9 +1903,7 @@ export default function POSSurface() {
               }}>
                 {/* v5.5.358 ServOS: colour-tinted icon chip (reference .cat .ci) replaces the thin stripe */}
                 <div style={{width:compact?30:34,height:compact?30:34,borderRadius:9,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',background:`${color}24`,border:`1px solid ${color}40`,color:color}}>
-                  {emojiToIcon(c.icon)
-                    ? <Icon name={emojiToIcon(c.icon)} size={compact?15:17} />
-                    : <span style={{fontSize:compact?14:16,lineHeight:1}}>{c.icon||'•'}</span>}
+                  <EmojiIcon value={c.icon} fallback="utensils" size={compact?15:17} />
                 </div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -2062,7 +2061,7 @@ export default function POSSurface() {
                 <button onClick={() => { setSubCat(null); setRightTab('menu'); setModalItem(null); setEditLine(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:!subCat?800:500, border:'none', background:!subCat?'var(--acc)':'var(--bg3)', color:!subCat?'#0b0c10':'var(--t3)' }}>All</button>
                 {subCategories.map(sc => {
                   const a = subCat === sc.id, cl = sc.color||'var(--acc)';
-                  return (<button key={sc.id} onClick={() => { setSubCat(sc.id); setRightTab('menu'); setModalItem(null); setEditLine(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && (emojiToIcon(sc.icon) ? <Icon name={emojiToIcon(sc.icon)} size={13}/> : <span>{sc.icon}</span>)}{sc.label}</button>);
+                  return (<button key={sc.id} onClick={() => { setSubCat(sc.id); setRightTab('menu'); setModalItem(null); setEditLine(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && <EmojiIcon value={sc.icon} size={13}/>}{sc.label}</button>);
                 })}
               </div>
             )}
@@ -2077,7 +2076,7 @@ export default function POSSurface() {
                   const storeCat = catById.get(item.cat);
                   const legacyMeta = CAT_META[item.cat] || CAT_META.quick;
                   const catColor = storeCat?.color || legacyMeta.color || 'var(--acc)';
-                  const catIcon  = storeCat?.icon  || legacyMeta.icon  || '🍽';
+                  const catIcon  = storeCat?.icon  || legacyMeta.icon  || 'utensils';
                   const flagged=allergens.some(a=>item.allergens?.includes(a));
                   const is86=eightySixIds.includes(item.id);
                   const rank=cat==='quick'?QUICK_IDS.indexOf(item.id):-1;
@@ -2153,10 +2152,9 @@ export default function POSSurface() {
                         {/* Top row: emoji/icon + badges — hide emoji when image fills the space */}
                         <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:8}}>
                           {!hasImg && (
-                      is86 ? <span style={{fontSize:24,lineHeight:1}}>🚫</span>
+                      is86 ? <Icon name="ban" size={23} style={{color:'var(--red)'}} />
                       : flagged ? <Icon name="warn" size={23} style={{color:'var(--red)'}} />
-                      : emojiToIcon(catIcon) ? <Icon name={emojiToIcon(catIcon)} size={23} stroke={1.8} style={{color:catColor}} />
-                      : <span style={{fontSize:24,lineHeight:1}}>{catIcon}</span>
+                      : <EmojiIcon value={catIcon} fallback="utensils" size={23} stroke={1.8} style={{color:catColor}} />
                     )}
                           {hasImg && <span/>}
                           <div style={{display:'flex',gap:3,flexDirection:'column',alignItems:'flex-end'}}>
@@ -2175,7 +2173,7 @@ export default function POSSurface() {
                                 color:hasImg?'#fff':catColor,letterSpacing:.02,
                               }}>#{rank+1}</span>
                             )}
-                            {flagged&&<span style={{fontSize:9,fontWeight:800,padding:'2px 5px',borderRadius:4,background:'var(--red)',color:'#fff'}}>⚠ allergen</span>}
+                            {flagged&&<span style={{fontSize:9,fontWeight:800,padding:'2px 5px',borderRadius:4,background:'var(--red)',color:'#fff',display:'inline-flex',alignItems:'center',gap:3}}><Icon name="warn" size={10} />allergen</span>}
                             {is86&&<span style={{fontSize:9,fontWeight:800,padding:'2px 5px',borderRadius:4,background:'var(--red-d)',color:'var(--red)',border:'1px solid var(--red-b)'}}>86'd</span>}
                           </div>
                         </div>

@@ -17,6 +17,7 @@ import { giftLinesOf } from '../lib/giftCardLine';
 import { giftFunctionsUrl, giftCardsOnCheck, giftLineSlots, giftActivationWords } from '../lib/giftAtTill';
 import { ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
 import { moneyMinor } from '../lib/currency';
+import { Icon, hasIcon } from './ServOSIcons';
 
 const REFUND_REASONS = [
   'Wrong item served','Quality issue','Customer complaint',
@@ -27,7 +28,7 @@ const managersFrom = (staffMembers) =>
   (staffMembers || [])
     .filter(s => s.role === 'Manager' && s.active !== false)
     .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
-const METHOD_ICON = {card:'💳',cash:'💵',split:'⚖','bar-tab':'🍸'};
+const METHOD_ICON = {card:'card',cash:'money',split:'scale','bar-tab':'cocktail'};
 
 // v5.6.78 — the refund screens used to name one processor on EVERY check, whichever
 // actually took the money, at the exact moment staff are deciding whether to trust
@@ -390,12 +391,12 @@ function RefundModal({check, onConfirm, onCancel}){
               </div>
               {/* Original method note */}
               <div style={{padding:'8px 12px',borderRadius:8,background:'var(--bg3)',border:'1px solid var(--bdr)',marginBottom:14,fontSize:12,color:'var(--t3)',display:'flex',alignItems:'center',gap:8}}>
-                <span>{METHOD_ICON[check.method]||'💳'}</span>
+                <Icon name={METHOD_ICON[check.method]||'card'} size={14}/>
                 <span>Originally paid by <strong style={{color:'var(--t2)'}}>{check.method}</strong> — refund to same method is recommended</span>
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
                 <button onClick={()=>handleTender('card')} style={{padding:'16px 18px',borderRadius:12,cursor:'pointer',fontFamily:'inherit',textAlign:'left',display:'flex',alignItems:'center',gap:14,background:'var(--bg3)',border:'1.5px solid var(--bdr)'}}>
-                  <span style={{fontSize:28}}>💳</span>
+                  <span style={{fontSize:28,display:'flex',color:'var(--t1)'}}><Icon name="card" size={28}/></span>
                   <div>
                     <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Return to card</div>
                     {/* v5.6.78: name the processor that actually took the money. */}
@@ -403,7 +404,7 @@ function RefundModal({check, onConfirm, onCancel}){
                   </div>
                 </button>
                 <button onClick={()=>handleTender('cash')} style={{padding:'16px 18px',borderRadius:12,cursor:'pointer',fontFamily:'inherit',textAlign:'left',display:'flex',alignItems:'center',gap:14,background:'var(--bg3)',border:'1.5px solid var(--bdr)'}}>
-                  <span style={{fontSize:28}}>💵</span>
+                  <span style={{fontSize:28,display:'flex',color:'var(--t1)'}}><Icon name="money" size={28}/></span>
                   <div>
                     <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Cash payout</div>
                     <div style={{fontSize:11,color:'var(--t3)',marginTop:2}}>Hand back from cash drawer immediately</div>
@@ -418,7 +419,7 @@ function RefundModal({check, onConfirm, onCancel}){
           {step==='cash_confirm'&&(
             <>
               <div style={{textAlign:'center',padding:'20px 0 24px'}}>
-                <div style={{fontSize:48,marginBottom:12}}>💵</div>
+                <div style={{fontSize:48,marginBottom:12,display:'flex',justifyContent:'center',color:'var(--t2)'}}><Icon name="money" size={48}/></div>
                 <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:6}}>{money(refundTotal)}</div>
                 <div style={{fontSize:14,color:'var(--t2)',marginBottom:20}}>Hand this amount back to the guest from the cash drawer</div>
                 <div style={{display:'flex',flexDirection:'column',gap:6,background:'var(--bg3)',border:'1px solid var(--bdr)',borderRadius:12,padding:'12px 16px',textAlign:'left',marginBottom:20}}>
@@ -522,7 +523,7 @@ function RefundModal({check, onConfirm, onCancel}){
           {step==='card_terminal'&&(
             <>
               <div style={{textAlign:'center',padding:'20px 0 24px'}}>
-                <div style={{fontSize:48,marginBottom:12}}>💳</div>
+                <div style={{fontSize:48,marginBottom:12,display:'flex',justifyContent:'center',color:'var(--t2)'}}><Icon name="card" size={48}/></div>
                 <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:6}}>−{money(refundTotal)}</div>
                 <div style={{fontSize:14,color:'var(--t2)',marginBottom:8}}>Refund to original card · {processorLabel(check,legs).replace(/^Processed /,'')}</div>
                 <div style={{fontSize:12,color:'var(--t3)',marginBottom:16}}>Customer does not need to re-present their card. Funds appear in 1–3 business days.</div>
@@ -590,10 +591,10 @@ function AmountRow({label,suffix,value,max,disabled,onChange,isOverridden,onRese
 // one that may look like a finished job.
 const CARD_STATUS_META={
   succeeded:{label:'Returned to card',color:'var(--grn)',icon:'✓'},
-  accepted: {label:'Accepted by processor, settling',color:'var(--acc)',icon:'⏳'},
-  partial:  {label:'SOME CARDS NOT REVERSED',color:'var(--red)',icon:'⚠'},
-  failed:   {label:'CARD REVERSAL FAILED — no money returned',color:'var(--red)',icon:'⚠'},
-  pending:  {label:'Reversal not confirmed',color:'var(--acc)',icon:'⏳'},
+  accepted: {label:'Accepted by processor, settling',color:'var(--acc)',icon:'clock'},
+  partial:  {label:'SOME CARDS NOT REVERSED',color:'var(--red)',icon:'warn'},
+  failed:   {label:'CARD REVERSAL FAILED — no money returned',color:'var(--red)',icon:'warn'},
+  pending:  {label:'Reversal not confirmed',color:'var(--acc)',icon:'clock'},
   none:     {label:'No card reversal — handle manually',color:'var(--t3)',icon:'·'},
 };
 
@@ -739,8 +740,8 @@ function TipWindowCard({ check }){
     <div style={{ background: 'var(--bg2)', border: `1px solid ${meta.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: meta.bg, color: meta.color, border: `1px solid ${meta.border}` }}>
-            ✍ {meta.label}
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: meta.bg, color: meta.color, border: `1px solid ${meta.border}`, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Icon name="signature" size={12}/>{meta.label}
           </span>
           {leg.capture === 'pending' && remaining && (
             <span style={{ fontSize: 11, color: 'var(--t3)' }}>window closes in {remaining}</span>
@@ -762,8 +763,8 @@ function TipWindowCard({ check }){
       {captureCanAct(leg) && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <button onClick={() => setShowPad(true)} disabled={closing}
-            style={{ flex: 1, height: 40, borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', background: 'var(--acc)', border: 'none', color: '#fff', fontSize: 12.5, fontWeight: 800 }}>
-            ✍ Add tip
+            style={{ flex: 1, height: 40, borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', background: 'var(--acc)', border: 'none', color: '#fff', fontSize: 12.5, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <Icon name="signature" size={14}/>Add tip
           </button>
           <button onClick={closeNoTip} disabled={closing}
             style={{ flex: 1, height: 40, borderRadius: 10, cursor: closing ? 'wait' : 'pointer', fontFamily: 'inherit', background: 'var(--bg3)', border: '1px solid var(--bdr2)', color: 'var(--t2)', fontSize: 12.5, fontWeight: 700 }}>
@@ -985,7 +986,7 @@ export default function CheckHistory(){
       <div style={{width:280,flexShrink:0,display:'flex',flexDirection:'column',borderRight:'1px solid var(--bdr2)',overflow:'hidden',background:'var(--bg1)'}}>
         <div style={{padding:'10px 12px',borderBottom:'1px solid var(--bdr)',flexShrink:0}}>
           <div style={{position:'relative',marginBottom:8}}>
-            <span style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:'var(--t3)',fontSize:13}}>🔍</span>
+            <span style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:'var(--t3)',fontSize:13,display:'flex'}}><Icon name="search" size={14}/></span>
             <input className="input" placeholder="Ref, table, server…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:30,height:32,fontSize:12}}/>
             {search&&<button onClick={()=>setSearch('')} style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:14}}>×</button>}
           </div>
@@ -1010,7 +1011,7 @@ export default function CheckHistory(){
 
         <div style={{flex:1,overflowY:'auto',padding:'6px 8px'}}>
           {filtered.length===0&&<div style={{textAlign:'center',padding:'40px 0',color:'var(--t3)'}}>
-            <div style={{fontSize:32,marginBottom:8,opacity:.4}}>🧾</div>
+            <div style={{fontSize:32,marginBottom:8,opacity:.4,display:'flex',justifyContent:'center'}}><Icon name="receipt" size={32}/></div>
             <div style={{fontSize:13,fontWeight:600,color:'var(--t2)',marginBottom:4}}>No checks</div>
             <div style={{fontSize:12}}>Completed orders appear here</div>
           </div>}
@@ -1032,7 +1033,7 @@ export default function CheckHistory(){
                       const cl=captureLegOf(chk);
                       if(!cl||!captureIsOpen(cl))return null;
                       const cm=CAPTURE_META[cl.capture];
-                      return <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:20,background:cm.bg,color:cm.color,border:`1px solid ${cm.border}`}}>✍ {cm.label}</span>;
+                      return <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:20,background:cm.bg,color:cm.color,border:`1px solid ${cm.border}`,display:'inline-flex',alignItems:'center',gap:3}}><Icon name="signature" size={10}/>{cm.label}</span>;
                     })()}
                   </div>
                   <span style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money(chk.total)}</span>
@@ -1043,7 +1044,7 @@ export default function CheckHistory(){
                 </div>
                 {totalRefunded>0&&<div style={{fontSize:11,color:'var(--red)',fontFamily:'DM Mono,monospace'}}>↩ −{money(totalRefunded)} refunded</div>}
                 <div style={{display:'flex',alignItems:'center',gap:5,marginTop:3}}>
-                  <span style={{fontSize:11}}>{METHOD_ICON[chk.method]||'💳'}</span>
+                  <span style={{fontSize:11,display:'flex',color:'var(--t3)'}}><Icon name={METHOD_ICON[chk.method]||'card'} size={12}/></span>
                   <span style={{fontSize:10,color:'var(--t4)'}}>{chk.items.length} items{chk.covers>1?` · ${chk.covers} cvr`:''}{chk.tip>0?` · tip ${money(chk.tip)}`:''}</span>
                 </div>
               </div>
@@ -1056,7 +1057,7 @@ export default function CheckHistory(){
       <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
         {!selectedCheck?(
           <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',color:'var(--t3)',padding:24,textAlign:'center'}}>
-            <div style={{fontSize:40,marginBottom:12,opacity:.4}}>🧾</div>
+            <div style={{fontSize:40,marginBottom:12,opacity:.4,display:'flex',justifyContent:'center'}}><Icon name="receipt" size={40}/></div>
             <div style={{fontSize:14,fontWeight:600,color:'var(--t2)',marginBottom:6}}>Select a check</div>
             <div style={{fontSize:12,lineHeight:1.6}}>Tap a check to view the full audit trail and issue refunds</div>
           </div>
@@ -1077,13 +1078,13 @@ export default function CheckHistory(){
                           const cl=captureLegOf(selectedCheck);
                           if(!cl)return null;
                           const cm=CAPTURE_META[cl.capture]||CAPTURE_META.pending;
-                          return <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:cm.bg,color:cm.color,border:`1px solid ${cm.border}`}}>✍ {cm.label}</span>;
+                          return <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:cm.bg,color:cm.color,border:`1px solid ${cm.border}`,display:'inline-flex',alignItems:'center',gap:4}}><Icon name="signature" size={11}/>{cm.label}</span>;
                         })()}
                       </div>
                       <div style={{fontSize:12,color:'var(--t3)',lineHeight:1.8}}>
                         {selectedCheck.tableLabel||selectedCheck.orderType}{selectedCheck.server?` · ${selectedCheck.server}`:''}{selectedCheck.covers>1?` · ${selectedCheck.covers} covers`:''}{selectedCheck.customer?.name?` · ${selectedCheck.customer.name}`:''}
                         <br/>
-                        {METHOD_ICON[selectedCheck.method]||'💳'} paid by {selectedCheck.method} · {fmtTime(selectedCheck.closedAt)}
+                        <Icon name={METHOD_ICON[selectedCheck.method]||'card'} size={13} style={{display:'inline-block',verticalAlign:'-2px'}}/> paid by {selectedCheck.method} · {fmtTime(selectedCheck.closedAt)}
                       </div>
                     </div>
                     <div style={{textAlign:'right',flexShrink:0}}>
@@ -1172,7 +1173,7 @@ export default function CheckHistory(){
                         </div>
                         <div style={{textAlign:'right'}}>
                           <span style={{fontSize:11,fontWeight:700,padding:'2px 7px',borderRadius:20,background:r.tenderMethod==='cash'?'var(--bg3)':'var(--bg3)',color:'var(--t2)',border:'1px solid var(--bdr)'}}>
-                            {METHOD_ICON[r.tenderMethod]||'💳'} {r.tenderMethod==='cash'?'Cash':'Card'}
+                            <Icon name={METHOD_ICON[r.tenderMethod]||'card'} size={12} style={{display:'inline-block',verticalAlign:'-2px'}}/> {r.tenderMethod==='cash'?'Cash':'Card'}
                           </span>
                         </div>
                       </div>
@@ -1198,7 +1199,7 @@ export default function CheckHistory(){
                         const canRetry=(r.legs||[]).some(l=>l?.status==='failed');
                         return(
                           <div style={{marginTop:6,paddingTop:6,borderTop:'1px dashed var(--red-b)'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:meta.color}}>{meta.icon} {meta.label}</div>
+                            <div style={{fontSize:11,fontWeight:700,color:meta.color}}>{hasIcon(meta.icon) ? <Icon name={meta.icon} size={12} style={{display:'inline-block',verticalAlign:'-2px'}}/> : meta.icon} {meta.label}</div>
                             {(r.legs||[]).map((l,li)=>(
                               <div key={li} style={{fontSize:10,color:'var(--t3)',marginTop:2,fontFamily:'DM Mono,monospace'}}>
                                 {l.brand||'card'}{l.last4?` ····${l.last4}`:''} {money((l.amountMinor||0)/100)} · {PROCESSOR_NAME[l.processor]||l.processor} ·{' '}
@@ -1233,8 +1234,8 @@ export default function CheckHistory(){
 
             {/* Reprint + Refund CTAs */}
             <div style={{padding:'12px 18px',borderTop:'1px solid var(--bdr)',flexShrink:0,display:'flex',gap:8}}>
-              <button onClick={handleReprint} disabled={reprinting} style={{flex:selectedCheck.status!=='refunded'?1:undefined,width:selectedCheck.status==='refunded'?'100%':undefined,height:42,borderRadius:10,cursor:reprinting?'wait':'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--t2)',fontSize:13,fontWeight:700,opacity:reprinting?0.6:1}}>
-                {reprinting ? '…' : '🖨 Print receipt'}
+              <button onClick={handleReprint} disabled={reprinting} style={{flex:selectedCheck.status!=='refunded'?1:undefined,width:selectedCheck.status==='refunded'?'100%':undefined,height:42,borderRadius:10,cursor:reprinting?'wait':'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--t2)',fontSize:13,fontWeight:700,opacity:reprinting?0.6:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                {reprinting ? '…' : <><Icon name="print" size={15}/>Print receipt</>}
               </button>
               {selectedCheck.status!=='refunded'&&(()=>{
                 // v5.7.5 - REFUND GUARD. While a tip window is open (pending /

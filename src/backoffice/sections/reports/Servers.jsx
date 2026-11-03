@@ -146,7 +146,7 @@ function ServersOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) 
     downloadCsv(`server-scorecard-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
-  if (rows.length === 0) return <EmptyState icon="👥" message="No server activity in this period."/>;
+  if (rows.length === 0) return <EmptyState icon="users" message="No server activity in this period."/>;
 
   const handleSort = (id) => {
     if (sortBy === id) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
@@ -259,7 +259,7 @@ function ServersSites(props) {
     ]);
   };
 
-  if (parts.every(p => bySite.get(p.id).staff === 0)) return <EmptyState icon="👥" message="No server activity at these sites in this period."/>;
+  if (parts.every(p => bySite.get(p.id).staff === 0)) return <EmptyState icon="users" message="No server activity at these sites in this period."/>;
 
   return (
     <div>

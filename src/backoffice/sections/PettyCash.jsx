@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';  // v5.5.326: multi-currency
+import { Icon } from '../../components/ServOSIcons';
 
 /**
  * Petty Cash ledger (v4.6.31).
@@ -11,12 +12,12 @@ import { money } from '../../lib/currency';  // v5.5.326: multi-currency
  */
 
 const TYPE_META = {
-  cash_sale:   { label: 'Cash sale',        sign: +1, color: 'var(--grn)', icon: '💵' },
-  float:       { label: 'Float added',      sign: +1, color: 'var(--grn)', icon: '📥' },
-  adjustment:  { label: 'Adjustment',       sign: +1, color: 'var(--acc)', icon: '⚖️' },
-  drop:        { label: 'Cash drop',        sign: -1, color: 'var(--amb,#e8a020)', icon: '📤' },
-  expense:     { label: 'Expense paid out', sign: -1, color: 'var(--red)', icon: '🧾' },
-  drawer_open: { label: 'Drawer opened',    sign:  0, color: 'var(--t4)', icon: '🔓' },
+  cash_sale:   { label: 'Cash sale',        sign: +1, color: 'var(--grn)', icon: 'money' },
+  float:       { label: 'Float added',      sign: +1, color: 'var(--grn)', icon: 'inbox' },
+  adjustment:  { label: 'Adjustment',       sign: +1, color: 'var(--acc)', icon: 'scale' },
+  drop:        { label: 'Cash drop',        sign: -1, color: 'var(--amb,#e8a020)', icon: 'upload' },
+  expense:     { label: 'Expense paid out', sign: -1, color: 'var(--red)', icon: 'receipt' },
+  drawer_open: { label: 'Drawer opened',    sign:  0, color: 'var(--t4)', icon: 'unlock' },
 };
 
 const MANUAL_TYPES = ['float', 'drop', 'expense', 'adjustment'];
@@ -109,7 +110,7 @@ export default function PettyCash() {
             disabled={!canOpenDrawer}
             title={canOpenDrawer ? 'Pulse the cash drawer now' : 'Open-drawer permission required'}
             style={{ padding:'10px 18px', borderRadius:10, background:'var(--bg3)', border:'1.5px solid var(--bdr2)', color: canOpenDrawer ? 'var(--t1)' : 'var(--t4)', fontWeight:700, fontFamily:'inherit', cursor: canOpenDrawer ? 'pointer' : 'not-allowed', fontSize:13, opacity: canOpenDrawer ? 1 : 0.5 }}>
-            🔓 Open drawer
+            <Icon name="unlock" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:6 }} />Open drawer
           </button>
           <button onClick={() => setShowAdd(true)}
             style={{ padding:'10px 18px', borderRadius:10, background:'var(--acc)', border:'none', color:'#fff', fontWeight:700, fontFamily:'inherit', cursor:'pointer', fontSize:13 }}>
@@ -152,20 +153,20 @@ export default function PettyCash() {
       {/* List */}
       {filtered.length === 0 ? (
         <div style={{ textAlign:'center', padding:'48px 20px', color:'var(--t4)', background:'var(--bg1)', border:'1px dashed var(--bdr2)', borderRadius:12 }}>
-          <div style={{ fontSize:36, marginBottom:8 }}>💰</div>
+          <div style={{ marginBottom:8, display:'flex', justifyContent:'center' }}><Icon name="money" size={36} /></div>
           <div style={{ fontSize:14, fontWeight:600, color:'var(--t3)' }}>No entries in this view</div>
           <div style={{ fontSize:12, marginTop:4 }}>Take a cash payment or add a manual entry to populate the ledger.</div>
         </div>
       ) : (
         <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'hidden' }}>
           {filtered.map((e, idx) => {
-            const meta = TYPE_META[e.type] || { label: e.type, sign: 0, color: 'var(--t3)', icon: '•' };
+            const meta = TYPE_META[e.type] || { label: e.type, sign: 0, color: 'var(--t3)', icon: 'dot' };
             const signed = meta.sign * (Number(e.amount) || 0);
             return (
               <div key={e.id}
                 style={{ display:'flex', alignItems:'center', gap:14, padding:'12px 16px', borderBottom: idx < filtered.length - 1 ? '1px solid var(--bdr)' : 'none' }}>
                 <div style={{ width:36, height:36, borderRadius:8, background:'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>
-                  {meta.icon}
+                  <Icon name={meta.icon} size={18} />
                 </div>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', display:'flex', gap:10, alignItems:'baseline' }}>
@@ -277,7 +278,7 @@ function AddEntryModal({ onClose, onSave }) {
                     color: on ? m.color : 'var(--t3)',
                     display:'flex', alignItems:'center', gap:8, justifyContent:'flex-start',
                   }}>
-                  <span style={{ fontSize:16 }}>{m.icon}</span> {m.label}
+                  <Icon name={m.icon} size={16} /> {m.label}
                 </button>
               );
             })}

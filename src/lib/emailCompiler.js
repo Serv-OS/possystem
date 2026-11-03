@@ -91,7 +91,7 @@ export const MERGE_TAGS = [
 
 export const STARTER_BLOCKS = () => ([
   { type: 'settings', ...DEFAULT_SETTINGS },
-  { type: 'heading', text: 'Happy birthday, {{first_name}}! 🎂', align: 'center' },
+  { type: 'heading', text: 'Happy birthday, {{first_name}}!', align: 'center' },
   { type: 'text', text: 'Thanks for being one of our regulars. Here\'s a little treat from us.', align: 'center' },
   { type: 'text', text: 'Show this code in store: {{promo_code}} ({{offer}})', align: 'center', bgColor: '#f7f7f9' },
   { type: 'button', text: 'See the menu', url: 'https://', align: 'center' },

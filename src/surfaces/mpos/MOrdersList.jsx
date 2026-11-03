@@ -4,6 +4,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 import { plainText, checkCustomerText } from '../../lib/reportText';
 import { qrSessionShownInQrSection } from '../../lib/qrTabStranded';
 
@@ -142,7 +143,7 @@ export default function MOrdersList({ onOpenOrder }) {
 
         {ready.length + openTables.length + inFlight.length + closed.length === 0 && (
           <div style={Sx.emptyBlock}>
-            <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>📋</div>
+            <div style={{ fontSize:36, marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="clipboard" size={36} /></div>
             <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>Nothing to show yet</div>
             <div style={{ fontSize:12 }}>Orders you take or that arrive at this location will appear here.</div>
           </div>
@@ -188,9 +189,9 @@ function OrderCard({ order, onClick }) {
           {order.paid && <span style={{ ...Sx.pill, background:'var(--grn-d)', color:'var(--grn)', border:'1px solid var(--grn-b)' }}>PAID</span>}
         </div>
         <div style={{ fontSize:11, color:'var(--t3)', display:'flex', gap:10 }}>
-          {order.server && <span>👤 {order.server}</span>}
+          {order.server && <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="user" size={12} /> {order.server}</span>}
           <span>{(order.items || []).length} item{(order.items || []).length === 1 ? '' : 's'}</span>
-          <span>⏱ {elapsed(order.createdAt) || '—'}</span>
+          <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="clock" size={12} /> {elapsed(order.createdAt) || '—'}</span>
         </div>
       </div>
       <div style={{ textAlign:'right', flexShrink:0 }}>

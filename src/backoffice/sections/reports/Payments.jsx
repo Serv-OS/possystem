@@ -8,6 +8,7 @@ import { toCsv, downloadCsv } from './_csv';
 import { isSplit, keyedMatrix, methodsFromSums } from '../../../lib/reportSplit.js';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, SiteMatrix } from './SiteSplit';
+import { Icon, hasIcon } from '../../../components/ServOSIcons';
 
 // Normalise the check.method string into a canonical bucket.
 // The check writer uses 'cash' and 'card'; older checks also carry 'stripe' or
@@ -24,8 +25,8 @@ function bucket(method) {
 }
 
 const METHOD_STYLE = {
-  'cash':       { color:'var(--grn)', label:'Cash',          icon:'💵' },
-  'card':       { color:'#3b82f6',    label:'Card',          icon:'💳' },
+  'cash':       { color:'var(--grn)', label:'Cash',          icon:'money' },
+  'card':       { color:'#3b82f6',    label:'Card',          icon:'card' },
   'apple-pay':  { color:'#a1a1aa',    label:'Apple Pay',     icon:''       },
   'google-pay': { color:'#4ade80',    label:'Google Pay',    icon:'G'            },
   'split':      { color:'var(--acc)', label:'Split payment', icon:'⎘'       },
@@ -71,7 +72,7 @@ function PaymentsOne({ checks, fmt, fmtN }) {
   };
 
   if (breakdown.total === 0) {
-    return <EmptyState icon="💳" message="No payments recorded in this period."/>;
+    return <EmptyState icon="card" message="No payments recorded in this period."/>;
   }
 
   return (
@@ -93,7 +94,7 @@ function PaymentsOne({ checks, fmt, fmtN }) {
             return (
               <BarRow
                 key={r.method}
-                label={`${st.icon} ${st.label} · ${r.count} checks`}
+                label={<span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>{hasIcon(st.icon) ? <Icon name={st.icon} size={14}/> : st.icon} {st.label} · {r.count} checks</span>}
                 value={r.revenue}
                 max={breakdown.total}
                 color={st.color}
@@ -175,7 +176,7 @@ function PaymentsSites(props) {
     ]);
   };
 
-  if (parts.every(p => sum(bySite.get(p.id), 'revenue') === 0)) return <EmptyState icon="💳" message="No payments recorded at these sites in this period."/>;
+  if (parts.every(p => sum(bySite.get(p.id), 'revenue') === 0)) return <EmptyState icon="card" message="No payments recorded at these sites in this period."/>;
 
   return (
     <div>

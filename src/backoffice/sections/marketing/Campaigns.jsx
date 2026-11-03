@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import EmailBuilder from './EmailBuilder';
+import { Icon } from '../../../components/ServOSIcons';
 import { compileEmail, SAMPLE_MERGE, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
 
 const S = {
@@ -41,7 +42,7 @@ const ensureBlocks = (c) => (Array.isArray(c.email_blocks) && c.email_blocks.len
 const BIRTHDAY_PRESET = () => ({
   name: 'Birthday treat', description: 'Send a unique code a week before each customer\'s birthday',
   type: 'automation', channel: 'both', trigger: { type: 'birthday', days_before: 7 }, segment_id: '', offer_id: '',
-  subject: 'Happy birthday {{first_name}}! 🎂', from_name: '',
+  subject: 'Happy birthday {{first_name}}!', from_name: '',
   email_blocks: STARTER_BLOCKS(),
   sms_body: 'Happy birthday {{first_name}}! Your treat: {{promo_code}} ({{offer}}). Reply STOP to opt out.',
   status: 'draft',
@@ -81,7 +82,7 @@ export default function Campaigns() {
   // Segment <select> options: prebuilt audiences (value "prebuilt:<key>") + the org's saved segments.
   const segmentOptions = () => (
     <>
-      {prebuilt.length > 0 && <optgroup label="Prebuilt audiences">{prebuilt.map((p) => <option key={p.key} value={`prebuilt:${p.key}`}>{p.icon} {p.name}</option>)}</optgroup>}
+      {prebuilt.length > 0 && <optgroup label="Prebuilt audiences">{prebuilt.map((p) => <option key={p.key} value={`prebuilt:${p.key}`}>{p.name}</option>)}</optgroup>}
       {segments.length > 0 && <optgroup label="Your segments">{segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</optgroup>}
     </>
   );
@@ -237,7 +238,7 @@ export default function Campaigns() {
               <input style={{ ...S.input, width: 180, marginLeft: 6 }} placeholder="Search campaigns…" value={q} onChange={(e) => { setQ(e.target.value); setShown(25); }} />
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button style={S.ghost} onClick={() => { setEditing(BIRTHDAY_PRESET()); setSave({}); }}>🎂 Birthday preset</button>
+              <button style={S.ghost} onClick={() => { setEditing(BIRTHDAY_PRESET()); setSave({}); }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="cake" size={14} />Birthday preset</span></button>
               <button style={S.btn} onClick={() => { setEditing(BLANK()); setSave({}); }}>+ New campaign</button>
             </div>
           </div>

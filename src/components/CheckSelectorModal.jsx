@@ -1,5 +1,6 @@
 import { useStore } from '../store';
 import { money } from '../lib/currency';
+import { Icon } from './ServOSIcons';
 
 export default function CheckSelectorModal({ parentTable, onSelect, onClose }) {
   const { tables } = useStore();
@@ -70,7 +71,7 @@ export default function CheckSelectorModal({ parentTable, onSelect, onClose }) {
                   {/* Items preview */}
                   <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:8 }}>
                     {sentCount>0&&<span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20, background:'var(--grn-d)', border:'1px solid var(--grn-b)', color:'var(--grn)' }}>✓ {sentCount} sent</span>}
-                    {pendingCount>0&&<span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)' }}>⏳ {pendingCount} pending</span>}
+                    {pendingCount>0&&<span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)', display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="clock" size={11}/>{pendingCount} pending</span>}
                     {itemCount===0&&<span style={{ fontSize:10, color:'var(--t4)' }}>Empty check</span>}
                   </div>
 

@@ -135,7 +135,7 @@ function SalesMixOne({ checks, prevChecks = NONE, fmt, fmtN, locationConfig, com
       </div>
 
       {view.total === 0 ? (
-        <EmptyState icon="📊" message="No item sales in this period. Try widening the date range."/>
+        <EmptyState icon="chart" message="No item sales in this period. Try widening the date range."/>
       ) : (
         <>
           {callout && <MixCallout callout={callout} onOpen={canSetup ? openPanel : null}/>}
@@ -391,7 +391,7 @@ function SalesMixSites(props) {
 
       <Blocks blocks={blocks}>{(b) => {
         const bv = blockViews[b.key];
-        if (!bv || bv.total === 0) return <EmptyState icon="📊" message="No item sales in this period. Try widening the date range."/>;
+        if (!bv || bv.total === 0) return <EmptyState icon="chart" message="No item sales in this period. Try widening the date range."/>;
         const matrix = siteMatrixRows(bv, b.parts.map((p) => ({ id: p.id, view: views[p.id] })));
         const at = (p, key) => (views[p.id]?.groups || []).find((g) => g.key === key);
         const change = (t) => (

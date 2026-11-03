@@ -26,6 +26,7 @@ import { getLocationId } from '../../../lib/supabase';
 import { isSplit, sumFields, tagPartRows } from '../../../lib/reportSplit.js';
 import { useParts, exportSites, titleSt } from './_siteSplit';
 import { SplitHeader, Blocks, SiteRows, SiteCell } from './SiteSplit';
+import { Icon } from '../../../components/ServOSIcons';
 
 // The LIVE tipping policy (Workforce settings) ↔ this calculator's modes.
 // One rule set, two vocabularies — keep them mapped so the report can never
@@ -290,7 +291,7 @@ function TipsOne({ checks, fmt, fmtN, locationConfig, sites }) {
   const peakHour = headline.byHour.indexOf(Math.max(...headline.byHour));
   const nowHour  = venueHour(new Date(), clock.timeZone); // the venue's hour now, not the browser's
 
-  if (servers.length === 0 && house.tips === 0) return <EmptyState icon="🙏" message="No tips captured in this period."/>;
+  if (servers.length === 0 && house.tips === 0) return <EmptyState icon="thanks" message="No tips captured in this period."/>;
 
   const allRoles = ['Manager','Server','Bartender','Cashier','Kitchen'];
 
@@ -373,7 +374,7 @@ function TipsOne({ checks, fmt, fmtN, locationConfig, sites }) {
               </label>
             </div>
             <div style={{ marginBottom:10, fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>
-              ⚖️ Managers are excluded by default — under US tip law (FLSA) managers and supervisors generally can't receive pooled tips. Only tick a manager role for a genuinely tip-eligible working supervisor. Anyone left out of the pool keeps the tips they personally collected.
+              <Icon name="scale" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }}/>Managers are excluded by default — under US tip law (FLSA) managers and supervisors generally can't receive pooled tips. Only tick a manager role for a genuinely tip-eligible working supervisor. Anyone left out of the pool keeps the tips they personally collected.
             </div>
           </>
         )}
@@ -412,7 +413,7 @@ function TipsOne({ checks, fmt, fmtN, locationConfig, sites }) {
         {mode !== 'none' && (
           <div style={{ marginTop:10, padding:'9px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
             ⓘ Pool math is a preview — export CSV to hand to payroll. Roles come from Staff manager; unrecognised names show "Unknown" and are treated as non-participants. Kiosk, online &amp; QR tips have no single server, so they always flow 100% into the pool.
-            <br/><br/>🇬🇧 For the official <strong style={{ color:'var(--t2)' }}>weekly tronc payout</strong> (UK Tipping Act — split by published-shift hours × role points, reconciled to the penny, recorded and audited), use <strong style={{ color:'var(--t2)' }}>Workforce → Tronc</strong>. It pulls this same pool automatically (card tips + service charge for the week), so this report and the payout always agree.
+            <br/><br/><Icon name="globe" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }}/>For the official <strong style={{ color:'var(--t2)' }}>weekly tronc payout</strong> (UK Tipping Act — split by published-shift hours × role points, reconciled to the penny, recorded and audited), use <strong style={{ color:'var(--t2)' }}>Workforce → Tronc</strong>. It pulls this same pool automatically (card tips + service charge for the week), so this report and the payout always agree.
           </div>
         )}
       </div>
@@ -534,7 +535,7 @@ function TipsSites(props) {
     ]);
   };
 
-  if (parts.every(p => bySite.get(p.id).tips === 0 && bySite.get(p.id).rows.length === 0)) return <EmptyState icon="🙏" message="No tips captured at these sites in this period."/>;
+  if (parts.every(p => bySite.get(p.id).tips === 0 && bySite.get(p.id).rows.length === 0)) return <EmptyState icon="thanks" message="No tips captured at these sites in this period."/>;
 
   return (
     <div>

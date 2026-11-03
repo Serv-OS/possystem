@@ -17,6 +17,7 @@ import { buildMenuPdf } from '../../lib/printMenuPdf';
 // this site adds, kcal); the Calories toggle starts from the venue's Show calories setting.
 import { withFacts, showCalories as venueShowsCalories } from '../../lib/menuStockFacts';
 import { compareMenuItems } from '../../lib/menuItemOrder';
+import { Icon } from '../../components/ServOSIcons';
 
 const CUR = { gbp: '£', usd: '$', eur: '€', aud: '$', cad: '$', nzd: '$' };
 
@@ -347,7 +348,7 @@ export default function PrintMenu() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
             <button style={S.btn} onClick={printNow}>Print / Save as PDF</button>
             <span style={{ fontSize: 11.5, color: saveState === 'error' ? 'var(--red)' : 'var(--t3)', fontWeight: saveState === 'error' ? 700 : 400 }}>
-              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? '⚠ NOT saved — this design will be lost' : `${paper.label} · ${land ? 'Landscape' : 'Portrait'} · ${cfg.columns} col`}
+              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? <><Icon name="warn" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 5 }} />NOT saved — this design will be lost</> : `${paper.label} · ${land ? 'Landscape' : 'Portrait'} · ${cfg.columns} col`}
             </span>
           </div>
           <div style={{ background: 'var(--bg0)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 8, height: 780 }}>

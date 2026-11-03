@@ -563,7 +563,7 @@ test('pin: no report throws the pager\'s error away', () => {
   assert.match(cash, /if \(sRes\.error\) throw sRes\.error;/);
   assert.match(cash, /if \(mRes\.error\) throw mRes\.error;/);
   assert.match(cash, /setFault\(isTooManyRows\(err\) \? 'too_long' : 'failed'\)/);
-  assert.match(cash, /if \(fault\) \{\s+return <EmptyState icon="⚠" message=\{faultText\(fault\)\}\/>;/);
+  assert.match(cash, /if \(fault\) \{\s+return <EmptyState icon="warn" message=\{faultText\(fault\)\}\/>;/);
 
   const price = read('../backoffice/sections/purchasing/PriceChangesSite.jsx');
   assert.match(price, /\{ data: hist, error: histErr, tooMany \}/);
@@ -579,7 +579,7 @@ test('pin: no report throws the pager\'s error away', () => {
   const report = read('../backoffice/sections/reports/BookingsReport.jsx');
   // 16 Oct 2026: multi site, so a failed site's read stops the loop and the whole report says so.
   assert.match(report, /if \(error\) \{ fault = tooMany \? 'too_long' : 'failed'; break; \}/);
-  assert.match(report, /if \(fault\) \{\s+return <EmptyState icon="⚠" message=\{faultText\(fault\)\}\/>;/);
+  assert.match(report, /if \(fault\) \{\s+return <EmptyState icon="warn" message=\{faultText\(fault\)\}\/>;/);
 
   // every screen that calls the pager directly looks at its error
   const dir = new URL('../backoffice/sections/', import.meta.url);

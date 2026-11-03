@@ -98,6 +98,8 @@ import StockCountCompliance from './reports/StockCountCompliance';
 import StockMonthEnd from './reports/StockMonthEnd';
 import ExportStatus from './reports/ExportStatus';
 import { money } from '../../lib/currency';
+import { EmojiIcon } from '../../components/ServOSIcons';
+import { stripEmoji } from '../../lib/emojiIcons';
 
 // Money in the signed in site's currency (the Back Office currency). A report showing
 // ANOTHER site gets a fmt for that site's own currency (see fmt in the component).
@@ -701,7 +703,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
       <div style={{ display:'flex', alignItems:'flex-end', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:12 }}>
         <div>
           <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', fontWeight:700, display:'flex', alignItems:'center', gap:6 }}>
-            {categoryForView && <><span>{categoryForView.icon}</span><span>{categoryForView.label}</span><span style={{ color:'var(--t4)' }}>/</span></>}
+            {categoryForView && <><EmojiIcon value={categoryForView.icon} size={14} /><span>{categoryForView.label}</span><span style={{ color:'var(--t4)' }}>/</span></>}
             <span>{current?.label || view}</span>
           </div>
           <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)', marginTop:2, letterSpacing:'-.01em' }}>
@@ -788,7 +790,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
         {!isStock && sources.length > 1 && (
           <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={selectSt}>
             <option value="all">All sources</option>
-            {sources.map(s => <option key={s} value={s}>{SOURCE_LABEL[s] || s}</option>)}
+            {sources.map(s => <option key={s} value={s}>{stripEmoji(SOURCE_LABEL[s] || s)}</option>)}
           </select>
         )}
       </div>

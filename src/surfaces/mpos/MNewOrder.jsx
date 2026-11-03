@@ -11,14 +11,15 @@
 import { useStore } from '../../store';
 import { Sx } from './MShellStyles';
 import MBottomSheet from './MBottomSheet';
+import { Icon } from '../../components/ServOSIcons';
 
 const TYPES = [
-  { id:'dine-in',    label:'Dine in',     icon:'🍽',  desc:'Seat guests at a table' },
-  { id:'takeaway',   label:'Takeaway',    icon:'🥡',  desc:'Customer takes the order with them now' },
-  { id:'collection', label:'Collection',  icon:'📦',  desc:'Customer collects later — capture name + time' },
-  { id:'delivery',   label:'Delivery',    icon:'🛵',  desc:'Sent out for delivery — capture address' },
+  { id:'dine-in',    label:'Dine in',     icon:'dinein',  desc:'Seat guests at a table' },
+  { id:'takeaway',   label:'Takeaway',    icon:'takeaway',  desc:'Customer takes the order with them now' },
+  { id:'collection', label:'Collection',  icon:'collect',  desc:'Customer collects later — capture name + time' },
+  { id:'delivery',   label:'Delivery',    icon:'delivery',  desc:'Sent out for delivery — capture address' },
   // Drive thru (16 Sep 2026): off unless the profile ticks it, like every entry here.
-  { id:'drive-thru', label:'Drive thru',  icon:'🚗',  desc:'Handed over at the drive thru window, name or car only' },
+  { id:'drive-thru', label:'Drive thru',  icon:'drivethru',  desc:'Handed over at the drive thru window, name or car only' },
 ];
 
 export default function MNewOrder({ onPick, onClose }) {
@@ -38,7 +39,7 @@ export default function MNewOrder({ onPick, onClose }) {
             background:'var(--bg2)', cursor:'pointer', fontFamily:'inherit', textAlign:'left',
             display:'flex', alignItems:'center', gap:14, minHeight:72,
           }}>
-            <div style={{ fontSize:30, flexShrink:0, width:48, textAlign:'center' }}>{t.icon}</div>
+            <div style={{ fontSize:30, flexShrink:0, width:48, textAlign:'center', display:'flex', justifyContent:'center', color:'var(--t2)' }}><Icon name={t.icon} size={28} /></div>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>{t.label}</div>
               <div style={{ fontSize:12, color:'var(--t3)', marginTop:2, lineHeight:1.4 }}>{t.desc}</div>

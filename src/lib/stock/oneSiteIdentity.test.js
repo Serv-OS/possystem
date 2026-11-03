@@ -22,7 +22,8 @@ const SRC = new URL('../../', import.meta.url);
 const at = (p) => new URL(p, SRC);
 const SPLIT = at('backoffice/sections/stock/items/StockItemsSplit.jsx');
 const ROUTER = at('backoffice/sections/StockItems.jsx');
-const PIN = 'fb015f29d5043ff7851f24a7a89309cc19719859a84ed4aef9303ffcb48f85cd';
+// 5.12.43: pin moved for the line icon swap (emoji out, one ServOSIcons import in).
+const PIN = '921e03fb2c76825cc457a728519d894a519a8845a3710586913ac4c05c71f9e1';
 
 const EDIT_PATH = ["from '../../../../", "from '../../"];
 const EDIT_SIG = ['export default function StockItemsSplit({ orgCtx = null, siteId = null })', 'export default function StockItems({ orgCtx = null })'];
@@ -40,7 +41,7 @@ test('StockItemsSplit is main\'s StockItems.jsx moved whole: undo the three edit
   const body = moved.slice(moved.search(/^import /m));
   assert.equal(count(body, EDIT_SIG[0]), 1, 'edit 3: the name and the siteId prop, once');
   assert.equal(count(body, EDIT_LOC[0]), 1, 'edit 4: start from siteId, once');
-  assert.equal(count(body, EDIT_PATH[0]), 15, 'edit 2: the 15 import paths, one folder deeper');
+  assert.equal(count(body, EDIT_PATH[0]), 16, 'edit 2: the 16 import paths, one folder deeper');
   assert.equal(count(body, "'../../../../"), count(body, EDIT_PATH[0]), 'no other path changed');
   const sha = crypto.createHash('sha256').update(mainText(moved)).digest('hex');
   assert.equal(sha, PIN, 'everything after the first import line is main\'s text byte for byte');
@@ -51,7 +52,7 @@ test('the moved file imports nothing new: no picker, no stock API, no company sc
   const head = moved.slice(0, moved.search(/^import /m));
   assert.doesNotMatch(head, /[\u2013\u2014]/, 'the rewritten top comment has no long dash');
   const imports = [...moved.matchAll(/^(?:import [^;]*?from|\} from) '([^']+)';$/gm)].map((m) => m[1]);
-  assert.equal(imports.length, 16);
+  assert.equal(imports.length, 17);
   for (const p of imports) assert.ok(p === 'react' || p.startsWith('../../../../'), p);
   assert.doesNotMatch(moved.slice(head.length), /StockScope|stockApi|itemListRules|siteScope|CompanyItemList|ItemPage/);
 });

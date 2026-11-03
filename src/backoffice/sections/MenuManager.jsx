@@ -30,6 +30,7 @@ import { useConfirm } from './msm/useConfirm';
 import { useMsmLockState } from './msm/useMsmLockState';
 import { withTimeout } from '../../lib/withTimeout';
 import { venueTaxRates } from '../../lib/rowMapping';
+import { Icon, EmojiIcon, hasIcon } from '../../components/ServOSIcons';
 import { categoryFormOf, categoryFormPatch } from '../../lib/categoryForm';
 import { beginDrag, dragOver } from '../../lib/dragReorder';
 import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches, detachPatches,
@@ -93,10 +94,10 @@ const NO_VENUE_RATES = 'This venue has no tax rates yet';
 // menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
 // so these ids MUST stay in that map's key set.
 const DIET_TAGS = [
-  { id:'vegetarian',  label:'Vegetarian', badge:'V',  icon:'🥗' },
-  { id:'vegan',       label:'Vegan',      badge:'VG', icon:'🌱' },
-  { id:'gluten-free', label:'Gluten-free',badge:'GF', icon:'🌾' },
-  { id:'dairy-free',  label:'Dairy-free', badge:'DF', icon:'🥛' },
+  { id:'vegetarian',  label:'Vegetarian', badge:'V',  icon:'salad' },
+  { id:'vegan',       label:'Vegan',      badge:'VG', icon:'sprout' },
+  { id:'gluten-free', label:'Gluten-free',badge:'GF', icon:'wheat' },
+  { id:'dairy-free',  label:'Dairy-free', badge:'DF', icon:'milk' },
 ];
 
 // ── Add a size (v5.8.70) ──────────────────────────────────────────────────────
@@ -496,13 +497,13 @@ export default function MenuManager({ setSection = null, canOpen = null } = {}) 
     <div className="bo-workspace" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
       {msmManaged > 0 && (
         <div role="status" style={{ padding:'8px 16px', background:'var(--blu-d, var(--bg2))', borderBottom:'1px solid var(--bdr)', fontSize:12.5, color:'var(--t2)', flexShrink:0 }}>
-          🔒 {msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Their names, prices, categories, VAT, photos and option groups are set there and show read only here. Button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes stay yours.
+          <Icon name="lock" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Their names, prices, categories, VAT, photos and option groups are set there and show read only here. Button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes stay yours.
           {openMsm && <> <button type="button" onClick={openMsm} style={{ background:'none', border:'none', padding:0, color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:700, textDecoration:'underline' }}>Open the Multi site menu</button></>}
         </div>
       )}
       <nav style={{ display:'flex', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0, alignItems:'center' }}>
-        {[['menu','🍽 Menus'],['quick','⚡ Quick Screen'],['items','📋 Items'],['modifiers','⊕ Modifier groups'],['instructions','📝 Instruction groups']].map(([id,label])=>(
-          <button key={id} onClick={()=>setTab(id)} style={{ padding:'0 20px', height:46, cursor:'pointer', fontFamily:'inherit', border:'none', borderBottom:`3px solid ${tab===id?'var(--acc)':'transparent'}`, background:'transparent', color:tab===id?'var(--acc)':'var(--t3)', fontSize:13, fontWeight:tab===id?800:500 }}>
+        {[['menu','utensils','Menus'],['quick','bolt','Quick Screen'],['items','clipboard','Items'],['modifiers',null,'⊕ Modifier groups'],['instructions','note','Instruction groups']].map(([id,icon,label])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{ padding:'0 20px', height:46, cursor:'pointer', fontFamily:'inherit', border:'none', borderBottom:`3px solid ${tab===id?'var(--acc)':'transparent'}`, background:'transparent', color:tab===id?'var(--acc)':'var(--t3)', fontSize:13, fontWeight:tab===id?800:500, display:'inline-flex', alignItems:'center', gap:6 }}>{icon && <Icon name={icon} size={15} />}
             {label}
           </button>
         ))}
@@ -878,7 +879,7 @@ function MenuTab() {
                     style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', padding:'9px 10px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:'none', background:'transparent' }}>
                     <div title={m.name} style={{ fontSize:12.5, fontWeight:700, color:selMenuId===m.id?'var(--acc)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingRight:44 }}>
                       {(m.isDefault ?? m.is_default)?'★ ':''}{m.name}
-                      {sched && <span style={{ marginLeft:4, fontSize:9, color:'var(--t4)' }}>⏰</span>}
+                      {sched && <span style={{ marginLeft:4, fontSize:9, color:'var(--t4)', display:'inline-flex', verticalAlign:'middle' }}><Icon name="clock" size={10} /></span>}
                     </div>
                     <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>
                       {sched ? `${sched.days?.length||7}d · ${sched.from}–${sched.to}` : 'Always active'}
@@ -978,7 +979,7 @@ function MenuTab() {
           </div>
           {/* v5.5.815: find-as-you-type filter over the category tree */}
           <div style={{ position:'relative', marginTop:7 }}>
-            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:10, color:'var(--t4)', pointerEvents:'none' }}>🔍</span>
+            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:10, color:'var(--t4)', pointerEvents:'none', display:'flex' }}><Icon name="search" size={12} /></span>
             <input value={catFilter} onChange={e=>setCatFilter(e.target.value)}
               onKeyDown={e=>{ if(e.key==='Escape'){ e.stopPropagation(); setCatFilter(''); } }}
               placeholder="Filter categories…" aria-label="Filter categories"
@@ -994,7 +995,7 @@ function MenuTab() {
           <div style={{ padding:'8px', borderBottom:'1px solid var(--bdr)', background:'var(--bg2)', flexShrink:0 }}>
             <input style={{ ...inp, fontSize:12, marginBottom:6 }} value={catForm.label} onChange={e=>setCatForm(f=>({...f,label:e.target.value}))} onKeyDown={e=>e.key==='Enter'&&saveNewCat()} placeholder="Category name…" autoFocus/>
             <div style={{ display:'flex', gap:3, flexWrap:'wrap', marginBottom:6 }}>
-              {ICONS.slice(0,12).map(ic=><button key={ic} onClick={()=>setCatForm(f=>({...f,icon:ic}))} style={{ width:24,height:24,borderRadius:5,border:`1.5px solid ${catForm.icon===ic?'var(--acc)':'var(--bdr)'}`,background:catForm.icon===ic?'var(--acc-d)':'var(--bg3)',cursor:'pointer',fontSize:12 }}>{ic}</button>)}
+              {ICONS.slice(0,12).map(ic=><button key={ic} onClick={()=>setCatForm(f=>({...f,icon:ic}))} style={{ width:24,height:24,borderRadius:5,border:`1.5px solid ${catForm.icon===ic?'var(--acc)':'var(--bdr)'}`,background:catForm.icon===ic?'var(--acc-d)':'var(--bg3)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--t2)' }}><EmojiIcon value={ic} fallback="utensils" size={13} /></button>)}
             </div>
             <div style={{ display:'flex', gap:3, flexWrap:'wrap', marginBottom:6 }}>
               {COLOURS.map(c=><button key={c} onClick={()=>setCatForm(f=>({...f,color:c}))} style={{ width:16,height:16,borderRadius:'50%',background:c,border:'none',cursor:'pointer',outline:catForm.color===c?'2px solid white':'none',outlineOffset:1 }}/>)}
@@ -1189,7 +1190,7 @@ function MenuTab() {
           <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', display:'flex', gap:8, alignItems:'center', flexShrink:0 }}>
             {selCat && (
               <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                <div style={{ width:28, height:28, borderRadius:8, background:`${selCat.color||'#3b82f6'}22`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 }}>{selCat.icon}</div>
+                <div style={{ width:28, height:28, borderRadius:8, background:`${selCat.color||'#3b82f6'}22`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 }}>{selCat.icon && <EmojiIcon value={selCat.icon} fallback="utensils" size={16} />}</div>
                 <span style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>{selCat.label}</span>
                 <span style={{ fontSize:10, color:'var(--t4)' }}>{displayItems.length} items</span>
                 {/* v5.8.65: a visible way to the category photo (it lives in the edit modal) */}
@@ -1209,7 +1210,7 @@ function MenuTab() {
               </button>
             )}
             <div style={{ position:'relative', flex:1, maxWidth:260 }}>
-              <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)' }}>🔍</span>
+              <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
               <input style={{ ...inp, paddingLeft:28, fontSize:12 }} placeholder="Search all items…" value={search} onChange={e=>setSearch(e.target.value)}/>
               {search && <button onClick={()=>setSearch('')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
             </div>
@@ -1248,7 +1249,7 @@ function MenuTab() {
                 <div style={{ padding:'8px 12px', display:'flex', gap:8, alignItems:'center', flexShrink:0, borderBottom:'1px solid var(--acc-b)' }}>
                   <span style={{ fontSize:11, fontWeight:700, color:'var(--acc)' }}>Add items to {selCat.label}</span>
                   <div style={{ position:'relative', flex:1, maxWidth:320 }}>
-                    <span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)' }}>🔍</span>
+                    <span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
                     <input autoFocus style={{ ...inp, paddingLeft:28, fontSize:12 }} value={addSearch} onChange={e=>setAddSearch(e.target.value)} placeholder="Search items to add…"/>
                     {addSearch&&<button onClick={()=>setAddSearch('')} style={{ position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:'var(--t4)',cursor:'pointer',fontSize:14 }}>×</button>}
                   </div>
@@ -1283,7 +1284,7 @@ function MenuTab() {
                       <div key={item.id} style={{ display:'flex',alignItems:'center',gap:10,padding:'6px 12px',borderBottom:'1px solid var(--bdr)',background:'var(--bg2)' }}>
                         <div style={{ flex:1,minWidth:0 }}>
                           <span style={{ fontSize:12,fontWeight:600,color:'var(--t1)' }}>{item.menuName||item.name}</span>
-                          {itemCat&&<span style={{ fontSize:9,color:'var(--t4)',marginLeft:7 }}>{itemCat.icon} {itemCat.label}</span>}
+                          {itemCat&&<span style={{ fontSize:9,color:'var(--t4)',marginLeft:7,display:'inline-flex',alignItems:'center',gap:3 }}>{itemCat.icon && <EmojiIcon value={itemCat.icon} fallback="utensils" size={10} />}{itemCat.label}</span>}
                           <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>{money((item.pricing?.base??item.price??0))}</span>
                         </div>
                         <button onClick={()=>addToCat(item)} style={{ padding:'4px 10px',borderRadius:7,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0b0c10',fontSize:11,fontWeight:700,flexShrink:0 }}>+ Add</button>
@@ -1313,7 +1314,7 @@ function MenuTab() {
             onDrop={e=>{ if(dragItemId&&!overItemId){ const max=Math.max(...displayItems.map(i=>i.sortOrder??0),0); updateMenuItem(dragItemId,{sortOrder:max+1}); markBOChange(); setDragItemId(null); } }}>
             {displayItems.length===0 ? (
               <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)' }}>
-                <div style={{ fontSize:36, opacity:.15, marginBottom:10 }}>{selCat?.icon||'🍽'}</div>
+                <div style={{ opacity:.15, marginBottom:10, display:'flex', justifyContent:'center' }}><EmojiIcon value={selCat?.icon} fallback="utensils" size={36} /></div>
                 <div style={{ fontSize:13, fontWeight:600, color:'var(--t3)', marginBottom:8 }}>No items in {selCat?.label||'this category'}</div>
                 <button onClick={()=>setShowAddPanel(true)} style={{ padding:'8px 18px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700 }}>+ Add items to this category</button>
               </div>
@@ -1437,7 +1438,7 @@ function MenuTab() {
                                     minWidth:90, flex:'1 1 90px', maxWidth:140 }}>
                                   <div style={{ fontSize:12, fontWeight:700, color:isSelChild?'var(--acc)':'var(--t1)', marginBottom:4 }}>{child.menuName||child.name}</div>
                                   <div style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>{money(cp)}</div>
-                                  {(child.allergens||[]).length>0 && <div style={{ fontSize:9, color:'var(--red)', marginTop:3 }}>⚠ {child.allergens.length}</div>}
+                                  {(child.allergens||[]).length>0 && <div style={{ fontSize:9, color:'var(--red)', marginTop:3 }}><Icon name="warn" size={10} style={{ display:'inline-block', verticalAlign:'-1px', marginRight:2 }} />{child.allergens.length}</div>}
                                 </button>
                               );
                             })}
@@ -1467,11 +1468,11 @@ function MenuTab() {
           )}
         </>) : (
           <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:10, color:'var(--t4)' }}>
-            <span style={{ fontSize:40, opacity:.12 }}>🍽</span>
+            <span style={{ opacity:.12, display:'flex' }}><Icon name="utensils" size={40} /></span>
             <span style={{ fontSize:13, fontWeight:600, color:'var(--t3)' }}>Select a category to see its items</span>
             <span style={{ fontSize:11, color:'var(--t4)' }}>or use search to find any item</span>
             <div style={{ position:'relative', marginTop:4 }}>
-              <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)' }}>🔍</span>
+              <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
               <input style={{ ...inp, paddingLeft:28, width:260 }} placeholder="Search all items…" value={search} onChange={e=>setSearch(e.target.value)} autoFocus/>
             </div>
           </div>
@@ -1571,7 +1572,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
         <div style={{ fontSize:9, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}>Type</div>
         <div style={{ fontSize:9, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}>Price</div>
         <div style={{ fontSize:9, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}>Mods</div>
-        <div style={{ fontSize:9, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}>⚠</div>
+        <div style={{ fontSize:9, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}><Icon name="warn" size={11} /></div>
       </div>
 
       {items.length === 0 && (
@@ -1755,7 +1756,7 @@ function useRecipeCosts() {
 // none (a real placeholder instead of the 🍽 cutlery emoji, which read as a
 // deliberate icon). Handoff marker 3.
 function CatGlyph({ cat, size = 20 }) {
-  if (cat?.icon) return <span style={{ fontSize: size * 0.75, flexShrink: 0, width: size, textAlign: 'center' }}>{cat.icon}</span>;
+  if (cat?.icon) return <span style={{ flexShrink: 0, width: size, display: 'flex', justifyContent: 'center' }}><EmojiIcon value={cat.icon} fallback="utensils" size={Math.round(size * 0.75)} /></span>;
   return (
     <span style={{
       flexShrink: 0, width: size, height: size, borderRadius: 6, background: 'var(--bg3)',
@@ -1929,7 +1930,7 @@ function ItemsLibrary() {
         {/* Toolbar */}
         <div style={{ padding:'10px 12px', borderBottom:'1px solid var(--bdr)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', flexShrink:0 }}>
           <div style={{ position:'relative', flex:1, minWidth:160 }}>
-            <span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)' }}>🔍</span>
+            <span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
             <input style={{ ...inp, paddingLeft:28 }} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search all items…"/>
           </div>
           <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)} style={{ ...inp, width:'auto', cursor:'pointer', fontSize:11 }}>
@@ -1941,7 +1942,7 @@ function ItemsLibrary() {
           </select>
           <select value={catFilter} onChange={e=>setCatFilter(e.target.value)} style={{ ...inp, width:'auto', cursor:'pointer', fontSize:11 }}>
             <option value="all">All categories</option>
-            {allCats.map(c=><option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+            {allCats.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
           <button onClick={()=>{setShowArchived(v=>!v);setSelItemId(null);}} style={{ padding:'7px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:showArchived?'var(--red-d)':'var(--bg3)', border:`1px solid ${showArchived?'var(--red-b)':'var(--bdr)'}`, color:showArchived?'var(--red)':'var(--t3)', fontSize:12, fontWeight:showArchived?700:400, flexShrink:0 }}>
             {showArchived ? '← Back to active' : `Archived${archivedCount>0?` (${archivedCount})`:''}${archivedLoading ? '…' : ''}`}
@@ -2006,7 +2007,7 @@ function ItemsLibrary() {
           if (noRate.all.length && !taggedOwn.length) {
             return (
               <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'var(--red-d)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
-                <span style={{ fontSize:12, fontWeight:800, color:'var(--red)' }}>⚠ {NO_VENUE_RATES}, so {noRate.all.length} product{noRate.all.length === 1 ? '' : 's'} record no {ukVenue ? 'VAT' : 'sales tax'}. Open Tax &amp; VAT and {ukVenue ? 'press Seed UK rates' : 'set up tax profiles or press Seed US rates'}.</span>
+                <span style={{ fontSize:12, fontWeight:800, color:'var(--red)' }}><Icon name="warn" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{NO_VENUE_RATES}, so {noRate.all.length} product{noRate.all.length === 1 ? '' : 's'} record no {ukVenue ? 'VAT' : 'sales tax'}. Open Tax &amp; VAT and {ukVenue ? 'press Seed UK rates' : 'set up tax profiles or press Seed US rates'}.</span>
                 {listNames}
               </div>
             );
@@ -2086,7 +2087,7 @@ function ItemsLibrary() {
           return (
             <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
               {noRate.all.length > 0 && <>
-                <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}>⚠ {noRate.all.length} product{noRate.all.length===1?' has':'s have'} no tax rate here{whyWords ? ` (${whyWords})` : ''}. {untilWords}</span>
+                <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}><Icon name="warn" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{noRate.all.length} product{noRate.all.length===1?' has':'s have'} no tax rate here{whyWords ? ` (${whyWords})` : ''}. {untilWords}</span>
                 <select value={bulkTaxId} disabled={running} onChange={e=>setBulkTaxId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
                   <option value="">Pick a rate</option>
                   {offered.map(t=><option key={t.id} value={t.id}>{formatRateLabel(t)}{(t.isDefault || t.is_default) ? ' (default)' : ''}</option>)}
@@ -2271,7 +2272,7 @@ function ItemsLibrary() {
           {showMoney && <div style={{ ...hdrSt, textAlign:'right' }}>Cost</div>}
           {showMoney && <div style={{ ...hdrSt, textAlign:'right' }} title="Gross profit % — auto-calculated from the linked recipe, on the ex-VAT price">GP %</div>}
           <div style={{ ...hdrSt, textAlign:'center' }}>Mods</div>
-          <div style={{ ...hdrSt, textAlign:'center' }} title="Allergens">⚠</div>
+          <div style={{ ...hdrSt, textAlign:'center' }} title="Allergens"><Icon name="warn" size={11} style={{ display:'inline-block' }} /></div>
         </div>
 
         {/* Scrollable list */}
@@ -2282,7 +2283,7 @@ function ItemsLibrary() {
             <>
               {parents.length === 0 ? (
                 <div style={{ textAlign:'center', padding:'48px', color:'var(--t4)', fontSize:13 }}>
-                  <div style={{ fontSize:32, opacity:.12, marginBottom:12 }}>📦</div>
+                  <div style={{ opacity:.12, marginBottom:12, display:'flex', justifyContent:'center' }}><Icon name="package" size={32} /></div>
                   <div style={{ fontWeight:600, color:'var(--t3)' }}>No archived items</div>
                 </div>
               ) : parents.map(item => {
@@ -2353,7 +2354,7 @@ function ItemsLibrary() {
 
           {typeFilter !== 'subitem' && parents.length === 0 && (
             <div style={{ textAlign:'center', padding:'48px', color:'var(--t4)', fontSize:13 }}>
-              <div style={{ fontSize:36, opacity:.12, marginBottom:12 }}>📋</div>
+              <div style={{ opacity:.12, marginBottom:12, display:'flex', justifyContent:'center' }}><Icon name="clipboard" size={36} /></div>
               <div style={{ fontWeight:600, color:'var(--t3)', marginBottom:8 }}>No items found</div>
               <button onClick={addNewItem} style={{ padding:'8px 18px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700 }}>+ Add first item</button>
             </div>
@@ -2467,7 +2468,7 @@ function ItemsLibrary() {
                         <select value={item.cat||''} onChange={e=>{updateMenuItem(item.id,{cat:e.target.value}); markBOChange();}}
                           style={{ ...inp, width:'auto', fontSize:11, padding:'3px 8px', color:item.cat?'var(--t1)':'var(--t4)', cursor:'pointer' }}>
                           <option value="">— pick a category —</option>
-                          {allCats.map(c=><option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+                          {allCats.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
                         </select>
                         {item.cat && <span style={{ fontSize:10, fontWeight:600, color:'var(--grn)' }}>✓ Will show on POS</span>}
                       </div>
@@ -2679,7 +2680,7 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
             <span style={{ fontSize:12, color:'var(--t3)' }}>Uploading…</span>
           ) : (
             <>
-              <span style={{ fontSize:24 }}>🖼</span>
+              <span style={{ display:'flex', color:'var(--t3)' }}><Icon name="image" size={24} /></span>
               <span style={{ fontSize:12, fontWeight:600, color:'var(--t2)' }}>Click to upload image</span>
               <span style={{ fontSize:10, color:'var(--t4)' }}>JPG, PNG or WebP · max 5MB</span>
             </>
@@ -3040,7 +3041,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               <span style={lbl}>Primary category</span>
               <select value={item.cat||''} onChange={e=>f('cat',e.target.value)} style={{ ...inp, cursor:'pointer' }}>
                 <option value="">— none —</option>
-                {rootCats.map(c=><optgroup key={c.id} label={`${c.icon} ${c.label}`}><option value={c.id}>{c.icon} {c.label}</option>{subCats.filter(s=>s.parentId===c.id).map(s=><option key={s.id} value={s.id}>  └ {s.label}</option>)}</optgroup>)}
+                {rootCats.map(c=><optgroup key={c.id} label={c.label}><option value={c.id}>{c.label}</option>{subCats.filter(s=>s.parentId===c.id).map(s=><option key={s.id} value={s.id}>  └ {s.label}</option>)}</optgroup>)}
               </select>
             </div>
             </MsmLocked>
@@ -3064,7 +3065,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
                     {shown.map(c=>{
                       const on = isOn(c);
-                      return <button key={c.id} onClick={()=>{const cur=item.cats||[];onUpdate({cats:on?cur.filter(id=>id!==c.id):[...cur,c.id]});}} style={{ padding:'2px 7px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:on?700:400, border:`1px solid ${on?'var(--acc)':'var(--bdr)'}`, background:on?'var(--acc-d)':'var(--bg3)', color:on?'var(--acc)':'var(--t4)' }}>{c.icon} {c.label}</button>;
+                      return <button key={c.id} onClick={()=>{const cur=item.cats||[];onUpdate({cats:on?cur.filter(id=>id!==c.id):[...cur,c.id]});}} style={{ padding:'2px 7px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:on?700:400, border:`1px solid ${on?'var(--acc)':'var(--bdr)'}`, background:on?'var(--acc-d)':'var(--bg3)', color:on?'var(--acc)':'var(--t4)', display:'inline-flex', alignItems:'center', gap:3 }}>{c.icon && <EmojiIcon value={c.icon} fallback="utensils" size={11} />}{c.label}</button>;
                     })}
                     {(hidden > 0 || showAllCats) && (
                       <button onClick={()=>setShowAllCats(v=>!v)} style={{ padding:'2px 9px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:700, border:'1px dashed var(--bdr2)', background:'transparent', color:'var(--acc)' }}>
@@ -3356,7 +3357,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             <div style={{ marginTop:8, padding:'10px 12px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
               <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Add to flow</div>
               <div style={{ position:'relative', marginBottom:6 }}>
-                <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)' }}>🔍</span>
+                <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
                 <input style={{ ...inp, paddingLeft:28, fontSize:12 }} value={modSearch} onChange={e=>setModSearch(e.target.value)} placeholder="Search modifier groups…"/>
               </div>
               {modSearch && filteredMods.slice(0,4).map(g => (
@@ -3448,14 +3449,14 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
           <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
             {lockOn('assigned_modifier_groups') && (
               <div role="note" style={{ padding:'8px 10px', borderRadius:8, background:'var(--blu-d, var(--bg3))', fontSize:11, color:'var(--t2)', lineHeight:1.5 }}>
-                🔒 The option groups on this product are set by head office in the Multi site menu, so changes to them here are not saved. Instruction groups (cooking preferences) below stay yours.
+                <Icon name="lock" size={12} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />The option groups on this product are set by head office in the Multi site menu, so changes to them here are not saved. Instruction groups (cooking preferences) below stay yours.
               </div>
             )}
 
             {/* Block modifiers on parent items that have variants */}
             {isParent ? (
               <div style={{ padding:'16px 18px', background:'var(--acc-d)', border:'1.5px solid var(--acc-b)', borderRadius:12 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:'var(--acc)', marginBottom:6 }}>⚠ Assign modifiers to sizes, not the parent</div>
+                <div style={{ fontSize:13, fontWeight:700, color:'var(--acc)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}><Icon name="warn" size={15} />Assign modifiers to sizes, not the parent</div>
                 <div style={{ fontSize:12, color:'var(--t2)', lineHeight:1.6 }}>
                   This item has {variants.length} size{variants.length!==1?'s':''} (variants). Modifiers must be assigned to each size individually — not to the parent product. Click a size in the Flow tab to edit its modifiers.
                 </div>
@@ -3498,7 +3499,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
               {/* Search to add */}
               <div style={{ position:'relative' }}>
-                <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)' }}>🔍</span>
+                <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
                 <input style={{ ...inp, paddingLeft:28, fontSize:12 }} value={modSearch} onChange={e=>setModSearch(e.target.value)} placeholder="Search modifier groups to add…"/>
               </div>
               {(modSearch || filteredMods.length <= 6) && filteredMods.length > 0 && (
@@ -3548,7 +3549,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               )}
 
               <div style={{ position:'relative' }}>
-                <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)' }}>🔍</span>
+                <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
                 <input style={{ ...inp, paddingLeft:28, fontSize:12 }} value={instSearch} onChange={e=>setInstSearch(e.target.value)} placeholder="Search instruction groups to add…"/>
               </div>
               {(instSearch || filteredInst.length <= 6) && filteredInst.length > 0 && (
@@ -3632,7 +3633,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     <div style={{ width:16,height:16,borderRadius:3,border:`2px solid ${on?'var(--grn,#2f8f4e)':'var(--bdr2)'}`,background:on?'var(--grn,#2f8f4e)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
                       {on&&<div style={{ width:6,height:6,borderRadius:1,background:'#fff' }}/>}
                     </div>
-                    <span style={{ fontSize:11, fontWeight:on?700:400, color:on?'var(--grn,#2f8f4e)':'var(--t1)' }}>{d.icon} {d.label} <b style={{ opacity:.7 }}>{d.badge}</b></span>
+                    <span style={{ fontSize:11, fontWeight:on?700:400, color:on?'var(--grn,#2f8f4e)':'var(--t1)', display:'inline-flex', alignItems:'center', gap:4 }}><Icon name={d.icon} size={13} />{d.label} <b style={{ opacity:.7 }}>{d.badge}</b></span>
                   </button>
                 );
               })}
@@ -3763,7 +3764,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
             return (
               <button key={b.id} onClick={()=>toggleBase(b.id)} style={{ padding:'6px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:avail?700:400, border:`1.5px solid ${avail?'var(--acc)':'var(--bdr)'}`, background:avail?'var(--acc-d)':'var(--bg3)', color:avail?'var(--acc)':'var(--t3)' }}>
                 {avail?'✓ ':''}{b.name}
-                {b.allergens.length>0&&<span style={{ fontSize:9, color:'var(--t4)', marginLeft:4 }}>⚠</span>}
+                {b.allergens.length>0&&<span style={{ fontSize:9, color:'var(--t4)', marginLeft:4, display:'inline-flex', verticalAlign:'middle' }}><Icon name="warn" size={10} /></span>}
               </button>
             );
           })}
@@ -3975,7 +3976,7 @@ function ModifiersTab() {
           {/* Search, by group name OR by an option inside it: somebody looking for
               oat milk is looking for the Milk group. */}
           <div style={{ position:'relative', marginTop:6 }}>
-            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)' }}>🔍</span>
+            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', display:'flex' }}><Icon name="search" size={13} /></span>
             <input style={{ ...inp, paddingLeft:26, fontSize:12, padding:'6px 10px 6px 26px' }} value={groupSearch}
               onChange={e=>setGroupSearch(e.target.value)} placeholder="Search groups or options…" autoComplete="off"/>
             {searching && (
@@ -4006,10 +4007,10 @@ function ModifiersTab() {
               <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab', flexShrink:0 }}>⠿</span>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:12, fontWeight:700, color:selId===g.id?'var(--acc)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{g.name}</div>
-                <div style={{ fontSize:9, color:'var(--t4)', marginTop:1 }}>{(g.options||[]).length} opts · {g.min>0?'required':'optional'}{groupLock(msmLockSt, g.id) ? ' · 🔒 head office' : ''}</div>
+                <div style={{ fontSize:9, color:'var(--t4)', marginTop:1 }}>{(g.options||[]).length} opts · {g.min>0?'required':'optional'}{groupLock(msmLockSt, g.id) ? <>{' · '}<Icon name="lock" size={9} style={{ display:'inline-block', verticalAlign:'-1px', marginRight:2 }} />head office</> : ''}</div>
               </div>
               {groupLock(msmLockSt, g.id)
-                ? <span title="Managed by head office in the Multi site menu, so it cannot be deleted here" style={{ width:20, textAlign:'center', fontSize:11, flexShrink:0 }}>🔒</span>
+                ? <span title="Managed by head office in the Multi site menu, so it cannot be deleted here" style={{ width:20, textAlign:'center', fontSize:11, flexShrink:0 }}><Icon name="lock" size={12} style={{ display:'inline-block' }} /></span>
                 : <button onClick={e=>{e.stopPropagation();if(confirm(`Remove "${g.name}"?`)){removeModifierGroupDef(g.id);if(selId===g.id)setSelId(null);markBOChange();}}} style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>}
             </div>
           );})}
@@ -4032,7 +4033,7 @@ function ModifiersTab() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:10 }}>
               {[
                 { id:'single',   label:'Pick 1',         hint:'Customer picks exactly one option',          icon:'◉' },
-                { id:'multiple', label:'Pick many',       hint:'Different options, each selectable once',    icon:'☑' },
+                { id:'multiple', label:'Pick many',       hint:'Different options, each selectable once',    icon:'checkSquare' },
                 { id:'quantity', label:'Pick with qty',   hint:'Same option can be chosen more than once',   icon:'＋' },
               ].map(mode => {
                 const act = sel.selectionType === mode.id || (!sel.selectionType && mode.id === 'single');
@@ -4050,7 +4051,7 @@ function ModifiersTab() {
                     const newMin = mode.id==='quantity' ? newMax : (sel.min||0);
                     upd({ selectionType: mode.id, max: newMax, min: newMin });
                   }} style={{ padding:'8px 8px 7px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`2px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)' }}>
-                    <div style={{ fontSize:15, marginBottom:3 }}>{mode.icon}</div>
+                    <div style={{ fontSize:15, marginBottom:3 }}>{hasIcon(mode.icon) ? <Icon name={mode.icon} size={15} /> : mode.icon}</div>
                     <div style={{ fontSize:11, fontWeight:700, color:act?'var(--acc)':'var(--t2)' }}>{mode.label}</div>
                     <div style={{ fontSize:9, color:'var(--t4)', lineHeight:1.4 }}>{mode.hint}</div>
                   </button>
@@ -4110,7 +4111,7 @@ function ModifiersTab() {
           <div style={{ flex:1, overflowY:'auto', padding:'14px 16px' }}>
             <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
               <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em' }}>Options</span>
-              <span style={{ fontSize:9, color:'var(--t4)' }}>{glock ? '🔒 set by head office' : 'drag to reorder · nested = links to another group'}</span>
+              <span style={{ fontSize:9, color:'var(--t4)' }}>{glock ? <><Icon name="lock" size={9} style={{ display:'inline-block', verticalAlign:'-1px', marginRight:2 }} />set by head office</> : 'drag to reorder · nested = links to another group'}</span>
             </div>
             <fieldset disabled={!!glock} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: glock ? 0.62 : 1 }}>
 
@@ -4132,7 +4133,7 @@ function ModifiersTab() {
                       const img = opt.image || itemMatch?.image;
                       return img
                         ? <img src={img} style={{ width:'100%', height:'100%', objectFit:'cover' }} alt="" />
-                        : <span style={{ fontSize:12, opacity:.3 }}>🖼</span>;
+                        : <span style={{ opacity:.3, display:'flex' }}><Icon name="image" size={12} /></span>;
                     })()}
                   </div>
                   <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={opt.name} onChange={e=>updOpt(opt.id,{name:e.target.value})} placeholder="Option name"/>
@@ -4175,7 +4176,7 @@ function ModifiersTab() {
                 Items must be created in the <strong style={{ color:'var(--t2)' }}>Items tab</strong> with type <strong style={{ color:'var(--t2)' }}>Sub item</strong> before being added here.
               </div>
               <div style={{ position:'relative', marginBottom:6 }}>
-                <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)' }}>🔍</span>
+                <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', display:'flex' }}><Icon name="search" size={13} /></span>
                 <input style={{ ...inp, paddingLeft:26, fontSize:12 }} value={itemSearch} onChange={e=>setItemSearch(e.target.value)} placeholder="Search sub-items by name…" autoComplete="off"/>
               </div>
               {itemSearch && (() => {
@@ -4236,7 +4237,7 @@ function ModifiersTab() {
                 <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginBottom:10 }}>
                   {carrying.map(it => (
                     <span key={it.id} style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'4px 8px', borderRadius:7, background:'var(--acc-d)', border:'1px solid var(--acc-b)', fontSize:11, color:'var(--t1)' }}>
-                      {displayNameOf(it, menuItems||[])}{optionLocked(it.id) ? ' 🔒' : ''}
+                      {displayNameOf(it, menuItems||[])}{optionLocked(it.id) ? <Icon name="lock" size={11} /> : ''}
                       <button onClick={()=>detachOne(it.id)} title={optionLocked(it.id) ? 'Head office sets the option groups on this product in the Multi site menu' : 'Take it off this product'}
                         style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, lineHeight:1, padding:0 }}>×</button>
                     </span>
@@ -4246,7 +4247,7 @@ function ModifiersTab() {
 
               <div style={{ display:'flex', gap:6, marginBottom:8 }}>
                 <div style={{ position:'relative', flex:1 }}>
-                  <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)' }}>🔍</span>
+                  <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', display:'flex' }}><Icon name="search" size={13} /></span>
                   <input style={{ ...inp, paddingLeft:26, fontSize:12 }} value={attachSearch}
                     onChange={e=>setAttachSearch(e.target.value)} placeholder="Search products by name…" autoComplete="off"/>
                 </div>
@@ -4293,7 +4294,7 @@ function ModifiersTab() {
                           </span>
                           {sizes.length > 0 && !has && !locked && <span style={{ fontSize:9, color:'var(--t3)' }}>all {sizes.length} sizes</span>}
                           {has && <span style={{ fontSize:9, color:'var(--t4)' }}>already on</span>}
-                          {locked && <span style={{ fontSize:9, color:'var(--t4)' }}>🔒 head office</span>}
+                          {locked && <span style={{ fontSize:9, color:'var(--t4)', display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="lock" size={9} />head office</span>}
                         </label>
                       );
                     })}
@@ -4416,7 +4417,7 @@ function InstructionsTab() {
         </div>
       ) : (
         <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:8 }}>
-          <div style={{ fontSize:40, opacity:.12 }}>📝</div>
+          <div style={{ opacity:.12, display:'flex' }}><Icon name="note" size={40} /></div>
           <div style={{ fontSize:13, fontWeight:600, color:'var(--t3)' }}>Select a group to edit</div>
         </div>
       )}
@@ -4448,14 +4449,14 @@ function CatModal({ cat, roots, onSave, onDelete, onClose }) {
           <div><span style={lbl}>Name</span><input style={inp} value={f.label} onChange={e=>set('label',e.target.value)} autoFocus/></div>
           <CategoryPhotoField cat={cat}/>
           <div><span style={lbl}>Accounting group</span><input style={inp} value={f.accountingGroup} onChange={e=>set('accountingGroup',e.target.value)} placeholder="e.g. Food, Beverages"/></div>
-          <div><span style={lbl}>Icon</span><div style={{ display:'flex', gap:3, flexWrap:'wrap' }}>{ICONS.map(ic=><button key={ic} onClick={()=>set('icon',ic)} style={{ width:28,height:28,borderRadius:7,border:`1.5px solid ${f.icon===ic?'var(--acc)':'var(--bdr)'}`,background:f.icon===ic?'var(--acc-d)':'var(--bg3)',cursor:'pointer',fontSize:14 }}>{ic}</button>)}</div></div>
+          <div><span style={lbl}>Icon</span><div style={{ display:'flex', gap:3, flexWrap:'wrap' }}>{ICONS.map(ic=><button key={ic} onClick={()=>set('icon',ic)} style={{ width:28,height:28,borderRadius:7,border:`1.5px solid ${f.icon===ic?'var(--acc)':'var(--bdr)'}`,background:f.icon===ic?'var(--acc-d)':'var(--bg3)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--t2)' }}><EmojiIcon value={ic} fallback="utensils" size={15} /></button>)}</div></div>
           <div><span style={lbl}>Colour</span><div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>{COLOURS.map(c=><button key={c} onClick={()=>set('color',c)} style={{ width:20,height:20,borderRadius:'50%',background:c,border:'none',cursor:'pointer',outline:f.color===c?'3px solid var(--t1)':'none',outlineOffset:2 }}/>)}</div></div>
           <div>
             <span style={lbl}>Default course</span>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
               {COURSES.map(({v,l,hint})=>(
                 <button key={v} onClick={()=>set('defaultCourse',v)} style={{ padding:'7px 10px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`2px solid ${f.defaultCourse===v?'var(--acc)':'var(--bdr)'}`, background:f.defaultCourse===v?'var(--acc-d)':'var(--bg3)' }}>
-                  <div style={{ fontSize:11, fontWeight:700, color:f.defaultCourse===v?'var(--acc)':'var(--t2)' }}>{v===0?'⚡':v===1?'1️⃣':v===2?'2️⃣':'3️⃣'} {l}</div>
+                  <div style={{ fontSize:11, fontWeight:700, color:f.defaultCourse===v?'var(--acc)':'var(--t2)', display:'flex', alignItems:'center', gap:5 }}><Icon name={v===0?'bolt':'hash'} size={12} />{l}</div>
                   <div style={{ fontSize:9, color:'var(--t4)', marginTop:2 }}>{hint}</div>
                 </button>
               ))}
@@ -4516,7 +4517,7 @@ function MoveCatModal({ cat, allCats, onSave, onClose }) {
             <div key={r.id} onClick={()=>setParentId(r.id)} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:10, border:`2px solid ${parentId===r.id?'var(--acc)':'var(--bdr)'}`, background:parentId===r.id?'var(--acc-d)':'var(--bg3)', cursor:'pointer' }}>
               <div style={{ width:18,height:18,borderRadius:'50%',border:`2px solid ${parentId===r.id?'var(--acc)':'var(--bdr2)'}`,background:parentId===r.id?'var(--acc)':'transparent',flexShrink:0 }}/>
               <div>
-                <div style={{ fontSize:12, fontWeight:700, color:parentId===r.id?'var(--acc)':'var(--t1)' }}>{r.icon} {r.label}</div>
+                <div style={{ fontSize:12, fontWeight:700, color:parentId===r.id?'var(--acc)':'var(--t1)', display:'flex', alignItems:'center', gap:5 }}>{r.icon && <EmojiIcon value={r.icon} fallback="utensils" size={13} />}{r.label}</div>
                 <div style={{ fontSize:10, color:'var(--t4)' }}>Nest as subcategory of {r.label}</div>
               </div>
             </div>
@@ -4759,7 +4760,7 @@ function QuickScreenManager() {
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', borderRight:'1px solid var(--bdr)' }}>
         <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0 }}>
           <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:2 }}>
-            <span style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>⚡ Quick Screen</span>
+            <span style={{ fontSize:15, fontWeight:800, color:'var(--t1)', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="bolt" size={16} />Quick Screen</span>
             <span style={{ fontSize:11, color:'var(--t4)' }}>{quickScreenIds.filter(Boolean).length}/{SLOTS} slots used</span>
           </div>
           <div style={{ fontSize:11, color:'var(--t3)' }}>Click an item to add it, or drag it onto a slot. Drag within the grid to reorder. ✕ to remove.</div>
@@ -4856,7 +4857,7 @@ function QuickScreenManager() {
                     {!item.image && <div style={{ position:'absolute',left:0,top:0,bottom:0,width:4,background:color,zIndex:1 }}/>}
                     <button onClick={()=>clearSlot(idx)} style={{ position:'absolute',top:4,right:4,width:18,height:18,borderRadius:5,border:'none',background:'rgba(0,0,0,.2)',color:'#fff',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',zIndex:2 }}>×</button>
                     <div style={{ padding:'8px 8px 6px 12px', height:'100%', boxSizing:'border-box', display:'flex', flexDirection:'column', position:'relative', zIndex:1 }}>
-                      {!item.image && <div style={{ fontSize:10, color:color, fontWeight:600, marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{cat?.icon} {cat?.label}</div>}
+                      {!item.image && <div style={{ fontSize:10, color:color, fontWeight:600, marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{cat?.icon && <EmojiIcon value={cat.icon} fallback="utensils" size={10} style={{ display:'inline-block', verticalAlign:'-1px', marginRight:3 }} />}{cat?.label}</div>}
                       {item.image && <div style={{ flex:1 }}/>}
                       <div style={{ fontSize:12, fontWeight:700, color:item.image?'#fff':'var(--t1)', flex:item.image?0:1, overflow:'hidden',
                         textShadow:item.image?'0 1px 4px rgba(0,0,0,1)':'none' }}>{item.menuName||item.name}</div>
@@ -4892,13 +4893,13 @@ function QuickScreenManager() {
         <div style={{ padding:'10px 12px', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
           <div style={{ fontSize:12, fontWeight:700, color:'var(--t2)', marginBottom:8 }}>Add items →</div>
           <div style={{ position:'relative', marginBottom:7 }}>
-            <span style={{ position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',fontSize:11,color:'var(--t4)' }}>🔍</span>
+            <span style={{ position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',fontSize:11,color:'var(--t4)', display:'flex' }}><Icon name="search" size={13} /></span>
             <input style={{ ...inp, paddingLeft:26, fontSize:11 }} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search items…"/>
             {search && <button onClick={()=>setSearch('')} style={{ position:'absolute',right:7,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:'var(--t4)',cursor:'pointer',fontSize:13 }}>×</button>}
           </div>
           <select value={catFilter} onChange={e=>setCatFilter(e.target.value)} style={{ ...inp, fontSize:11, cursor:'pointer' }}>
             <option value="">All categories</option>
-            {roots.map(c=><option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+            {roots.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </div>
         <div style={{ flex:1, overflowY:'auto' }}>
@@ -4922,7 +4923,7 @@ function QuickScreenManager() {
                 <div style={{ width:3,height:32,borderRadius:2,background:color,flexShrink:0 }}/>
                 <div style={{ flex:1,minWidth:0 }}>
                   <div style={{ fontSize:11,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{item.menuName||item.name}</div>
-                  <div style={{ fontSize:9,color:'var(--t4)' }}>{cat?.icon} {cat?.label} · {money(price)}</div>
+                  <div style={{ fontSize:9,color:'var(--t4)' }}>{cat?.icon && <EmojiIcon value={cat.icon} fallback="utensils" size={10} style={{ display:'inline-block', verticalAlign:'-1px', marginRight:3 }} />}{cat?.label} · {money(price)}</div>
                 </div>
                 {inScreen
                   ? <span style={{ fontSize:9,fontWeight:700,color:'var(--grn)',flexShrink:0 }}>✓</span>

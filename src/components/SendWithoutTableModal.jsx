@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { sortTables } from '../lib/sortTables';
 import { money, currencySymbol } from '../lib/currency';
+import { Icon } from './ServOSIcons';
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)' },
@@ -175,7 +176,7 @@ export default function SendWithoutTableModal({ items, onClose, onNameOrder, onS
                 }}
                 onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';}}
                 onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr)';}}>
-                  <span style={{ fontSize:32 }}>🪑</span>
+                  <span style={{ fontSize:32, color:'var(--acc)' }}><Icon name="seat" size={32} /></span>
                   <div>
                     <div style={{ fontSize:15, fontWeight:700, color:'var(--t1)' }}>Add to a table</div>
                     <div style={{ fontSize:12, color:'var(--t3)', marginTop:3 }}>
@@ -195,7 +196,7 @@ export default function SendWithoutTableModal({ items, onClose, onNameOrder, onS
                 }}
                 onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--grn-b)';}}
                 onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr)';}}>
-                  <span style={{ fontSize:32 }}>✏️</span>
+                  <span style={{ fontSize:32, color:'var(--grn)' }}><Icon name="pencil" size={32} /></span>
                   <div>
                     <div style={{ fontSize:15, fontWeight:700, color:'var(--t1)' }}>Name the order</div>
                     <div style={{ fontSize:12, color:'var(--t3)', marginTop:3 }}>

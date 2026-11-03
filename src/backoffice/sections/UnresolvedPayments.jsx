@@ -44,6 +44,7 @@
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
 import { moneyMinor } from '../../lib/currency';
+import { Icon } from '../../components/ServOSIcons';
 
 const S = {
   card:    { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:24, marginBottom:20 },
@@ -208,7 +209,7 @@ export default function UnresolvedPayments() {
 
   return (
     <div style={S.card}>
-      <div style={S.h2}>⚠️ Payments that need checking</div>
+      <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="warn" size={16} />Payments that need checking</div>
       <div style={S.desc}>
         Card payments that need a person to look at them. Most finished without the terminal ever saying
         what happened, so nobody knows whether the customer was charged; a few went through but for an

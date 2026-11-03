@@ -33,6 +33,7 @@ import {
 import { toBase, fromBase, formatToken } from '../../lib/stock/uom';
 import { countName, fmtVenueDateTime } from '../../lib/venueDate';
 import { reportSave } from '../../lib/saveHealth';
+import { Icon } from '../../components/ServOSIcons';
 import NumberField from '../../components/NumberField';
 import StockItemPicker from '../../components/StockItemPicker';
 import { useStockScope } from '../StockScope';
@@ -703,7 +704,7 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
                       border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t3)', fontSize: 14 }}>×</button>
                 ) : (
                   <span title="Approved counts have already adjusted your stock and cannot be deleted"
-                    style={{ width: 30, textAlign: 'center', color: 'var(--t4)', fontSize: 12 }}>🔒</span>
+                    style={{ width: 30, textAlign: 'center', color: 'var(--t4)', fontSize: 12, display: 'inline-flex', justifyContent: 'center' }}><Icon name="lock" size={13} /></span>
                 )}
               </div>
             </div>

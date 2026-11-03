@@ -17,6 +17,7 @@ import {
   catEntrySelected, catEntryCovered, toggleCatEntry, categoryChips, removeCategoryChip,
   categoryIdChips, removeCategoryIdChip, itemEntriesFromIds, itemIdsFromEntries,
 } from '../../lib/loyaltyCategoryPicker';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -145,6 +146,8 @@ const REWARD_TYPES = [
 ];
 
 const REWARD_ICONS = ['gift', 'star', 'coffee', 'pizza', 'beer', 'cake', 'heart', 'fire', 'sparkles', 'crown', 'ticket', 'percent'];
+// Saved reward icon words that are not icon names. The saved word stays; only the drawing differs.
+const REWARD_ICON_DRAW = { coffee: 'cup' };
 
 // ═══════════════════════════════════════════════════════════════════════
 // Main component
@@ -256,7 +259,7 @@ export default function LoyaltyManager() {
 
   return (
     <div style={S.page}>
-      <h1 style={S.h1}>{'⭐'} Loyalty Program</h1>
+      <h1 style={{ ...S.h1, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="star" size={22} />Loyalty Program</h1>
       <div style={S.sub}>
         Reward your customers for every purchase. Configure points, create rewards, and manage your loyalty program.
       </div>
@@ -897,8 +900,9 @@ function RewardsPanel({ rewards, onReload, menuItems = [], categoryGroups = [] }
                       color: form.icon === ic ? '#0b0c10' : 'var(--t3)',
                       border: `1px solid ${form.icon === ic ? 'var(--acc)' : 'var(--bdr)'}`,
                     }}
+                    aria-label={ic}
                   >
-                    {ic}
+                    <EmojiIcon value={REWARD_ICON_DRAW[ic] || ic} fallback="gift" size={16} />
                   </button>
                 ))}
               </div>
@@ -978,7 +982,7 @@ function RewardsPanel({ rewards, onReload, menuItems = [], categoryGroups = [] }
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 16, flexShrink: 0, border: '1px solid var(--bdr)',
           }}>
-            {r.icon || 'gift'}
+            <EmojiIcon value={REWARD_ICON_DRAW[r.icon] || r.icon} fallback="gift" size={18} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{r.name}</div>
@@ -1356,7 +1360,7 @@ function MembersPanel({ config }) {
 
       {filtered.length === 0 ? (
         <div style={{ ...S.card, textAlign: 'center', padding: 40 }}>
-          <div style={{ fontSize: 36, marginBottom: 8, opacity: 0.3 }}>⭐</div>
+          <div style={{ marginBottom: 8, opacity: 0.3, display: 'flex', justifyContent: 'center' }}><Icon name="star" size={36} /></div>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t3)' }}>
             {members.length === 0 ? 'No loyalty members yet' : 'No matches'}
           </div>
@@ -1403,8 +1407,8 @@ function MembersPanel({ config }) {
                   <div style={{ fontWeight: 700, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {m.name || 'Unnamed'}
                     {m.tier && (
-                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: `${m.tier.color || 'var(--acc)'}20`, color: m.tier.color || 'var(--acc)' }}>
-                        {m.tier.icon || '⭐'} {m.tier.name}
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: `${m.tier.color || 'var(--acc)'}20`, color: m.tier.color || 'var(--acc)', display: 'inline-flex', alignItems: 'center', gap: 3, verticalAlign: 'middle' }}>
+                        <EmojiIcon value={m.tier.icon} fallback="star" size={11} />{m.tier.name}
                       </span>
                     )}
                     {memberStamps.length > 0 && (
@@ -1446,7 +1450,7 @@ function MembersPanel({ config }) {
                             border: '1px solid var(--bdr)', minWidth: 200, flex: '0 0 auto',
                           }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                              <span style={{ fontSize: 18 }}>{prog.icon || '☕'}</span>
+                              <span style={{ display: 'flex' }}><EmojiIcon value={prog.icon} fallback="cup" size={18} /></span>
                               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)' }}>{prog.name}</span>
                             </div>
                             {/* Progress bar */}
@@ -1810,7 +1814,7 @@ function TiersPanel({ tiers, onReload }) {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 16, color: '#fff', fontWeight: 800,
           }}>
-            {t.icon || '⭐'}
+            <EmojiIcon value={t.icon} fallback="star" size={16} />
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: t.color || 'var(--t1)' }}>{t.name}</div>
@@ -1923,7 +1927,7 @@ function StampCardsPanel({ menuItems = [], categories = [], categoriesLoaded = f
 
       {programs.length === 0 ? (
         <div style={{ ...S.card, textAlign: 'center', padding: 40 }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>☕</div>
+          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center', color: 'var(--t3)' }}><Icon name="cup" size={40} /></div>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>No stamp cards yet</div>
           <div style={{ fontSize: 12, color: 'var(--t4)', maxWidth: 320, margin: '0 auto', lineHeight: 1.5 }}>
             Create your first stamp card to reward loyal customers. For example: "Buy 9 coffees, get 1 free!"
@@ -1956,7 +1960,7 @@ function StampCardRow({ program: p, categoryGroups = [], categories = [], catego
       <div style={{ width: 48, height: 48, borderRadius: 12, background: p.active ? 'var(--acc-d)' : 'var(--bg3)',
         border: `1px solid ${p.active ? 'var(--acc-b)' : 'var(--bdr)'}`, display: 'flex', alignItems: 'center',
         justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
-        {p.icon || '☕'}
+        <EmojiIcon value={p.icon} fallback="cup" size={24} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{p.name}</div>
@@ -2099,10 +2103,10 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
               style={{
                 width: 52, height: 52, borderRadius: 12, border: '2px solid var(--bdr2)',
                 background: 'var(--bg2)', fontSize: 28, cursor: 'pointer', display: 'flex',
-                alignItems: 'center', justifyContent: 'center',
+                alignItems: 'center', justifyContent: 'center', color: 'var(--t1)',
               }}
             >
-              {icon}
+              <EmojiIcon value={icon} fallback="cup" size={28} />
             </button>
             {showIconPicker && (
               <div style={{
@@ -2115,10 +2119,10 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
                     style={{
                       width: 36, height: 36, borderRadius: 8, border: ic === icon ? '2px solid var(--acc)' : '1px solid var(--bdr)',
                       background: ic === icon ? 'var(--acc-d)' : 'var(--bg2)', fontSize: 20, cursor: 'pointer',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--t2)',
                     }}
                   >
-                    {ic}
+                    <EmojiIcon value={ic} fallback="cup" size={20} />
                   </button>
                 ))}
               </div>
@@ -2260,7 +2264,7 @@ function StampCardPreview({ icon, name, stampsRequired, stampsCollected, reward 
       borderRadius: 14, padding: 18, maxWidth: 380,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-        <span style={{ fontSize: 22 }}>{icon}</span>
+        <span style={{ display: 'flex', color: '#fff' }}><EmojiIcon value={icon} fallback="cup" size={22} /></span>
         <div style={{ fontSize: 14, fontWeight: 800, color: '#fff' }}>{name}</div>
       </div>
       <div style={{
@@ -2274,7 +2278,7 @@ function StampCardPreview({ icon, name, stampsRequired, stampsCollected, reward 
             fontSize: filled ? 16 : 11,
             color: filled ? '#E8743C' : 'rgba(255,255,255,0.25)',
           }}>
-            {filled ? icon : i + 1}
+            {filled ? <EmojiIcon value={icon} fallback="cup" size={16} /> : i + 1}
           </div>
         ))}
         {/* Reward slot */}
@@ -2283,7 +2287,7 @@ function StampCardPreview({ icon, name, stampsRequired, stampsCollected, reward 
           background: 'rgba(232,116,60,0.1)', border: '2px solid rgba(232,116,60,0.4)',
           fontSize: 14, flexDirection: 'column', gap: 2,
         }}>
-          <span style={{ fontSize: 16 }}>🎁</span>
+          <span style={{ display: 'flex', color: '#E8743C' }}><Icon name="gift" size={16} /></span>
         </div>
       </div>
       <div style={{ textAlign: 'center', marginTop: 10, fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
@@ -2361,8 +2365,8 @@ function PortalLink({ slug, enabled }) {
         marginTop: 12, padding: '10px 12px', borderRadius: 8,
         background: 'var(--bg3)', border: '1px solid var(--bdr)',
       }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t2)', marginBottom: 4 }}>
-          📱 Apple Wallet & Google Wallet
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t2)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Icon name="phone" size={13} />Apple Wallet & Google Wallet
         </div>
         <div style={{ fontSize: 11, color: 'var(--t4)', lineHeight: 1.5 }}>
           Loyalty members can add their card to Apple Wallet or Google Wallet from the customer portal or during online checkout sign-in. No setup needed — it's automatic.

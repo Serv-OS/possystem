@@ -8,6 +8,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
 import MFloorPlan from './MFloorPlan';
+import { Icon } from '../../components/ServOSIcons';
 
 const VIEW_KEY = 'mpos-tables-view'; // 'list' | 'floor'
 
@@ -154,7 +155,7 @@ export default function MTablesList({ onPickTable }) {
 
       {sorted.length === 0 && (
         <div style={Sx.emptyBlock}>
-          <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🪑</div>
+          <div style={{ fontSize:36, marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="seat" size={36} /></div>
           <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>No tables match</div>
           <div style={{ fontSize:12 }}>Try a different filter or clear your search.</div>
         </div>
@@ -204,9 +205,9 @@ function TableRow({ table, myName, onClick }) {
         </div>
         {session ? (
           <div style={{ fontSize:11, color:'var(--t3)', display:'flex', gap:10, flexWrap:'wrap' }}>
-            {session.covers && <span>🧑 {session.covers}</span>}
-            {session.server && <span>👤 {isMine ? 'You' : session.server}</span>}
-            <span>⏱ {elapsed(session.seatedAt || session.createdAt)}</span>
+            {session.covers && <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="users" size={12} /> {session.covers}</span>}
+            {session.server && <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="user" size={12} /> {isMine ? 'You' : session.server}</span>}
+            <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="clock" size={12} /> {elapsed(session.seatedAt || session.createdAt)}</span>
           </div>
         ) : (
           <div style={{ fontSize:11, color:'var(--t4)' }}>Tap to seat guests</div>

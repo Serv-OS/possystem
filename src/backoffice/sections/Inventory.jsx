@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { MENU_ITEMS as SEED_ITEMS } from '../../data/seed';
 import { isMock } from '../../lib/supabase';
+import { Icon } from '../../components/ServOSIcons';
 
 const STATUS_LEVELS = [
   { id:'ok',       label:'In stock',   color:'var(--grn)', bg:'var(--grn-d)', border:'var(--grn-b)', threshold:0.4 },
@@ -117,7 +118,7 @@ export default function Inventory() {
         {/* Toolbar */}
         <div style={{ padding:'10px 18px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', display:'flex', gap:10, alignItems:'center', flexShrink:0 }}>
           <div style={{ position:'relative', flex:1, maxWidth:280 }}>
-            <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'var(--t4)', fontSize:13 }}>🔍</span>
+            <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'var(--t4)', fontSize:13, display:'flex' }}><Icon name="search" size={14} /></span>
             <input style={{ width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:10, padding:'8px 10px 8px 32px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
               placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)}/>
           </div>
@@ -209,7 +210,7 @@ export default function Inventory() {
               })}
               {itemsWithStatus.length === 0 && (
                 <tr><td colSpan={6} style={{ textAlign:'center', padding:'60px', color:'var(--t4)' }}>
-                  <div style={{ fontSize:28, marginBottom:8, opacity:.3 }}>📦</div>
+                  <div style={{ marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="package" size={28} /></div>
                   <div style={{ fontSize:13, fontWeight:600, color:'var(--t2)' }}>No items match filter</div>
                 </td></tr>
               )}

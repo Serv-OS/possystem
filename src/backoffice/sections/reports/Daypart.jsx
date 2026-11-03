@@ -89,7 +89,7 @@ function DaypartOne({ checks, fmt, locationConfig }) {
   };
 
   if (totalRev === 0) {
-    return <EmptyState icon="🕓" message="No sales in this period to chart."/>;
+    return <EmptyState icon="clock" message="No sales in this period to chart."/>;
   }
 
   return (
@@ -170,7 +170,7 @@ function DaypartSites(props) {
   };
 
   if (parts.every(p => bySite.get(p.id).byHour.every(v => v === 0))) {
-    return <EmptyState icon="🕓" message="No sales at these sites in this period to chart."/>;
+    return <EmptyState icon="clock" message="No sales at these sites in this period to chart."/>;
   }
 
   return (

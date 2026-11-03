@@ -193,6 +193,19 @@ export const EMOJI_ICON = {
   '💬':'chat',
   '❤':'heart',
   '🕐':'clock',
+  '💪':'idCard',
+  '🎫':'ticket',
+  '📬':'mail',
+  '🔀':'repeat',
+  '⏹':'square',
+  '☐':'square',
+  '⏸':'pause',
+  'ℹ':'info',
+  '⬛':'dot',
+  '➕':'plus',
+  '👨‍🍳':'chef',
+  '🧑‍💼':'user',
+  '🕑':'clock',
   '⏳':'clock',
   '⌛':'clock',
   '⏱':'clock',
@@ -229,5 +242,5 @@ export const EMOJI_RE = /(?:[\u{1F1E6}-\u{1F1FF}]{2}|[\u{1F300}-\u{1FAFF}\u{1F00
 /** Text with picture emoji taken out, for places that can only hold text (toasts, options, texts). */
 export function stripEmoji(text) {
   if (text == null) return text;
-  return String(text).replace(EMOJI_RE, '').replace(/[ \t]{2,}/g, ' ').replace(/^ +| +$/gm, '');
+  return String(text).replace(EMOJI_RE, '').replace(/\u200D|\u20E3/g, '').replace(/[ \t]{2,}/g, ' ').replace(/^ +| +$/gm, '');
 }

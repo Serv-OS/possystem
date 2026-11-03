@@ -74,6 +74,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken, isMock } from '../lib/supabase';
 import { VERSION } from '../lib/version';
+import { Icon } from '../components/ServOSIcons';
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -808,7 +809,7 @@ export default function ReaderDemoSurface() {
     if (phase === 'fatal') {
       return (
         <div style={sx.center('#fff')}>
-          <div style={{ fontSize: 40 }}>⚠️</div>
+          <Icon name="warn" size={40} />
           <div style={sx.h2}>Demo reader unavailable</div>
           <div style={sx.sub}>{err || 'This build cannot reach the server.'}</div>
         </div>
@@ -1115,10 +1116,10 @@ export default function ReaderDemoSurface() {
       {/* ── operator strip (not part of the "reader") ── */}
       <div style={sx.opsStrip}>
         <button style={{ ...sx.opsBtn, opacity: canTap ? 1 : 0.35 }} disabled={!canTap} onClick={() => (isManualTap ? settleManual('approved') : settle('approved'))}>
-          💳 Tap card
+          <Icon name="card" size={14} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />Tap card
         </button>
         <button style={{ ...sx.opsBtn, opacity: canTap ? 1 : 0.35 }} disabled={!canTap} onClick={() => (isManualTap ? settleManual('declined') : settle('declined'))}>
-          ⛔ Decline
+          <Icon name="ban" size={14} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />Decline
         </button>
         <button
           style={{ ...sx.opsBtn, opacity: canCancel ? 1 : 0.35 }}

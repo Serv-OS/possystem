@@ -14,6 +14,7 @@ import { useState, useRef } from 'react';
 import { useStore } from '../../store';
 import { selectOnFocus } from '../../lib/selectOnFocus';
 import { aiRequestInit } from '../../lib/aiRequest';
+import { Icon } from '../../components/ServOSIcons';
 
 const ACCEPTED_MIME = [
   'application/pdf',
@@ -303,7 +304,7 @@ export default function MenuImportModal({ menuId, onClose }) {
                 background: isDragging ? 'var(--acc-d)' : 'var(--bg2)',
                 transition:'all 0.15s',
               }}>
-              <div style={{ fontSize:48, marginBottom:12 }}>📄</div>
+              <div style={{ marginBottom:12, display:'flex', justifyContent:'center', color:'var(--t3)' }}><Icon name="fileText" size={44} /></div>
               <div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>Drop your menu here</div>
               <div style={{ fontSize:12, color:'var(--t4)' }}>or click to browse</div>
               <div style={{ fontSize:11, color:'var(--t5)', marginTop:14 }}>PDF · Word · Excel · JPG · PNG · max 7MB</div>
@@ -320,7 +321,7 @@ export default function MenuImportModal({ menuId, onClose }) {
           {(phase === 'uploading' || phase === 'parsing' || phase === 'publishing') && (
             <div style={{ padding:40, textAlign:'center' }}>
               <div style={{ fontSize:32, marginBottom:14 }}>
-                <span style={{ display:'inline-block', animation:'spin 1s linear infinite' }}>⚙</span>
+                <span style={{ display:'inline-block', animation:'spin 1s linear infinite' }}><Icon name="settings" size={32} /></span>
               </div>
               <div style={{ fontSize:14, fontWeight:600 }}>{statusMsg}</div>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -401,9 +402,9 @@ function ReviewPanel({ draft, meta, updateCat, removeCat, updateItem, removeItem
               style={{ ...inp, width:170, fontSize:11 }}
               title="Merge into an existing category instead of creating a new one"
             >
-              <option value="">➕ Create new category</option>
+              <option value="">+ Create new category</option>
               {existingRootCats.map(c => (
-                <option key={c.id} value={c.id}>{c.icon || '🍽'} {c.label} (merge)</option>
+                <option key={c.id} value={c.id}>{c.label} (merge)</option>
               ))}
             </select>
             <input style={{ ...inp, width:50, textAlign:'center', opacity: cat.existingId ? 0.4 : 1 }}
@@ -482,7 +483,7 @@ function ReviewPanel({ draft, meta, updateCat, removeCat, updateItem, removeItem
                       </div>
                     )}
                     {item.notes && (
-                      <div style={{ fontSize:10, color:'#c88019', fontStyle:'italic' }}>⚠ {item.notes}</div>
+                      <div style={{ fontSize:10, color:'#c88019', fontStyle:'italic', display:'flex', alignItems:'center', gap:4 }}><Icon name="warn" size={11} />{item.notes}</div>
                     )}
                   </div>
                 </div>

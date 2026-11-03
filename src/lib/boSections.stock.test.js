@@ -187,7 +187,7 @@ test('every stock route has a title row in BackOfficeApp NAV; the routes with no
   const stockRows = NAV_IA.filter((r) => ['Inventory', 'Produce', 'Purchasing'].includes(r.label));
   for (const id of stockRows.flatMap(routesOfRow)) assert.ok(titled.has(id), `no top bar title for ${id}`);
   assert.ok(titled.has(STOCK_GP_ROUTE), 'Stock and GP has a top bar title');
-  assert.match(nav, /\{ id:'stock-gp', label:'Stock and GP', icon:'📊', group:'Analytics' \}/);
+  assert.match(nav, /\{ id:'stock-gp', label:'Stock and GP', icon:'chart', group:'Analytics' \}/);
   // Not every sidebar route had a top bar title on v5.11.84 (main, 20 Oct): these 15 show a blank
   // title today. Drop 1 and Drop 4a add no title to them and change none of them (Rule 2: today's screens).
   const untitled = allRoutes.filter((id) => !id.startsWith('wf-') && !titled.has(id));

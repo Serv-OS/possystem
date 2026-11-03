@@ -39,9 +39,10 @@ const PO_ROUTER = at('backoffice/sections/PurchaseOrders.jsx');
 const INV_ROUTER = at('backoffice/sections/Invoices.jsx');
 const PC_ROUTER = at('backoffice/sections/PriceChanges.jsx');
 const PIN = {
-  pad: 'd4d5573525e8feac1068245f1be18365e7810c9269c4ce5ed2bdf00426b15559',
-  po: 'bd6e0a75e18971b5bb69ce12473e6fde813558cff7dfcf94c29a077caa7cdf2b',
-  inv: '74ed21e70f929752d366ab71bece7af706cb4387e2e0986b80776a0333ed1782',
+  pad: '66030e23ffeab9ffd165d34ecfd79c49612abb63d02d84b108e61a1c705f8a53', // 5.12.43: line icons for emoji (main 4f15e759 was d4d5573525e8feac1068245f1be18365e7810c9269c4ce5ed2bdf00426b15559)
+  // 5.12.43: line icons for emoji (main 4f15e759 was bd6e0a75e18971b5bb69ce12473e6fde813558cff7dfcf94c29a077caa7cdf2b)
+  po: '1b02fa8ccd5d5171685ea76625a8568a852a0299cccf5d5831fd08eb7c67b575',
+  inv: '3e6c333798607672eb1e8eed92bcad3c0a922a77fd7e835d59dbc5d3559bba23', // 5.12.43: line icons for emoji
   pc: '6c7310a6184daaf69f06a9667675fe56f1c7f63662e726308b7ec9f34616ce2d',
 };
 

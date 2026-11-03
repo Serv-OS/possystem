@@ -5,6 +5,8 @@ import { reportSave } from '../../lib/saveHealth';
 import { issuePairingCodeWithFallback, formatPairingCode } from '../../lib/deviceFence';
 import { pairingCodeState, canIssueNewCode, replaceCodeWarning } from '../../lib/pairingCodeState';
 import { masterSetupReport } from '../../lib/masterTill';
+import { Icon } from '../../components/ServOSIcons';
+import { stripEmoji } from '../../lib/emojiIcons';
 
 // 12 Oct 2026 (Preston, D9): the master till set up, said plainly above the device list. The
 // master till is the one that sends QR, online and kiosk orders to the kitchen. A venue with
@@ -53,15 +55,15 @@ const ADJECTIVES = ['APPLE','BAKER','CEDAR','DONUT','EMBER','FROST','GROVE','HON
 const genCode = () => `${ADJECTIVES[Math.floor(Math.random()*10)]}-${Math.floor(1000+Math.random()*9000)}`;
 
 const DEVICE_TYPES = [
-  { id:'pos',      label:'POS Terminal',     icon:'🖥' },
-  { id:'kds',      label:'Kitchen Display',  icon:'📺' },
-  { id:'kiosk',    label:'Self-service Kiosk',icon:'⬜' },
-  { id:'handheld', label:'Handheld',         icon:'📱' },
+  { id:'pos',      label:'POS Terminal',     icon:'monitor' },
+  { id:'kds',      label:'Kitchen Display',  icon:'tv' },
+  { id:'kiosk',    label:'Self-service Kiosk',icon:'square' },
+  { id:'handheld', label:'Handheld',         icon:'phone' },
   // v5.7.40: the Time Clock finally has its own type. Until now a clock only
   // worked by borrowing a browser's existing POS pairing (invisible, unfindable
   // in this screen), and the iPad Time Clock app had no way in at all. A clock
   // needs no profile, no prep centre and no printer: it is a PIN pad.
-  { id:'clock',    label:'Time Clock',       icon:'⏰' },
+  { id:'clock',    label:'Time Clock',       icon:'clock' },
 ];
 
 const DEFAULT_PROFILES = [
@@ -103,7 +105,7 @@ function PrinterSelect({ value, onChange, placeholder = 'No receipt printer' }) 
   return (
     <select style={S.input} value={value || ''} onChange={e => onChange(e.target.value)}>
       <option value="">{placeholder}</option>
-      {printers.map(p => <option key={p.id} value={p.id}>🖨 {p.name}{p.location ? ` (${p.location})` : ''}</option>)}
+      {printers.map(p => <option key={p.id} value={p.id}>{p.name}{p.location ? ` (${p.location})` : ''}</option>)}
     </select>
   );
 }
@@ -338,7 +340,7 @@ export default function DeviceRegistry() {
 
   return (
     <div style={S.page}>
-      <div style={S.h1}>📱 Devices</div>
+      <div style={{ ...S.h1, display:'flex', alignItems:'center', gap:8 }}><Icon name="phone" size={22} />Devices</div>
       <div style={S.sub}>Manage POS terminals, KDS screens and kiosks at this location</div>
 
       {!showAdd && (
@@ -365,7 +367,7 @@ export default function DeviceRegistry() {
                 <div>
                   <label style={S.label}>Device type</label>
                   <select style={S.input} value={newDevice.type} onChange={e=>setNewDevice(d=>({...d,type:e.target.value}))}>
-                    {DEVICE_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+                    {DEVICE_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
                   </select>
                 </div>
                 <div>
@@ -374,7 +376,7 @@ export default function DeviceRegistry() {
                       <label style={S.label}>Production center</label>
                       <select style={S.input} value={newDevice.centreId||''} onChange={e=>setNewDevice(d=>({...d,centreId:e.target.value}))}>
                         <option value="">Select production center…</option>
-                        {getProductionCentres().map(pc=><option key={pc.id} value={pc.id}>{pc.icon} {pc.name}</option>)}
+                        {getProductionCentres().map(pc=><option key={pc.id} value={pc.id}>{stripEmoji(`${pc.icon || ''} ${pc.name}`)}</option>)}
                       </select>
                     </>
                   ) : (
@@ -477,7 +479,7 @@ export default function DeviceRegistry() {
                   <div>
                     <label style={S.label}>Type</label>
                     <select style={S.input} value={editForm.type} onChange={e=>setEditForm(f=>({...f,type:e.target.value}))}>
-                      {DEVICE_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+                      {DEVICE_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
                     </select>
                   </div>
                   <div>
@@ -486,7 +488,7 @@ export default function DeviceRegistry() {
                         <label style={S.label}>Production center</label>
                         <select style={S.input} value={editForm.centreId||''} onChange={e=>setEditForm(f=>({...f,centreId:e.target.value}))}>
                           <option value="">Select center…</option>
-                          {getProductionCentres().map(pc=><option key={pc.id} value={pc.id}>{pc.icon} {pc.name}</option>)}
+                          {getProductionCentres().map(pc=><option key={pc.id} value={pc.id}>{stripEmoji(`${pc.icon || ''} ${pc.name}`)}</option>)}
                         </select>
                       </>
                     ) : (
@@ -510,12 +512,12 @@ export default function DeviceRegistry() {
               ) : (
                 /* View mode */
                 <div style={{ display:'flex', alignItems:'center', gap:16 }}>
-                  <div style={{ fontSize:28, width:40, textAlign:'center' }}>{dtype.icon}</div>
+                  <div style={{ width:40, display:'flex', justifyContent:'center', color:'var(--t2)' }}><Icon name={dtype.icon} size={28} /></div>
                   <div style={{ flex:1 }}>
                     <div style={{ fontWeight:700, color:'var(--t1)', fontSize:14 }}>{d.name}</div>
                     <div style={{ fontSize:12, color:'var(--t3)' }}>
                       {dtype.label} · {d.type === 'kds' ? 'Center' : 'Profile'}: {profileName}
-                      {d.receipt_printer_id && (() => { const p = getPrinters().find(x=>x.id===d.receipt_printer_id); return p ? <span> · 🖨 {p.name}</span> : null; })()}
+                      {d.receipt_printer_id && (() => { const p = getPrinters().find(x=>x.id===d.receipt_printer_id); return p ? <span> · <Icon name="print" size={12} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:3 }} />{p.name}</span> : null; })()}
                       {d.last_seen && <span> · Last seen {new Date(d.last_seen).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</span>}
                     </div>
 

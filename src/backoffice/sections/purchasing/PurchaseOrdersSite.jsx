@@ -35,6 +35,7 @@ import { areasReady, fetchAreas } from '../../../lib/stock/areas';
 import { reportSave } from '../../../lib/saveHealth';
 import { fmtYmd } from '../../../lib/venueDate';
 import NumberField from '../../../components/NumberField';
+import { Icon } from '../../../components/ServOSIcons';
 import { PageHeader, PrimaryBtn, Tag, SearchField } from '../reports/reportKit';
 import { useSiteStockContext } from '../../../lib/stock/siteContext';
 
@@ -491,8 +492,8 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
                   if (!e && res?.ok) msg = `Emailed to ${res.to}`;
                   else { try { msg = res?.error || (e?.context ? (await e.context.json())?.error : e?.message) || 'send failed'; } catch { msg = e?.message || 'send failed'; } }
                   showToast?.(msg, (!e && res?.ok) ? 'success' : 'error');
-                }} disabled={busy} style={{ padding: '9px 14px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer' }}>
-                  ✉ Resend to supplier
+                }} disabled={busy} style={{ padding: '9px 14px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Icon name="mail" size={15} />Resend to supplier
                 </button>
               )}
               {draft.id && (draft.status === 'SENT' || draft.status === 'PARTIAL') && !receiving && <PrimaryBtn onClick={openReceive} disabled={busy}>Accept delivery…</PrimaryBtn>}
@@ -530,8 +531,8 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
                   );
                 })}
                 <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
-                  <label style={{ fontSize: 12, color: 'var(--t3)', cursor: 'pointer', border: '1px dashed var(--bdr)', borderRadius: 7, padding: '7px 12px' }}>
-                    📎 Attach invoice
+                  <label style={{ fontSize: 12, color: 'var(--t3)', cursor: 'pointer', border: '1px dashed var(--bdr)', borderRadius: 7, padding: '7px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Icon name="paperclip" size={14} />Attach invoice
                     <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) attachInvoice(f); e.target.value = ''; }} />
                   </label>
                   <div style={{ marginRight: 'auto' }} />
@@ -542,7 +543,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
             )}
             {poInvoices.length > 0 && (
               <div style={{ marginTop: 12, fontSize: 12, color: 'var(--t3)' }}>
-                📎 {poInvoices.length} invoice{poInvoices.length === 1 ? '' : 's'} attached
+                <Icon name="paperclip" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />{poInvoices.length} invoice{poInvoices.length === 1 ? '' : 's'} attached
                 {draft.status === 'RECEIVED' && (
                   <label style={{ marginLeft: 10, cursor: 'pointer', textDecoration: 'underline' }}>
                     add another<input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) attachInvoice(f); e.target.value = ''; }} />
@@ -552,7 +553,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
             )}
             {draft.status === 'RECEIVED' && poInvoices.length === 0 && (
               <div style={{ marginTop: 12, fontSize: 12, color: 'var(--t3)' }}>
-                <label style={{ cursor: 'pointer', textDecoration: 'underline' }}>📎 Attach the supplier invoice
+                <label style={{ cursor: 'pointer', textDecoration: 'underline' }}><Icon name="paperclip" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />Attach the supplier invoice
                   <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) attachInvoice(f); e.target.value = ''; }} />
                 </label>
                 {' '}(paperwork only, the stock is already in).

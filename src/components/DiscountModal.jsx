@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { money, currencySymbol } from '../lib/currency';
 import { approverStamp } from '../lib/discountApprover';
 import { venueDiscountList, NO_DISCOUNTS_TEXT } from '../lib/venueDiscounts';
+import { Icon } from './ServOSIcons';
 
 const managersFrom = (staffMembers) =>
   (staffMembers || [])
@@ -154,7 +155,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel, ch
               )}
               {selected&&preset?.requiresManager&&(
                 <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,background:'rgba(232,160,32,.1)',border:'1px solid var(--acc-b)',marginBottom:12}}>
-                  <span>🔑</span><span style={{fontSize:12,color:'var(--acc)'}}>Requires manager PIN</span>
+                  <span style={{display:'flex',color:'var(--acc)'}}><Icon name="key" size={14}/></span><span style={{fontSize:12,color:'var(--acc)'}}>Requires manager PIN</span>
                 </div>
               )}
               <div style={{display:'flex',gap:8}}>

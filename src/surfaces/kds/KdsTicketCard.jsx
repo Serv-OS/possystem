@@ -25,6 +25,8 @@ import { kdsVisibleNote } from '../../lib/kioskStaffFlags';
 import { scaled, breakableWords, fitFontSize } from '../../lib/kds/kdsFit';
 import { BUMP_NOT_SAVED } from '../../lib/kds/kdsLinkHealth';
 import { C, SANS, MONO, LATE_PULSE, ghostBtn } from './kdsStyles';
+import { Icon } from '../../components/ServOSIcons';
+import { stripEmoji } from '../../lib/emojiIcons';
 // v5.11.93 (multi site stock Drop 2): the recipe card for staff, from the item in the pop out.
 import { getActiveLocationSync } from '../../lib/supabase';
 import KdsRecipeCard from './KdsRecipeCard';
@@ -206,12 +208,12 @@ function LineRow({ line, big, z, onTick, canTick, showTick, onRecipe = null }) {
         {line.mods.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: big ? 3 : 2 }}>
             {line.mods.map((m, i) => (
-              <div key={i} style={{ font: `600 ${z.mods}px/${big ? 1.25 : 1.3} ${SANS}`, color: C.mods, overflowWrap: 'anywhere' }}>{m}</div>
+              <div key={i} style={{ font: `600 ${z.mods}px/${big ? 1.25 : 1.3} ${SANS}`, color: C.mods, overflowWrap: 'anywhere', display: 'flex', alignItems: 'baseline', gap: 6 }}>{/^\u{1F4DD}/u.test(m) && <Icon name="note" size={z.mods} style={{ alignSelf: 'center' }} />}{stripEmoji(m)}</div>
             ))}
           </div>
         )}
         {line.allergen && (
-          <div style={{ font: `700 ${z.allergen}px ${MONO}`, letterSpacing: big ? 0 : '.06em', color: C.allergen, overflowWrap: 'anywhere' }}>⚠ {line.allergen}</div>
+          <div style={{ font: `700 ${z.allergen}px ${MONO}`, letterSpacing: big ? 0 : '.06em', color: C.allergen, overflowWrap: 'anywhere' }}><Icon name="warn" size={z.allergen} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />{line.allergen}</div>
         )}
       </div>
       {big && onRecipe && line.itemId ? (

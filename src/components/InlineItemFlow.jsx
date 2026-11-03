@@ -5,6 +5,7 @@ import { money } from '../lib/currency';
 import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
 import { resolveItemPrice } from '../lib/menuPricing';
 import { sizeOrMainOptions, modifierGroupRequired, instructionGroupMin } from '../lib/menuRules';
+import { Icon } from './ServOSIcons';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -399,7 +400,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
           {/* Required field error */}
           {requireErr && missingRequired.length > 0 && (
             <div style={{ marginBottom:10, padding:'10px 12px', background:'var(--red-d)', border:'1px solid var(--red-b)', borderRadius:10, display:'flex', alignItems:'flex-start', gap:8 }}>
-              <span style={{ fontSize:16, flexShrink:0 }}>⚠</span>
+              <span style={{ fontSize:16, flexShrink:0, display:'flex', color:'var(--red)' }}><Icon name="warn" size={16}/></span>
               <div>
                 <div style={{ fontSize:12, fontWeight:700, color:'var(--red)', marginBottom:2 }}>Required options needed</div>
                 <div style={{ fontSize:11, color:'var(--red)', opacity:.85 }}>
@@ -469,8 +470,8 @@ function VariantStep({ item, variantChildren, onPick, priceOf = null }) {
                 {money(price)}
               </div>
               {v.allergens?.length > 0 && (
-                <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>
-                  ⚠ {v.allergens.join(', ')}
+                <div style={{ fontSize:10, color:'var(--t4)', marginTop:4, display:'flex', alignItems:'center', gap:4 }}>
+                  <Icon name="warn" size={11}/>{v.allergens.join(', ')}
                 </div>
               )}
             </button>
@@ -711,7 +712,7 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                           </div>
                         )}
                         <div style={{ width:18, height:18, borderRadius: isMulti ? 4 : '50%', border:`2px solid ${opt86 ? 'var(--red-b)' : isSel ? 'var(--acc)' : 'var(--bdr2)'}`, background: opt86 ? 'var(--red-d)' : isSel ? 'var(--acc)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                          {opt86 ? <span style={{ fontSize:10, lineHeight:1 }}>🚫</span> : isSel && <div style={{ width:6, height:6, borderRadius: isMulti ? 2 : '50%', background:'#0b0c10' }}/>}
+                          {opt86 ? <span style={{ fontSize:10, lineHeight:1, display:'flex', color:'var(--red)' }}><Icon name="ban" size={10}/></span> : isSel && <div style={{ width:6, height:6, borderRadius: isMulti ? 2 : '50%', background:'#0b0c10' }}/>}
                         </div>
                         {/* Name + price stacked; flex:1 + minWidth:0 lets a long name wrap instead of colliding */}
                         <div style={{ flex:1, minWidth:0 }}>

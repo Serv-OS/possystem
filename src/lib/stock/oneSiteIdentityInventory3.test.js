@@ -16,7 +16,7 @@ const at = (p) => new URL(`../../backoffice/sections/${p}`, import.meta.url);
 const MARK = /\/\/ d3 multi|\{\/\* d3 multi \*\/\}/;
 
 const PINS = {
-  'StockCounts.jsx': '2e77d1cbfa14257083ee2da1ffde474d2058699cc01592fe4f8bde1da5af8248',
+  'StockCounts.jsx': 'd0f4f8f63bec551d335b2ca9862dc4afec6590b92beea624ad6c5fe05aad76c1', // 5.12.43: line icons for emoji
   // v5.11.99 (Reports align): the Wastage log values waste from the stock ledger for EVERY company (one
   // source for every report), so the pin is that text, not 5.11.96's (was c0fcc4f9...).
   'Wastage.jsx': '07bccb49a573dc9deee7effd65408bb1abb7b38ff267f66d8c6ab2028a5a6472',

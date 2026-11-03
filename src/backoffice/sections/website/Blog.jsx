@@ -9,6 +9,7 @@ import { W } from './ui.js';
 import { formatWhen, isValidSlug, slugify } from './helpers.js';
 // The same renderer the public site uses (agent B), so the preview matches the live post.
 import { renderMarkdown, markdownToText } from '../../../surfaces/website/markdown.js';
+import { Icon } from '../../../components/ServOSIcons';
 
 const PREVIEW_STYLE = { fontSize: 14, lineHeight: 1.65, color: 'var(--t1)', wordBreak: 'break-word' };
 
@@ -66,7 +67,7 @@ function PostEditor({ post, posts, ws, toast, onDone, onWriteForMe }) {
       <div style={W.cardHead}>
         <h2 style={W.h2}>{isNew ? 'New post' : 'Edit post'}</h2>
         <div style={W.row}>
-          {!isNew && <button style={W.ghost} onClick={() => onWriteForMe(post.id)}>✨ Write it for me</button>}
+          {!isNew && <button style={{ ...W.ghost, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => onWriteForMe(post.id)}><Icon name="sparkles" size={14}/>Write it for me</button>}
           <button style={W.ghost} onClick={onDone}>Back to posts</button>
         </div>
       </div>
@@ -138,7 +139,7 @@ export default function Blog({ ws, toast, onWriteForMe }) {
       <div style={W.cardHead}>
         <h2 style={W.h2}>Blog</h2>
         <div style={W.row}>
-          <button style={W.ghost} onClick={() => onWriteForMe(null)}>✨ Write a post for me</button>
+          <button style={{ ...W.ghost, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => onWriteForMe(null)}><Icon name="sparkles" size={14}/>Write a post for me</button>
           <button style={W.btn} onClick={() => setEditing('new')}>+ New post</button>
         </div>
       </div>

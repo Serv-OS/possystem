@@ -151,8 +151,8 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo, locationId = null }) {
   };
 
   if (other.loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading this site's tax rates…</div>;
-  if (checks.length === 0) return <EmptyState icon="💰" message="No checks in this period."/>;
-  if (taxRates.length === 0 && !(other.other && (other.failed || !other.menu?.taxLoaded))) return <EmptyState icon="💰" message="No tax rates configured. Set them up under Settings → Tax to see breakdowns here."/>;
+  if (checks.length === 0) return <EmptyState icon="money" message="No checks in this period."/>;
+  if (taxRates.length === 0 && !(other.other && (other.failed || !other.menu?.taxLoaded))) return <EmptyState icon="money" message="No tax rates configured. Set them up under Settings → Tax to see breakdowns here."/>;
 
   const { ledger } = analysis;
   const varianceNames = analysis.varianceSales.map((v) => `${v.ref || v.id} ${v.diff > 0 ? '+' : ''}${v.diff.toFixed(2)}`).join(', ');
@@ -273,7 +273,7 @@ function TaxSites(props) {
   };
 
   if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's tax rates…</div>;
-  if (parts.every(p => p.rows.length === 0)) return <EmptyState icon="💰" message="No checks at these sites in this period."/>;
+  if (parts.every(p => p.rows.length === 0)) return <EmptyState icon="money" message="No checks at these sites in this period."/>;
 
   const notes = parts.map(p => {
     const menu = menus[p.id];

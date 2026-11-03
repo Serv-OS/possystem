@@ -73,6 +73,8 @@ import { bannerWords, savingWords, emptyWords, countBelow, belowWords, traceWord
 import { KdsTicketCard, KdsTicketModal } from './KdsTicketCard';
 import { KdsSettingsSheet, KdsManagerPin } from './KdsSettingsSheet';
 import { C, SANS, MONO, ghostBtn, pill, monoLabel, KDS_KEYFRAMES } from './kdsStyles';
+import { Icon } from '../../components/ServOSIcons';
+import { stripEmoji } from '../../lib/emojiIcons';
 
 // Database fence stage 1, fix round 2 (the zero row blocker): every kds_tickets update here counts
 // the rows it changed. One that changes nothing while this screen is not linked is kept and sent
@@ -1081,7 +1083,7 @@ export function KDSSurface() {
           <button type="button" className={showHistory ? undefined : 'kds-ghost'} onClick={showHistory ? () => { setShowHistory(false); setSel(null); } : openHistory} style={ghostBtn(showHistory)}>
             {showHistory ? '← Back to board' : '☰ History'}
           </button>
-          <button type="button" className="kds-ghost" onClick={openSettings} style={ghostBtn()}>⚙ Settings</button>
+          <button type="button" className="kds-ghost" onClick={openSettings} style={ghostBtn()}><Icon name="settings" size={16} />Settings</button>
           <div style={{ font: `700 15px ${MONO}`, color: C.clock, paddingLeft: 6 }}>{clockFmt.format(now)}</div>
         </div>
       </div>
@@ -1178,7 +1180,7 @@ export function KDSSurface() {
                     <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span style={{ font: `600 16px/1.25 ${SANS}`, color: C.railItem, overflowWrap: 'anywhere' }}>{r.name}</span>
                       {r.mods.map((m, i) => (
-                        <span key={i} style={{ font: `600 14px/1.3 ${SANS}`, color: m.startsWith('⚠') ? C.allergen : C.meta1, overflowWrap: 'anywhere' }}>{m}</span>
+                        <span key={i} style={{ font: `600 14px/1.3 ${SANS}`, color: m.startsWith('⚠') ? C.allergen : C.meta1, overflowWrap: 'anywhere' }}>{m.startsWith('⚠') ? <><Icon name="warn" size={14} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />{stripEmoji(m)}</> : stripEmoji(m)}</span>
                       ))}
                     </div>
                   </div>

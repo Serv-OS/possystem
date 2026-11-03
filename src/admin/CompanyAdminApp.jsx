@@ -17,6 +17,7 @@ import { money, CURRENCIES } from '../lib/currency';
 import { newVenueSubscription, saasPlanName } from '../lib/saasNewVenue';
 import { seedVenueTaxRates, seedWords } from '../lib/venueTaxRates';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
+import { Icon } from '../components/ServOSIcons';
 
 // v5.11.75: loaded only when a company is opened here, so the Multi site menu code never rides in
 // the bundle every till downloads.
@@ -164,7 +165,7 @@ export default function CompanyAdminApp() {
   if (!roleChecked) return <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', fontSize:13 }}>Loading…</div>;
   if (!isSuperAdmin) return (
     <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', gap:16 }}>
-      <div style={{ fontSize:32 }}>🔒</div>
+      <Icon name="lock" size={32} />
       <div style={{ fontSize:16, fontWeight:700, color:'var(--t1)' }}>Access denied</div>
       <div style={{ fontSize:13 }}>This area requires super_admin access.</div>
       <button onClick={adminSignOut} style={{ marginTop:8, padding:'8px 20px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>Sign out</button>
@@ -512,14 +513,14 @@ function AdminPanel({ authUser }) {
           <div style={{ fontSize:11, color:'var(--acc)', fontWeight:700, letterSpacing:'.06em', textTransform:'uppercase' }}>Company Admin</div>
         </div>
         {[
-          { id:'orgs', label:'All organisations', icon:'🏢' },
+          { id:'orgs', label:'All organisations', icon:'building' },
           { id:'new-org', label:'+ New organisation' },
-          { id:'billing', label:'Processing', icon:'💳' },
-          { id:'revenue', label:'Revenue', icon:'📈' },
-          { id:'reseller', label:'FranPOS', icon:'🧾' },
-          { id:'venue-messages', label:'Messages and emails', icon:'📣' },
-          { id:'customer-import', label:'Import customers', icon:'📥' },
-          { id:'second-step', label:'Sign in security', icon:'🔐' },
+          { id:'billing', label:'Processing', icon:'card' },
+          { id:'revenue', label:'Revenue', icon:'trendUp' },
+          { id:'reseller', label:'FranPOS', icon:'receipt' },
+          { id:'venue-messages', label:'Messages and emails', icon:'megaphone' },
+          { id:'customer-import', label:'Import customers', icon:'inbox' },
+          { id:'second-step', label:'Sign in security', icon:'lock' },
         ].map(n => (
           <button key={n.id} onClick={() => { setSection(n.id); setMsg({ type:'', text:'' }); }}
             style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 16px', margin:'1px 8px', borderRadius:8, cursor:'pointer', fontSize:13,
@@ -527,7 +528,7 @@ function AdminPanel({ authUser }) {
               background: section===n.id ? 'var(--acc-d)' : 'none',
               color: section===n.id ? 'var(--acc)' : 'var(--t2)',
               border:'none', fontFamily:'inherit', width:'calc(100% - 16px)', textAlign:'left' }}>
-            {n.icon} {n.label}
+            {n.icon && <Icon name={n.icon} size={16} />}{n.label}
           </button>
         ))}
         {selectedOrg && (
@@ -569,7 +570,7 @@ function AdminPanel({ authUser }) {
         {/* ── Orgs list ── */}
         {section === 'orgs' && (
           <>
-            <div style={S.h1}>🏢 Organisations</div>
+            <div style={{ ...S.h1, display:'flex', alignItems:'center', gap:8 }}><Icon name="building" size={20} />Organisations</div>
             <div style={S.sub}>All restaurants on the platform · {orgs.length} total</div>
             <button onClick={() => setSection('new-org')} style={{ ...S.btn, ...S.btnPrimary, marginBottom:20 }}>+ New organisation</button>
             <div style={S.card}>
@@ -596,8 +597,8 @@ function AdminPanel({ authUser }) {
                           <span style={{ ...S.badge, background:'#0d2e1a', color:'#86efac' }}>{o.status}</span>
                           <div style={{ fontSize:12, color:'var(--t3)' }}>{new Date(o.created_at).toLocaleDateString('en-GB')}</div>
                           <button onClick={() => selectOrg(o)} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}>Manage →</button>
-                          <button onClick={() => setEditingOrg({ id:o.id, name:o.name })} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}>✏️</button>
-                          <button onClick={() => deleteOrg(o)} disabled={working} style={{ ...S.btn, ...S.btnDanger, padding:'5px 12px', fontSize:12 }}>🗑</button>
+                          <button onClick={() => setEditingOrg({ id:o.id, name:o.name })} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}><Icon name="pencil" size={14} /></button>
+                          <button onClick={() => deleteOrg(o)} disabled={working} style={{ ...S.btn, ...S.btnDanger, padding:'5px 12px', fontSize:12 }}><Icon name="trash" size={14} /></button>
                         </>
                       )}
                     </div>
@@ -638,11 +639,11 @@ function AdminPanel({ authUser }) {
               <>
                 <div style={{ display:'flex', gap:10, marginBottom:24 }}>
                   <button onClick={() => setSection('new-location')} style={{ ...S.btn, ...S.btnPrimary }}>+ Add location</button>
-                  <button onClick={() => { setSection('create-user'); setMsg({type:'',text:''}); }} style={{ ...S.btn, ...S.btnGhost }}>👤 Create user</button>
+                  <button onClick={() => { setSection('create-user'); setMsg({type:'',text:''}); }} style={{ ...S.btn, ...S.btnGhost, display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="user" size={14} />Create user</button>
                 </div>
 
                 <div style={S.card}>
-                  <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:20 }}>📍 Locations & User Access</div>
+                  <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:20, display:'flex', alignItems:'center', gap:6 }}><Icon name="mapPin" size={16} />Locations & User Access</div>
                   {locations.length === 0
                     ? <div style={{ color:'var(--t3)', fontSize:13 }}>No locations yet — add one above</div>
                     : locations.map((loc, idx) => {
@@ -679,8 +680,8 @@ function AdminPanel({ authUser }) {
                                     <span style={{ fontSize:12, color:'var(--t3)' }}>{money(parseFloat(gmv))} GMV</span>
                                   </div>
                                   <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
-                                    <button onClick={() => setEditingLoc({ id:loc.id, name:loc.name })} style={{ ...S.btn, ...S.btnGhost, padding:'4px 10px', fontSize:11 }}>✏️ Rename</button>
-                                    <button onClick={() => deleteLocation(loc)} disabled={working} style={{ ...S.btn, ...S.btnDanger, padding:'4px 10px', fontSize:11 }}>🗑 Delete</button>
+                                    <button onClick={() => setEditingLoc({ id:loc.id, name:loc.name })} style={{ ...S.btn, ...S.btnGhost, padding:'4px 10px', fontSize:11, display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="pencil" size={12} />Rename</button>
+                                    <button onClick={() => deleteLocation(loc)} disabled={working} style={{ ...S.btn, ...S.btnDanger, padding:'4px 10px', fontSize:11, display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="trash" size={12} />Delete</button>
                                   </div>
                                 </>
                               )}
@@ -749,7 +750,7 @@ function AdminPanel({ authUser }) {
                                       ))
                                   }
                                   <button onClick={() => setEditUsersFor(loc.id)} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}>
-                                    {locUsers.length ? '✏️ Edit access' : '+ Add user'}
+                                    {locUsers.length ? <span style={{ display:'inline-flex', alignItems:'center', gap:5 }}><Icon name="pencil" size={13} />Edit access</span> : '+ Add user'}
                                   </button>
                                 </div>
                               )}
@@ -799,7 +800,7 @@ function AdminPanel({ authUser }) {
             {/* ── Create user form ── */}
             {section === 'create-user' && (
               <div style={S.card}>
-                <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:16 }}>👤 Create back-office user for {selectedOrg.name}</div>
+                <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:16, display:'flex', alignItems:'center', gap:6 }}><Icon name="user" size={16} />Create back-office user for {selectedOrg.name}</div>
                 <div style={S.row}>
                   <div><label style={S.label}>Email *</label><input type="email" style={S.input} placeholder="owner@restaurant.com" value={form.inviteEmail||''} onChange={e=>f('inviteEmail',e.target.value)} /></div>
                   <div><label style={S.label}>Full name</label><input style={S.input} placeholder="Sarah Smith" value={form.inviteName||''} onChange={e=>f('inviteName',e.target.value)} /></div>

@@ -10,6 +10,7 @@ import { getActiveLocationSync } from '../../lib/supabase';
 import { receiptTargetStatus } from '../../lib/printer';
 import { Sx, money } from './MShellStyles';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function MOrderDetail({ check, onBack }) {
   const { closedChecks = [], refundCheck, printCustomerReceipt, locationConfig, showToast } = useStore();
@@ -335,7 +336,7 @@ export default function MOrderDetail({ check, onBack }) {
                   <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>+ {it.mods.map(m => m?.name || m?.label || m).filter(Boolean).join(' · ')}</div>
                 )}
                 {it.notes && (
-                  <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>📝 {it.notes}</div>
+                  <div style={{ fontSize:11, color:'var(--acc)', marginTop:1, display:'flex', alignItems:'center', gap:4 }}><Icon name="note" size={12} /> {it.notes}</div>
                 )}
               </div>
               <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
@@ -378,11 +379,11 @@ export default function MOrderDetail({ check, onBack }) {
         <div style={{ display:'flex', gap:8, marginBottom:8 }}>
           <button onClick={reprint} disabled={busy || !printable.ok}
             title={printable.ok ? undefined : printable.reason}
-            style={{ ...Sx.btnGhost, flex:1, opacity: printable.ok ? 1 : .55, cursor: printable.ok ? 'pointer' : 'not-allowed' }}>
-            {printable.ok ? '🧾 Reprint' : '🧾 No printer set'}
+            style={{ ...Sx.btnGhost, flex:1, opacity: printable.ok ? 1 : .55, cursor: printable.ok ? 'pointer' : 'not-allowed', display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
+            <Icon name="receipt" size={16} />{printable.ok ? 'Reprint' : 'No printer set'}
           </button>
-          <button onClick={() => setView('resend-email')} style={{ ...Sx.btnGhost, flex:1 }}>
-            ✉️ Email
+          <button onClick={() => setView('resend-email')} style={{ ...Sx.btnGhost, flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
+            <Icon name="mail" size={16} />Email
           </button>
         </div>
         {remaining > 0 && (

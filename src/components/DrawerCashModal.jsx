@@ -7,6 +7,7 @@ import { money } from '../lib/currency';  // v5.5.326: multi-currency
  *
  * Shared denomination counter used for:
  *   - Cash in (open drawer with opening float)       — mode='in'
+import { Icon } from './ServOSIcons';
  *   - Cash out (close drawer, declare variance)      — mode='out'
  *
  * Renders the same UI for POS and back-office usage. The caller decides
@@ -222,7 +223,7 @@ export default function DrawerCashModal({
                   display:'flex', alignItems:'center', justifyContent:'center', gap:8,
                   transition:'all .2s',
                 }}>
-                <span style={{ fontSize:16 }}>{drawerFired ? '✓' : '💵'}</span>
+                <span style={{ fontSize:16, display:'flex' }}>{drawerFired ? '✓' : <Icon name="money" size={16}/>}</span>
                 {drawerFired ? 'Drawer opened — place your float' : 'Open cash drawer'}
               </button>
             </>

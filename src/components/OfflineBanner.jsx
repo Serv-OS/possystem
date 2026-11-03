@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getQueueSize } from '../sync/OfflineQueue';
 import { getPendingCount } from '../sync/DataSafe';
+import { Icon } from './ServOSIcons';
 
 export default function OfflineBanner() {
   const [offline, setOffline] = useState(!navigator.onLine);
@@ -38,7 +39,7 @@ export default function OfflineBanner() {
   if (!offline && !syncing && pendingChecks === 0) return null;
 
   const bg = offline ? '#7f1d1d' : pendingChecks > 0 ? '#78350f' : '#14532d';
-  const icon = offline ? '⚡' : pendingChecks > 0 ? '⏳' : '✓';
+  const icon = offline ? 'bolt' : pendingChecks > 0 ? 'clock' : null;
   const msg = offline
     ? 'No internet — orders saved locally, will sync when reconnected'
     : pendingChecks > 0
@@ -54,7 +55,7 @@ export default function OfflineBanner() {
       fontSize: 12, fontWeight: 700,
       transition: 'background .3s',
     }}>
-      <span style={{ fontSize: 14 }}>{icon}</span>
+      <span style={{ fontSize: 14, display: 'flex' }}>{icon ? <Icon name={icon} size={14}/> : '✓'}</span>
       {msg}
     </div>
   );

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
+import { Icon } from '../components/ServOSIcons';
 
 export default function DeviceSetup({ onSelectMode }) {
   const [hovered, setHovered] = useState(null);
@@ -39,7 +40,7 @@ export default function DeviceSetup({ onSelectMode }) {
             transition: 'all .15s', textAlign: 'center',
           }}
         >
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🖥</div>
+          <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center', color: 'var(--t1)' }}><Icon name="monitor" size={44} /></div>
           <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--t1)', marginBottom: 8 }}>
             POS Terminal
           </div>
@@ -66,7 +67,7 @@ export default function DeviceSetup({ onSelectMode }) {
             transition: 'all .15s', textAlign: 'center',
           }}
         >
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🏢</div>
+          <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center', color: 'var(--t1)' }}><Icon name="building" size={44} /></div>
           <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--t1)', marginBottom: 8 }}>
             Back Office
           </div>

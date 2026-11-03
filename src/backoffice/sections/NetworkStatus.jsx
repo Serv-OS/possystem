@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
+import { Icon } from '../../components/ServOSIcons';
 import { forceSyncFromSupabase, getMasterStatus } from '../../sync/MasterSync';
 
 // Numeric semver compare: returns >0 if a is newer than b. (v5.5.870 fleet version flagging)
@@ -93,7 +94,7 @@ export default function NetworkStatus() {
                     <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)', display: 'flex', gap: 8, alignItems: 'center' }}>
                       {d.device_name || d.device_id}
                       {isMaster && <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'var(--acc-d)', color: 'var(--acc)', border: '1px solid var(--acc-b)' }}>MASTER</span>}
-                      {outOfDate && <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 20, background: 'var(--red, #dc2626)', color: '#fff' }}>⚠ OUT OF DATE — restart this till</span>}
+                      {outOfDate && <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 20, background: 'var(--red, #dc2626)', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="warn" size={11} />OUT OF DATE — restart this till</span>}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
                       {online ? `Active · ${ageSec}s ago` : `Offline · ${ageSec > 60 ? Math.round(ageSec/60)+'m' : ageSec+'s'} ago`}

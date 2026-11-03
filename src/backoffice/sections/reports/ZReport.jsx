@@ -38,6 +38,7 @@ import { applyFilters } from './_filters';
 import { useRefundLookback, toMs } from './_refundLookback';
 import { ExportBtn } from './_charts';
 import ZReportGroups from './ZReportGroups';
+import { Icon } from '../../../components/ServOSIcons';
 
 const ROW = { display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:11, lineHeight:1.5 };
 const DIV = { borderTop:'1px dashed currentColor', margin:'8px 0' };
@@ -141,7 +142,7 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
           background:'var(--acc)', color:'var(--bg0)', fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
           display:'inline-flex', alignItems:'center', gap:8,
         }}>
-          <span>🖨</span>
+          <Icon name="print" size={16}/>
           Print / Save PDF
         </button>
       </div>

@@ -300,14 +300,14 @@ export function uniqueSources(checks) {
 // v5.5.140: pretty labels + emoji for the source filter pills. Falls back to
 // title-case of the raw value for unknown sources.
 export const SOURCE_LABEL = {
-  pos:      '🧾 POS',
-  mpos:     '📲 Mobile POS',
-  kiosk:    '📟 Kiosk',
-  online:   '🌐 Online',
-  qr:       '📱 QR Code',
-  catering: '🍽 Catering',
-  delivery: '🛵 Delivery',
-  hubrise:  '🛵 Delivery apps',
+  pos:      'POS',
+  mpos:     'Mobile POS',
+  kiosk:    'Kiosk',
+  online:   'Online',
+  qr:       'QR Code',
+  catering: 'Catering',
+  delivery: 'Delivery',
+  hubrise:  'Delivery apps',
 };
 
 // v4.6.24: Classify a check timestamp into one of the configured service

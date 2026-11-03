@@ -2,38 +2,39 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { executeTool, executeConfirmedAction, WRITE_TOOLS } from '../lib/aiTools';
 import { useStore } from '../store';
 import { aiRequestInit } from '../lib/aiRequest';
+import { Icon } from './ServOSIcons';
 
 const API_ENDPOINT = '/api/ai';
 
 function ToolCallBadge({ name }) {
   const labels = {
-    get_sales_summary:    '📊 Looking up sales…',
-    get_shift_summary:    '📊 Pulling shift overview…',
-    get_top_items:        '🏆 Checking top sellers…',
-    search_item_sales:    '🔍 Searching item sales…',
-    get_hourly_breakdown: '⏰ Checking hourly data…',
-    get_payment_breakdown:'💳 Checking payment breakdown…',
-    get_server_performance:'👤 Checking server stats…',
-    get_covers_report:    '🧑 Loading covers report…',
-    get_floor_status:     '🪑 Checking floor status…',
-    get_open_tables:      '🪑 Loading open tables…',
-    get_printer_status:   '🖨 Checking printers…',
-    get_allergen_info:    '⚠️ Looking up allergens…',
-    get_item_detail:      '📋 Looking up item…',
-    get_menu_items:       '📋 Loading menu…',
-    get_order_history:    '🧾 Loading order history…',
-    get_current_order:    '🛒 Checking current order…',
-    add_to_order:         '🛒 Preparing to add item…',
-    remove_from_order:    '🗑 Preparing to remove item…',
-    apply_order_discount: '🏷 Preparing discount…',
-    add_menu_item:        '✨ Preparing new item…',
-    update_item_price:    '💰 Preparing price change…',
-    eighty_six_item:      '🚫 Preparing 86…',
+    get_sales_summary:    ['chart', 'Looking up sales…'],
+    get_shift_summary:    ['chart', 'Pulling shift overview…'],
+    get_top_items:        ['trophy', 'Checking top sellers…'],
+    search_item_sales:    ['search', 'Searching item sales…'],
+    get_hourly_breakdown: ['clock', 'Checking hourly data…'],
+    get_payment_breakdown:['card', 'Checking payment breakdown…'],
+    get_server_performance:['user', 'Checking server stats…'],
+    get_covers_report:    ['user', 'Loading covers report…'],
+    get_floor_status:     ['seat', 'Checking floor status…'],
+    get_open_tables:      ['seat', 'Loading open tables…'],
+    get_printer_status:   ['print', 'Checking printers…'],
+    get_allergen_info:    ['warn', 'Looking up allergens…'],
+    get_item_detail:      ['clipboard', 'Looking up item…'],
+    get_menu_items:       ['clipboard', 'Loading menu…'],
+    get_order_history:    ['receipt', 'Loading order history…'],
+    get_current_order:    ['cart', 'Checking current order…'],
+    add_to_order:         ['cart', 'Preparing to add item…'],
+    remove_from_order:    ['trash', 'Preparing to remove item…'],
+    apply_order_discount: ['tag', 'Preparing discount…'],
+    add_menu_item:        ['sparkles', 'Preparing new item…'],
+    update_item_price:    ['money', 'Preparing price change…'],
+    eighty_six_item:      ['ban', 'Preparing 86…'],
   };
   return (
     <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:10, background:'var(--acc-d)', border:'1px solid var(--acc-b)', fontSize:12, color:'var(--acc)', fontWeight:600, marginBottom:8 }}>
       <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', animation:'pulse 1s infinite' }}/>
-      {labels[name] || `Using ${name}…`}
+      {labels[name] ? <><Icon name={labels[name][0]} size={14}/>{labels[name][1]}</> : `Using ${name}…`}
     </div>
   );
 }
@@ -41,8 +42,8 @@ function ToolCallBadge({ name }) {
 function PendingActionCard({ action, onConfirm, onCancel }) {
   return (
     <div style={{ border:'1.5px solid var(--acc-b)', borderRadius:12, overflow:'hidden', marginBottom:12 }}>
-      <div style={{ padding:'10px 14px', background:'var(--acc-d)', borderBottom:'1px solid var(--acc-b)', fontSize:11, fontWeight:700, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.06em' }}>
-        ⚡ Action requires confirmation
+      <div style={{ padding:'10px 14px', background:'var(--acc-d)', borderBottom:'1px solid var(--acc-b)', fontSize:11, fontWeight:700, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.06em', display:'flex', alignItems:'center', gap:6 }}>
+        <Icon name="bolt" size={13}/>Action requires confirmation
       </div>
       <div style={{ padding:'12px 14px', background:'var(--bg3)' }}>
         <div style={{ fontSize:13, color:'var(--t1)', marginBottom:12, lineHeight:1.5 }}>{action.label}</div>
@@ -327,8 +328,8 @@ export default function AIChat({ mode = 'foh', initialContext = '', placeholder 
         )}
 
         {error && (
-          <div style={{ padding:'10px 14px', borderRadius:10, background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, marginBottom:10 }}>
-            ⚠ {error}
+          <div style={{ padding:'10px 14px', borderRadius:10, background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, marginBottom:10, display:'flex', alignItems:'flex-start', gap:6 }}>
+            <Icon name="warn" size={14} style={{ marginTop:1 }}/><span>{error}</span>
           </div>
         )}
 

@@ -36,6 +36,7 @@ import { msmApi } from '../../../lib/msm/msmApi';
 import { salesMap } from '../../../lib/msm/msmData';
 import { demoMsm } from '../../../lib/msm/msmDemo';
 import BetaTag from '../../../components/BetaTag';
+import { Icon } from '../../../components/ServOSIcons';
 import { applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { indexCentral, stagedIndex } from '../../../lib/msm/msmGrid';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
@@ -372,7 +373,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         {busy > 0 && <span style={{ ...ui.sub, alignSelf: 'center', marginRight: 8 }}>Saving…</span>}
         <button type="button" onClick={() => { setNote(null); setTab('details'); }} title="The menu's name and each site's menu"
           style={{ padding: '9px 12px', fontSize: 13, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0,
-            color: tab === 'details' ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === 'details' ? 700 : 500, borderBottom: `2.5px solid ${tab === 'details' ? 'var(--acc)' : 'transparent'}`, marginBottom: -1 }}>⚙ Menu details</button>
+            color: tab === 'details' ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === 'details' ? 700 : 500, borderBottom: `2.5px solid ${tab === 'details' ? 'var(--acc)' : 'transparent'}`, marginBottom: -1, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="settings" size={14} />Menu details</button>
       </div>
 
       <StatusBar status={status} canEdit={canEdit}

@@ -8,6 +8,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 import { orderPaymentState, paymentStatusLabel, paymentShortLine } from '../../lib/orderPayment';
 
 const FLOW = ['received', 'prep', 'ready', 'collected'];
@@ -21,11 +22,14 @@ function nextStatus(current) {
 function nextLabel(current) {
   const next = nextStatus(current);
   if (!next) return null;
-  return next === 'prep'      ? '⏱ Mark in prep'
-       : next === 'ready'     ? '✅ Mark ready'
-       : next === 'collected' ? '🎯 Mark collected'
+  return next === 'prep'      ? 'Mark in prep'
+       : next === 'ready'     ? 'Mark ready'
+       : next === 'collected' ? 'Mark collected'
        : `Mark ${next}`;
 }
+
+// Icon drawn before the advance label.
+const NEXT_ICON = { prep:'clock', ready:'checkCircle', collected:'target' };
 
 export default function MQueueDetail({ order, onBack }) {
   const { orderQueue = [], updateQueueStatus, removeFromQueue, showToast } = useStore();
@@ -108,7 +112,7 @@ export default function MQueueDetail({ order, onBack }) {
               <Row label="Address">{typeof live.customer.address === 'string' ? live.customer.address : [live.customer.address.line1, live.customer.address.line2, live.customer.address.city, live.customer.address.postcode].filter(Boolean).join(', ')}</Row>
             )}
             {(live.collectionTime || live.isASAP) && (
-              <Row label="Collection">{live.isASAP ? '⚡ ASAP' : `⏰ ${live.collectionTime}`}</Row>
+              <Row label="Collection"><span style={{ display:'inline-flex', alignItems:'center', gap:4 }}><Icon name={live.isASAP ? 'bolt' : 'clock'} size={14} />{live.isASAP ? 'ASAP' : live.collectionTime}</span></Row>
             )}
             <Row label="Placed">{elapsed(live.createdAt) || '—'} ago</Row>
           </div>
@@ -140,7 +144,7 @@ export default function MQueueDetail({ order, onBack }) {
                     </div>
                   )}
                   {it.notes && (
-                    <div style={{ fontSize:11, color:'var(--acc)', marginTop:1 }}>📝 {it.notes}</div>
+                    <div style={{ fontSize:11, color:'var(--acc)', marginTop:1, display:'flex', alignItems:'center', gap:4 }}><Icon name="note" size={12} /> {it.notes}</div>
                   )}
                 </div>
                 <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
@@ -175,7 +179,7 @@ export default function MQueueDetail({ order, onBack }) {
       {/* Bottom action bar */}
       <div style={Sx.bottom}>
         {advanceLabel ? (
-          <button onClick={advance} style={Sx.btnPrim}>{(nextStatus(status) === 'collected' && checking) ? checkingLabel : (nextStatus(status) === 'collected' && !paid) ? '💳 Take payment to collect' : advanceLabel}</button>
+          <button onClick={advance} style={{ ...Sx.btnPrim, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>{(nextStatus(status) === 'collected' && checking) ? checkingLabel : (nextStatus(status) === 'collected' && !paid) ? <><Icon name="card" size={18} />Take payment to collect</> : <>{NEXT_ICON[nextStatus(status)] && <Icon name={NEXT_ICON[nextStatus(status)]} size={18} />}{advanceLabel}</>}</button>
         ) : (
           <div style={{ padding:10, borderRadius:10, background:'var(--bg3)', color:'var(--t3)', fontSize:12, textAlign:'center', fontWeight:700 }}>
             Order complete · removing from queue shortly
@@ -207,10 +211,10 @@ function Row({ label, children }) {
 
 function Timeline({ current }) {
   const steps = [
-    { id:'received',  label:'Received',  icon:'📥' },
-    { id:'prep',      label:'In prep',   icon:'⏱' },
-    { id:'ready',     label:'Ready',     icon:'✅' },
-    { id:'collected', label:'Collected', icon:'🎯' },
+    { id:'received',  label:'Received',  icon:'inbox' },
+    { id:'prep',      label:'In prep',   icon:'clock' },
+    { id:'ready',     label:'Ready',     icon:'checkCircle' },
+    { id:'collected', label:'Collected', icon:'target' },
   ];
   const currentIdx = steps.findIndex(s => s.id === current);
   return (
@@ -226,7 +230,7 @@ function Timeline({ current }) {
               color: done || active ? '#0b0c10' : 'var(--t4)',
               border: `2px solid ${done ? 'var(--grn)' : active ? 'var(--acc)' : 'var(--bdr)'}`,
               display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:800,
-            }}>{done ? '✓' : s.icon}</div>
+            }}>{done ? '✓' : <Icon name={s.icon} size={16} />}</div>
             <div style={{ fontSize:10, fontWeight:700, color: active ? 'var(--acc)' : 'var(--t4)', marginTop:6, textTransform:'uppercase', letterSpacing:'.06em' }}>
               {s.label}
             </div>

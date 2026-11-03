@@ -13,6 +13,7 @@ import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSyn
 import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption, idChunks } from '../../lib/customersQuery';
 import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 import { uniqueClashOf, canStaffMerge, mergeRequestBody, clashText, exactIlike, clashHolder, movesText, stampLine, CUSTOMER_MERGE_FN } from '../../lib/customerMerge';
 import {
   stampAdjustBody, STAMP_ADJUST_FN, STAMP_ADJUST_MAX, newAdjustRequestId, mergeAdjustedCard, rewardsAvailable, redeemedByProgram,
@@ -503,7 +504,7 @@ export default function Customers() {
             </div>
           ) : filtered.length === 0 ? (
             <div style={{ padding:'60px 20px', textAlign:'center', color:'var(--t4)' }}>
-              <div style={{ fontSize:36, marginBottom:8, opacity:.35 }}>👥</div>
+              <div style={{ marginBottom:8, opacity:.35, display:'flex', justifyContent:'center' }}><Icon name="users" size={36} /></div>
               <div style={{ fontSize:14, fontWeight:700, color:'var(--t3)' }}>{customers.length === 0 ? 'No customers yet' : searching ? 'Searching…' : 'No matches'}</div>
               <div style={{ fontSize:12, marginTop:4 }}>{customers.length === 0 ? 'Take a takeaway order with a phone number to start the database.' : searching ? 'Asking the database for every customer.' : 'Try a different search or clear the filters.'}</div>
             </div>
@@ -850,7 +851,7 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
               return (
                 <div key={prog.id} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:8, border:'1px solid var(--bdr)' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                    <span style={{ fontSize:18 }}>{prog.icon || '☕'}</span>
+                    <span style={{ display:'inline-flex', color:'var(--t2)' }}><EmojiIcon value={prog.icon} fallback="cup" size={18} /></span>
                     <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)', flex:1 }}>{prog.name}</span>
                     <span style={{ fontSize:10, fontWeight:700, color: redeemedLoaded && available > 0 ? 'var(--acc)' : 'var(--t4)', padding:'1px 6px', borderRadius:4, background: redeemedLoaded && available > 0 ? 'var(--acc-d, var(--bg3))' : 'var(--bg3)' }}>
                       {redeemedLoaded ? words.ready : (redeemStatus === 'failed' ? 'Rewards could not be checked' : 'Checking rewards…')}
@@ -1607,7 +1608,7 @@ function Tile({ label, value, color = 'var(--t1)' }) {
 function EmptyMsg({ label, sub }) {
   return (
     <div style={{ padding:'40px 20px', textAlign:'center', color:'var(--t4)', background:'var(--bg1)', border:'1px dashed var(--bdr2)', borderRadius:10 }}>
-      <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>📊</div>
+      <div style={{ marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="chart" size={36} /></div>
       <div style={{ fontSize:14, fontWeight:700, color:'var(--t3)' }}>{label}</div>
       {sub && <div style={{ fontSize:12, marginTop:4, lineHeight:1.5 }}>{sub}</div>}
     </div>

@@ -182,10 +182,10 @@ export default function CashDrawer({ fromMs, toMs }) {
     return <div style={{ padding:'40px 20px', textAlign:'center', color:'var(--t4)' }}>Loading drawer sessions…</div>;
   }
   if (fault) {
-    return <EmptyState icon="⚠" message={faultText(fault)}/>;
+    return <EmptyState icon="warn" message={faultText(fault)}/>;
   }
   if (filtered.length === 0) {
-    return <EmptyState icon="💰" message="No drawer sessions in this period. Cash in a drawer from Back Office > Cash drawers to start recording."/>;
+    return <EmptyState icon="money" message="No drawer sessions in this period. Cash in a drawer from Back Office > Cash drawers to start recording."/>;
   }
 
   return (

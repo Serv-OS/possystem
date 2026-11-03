@@ -228,7 +228,7 @@ function AppShell({ venueName, operator, view, onView, dark, onToggleTheme, onLo
           aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
           className="sv-glass"
           style={{ width: 38, height: 38, borderRadius: 12, display: 'grid', placeItems: 'center', cursor: 'pointer', fontSize: 17, color: 'var(--t2)', flexShrink: 0, border: 'none' }}
-        >{dark ? '☀️' : '🌙'}</button>
+        ><Icon name={dark ? 'sun' : 'moon'} size={18} /></button>
       </div>
 
       {/* hero stat strip */}

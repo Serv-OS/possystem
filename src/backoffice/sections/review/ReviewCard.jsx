@@ -12,6 +12,7 @@ import { supabase, platformSupabase, getActiveLocationSync } from '../../../lib/
 import { patchBranding } from '../../../lib/locationAdmin';
 import { customerUrl } from '../../../lib/env';
 import QRCode from 'qrcode';
+import { Icon } from '../../../components/ServOSIcons';
 
 const FALLBACK_ACCENT = '#5a51c2';
 const ASSET_BUCKET = 'receipt-assets';   // shared image bucket (same as online/receipt assets)
@@ -318,7 +319,7 @@ function Phone({ accent, logo, rawLogo, venue, copy, state }) {
           <div style={{ ...P.dark, marginTop: 10 }}>Send</div>
         </>}
         {state === 'happy' && <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 26, marginBottom: 2 }}>🎉</div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 2 }}><Icon name="party" size={26}/></div>
           <div style={P.title}>{copy.thanks_public_copy}</div>
           <div style={P.sub}>Would you share it on Google? One tap and it really helps {venue}.</div>
           <div style={{ ...P.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>

@@ -17,6 +17,7 @@ import { supabase } from '../lib/supabase';
 import { resetChallenge21 } from '../lib/challenge21Counter';
 import { reportSave } from '../lib/saveHealth';
 import { useStore } from '../store';
+import { Icon } from './ServOSIcons';
 
 const ID_TYPES = [
   { id: 'passport',         label: 'Passport' },
@@ -135,7 +136,7 @@ export default function Challenge21Modal({ open, onClose, opsLocationId, trigger
         {/* Header */}
         <div style={{ padding: '20px 24px', background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', color: '#0b0c10' }}>
           <div style={{ display:'flex', alignItems:'center', gap: 12 }}>
-            <div style={{ fontSize: 32 }}>🪪</div>
+            <div style={{ fontSize: 32, display: 'flex' }}><Icon name="idCard" size={32}/></div>
             <div>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing:'0.1em', textTransform:'uppercase' }}>
                 UK Licensing · Challenge ID

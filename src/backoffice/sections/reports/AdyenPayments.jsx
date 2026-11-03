@@ -154,8 +154,8 @@ export default function AdyenPayments() {
   };
 
   if (loading && !data) return <div style={{ padding: 24, color: 'var(--t3)' }}>Loading card payments…</div>;
-  if (error && !data) return <EmptyState icon="⚠️" message={error} />;
-  if (data?.mock) return <EmptyState icon="💳" message="Card payment data is live only. View it on the deployed app." />;
+  if (error && !data) return <EmptyState icon="warn" message={error} />;
+  if (data?.mock) return <EmptyState icon="card" message="Card payment data is live only. View it on the deployed app." />;
 
   const s = data?.summary || {};
   const payments = data?.payments || [];
@@ -215,7 +215,7 @@ export default function AdyenPayments() {
       </div>
 
       {payments.length === 0 ? (
-        <EmptyState icon="💳" message={emptyMessage} />
+        <EmptyState icon="card" message={emptyMessage} />
       ) : (
         <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflowX: 'auto' }}>
           <div style={{ minWidth: 900 }}>

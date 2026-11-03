@@ -36,6 +36,7 @@ import { useSiteStockContext } from '../../../lib/stock/siteContext';
 import { useStockScope } from '../../StockScope';
 import LockLine from '../stock/LockLine';
 import RecipeFactsLine from './RecipeFactsLine';
+import { Icon } from '../../../components/ServOSIcons';
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -255,7 +256,7 @@ export default function RecipesSite({ siteId = null } = {}) {
             const sel = r.id === selectedKey;
             return (
               <div key={r.id} onClick={() => selectPrep(r)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (sel ? 'var(--acc)' : 'transparent'), background: sel ? 'var(--bg2)' : 'transparent' }}>
-                <div style={{ width: 32, height: 32, borderRadius: 7, background: 'var(--bg3)', display: 'grid', placeItems: 'center', fontSize: 14, flexShrink: 0 }}>🍲</div>
+                <div style={{ width: 32, height: 32, borderRadius: 7, background: 'var(--bg3)', display: 'grid', placeItems: 'center', fontSize: 14, flexShrink: 0 }}><Icon name="cookingPot" size={16} /></div>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, color: 'var(--t1)' }}>{r.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>→ {itemName(r.outputItemId)}</div>
@@ -269,7 +270,7 @@ export default function RecipesSite({ siteId = null } = {}) {
       <main style={{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
         {!draft && (
           <div style={{ display: 'grid', placeItems: 'center', height: '100%', color: 'var(--t3)', textAlign: 'center', padding: 24 }}>
-            <div><div style={{ fontSize: 40, marginBottom: 10 }}>📖</div><div style={{ fontSize: 15, color: 'var(--t2)' }}>{mode === 'dishes' ? 'Pick a menu product on the left to build its recipe.' : 'Pick a prep recipe, or press + to add one.'}</div></div>
+            <div><Icon name="book" size={38} style={{ margin: '0 auto 10px' }} /><div style={{ fontSize: 15, color: 'var(--t2)' }}>{mode === 'dishes' ? 'Pick a menu product on the left to build its recipe.' : 'Pick a prep recipe, or press + to add one.'}</div></div>
           </div>
         )}
         {draft && (
@@ -366,7 +367,7 @@ export default function RecipesSite({ siteId = null } = {}) {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.componentItemId)}</div>
                             <div style={{ fontSize: 11, color: noCost ? 'var(--red)' : 'var(--t3)', marginTop: 1 }}>
-                              {noCost ? '⚠ no price set — add a supplier price on this item' : (comp ? `${fmtCost(comp.currentCost)} / ${comp.baseUnit}` : '')}
+                              {noCost ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="warn" size={12} />no price set — add a supplier price on this item</span> : (comp ? `${fmtCost(comp.currentCost)} / ${comp.baseUnit}` : '')}
                             </div>
                           </div>
                           <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
@@ -457,7 +458,7 @@ function AppliesTo({ value, onChange, disabled = false }) {
     <div style={{ position: 'relative' }}>
       <button onClick={() => { if (!disabled) setOpen(o => !o); }} disabled={disabled} title="Choose which order types this ingredient applies to"
         style={{ fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 20, cursor: 'pointer', border: '1px solid ' + (sel ? 'var(--acc)' : 'var(--bdr)'), background: 'var(--bg2)', color: sel ? 'var(--acc)' : 'var(--t2)' }}>
-        {sel ? '🏷 ' : ''}{summary} ▾
+        {sel ? <Icon name="tag" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} /> : ''}{summary} ▾
       </button>
       {open && (
         <>

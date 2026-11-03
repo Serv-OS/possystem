@@ -125,7 +125,7 @@ export default function AdyenPayouts() {
   const m = (minor, cur) => (hasValue(minor) ? money((Number(minor) || 0) / 100, cur || 'GBP') : '—');
 
   if (loading && payouts == null) return <div style={{ padding: 24, color: 'var(--t3)' }}>Loading payouts…</div>;
-  if (error && payouts == null) return <EmptyState icon="⚠️" message={error} />;
+  if (error && payouts == null) return <EmptyState icon="warn" message={error} />;
 
   // ── Drill-down: one payout, every payment line inside it ─────────────────
   if (detail) {
@@ -174,7 +174,7 @@ export default function AdyenPayouts() {
           {lines.length > 0 && <ExportBtn onClick={exportLines} />}
         </div>
         {lines.length === 0 ? (
-          <EmptyState icon="🏦" message="No payment lines recorded for this payout." />
+          <EmptyState icon="bank" message="No payment lines recorded for this payout." />
         ) : (
           <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflowX: 'auto' }}>
             <div style={{ minWidth: 640 }}>
@@ -209,7 +209,7 @@ export default function AdyenPayouts() {
   if (rows.length === 0) {
     return (
       <div style={{ padding: '4px 0' }}>
-        <EmptyState icon="🏦" message="Payouts appear here once settlement reporting is switched on." />
+        <EmptyState icon="bank" message="Payouts appear here once settlement reporting is switched on." />
         <SettlementSetupSteps />
       </div>
     );

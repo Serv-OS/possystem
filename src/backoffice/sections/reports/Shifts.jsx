@@ -25,6 +25,7 @@ import { voidedValue } from '../../../lib/voidRules';
 import { isSplit, sumFields } from '../../../lib/reportSplit.js';
 import { useParts, exportSites, titleSt } from './_siteSplit';
 import { SplitHeader, Blocks, SiteRows, SiteCell } from './SiteSplit';
+import { Icon } from '../../../components/ServOSIcons';
 
 // Aggregate a check bundle into shift stats. Reused for both business-day and server session.
 function aggregate(checks) {
@@ -142,7 +143,7 @@ function DayBasedShifts({ checks, fmt, fmtN, locationConfig }) {
   };
 
   if (rollups.length === 0) {
-    return <EmptyState icon="🕘" message="No shifts in this period. Widen the date range to see prior days."/>;
+    return <EmptyState icon="clock" message="No shifts in this period. Widen the date range to see prior days."/>;
   }
 
   return (
@@ -337,7 +338,7 @@ function ServicePeriodShifts({ checks, fmt, fmtN, locationConfig }) {
         <div style={{ fontSize:12, color:'var(--t4)', padding:'8px 12px', background:'var(--bg2)', border:'1px solid var(--bdr)', borderRadius:8, marginBottom:16 }}>
           Service periods configured: {shifts.map(s => `${s.name} (${s.start}\u2013${s.end})`).join(' \u00b7 ')}
         </div>
-        <EmptyState icon="\u{1F551}" message="No checks fell within any configured service period for this range."/>
+        <EmptyState icon="clock" message="No checks fell within any configured service period for this range."/>
       </div>
     );
   }
@@ -358,8 +359,8 @@ function ServicePeriodShifts({ checks, fmt, fmtN, locationConfig }) {
           <span style={{ color:'var(--t4)' }}> \u00b7 </span>
           defined services: {shifts.map(s => s.name).join(' / ')}
           {unclassified > 0 && (
-            <span style={{ marginLeft:10, color:'var(--amb)' }}>
-              \u26a0 {unclassified} check{unclassified !== 1 ? 's' : ''} outside any configured service
+            <span style={{ marginLeft:10, color:'var(--amb)', display:'inline-flex', alignItems:'center', gap:4 }}>
+              <Icon name="warn" size={13}/>{unclassified} check{unclassified !== 1 ? 's' : ''} outside any configured service
             </span>
           )}
         </div>
@@ -460,7 +461,7 @@ function ShiftsSites(props) {
   };
 
   if (parts.every(p => bySite.get(p.id).days === 0)) {
-    return <EmptyState icon="🕘" message="No shifts at these sites in this period. Widen the date range to see prior days."/>;
+    return <EmptyState icon="clock" message="No shifts at these sites in this period. Widen the date range to see prior days."/>;
   }
 
   return (

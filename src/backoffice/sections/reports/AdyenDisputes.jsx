@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
 import { StatTile, EmptyState } from './_charts';
 import { money } from '../../../lib/currency';
+import { Icon } from '../../../components/ServOSIcons';
 
 const OPEN = (s) => ['open', 'info_requested'].includes(String(s || '').toLowerCase());
 const statusColor = (s) => {
@@ -58,7 +59,7 @@ export default function AdyenDisputes() {
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div style={{ padding: 24, color: 'var(--t3)' }}>Loading disputes…</div>;
-  if (error && !disputes) return <EmptyState icon="⚠️" message={error} />;
+  if (error && !disputes) return <EmptyState icon="warn" message={error} />;
 
   const list = disputes || [];
   const open = list.filter((d) => OPEN(d.status));
@@ -76,7 +77,7 @@ export default function AdyenDisputes() {
       {error && <div style={{ padding: 10, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, fontSize: 12, border: '1px solid var(--red-b)', marginBottom: 14 }}>{error}</div>}
 
       {list.length === 0 ? (
-        <EmptyState icon="🛡" message="No chargebacks. If a customer disputes a card payment it will appear here with its deadline." />
+        <EmptyState icon="shield" message="No chargebacks. If a customer disputes a card payment it will appear here with its deadline." />
       ) : list.map((d) => {
         const cd = countdown(d.respond_by);
         return (
@@ -85,7 +86,7 @@ export default function AdyenDisputes() {
               <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--t1)' }}>{money((Number(d.amount_minor) || 0) / 100, d.currency || cur)}</span>
               <span style={{ fontSize: 12, fontWeight: 700, color: statusColor(d.status), textTransform: 'uppercase', letterSpacing: '.04em' }}>{statusLabel(d.status)}</span>
               {OPEN(d.status) && cd && (
-                <span style={{ fontSize: 12, fontWeight: 700, color: cd.urgent ? 'var(--red)' : 'var(--t2)' }}>⏳ {cd.text}</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: cd.urgent ? 'var(--red)' : 'var(--t2)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="clock" size={13} />{cd.text}</span>
               )}
             </div>
             <div style={{ fontSize: 13, color: 'var(--t2)' }}>

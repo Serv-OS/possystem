@@ -19,6 +19,7 @@ import { CATEGORY_PHOTO_COPY } from '../../lib/categoryPhoto';
 import { KIOSK_NEW_DESIGN_READY } from '../../lib/kioskFlow';
 import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GREEN, OLD_DEFAULT_BRAND, kioskAccent, kioskBackground, kioskBackgroundTooDark, OLD_DEFAULT_ACCENT, OLD_DEFAULT_BG } from '../../lib/kioskTheme';
 import KioskTipping from './KioskTipping';
+import { Icon } from '../../components/ServOSIcons';
 import MenuTranslations from './MenuTranslations';
 import { terminalProcessor } from '../../lib/payments/terminalProcessor.js';
 import { COUNTER_DEFAULT_LABEL, COUNTER_LABEL_MAX, counterLabel, counterLabelToSave } from '../../lib/counterOrder';
@@ -428,7 +429,7 @@ export default function KioskSettings({ kioskId, onBack }) {
               />
             </Field>
 
-            <Field label="Attract video" hint="⚠ MUST be MP4 (H.264). iPhone .mov files won't play in browsers · max 30MB · silent">
+            <Field label="Attract video" hint={<><Icon name="warn" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />MUST be MP4 (H.264). iPhone .mov files won't play in browsers · max 30MB · silent</>}>
               <FileSlot
                 currentUrl={draft.kiosk_attract_video_url}
                 onUpload={onVideoUpload}
@@ -928,7 +929,7 @@ function KioskCardTerminalSection({ kioskId, locationId }) {
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{t.label || 'Card terminal'}</div>
                   <div style={{ fontSize: 11, color: 'var(--t3)' }}>
                     {mine ? 'Assigned to this kiosk' : other ? 'Assigned to another till' : 'Unassigned'}
-                    {!linked && ' · ⚠ not connected to the card processor (cannot take card yet)'}
+                    {!linked && <>{' · '}<Icon name="warn" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />not connected to the card processor (cannot take card yet)</>}
                   </div>
                 </div>
                 {mine ? (

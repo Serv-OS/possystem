@@ -74,9 +74,9 @@ test('every message the action can raise, listed: seven, each one a problem, and
   // After the claim, each with its words and its type as written.
   const kept = [
     // One of the two toasts on a line that had no kitchen screen: a delivery app item that is not in our menu.
-    "showToast?.(`\u26a0 ${srcLabel} ${order.ref}: ${unknown.length} item(s) not in our menu (${unknown.map(i => i.name).join(', ')}) \u2014 sent to default centre. Re-push the HubRise catalog.`, 'warning');",
+    "showToast?.(`${srcLabel} ${order.ref}: ${unknown.length} item(s) not in our menu (${unknown.map(i => i.name).join(', ')}) \u2014 sent to default centre. Re-push the HubRise catalog.`, 'warning');",
     "useStore.getState().showToast?.(`${order.ref} did NOT reach the kitchen screen \u2014 ${kdsErr.message}`, 'error');",
-    "showToast?.(`\u26a0 ${srcLabel} ${order.ref} did not print: ${reason}`, 'error');",
+    "showToast?.(`${srcLabel} ${order.ref} did not print: ${reason}`, 'error');",
     // The order type fallback warning.
     "if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning', toastOnScreen ? 3000 : 0);",
     // The route notice of v5.11.51 (a line had no kitchen screen, or the order was sent before the menu was held).
@@ -87,7 +87,7 @@ test('every message the action can raise, listed: seven, each one a problem, and
     assert.ok(CODE.indexOf(text) > claimAt, text);
   }
   // The seventh: the database column that stops double tickets is missing (once per session).
-  assert.match(CODE, /useStore\.getState\(\)\.showToast\?\.\(\n\s*'\u26a0 Duplicate prints risk: [^\n]*',\n\s*'error', 15000\n\s*\);/);
+  assert.match(CODE, /useStore\.getState\(\)\.showToast\?\.\(\n\s*'Duplicate prints risk: [^\n]*',\n\s*'error', 15000\n\s*\);/);
 
   // So on the routed path every toast names its type, and it is a warning or an error.
   const routed = CODE.slice(claimAt);
@@ -234,7 +234,7 @@ test('run as written: a message already on the till is read in full first, then 
 test('run as written: nothing routed still says "did not print" with its reason, and the order type warning waits behind it', () => {
   const none = runTail({ byCentre: {}, routingConfig: { centres: [], routing: {} }, typeFallback: true, routeWords: NOTICE_WORDS });
   assert.deepEqual(none.screen, [
-    [0, '\u26a0 QR QR-1 did not print: no production centres configured', 'error', 2800],
+    [0, 'QR QR-1 did not print: no production centres configured', 'error', 2800],
     [3000, FALLBACK, 'warning', 5800],
   ]);
   assert.deepEqual(none.events, [], 'no route notice when nothing was routed');
@@ -243,11 +243,11 @@ test('run as written: nothing routed still says "did not print" with its reason,
   // The other reasons, word for word as before.
   const reasonOf = (over) => runTail({ byCentre: {}, ...over }).screen[0][1];
   assert.equal(reasonOf({ routingConfig: { centres: [{ id: 'food' }], routing: {} } }),
-    '\u26a0 QR QR-1 did not print: centres exist but no category routing rules');
+    'QR QR-1 did not print: centres exist but no category routing rules');
   assert.equal(reasonOf({ order: { ref: 'QR-1', items: [{ name: 'Latte' }] } }),
-    '\u26a0 QR QR-1 did not print: order items have no `cat` field \u2014 try refreshing customer browser');
+    'QR QR-1 did not print: order items have no `cat` field \u2014 try refreshing customer browser');
   assert.equal(reasonOf({}),
-    "\u26a0 QR QR-1 did not print: item cats (coffee) don't match any centre that takes Takeaway");
+    "QR QR-1 did not print: item cats (coffee) don't match any centre that takes Takeaway");
 });
 
 // ── the print job for a kitchen screen with no printer ───────────────────────
@@ -352,7 +352,7 @@ test('the route hands back one outcome, at its very end, and says nothing about 
 test('the button: busy while it sends, and the press is the one in the handler', () => {
   assert.equal(count(HUB, 'const [kitchenBusy, setKitchenBusy] = useState(false);'), 1);
   assert.equal(count(HUB, '<button onClick={sendToKitchenAgain} disabled={kitchenBusy}'), 1);
-  assert.equal(count(HUB, "{kitchenBusy ? 'Sending…' : '🍳 Send to kitchen again'}"), 1);
+  assert.equal(count(HUB, '{kitchenBusy ? \'Sending…\' : <><Icon name="cookingPot" size={13} style={ICON_INLINE} />Send to kitchen again</>}'), 1);
   assert.equal(count(HUB, 'sendToKitchenAgain'), 2, 'one handler, one button');
   // Still a forced press stamped manual, once in the file (masterTillWiring.test.js pins the same).
   assert.equal(count(HUB, "{ force: true, trigger: 'manual' }"), 1);

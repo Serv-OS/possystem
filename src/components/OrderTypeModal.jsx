@@ -11,12 +11,13 @@ import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { sortTables } from '../lib/sortTables';
 import { money } from '../lib/currency';
+import { Icon, hasIcon } from './ServOSIcons';
 
 const TYPES = [
   {
     id: 'counter',
     label: 'Counter / named',
-    icon: '🏷',
+    icon: 'tag',
     color: '#22d3ee',
     desc: 'Named order at the counter — goes straight to kitchen',
     shortDesc: 'Named counter order',
@@ -32,7 +33,7 @@ const TYPES = [
   {
     id: 'bar',
     label: 'Bar tab',
-    icon: '🍸',
+    icon: 'cocktail',
     color: '#a855f7',
     desc: 'Open a new bar tab or add to an existing one',
     shortDesc: 'Bar tab',
@@ -40,7 +41,7 @@ const TYPES = [
   {
     id: 'takeaway',
     label: 'Takeaway',
-    icon: '🥡',
+    icon: 'takeaway',
     color: '#e8a020',
     desc: 'Customer will collect — provide name and collection time',
     shortDesc: 'Takeaway',
@@ -48,7 +49,7 @@ const TYPES = [
   {
     id: 'collection',
     label: 'Click & collect',
-    icon: '📦',
+    icon: 'package',
     color: '#22c55e',
     desc: 'Pre-ordered collection — name and time required',
     shortDesc: 'Collection',
@@ -56,7 +57,7 @@ const TYPES = [
   {
     id: 'delivery',
     label: 'Delivery',
-    icon: '🛵',
+    icon: 'scooter',
     color: '#ef4444',
     desc: 'Delivered to the customer — name and address required',
     shortDesc: 'Delivery',
@@ -65,7 +66,7 @@ const TYPES = [
   {
     id: 'drive-thru',
     label: 'Drive thru',
-    icon: '🚗',
+    icon: 'car',
     color: '#ec4899',
     desc: 'Handed over at the drive thru window, name or car only',
     shortDesc: 'Drive thru',
@@ -207,8 +208,8 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                 }}
                 onMouseEnter={e => { e.currentTarget.style.background = `${type.color}18`; e.currentTarget.style.borderColor = `${type.color}66`; }}
                 onMouseLeave={e => { e.currentTarget.style.background = `${type.color}0a`; e.currentTarget.style.borderColor = `${type.color}33`; }}>
-                  <div style={{ width: 44, height: 44, borderRadius: 12, background: `${type.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>
-                    {type.icon}
+                  <div style={{ width: 44, height: 44, borderRadius: 12, background: `${type.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0, color: type.color }}>
+                    {hasIcon(type.icon) ? <Icon name={type.icon} size={22} /> : type.icon}
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)', marginBottom: 2 }}>{type.label}</div>
@@ -223,8 +224,8 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
           {/* ── Step 2a: Counter / named ── */}
           {step === 'details' && selectedType?.id === 'counter' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div style={{ padding: '12px 14px', background: 'var(--bg3)', borderRadius: 11, border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t3)', lineHeight: 1.5 }}>
-                🏷 Order will be sent to kitchen immediately and appear in the Orders Hub with this name. The POS will clear ready for the next order.
+              <div style={{ padding: '12px 14px', background: 'var(--bg3)', borderRadius: 11, border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t3)', lineHeight: 1.5, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                <Icon name="tag" size={14} style={{ marginTop: 2 }} /><span>Order will be sent to kitchen immediately and appear in the Orders Hub with this name. The POS will clear ready for the next order.</span>
               </div>
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Customer name or reference (optional)</div>
@@ -258,14 +259,14 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Collection time</div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
                   <input type="checkbox" checked={form.isASAP} onChange={e => setField('isASAP', e.target.checked)} style={{ accentColor: 'var(--acc)', width: 16, height: 16 }} />
-                  <span style={{ fontSize: 13, color: 'var(--t2)' }}>⚡ ASAP</span>
+                  <span style={{ fontSize: 13, color: 'var(--t2)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="bolt" size={14} />ASAP</span>
                 </label>
                 {!form.isASAP && (
                   <input style={inp} type="time" value={form.time} onChange={e => setField('time', e.target.value)} />
                 )}
               </div>
               <button onClick={confirmTakeaway} disabled={!form.name.trim()} style={{ ...sendBtn(selectedType.color), opacity: form.name.trim() ? 1 : .4 }}>
-                Send {selectedType.icon} →
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Send <Icon name={selectedType.icon} size={16} /> →</span>
               </button>
             </div>
           )}
@@ -280,7 +281,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                   placeholder="Name or car, e.g. Sam or red Golf" autoFocus />
               </div>
               <button onClick={confirmDriveThru} disabled={!form.name.trim()} style={{ ...sendBtn(selectedType.color), opacity: form.name.trim() ? 1 : .4 }}>
-                Confirm drive thru 🚗 →
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Confirm drive thru <Icon name="car" size={16} /> →</span>
               </button>
             </div>
           )}
@@ -301,7 +302,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                 <textarea style={{ ...inp, resize: 'none', height: 64 }} value={form.address} onChange={e => setField('address', e.target.value)} placeholder="Street, city, postcode" />
               </div>
               <button onClick={confirmDelivery} disabled={!form.name.trim()} style={{ ...sendBtn('#ef4444'), opacity: form.name.trim() ? 1 : .4 }}>
-                Send for delivery 🛵 →
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Send for delivery <Icon name="scooter" size={16} /> →</span>
               </button>
             </div>
           )}
@@ -392,7 +393,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                       }}
                       onMouseEnter={e => { e.currentTarget.style.borderColor = '#a855f755'; e.currentTarget.style.background = '#a855f710'; }}
                       onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--bdr)'; e.currentTarget.style.background = 'var(--bg3)'; }}>
-                        <span style={{ fontSize: 20 }}>🍸</span>
+                        <span style={{ fontSize: 20, color: '#a855f7' }}><Icon name="cocktail" size={20} /></span>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{tab.name || tab.id}</div>
                           <div style={{ fontSize: 10, color: 'var(--t4)' }}>

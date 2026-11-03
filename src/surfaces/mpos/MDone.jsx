@@ -2,6 +2,7 @@
 // receipt status and a big "Take next order" CTA to reset and go back to home.
 
 import { Sx, money } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function MDone({ check, deliveredVia, onNewOrder }) {
   const total = Number(check?.total) || 0;
@@ -31,12 +32,12 @@ export default function MDone({ check, deliveredVia, onNewOrder }) {
         </div>
 
         <div style={{ padding:'8px 16px 16px', textAlign:'center' }}>
-          <div style={{ display:'inline-block', padding:'10px 16px', borderRadius:99, background:'var(--bg2)', border:'1px solid var(--bdr)', fontSize:12, color:'var(--t3)' }}>
-            {deliveredVia === 'printed'  && '🧾 Receipt sent to counter printer'}
+          <div style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'10px 16px', borderRadius:99, background:'var(--bg2)', border:'1px solid var(--bdr)', fontSize:12, color:'var(--t3)' }}>
+            {deliveredVia === 'printed'  && <><Icon name="receipt" size={14} />Receipt sent to counter printer</>}
             {deliveredVia === 'skipped'  && '∅ No receipt'}
             {typeof deliveredVia === 'string' && deliveredVia.startsWith('email')
-              && `✉️ Receipt emailed to ${deliveredVia.replace(/^email\s·\s/, '')}`}
-            {!deliveredVia && '🍽 Kitchen has been notified'}
+              && <><Icon name="mail" size={14} />{`Receipt emailed to ${deliveredVia.replace(/^email\s·\s/, '')}`}</>}
+            {!deliveredVia && <><Icon name="utensils" size={14} />Kitchen has been notified</>}
           </div>
         </div>
       </div>

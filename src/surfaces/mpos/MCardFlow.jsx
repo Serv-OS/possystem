@@ -19,6 +19,7 @@ import { getActiveLocationSync, supabase, isMock } from '../../lib/supabase';
 import { confirmLinkBeforeCard } from '../../lib/deviceLink';
 import { usePaymentBusy } from '../../lib/usePaymentBusy';
 import { Sx, money } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 import { getActiveCurrencyCode } from '../../lib/currency';
 import { isTrainingMode } from '../../lib/trainingMode';
 import { adyenLocalBridgeAvailable, runAdyenLocalPayment, abortAdyenLocalPayment } from '../../lib/payments/adyenLocalTerminal';
@@ -428,7 +429,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     return (
       <Waiting
         grand={grand}
-        icon="💳"
+        icon="card"
         title={copy.title}
         sub={copy.sub}
         cancelLabel={
@@ -452,7 +453,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
           </div>
         </div>
         <div style={{ ...Sx.scroller, padding:'24px 16px', textAlign:'center' }}>
-          <div style={{ fontSize:48, marginBottom:10 }}>🔌</div>
+          <div style={{ marginBottom:10, display:'flex', justifyContent:'center', color:'var(--t2)' }}><Icon name="plug" size={44} /></div>
           <div style={{ fontSize:13, color:'var(--t3)', lineHeight:1.6, maxWidth:380, margin:'0 auto 18px' }}>
             {localSetup?.reason}
           </div>
@@ -481,7 +482,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     return (
       <Waiting
         grand={grand}
-        icon={onThisDevice ? '💳' : '📲'}
+        icon={onThisDevice ? 'card' : 'phone'}
         title={onThisDevice ? 'Getting ready' : 'Customer paying on reader'}
         sub={onThisDevice && phase === 'starting' ? 'Setting the payment up on this terminal…' : statusMsg}
         onCancel={cancelFlow}
@@ -499,7 +500,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
           </div>
         </div>
         <div style={{ ...Sx.scroller, padding:'24px 16px', textAlign:'center' }}>
-          <div style={{ fontSize:54, marginBottom:8 }}>📱</div>
+          <div style={{ marginBottom:8, display:'flex', justifyContent:'center', color:'var(--t1)' }}><Icon name="phone" size={50} /></div>
           <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>
             Simulated card flow
           </div>
@@ -525,7 +526,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
           <div style={Sx.hTitle}>Payment failed</div>
         </div>
         <div style={{ ...Sx.scroller, padding:'24px 16px', textAlign:'center' }}>
-          <div style={{ fontSize:48, marginBottom:8 }}>⚠️</div>
+          <div style={{ marginBottom:8, display:'flex', justifyContent:'center', color:'var(--red)' }}><Icon name="warn" size={44} /></div>
           <div style={{ fontSize:18, fontWeight:800, color:'var(--red)', marginBottom:6 }}>Payment failed</div>
           <div style={{ fontSize:13, color:'var(--t3)', maxWidth:380, margin:'0 auto', lineHeight:1.5 }}>{errorMsg}</div>
         </div>
@@ -538,7 +539,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   return null;
 }
 
-function Waiting({ grand, title, sub, onCancel, icon = '📲', cancelLabel = '✕ Cancel payment', cancelDisabled = false }) {
+function Waiting({ grand, title, sub, onCancel, icon = 'phone', cancelLabel = '✕ Cancel payment', cancelDisabled = false }) {
   return (
     <div style={Sx.shell}>
       <div style={Sx.header}>
@@ -549,7 +550,7 @@ function Waiting({ grand, title, sub, onCancel, icon = '📲', cancelLabel = '�
         </div>
       </div>
       <div style={{ ...Sx.scroller, padding:'48px 16px', textAlign:'center' }}>
-        <div style={{ fontSize:54, marginBottom:14 }}>{icon}</div>
+        <div style={{ marginBottom:14, display:'flex', justifyContent:'center', color:'var(--t1)' }}><Icon name={icon} size={50} /></div>
         <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>{title}</div>
         <div style={{ fontSize:13, color:'var(--t3)', marginBottom:24 }}>{sub}</div>
         <div style={{ fontSize:36, fontWeight:800, fontFamily:'var(--font-mono)', color:'var(--acc)' }}>{money(grand)}</div>

@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { EmojiIcon } from '../../../components/ServOSIcons';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -143,7 +144,7 @@ export default function Segments() {
           <div style={S.prebuilt}>
             {prebuilt.map((p) => (
               <div key={p.key} style={S.pcard}>
-                <div style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--t1)' }}>{p.icon} {p.name}</div>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 6 }}><EmojiIcon value={p.icon} fallback="users" size={15} />{p.name}</div>
                 <div style={{ fontSize: 11.5, color: 'var(--t3)', margin: '4px 0 10px', minHeight: 30 }}>{p.description}</div>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   <button style={{ ...S.ghost, padding: '5px 10px' }} onClick={() => previewPrebuilt(p)}>Count{pcounts[p.key] !== undefined ? `: ${pcounts[p.key]}` : ''}</button>

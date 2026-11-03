@@ -14,6 +14,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { patchBranding } from '../../lib/locationAdmin';
+import { Icon } from '../../components/ServOSIcons';
 import MenuHeader from '../../surfaces/menu/MenuHeader';
 import { readTheme, deriveVars, THEME_DEFAULTS, DISPLAY_FONT, BODY_FONT, FIXED } from '../../surfaces/menu/menuTheme';
 import { buildGiftTheme, fetchGiftLimits, giftPresetsFor, GIFT_DEFAULT_LIMITS, formatAmount } from '../../surfaces/gift/giftHelpers';
@@ -59,11 +60,11 @@ const S = {
 const HEADERS = [['cinematic', 'Cinematic'], ['framed', 'Framed'], ['compact', 'Compact']];
 const SHAPES = [['auto', 'Auto'], ['square', 'Square'], ['wide', 'Wide'], ['tall', 'Tall'], ['circle', 'Circle']];
 const SECTIONS = [
-  ['brand', '🎨', 'Brand basics'],
-  ['storefront', '🍽', 'Storefront'],
-  ['portal', '⭐', 'Loyalty portal'],
-  ['gift', '🎁', 'Gift cards'],
-  ['website', '🌐', 'Website builder'],
+  ['brand', 'palette', 'Brand basics'],
+  ['storefront', 'utensils', 'Storefront'],
+  ['portal', 'star', 'Loyalty portal'],
+  ['gift', 'gift', 'Gift cards'],
+  ['website', 'globe', 'Website builder'],
 ];
 // v5.12.0: the website builder is a lazy chunk so Puck and the designer never load for
 // the other four tabs (or the POS bundle). It owns the whole width, see below.
@@ -280,7 +281,7 @@ export default function MenuAppearance() {
       {/* Section tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         {SECTIONS.map(([id, icon, label]) => (
-          <button key={id} style={S.tab(section === id)} onClick={() => setSection(id)}><span>{icon}</span>{label}</button>
+          <button key={id} style={S.tab(section === id)} onClick={() => setSection(id)}><Icon name={icon} size={15} />{label}</button>
         ))}
       </div>
 

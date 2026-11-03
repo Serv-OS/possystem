@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { isMock } from './supabase';
+import { Icon } from '../components/ServOSIcons';
 
 /**
  * Shown in the Back Office when Supabase is not yet configured.
@@ -16,7 +17,7 @@ export default function SupabaseSetup() {
       border:'1.5px solid var(--acc-b)', borderRadius:14, marginBottom:20,
     }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:14 }}>
-        <div style={{ fontSize:24, flexShrink:0, marginTop:2 }}>🔌</div>
+        <div style={{ fontSize:24, flexShrink:0, marginTop:2, color:'var(--acc)' }}><Icon name="plug" size={24} /></div>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:14, fontWeight:800, color:'var(--acc)', marginBottom:4 }}>
             Running in demo mode — Supabase not connected

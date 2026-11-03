@@ -123,7 +123,7 @@ function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
   };
 
   if (cur.count === 0 && cur.voidCount === 0 && cur.refundCount === 0) {
-    return <EmptyState icon="📊" message="No sales in this period. Try widening the date range."/>;
+    return <EmptyState icon="chart" message="No sales in this period. Try widening the date range."/>;
   }
 
   const notes = [subtotalOffLine(cur, fmt), discountOffLine(cur, fmt)].filter(Boolean);
@@ -354,7 +354,7 @@ function SalesSummarySites(props) {
   };
 
   if (parts.every(p => { const c = stats.get(p.id).cur; return c.count === 0 && c.voidCount === 0 && c.refundCount === 0; })) {
-    return <EmptyState icon="📊" message="No sales at these sites in this period. Try widening the date range."/>;
+    return <EmptyState icon="chart" message="No sales at these sites in this period. Try widening the date range."/>;
   }
 
   return (

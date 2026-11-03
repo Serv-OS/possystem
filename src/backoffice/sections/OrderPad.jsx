@@ -59,6 +59,7 @@ import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit'
 import { useStockScope } from '../StockScope';
 import { stockApi } from '../../lib/stock/stockApi';
 import { pausedMap, pauseWords, pausedLineWords } from '../../lib/stock/pauseRules';
+import { Icon } from '../../components/ServOSIcons';
 
 const USAGE_DAYS = 28;
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -410,13 +411,13 @@ function OrderPadScreen({ siteId = null } = {}) {
 
         {noSupplier > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, padding: '8px 12px', borderRadius: 10, background: 'var(--red-d)', border: '1px solid var(--red-b)', fontSize: 12, color: 'var(--red)' }}>
-            <span aria-hidden="true">⚠</span>
+            <Icon name="warn" size={14} />
             <span>{noSupplier} item{noSupplier === 1 ? '' : 's'} have no supplier — add one on the item’s Suppliers tab to order them.</span>
           </div>
         )}
         {staleOrders.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, padding: '8px 12px', borderRadius: 10, background: 'color-mix(in srgb, var(--amber, #F5A623) 14%, transparent)', border: '1px solid var(--amber, #F5A623)', fontSize: 12, color: 'var(--amber, #F5A623)' }}>
-            <span aria-hidden="true">⚠</span>
+            <Icon name="warn" size={14} />
             <span>{staleOrders.length} open order{staleOrders.length === 1 ? '' : 's'} more than a week past due ({staleOrders.map(s => `${supName(s.supplierId)}${s.reference ? ` ${s.reference}` : ''}`).join(', ')}) {staleOrders.length === 1 ? 'is' : 'are'} not counted as on order. Receive or cancel {staleOrders.length === 1 ? 'it' : 'them'} in Orders.</span>
           </div>
         )}
@@ -486,7 +487,7 @@ function OrderPadScreen({ siteId = null } = {}) {
                     {multi && <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)' }}>{r.avgDaily > 0 || r.prof ? `${r2(displayInUnits(r.avgDaily * fScale, uom).qty)} ${use.label}` : ''}</td>}{/* // d3 multi */}
                     {!multi && ( // d3 multi
                     <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LABEL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule: default ${days}d + ${safetyDays}d safety`}>
-                      {r.effCover}d{r.sched != null ? ' 🚚' : ''}
+                      {r.effCover}d{r.sched != null ? <Icon name="truck" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginLeft: 4 }} /> : ''}
                     </td>
                     )}{/* // d3 multi */}
                     {multi && <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)', fontSize: 12 }}>{(() => { const pv = parOf(r); if (pv == null) return ''; const d = displayInUnits(pv, uom); return `${r2(d.qty)} ${d.label}`; })()}</td>}{/* // d3 multi */}
@@ -524,7 +525,7 @@ function OrderPadScreen({ siteId = null } = {}) {
         {multi && <MultiBasket basket={basket} ctx={ctx} supName={supName} spNet={spNet} itemName={itemName} />}{/* // d3 multi */}
         {/* --amber is only declared under [data-skin="servos"], so keep reportKit's fallback. */}
         {!multi && (<>{/* // d3 multi */}
-        {minWarnings.length > 0 && <div style={{ fontSize: 12, color: 'var(--amber, #F5A623)', padding: '5px 10px', borderRadius: 9, background: 'color-mix(in srgb, var(--amber, #F5A623) 14%, transparent)' }}>⚠ below min order: {minWarnings.map(w => `${w.name} ${money(w.val)}/${money(w.min)}`).join(' · ')}</div>}
+        {minWarnings.length > 0 && <div style={{ fontSize: 12, color: 'var(--amber, #F5A623)', padding: '5px 10px', borderRadius: 9, background: 'color-mix(in srgb, var(--amber, #F5A623) 14%, transparent)' }}><Icon name="warn" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 6 }} />below min order: {minWarnings.map(w => `${w.name} ${money(w.val)}/${money(w.min)}`).join(' · ')}</div>}
         </>)}{/* // d3 multi */}
         {!multi && ( // d3 multi
         <button onClick={createOrders} disabled={busy || basketCount === 0} style={{ marginLeft: 'auto', padding: '11px 22px', borderRadius: 12, background: basketCount ? 'var(--grn)' : 'var(--bg3)', color: basketCount ? '#0b0c10' : 'var(--t4)', border: 0, fontFamily: 'inherit', fontSize: 14, fontWeight: 700, cursor: basketCount ? 'pointer' : 'default', flexShrink: 0 }}>

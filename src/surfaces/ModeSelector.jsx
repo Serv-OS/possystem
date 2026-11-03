@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { VERSION } from '../lib/version';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
+import { Icon } from '../components/ServOSIcons';
 
 function Card({ icon, title, desc, note, accent, onClick }) {
   const [hover, setHover] = useState(false);
@@ -16,7 +17,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
         fontFamily: 'inherit', transition: 'all .18s',
         display: 'flex', flexDirection: 'column', gap: 10,
       }}>
-      <div style={{ fontSize: 36, lineHeight: 1 }}>{icon}</div>
+      <div style={{ lineHeight: 1, color: accent }}><Icon name={icon} size={36} /></div>
       <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9' }}>{title}</div>
       <div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6 }}>{desc}</div>
       {note && <div style={{ fontSize: 12, color: accent, fontWeight: 600, marginTop: 4 }}>{note}</div>}
@@ -43,7 +44,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
       {/* Main cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 20, width: '100%', maxWidth: 720, marginBottom: 20 }}>
         <Card
-          icon="🖥"
+          icon="monitor"
           title="POS Terminal"
           desc="A till, counter screen, or handheld used by staff to take orders and process payments."
           note="Requires a pairing code from Back Office"
@@ -51,7 +52,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectPOS}
         />
         <Card
-          icon="📱"
+          icon="phone"
           title="MPOS (mobile)"
           desc="A phone or Sunmi handheld used by servers and runners — portrait UI, Adyen card reader, walk-in orders."
           note="Pairs to a location like a regular POS"
@@ -59,7 +60,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectMPOS}
         />
         <Card
-          icon="🕐"
+          icon="clock"
           title="Time Clock"
           desc="A dedicated tablet by the staff entrance — staff enter their PIN to clock in/out and take breaks."
           note="Pairs to a location like a regular POS"
@@ -67,7 +68,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectClock}
         />
         <Card
-          icon="🏢"
+          icon="building"
           title="Back Office"
           desc="For owners and managers — menu builder, staff, reports, device management and settings."
           note="Requires a Serv OS account"
@@ -75,7 +76,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectBackOffice}
         />
         <Card
-          icon="📺"
+          icon="tv"
           title="Menu Board"
           desc="A TV or display showing your menu, with categories, prices and allergens, updating live. Marks items sold out automatically."
           note="Pair it with a code from Back Office"
@@ -83,7 +84,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectMenuBoard}
         />
         {onSelectOrderScreen && <Card
-          icon="🧾"
+          icon="receipt"
           title="Order screen"
           desc="A TV that shows customers and delivery drivers when their order is ready."
           note="Pair it with a code from Back Office"
@@ -91,7 +92,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectOrderScreen}
         />}
         <Card
-          icon="🪑"
+          icon="seat"
           title="Tables Ready"
           desc="Front-of-house walk-in waitlist — capture a party, get a smart wait quote, text guests when their table's ready, and seat them as tables free up."
           note="Pairs to a location, then staff sign in by PIN"
@@ -99,7 +100,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectWaitlist}
         />
         {onSelectBookings && <Card
-          icon="📅"
+          icon="calendar"
           title="Bookings"
           desc="The reservations diary + host stand — take bookings with smart table combinations, see the whole service on a timeline, and seat parties straight into a POS tab."
           note="Runs on the venue's floor plan — set up join groups in Back Office"
@@ -107,7 +108,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onClick={onSelectBookings}
         />}
         {onSelectManager && <Card
-          icon="📲"
+          icon="phone"
           title="Manager"
           desc="The owner app + ops tablet in one phone — takings, the live floor, team & approvals, ops checks and kitchen, adapting to who signs in."
           note="Pairs to a location, then staff sign in by PIN"
@@ -130,7 +131,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           onMouseEnter={e => { e.currentTarget.style.background = '#1a1d27'; e.currentTarget.style.borderColor = '#6366f1'; }}
           onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = '#2d3148'; }}
         >
-          <span style={{ fontSize: 18 }}>🔐</span>
+          <span style={{ display: 'flex', color: '#64748b' }}><Icon name="lock" size={18} /></span>
           <div style={{ textAlign: 'left' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b' }}>Serv OS Internal — Company Admin</div>
             <div style={{ fontSize: 12, color: '#334155' }}>Your internal tool for creating and managing venues on the platform</div>

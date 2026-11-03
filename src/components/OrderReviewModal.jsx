@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ALLERGENS } from '../data/seed';
 import { money } from '../lib/currency';
 import { useStore } from '../store';
+import { Icon } from './ServOSIcons';
 
 export default function OrderReviewModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, onClose, onCheckout, onPrint }) {
   const [mode, setMode] = useState('compact');  // compact | detailed
@@ -52,7 +53,7 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
             </div>
             <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
               {sentCount>0&&<span style={{ fontSize:10, fontWeight:700, padding:'3px 8px', borderRadius:20, background:'var(--grn-d)', border:'1px solid var(--grn-b)', color:'var(--grn)' }}>✓ {sentCount} sent</span>}
-              {pendingCount>0&&<span style={{ fontSize:10, fontWeight:700, padding:'3px 8px', borderRadius:20, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)' }}>⏳ {pendingCount} pending</span>}
+              {pendingCount>0&&<span style={{ fontSize:10, fontWeight:700, padding:'3px 8px', borderRadius:20, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)', display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="clock" size={11}/>{pendingCount} pending</span>}
             </div>
           </div>
         </div>
@@ -61,7 +62,7 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
         <div style={{ flex:1, overflowY:'auto', padding:'8px 0' }}>
           {nonVoided.length === 0 && (
             <div style={{ textAlign:'center', padding:'40px 0', color:'var(--t3)' }}>
-              <div style={{ fontSize:30, opacity:.4, marginBottom:8 }}>🧾</div>
+              <div style={{ fontSize:30, opacity:.4, marginBottom:8, display:'flex', justifyContent:'center' }}><Icon name="receipt" size={30}/></div>
               <div style={{ fontSize:13, fontWeight:600 }}>No items on this order</div>
             </div>
           )}
@@ -114,11 +115,11 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
                         {m.price>0&&<span style={{ color:'var(--acc)', marginLeft:6, fontFamily:'var(--font-mono)' }}>+{money(m.price)}</span>}
                       </div>
                     ))}
-                    {item.notes&&<div style={{ fontSize:11, color:'var(--orn)', marginTop:2, fontStyle:'italic' }}>📝 {item.notes}</div>}
-                    {disc&&<div style={{ fontSize:11, color:'var(--grn)', marginTop:2, fontWeight:600 }}>🏷 {disc.label}</div>}
+                    {item.notes&&<div style={{ fontSize:11, color:'var(--orn)', marginTop:2, fontStyle:'italic', display:'flex', alignItems:'flex-start', gap:4 }}><Icon name="note" size={12} style={{ marginTop:1 }}/><span>{item.notes}</span></div>}
+                    {disc&&<div style={{ fontSize:11, color:'var(--grn)', marginTop:2, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}><Icon name="tag" size={12}/>{disc.label}</div>}
                     {item.allergens?.length>0&&(
-                      <div style={{ fontSize:10, color:'var(--red)', marginTop:2, fontWeight:600 }}>
-                        ⚠ {item.allergens.map(a=>ALLERGENS.find(x=>x.id===a)?.label).filter(Boolean).join(' · ')}
+                      <div style={{ fontSize:10, color:'var(--red)', marginTop:2, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
+                        <Icon name="warn" size={11}/>{item.allergens.map(a=>ALLERGENS.find(x=>x.id===a)?.label).filter(Boolean).join(' · ')}
                       </div>
                     )}
                     <div style={{ display:'flex', gap:4, marginTop:5, flexWrap:'wrap' }}>
@@ -159,7 +160,7 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
 
         {/* Actions */}
         <div style={{ padding:'8px 16px 14px', display:'flex', gap:6, flexShrink:0 }}>
-          {onPrint && <button className="btn btn-ghost btn-sm" style={{ flexShrink:0 }} onClick={onPrint}>🖨 Print</button>}
+          {onPrint && <button className="btn btn-ghost btn-sm" style={{ flexShrink:0 }} onClick={onPrint}><Icon name="print" size={14}/>Print</button>}
           <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Close</button>
           <button className="btn btn-acc" style={{ flex:2, height:44, fontSize:14, fontWeight:800 }} onClick={onCheckout}>
             Checkout · {money(total)} →

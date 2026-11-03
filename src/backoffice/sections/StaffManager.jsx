@@ -15,6 +15,7 @@ import { useStockScope } from '../StockScope';
 import TillSitesPanel from './TillSitesPanel';
 import { stockApi } from '../../lib/stock/stockApi';
 import { STOCK_CONTROL_CHOICES, stockControlLine, canChangeStockControl, savedWords } from '../../lib/stock/stockControlWords';
+import { Icon } from '../../components/ServOSIcons';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -853,13 +854,14 @@ export default function StaffManager({ orgCtx = null } = {}) {
                     border:`1.5px solid ${(sel.authMethod||'pin')===m ? 'var(--acc)' : 'var(--bdr)'}`,
                     background:(sel.authMethod||'pin')===m ? 'var(--acc-d, rgba(232,160,32,.10))' : 'transparent',
                     color:(sel.authMethod||'pin')===m ? 'var(--acc)' : 'var(--t3)',
-                  }}>{m==='pin' ? '🔢 PIN' : '💳 Card'}</button>
+                    display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+                  }}><Icon name={m==='pin' ? 'hash' : 'card'} size={14} />{m==='pin' ? 'PIN' : 'Card'}</button>
                 ))}
               </div>
               {sel.authMethod==='card' && (
                 <div>
                   <div style={{ fontSize:11, marginBottom:8, color: sel.nfcCardId ? 'var(--grn)' : 'var(--red)', fontWeight:700 }}>
-                    {sel.nfcCardId ? '✓ Card assigned' : '⚠ No card yet — assign one below, or they can’t sign in'}
+                    {sel.nfcCardId ? '✓ Card assigned' : <><Icon name="warn" size={12} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:5 }} />No card yet — assign one below, or they can’t sign in</>}
                   </div>
                   <div style={{ display:'flex', gap:6 }}>
                     <input value={cardEntry} onChange={e=>setCardEntry(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') saveCardEntry(sel.id); }}
@@ -969,7 +971,7 @@ export default function StaffManager({ orgCtx = null } = {}) {
         </div>
       ) : (
         <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:8, color:'var(--t4)' }}>
-          <div style={{ fontSize:32, opacity:.15 }}>👤</div>
+          <div style={{ opacity:.15 }}><Icon name="user" size={32} /></div>
           <div style={{ fontSize:12, fontWeight:600, color:'var(--t3)' }}>Select a staff member to edit</div>
         </div>
       )}

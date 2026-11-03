@@ -215,7 +215,7 @@ export default function StaffSurface() {
         <div style={{ display: 'flex', gap: 6 }}>
           <button onClick={() => setDark(d => !d)} title={dark ? 'Light mode' : 'Dark mode'} className="sv-glass"
             style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>
-            {dark ? '☀︎' : '☾'}
+            <Icon name={dark ? 'sun' : 'moon'} size={14} />
           </button>
           <button onClick={refresh} disabled={refreshing} title="Refresh" className="sv-glass"
             style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>

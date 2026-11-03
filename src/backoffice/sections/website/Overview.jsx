@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { W } from './ui.js';
 import Toggle from './Toggle.jsx';
 import { CHANNELS, channelOn, draftChanges, formatWhen, healthChecklist, orderPages, pagePath, siteUrl, PAGE_KINDS } from './helpers.js';
+import { Icon } from '../../../components/ServOSIcons';
 
 const kindLabel = (k) => PAGE_KINDS.find(([id]) => id === k)?.[1] || 'Page';
 
@@ -116,7 +117,7 @@ export default function Overview({ ws, toast, onBuild, onDesigner, onEditor, onB
   if (empty) {
     return (
       <div style={{ ...W.card, padding: '48px 28px', textAlign: 'center', borderStyle: 'dashed' }}>
-        <div style={{ fontSize: 40, marginBottom: 10 }}>🌐</div>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10, color: 'var(--t2)' }}><Icon name="globe" size={40}/></div>
         <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)' }}>Build me a website</div>
         <div style={{ fontSize: 13.5, color: 'var(--t3)', margin: '8px auto 20px', maxWidth: 520, lineHeight: 1.6 }}>
           The designer reads your menu, hours, locations and branding, then builds a full site: home, live menu, ordering, loyalty, gift cards, find us, one page per location and a blog. You can change anything after.
@@ -133,7 +134,7 @@ export default function Overview({ ws, toast, onBuild, onDesigner, onEditor, onB
   return (
     <div>
       <div style={{ ...W.row, marginBottom: 16 }}>
-        <button style={W.btn} onClick={onDesigner}>✨ Open AI designer</button>
+        <button style={{ ...W.btn, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={onDesigner}><Icon name="sparkles" size={14}/>Open AI designer</button>
         <button style={W.ghost} onClick={() => onEditor(null)}>Edit pages</button>
         <button style={W.ghost} onClick={onBranding}>Branding and domain</button>
         <button style={W.ghost} onClick={onBlog}>Blog{posts?.length ? ` (${posts.length})` : ''}</button>

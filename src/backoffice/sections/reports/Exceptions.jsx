@@ -120,7 +120,7 @@ function ExceptionsOne({ checks, fmt }) {
   };
 
   if (events.length === 0) {
-    return <EmptyState icon="🛡" message="No exceptions in this period. Clean shift."/>;
+    return <EmptyState icon="shield" message="No exceptions in this period. Clean shift."/>;
   }
 
   return (
@@ -241,7 +241,7 @@ function ExceptionsSites(props) {
     ]);
   };
 
-  if (all.length === 0) return <EmptyState icon="🛡" message="No exceptions at these sites in this period. Clean shift."/>;
+  if (all.length === 0) return <EmptyState icon="shield" message="No exceptions at these sites in this period. Clean shift."/>;
 
   const amount = (v, n, f) => <>{f(v)}<span style={{ color:'var(--t4)', marginLeft:6, fontSize:10 }}>×{n}</span></>;
   return (

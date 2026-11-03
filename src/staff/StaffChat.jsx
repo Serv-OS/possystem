@@ -30,7 +30,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Icon } from '../components/ServOSIcons';
+import { Icon, EmojiIcon } from '../components/ServOSIcons';
 import { registerPush, pushStatus, webSubscribed, quietIosRefresh, setOpenChat } from '../lib/pushRegister';
 import {
   conversationTitle, kindLabel, messageText, previewText, mergeMessages, canEdit, canDelete, canReport, isMutedNow,
@@ -575,7 +575,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack, embed = 
               {reacts.length > 0 && (
                 <div style={{ display: 'flex', gap: 4, margin: '3px 6px 0' }}>
                   {reacts.map((g) => (
-                    <button key={g.emoji} onClick={() => act('react', m, { emoji: g.emoji, mine: g.mine })} style={{ ...btn, padding: '2px 7px', fontSize: 12, borderColor: g.mine ? 'var(--acc)' : 'var(--bdr)' }}>{g.emoji} {g.count}</button>
+                    <button key={g.emoji} onClick={() => act('react', m, { emoji: g.emoji, mine: g.mine })} style={{ ...btn, padding: '2px 7px', fontSize: 12, borderColor: g.mine ? 'var(--acc)' : 'var(--bdr)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><EmojiIcon value={g.emoji} size={13} />{g.count}</button>
                   ))}
                 </div>
               )}
@@ -634,7 +634,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack, embed = 
           <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
             {REACTIONS.map((e) => {
               const minei = reactions.some((r) => String(r.message_id) === String(actionFor.id) && r.member_id === me && r.emoji === e);
-              return <button key={e} onClick={() => act('react', actionFor, { emoji: e, mine: minei })} style={{ ...btn, fontSize: 20, padding: '6px 10px', borderColor: minei ? 'var(--acc)' : 'var(--bdr)' }}>{e}</button>;
+              return <button key={e} onClick={() => act('react', actionFor, { emoji: e, mine: minei })} style={{ ...btn, padding: '6px 10px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderColor: minei ? 'var(--acc)' : 'var(--bdr)' }} aria-label={e}><EmojiIcon value={e} size={22} /></button>;
             })}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
