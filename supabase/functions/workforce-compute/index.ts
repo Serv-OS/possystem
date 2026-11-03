@@ -23,6 +23,7 @@ import { writeWfAudit } from '../_shared/wfAudit.js';
 import { regionPack } from '../_shared/regionPack.js';
 import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, venueDay } from '../_shared/payPremiums.js';
 import { tipCreditTopUps } from '../_shared/tipCredit.js';
+import { ptoRules, ptoAccruals } from '../_shared/usPto.js';
 import { acaReport, monthsBetween } from '../_shared/acaHours.js';
 import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime.js';
 
@@ -196,7 +197,9 @@ Deno.serve(async (req) => {
     if (action === 'accrual.run') {
       // v5.11.101: the 12.07% accrual is a UK rule (holidayRules 'uk'); a US venue has no statutory
       // accrual, so it is off there for now and nothing is written.
-      if (pack.holidayRules !== 'uk') return json({ ok: true, accrued: 0, hours: 0, rate: 0, off: 'Holiday accrual is off for US venues.' });
+      // 5.12.51: a US venue earns PTO by its own rule (_shared/usPto.js) when switched on; any other
+      // region without a rule writes nothing.
+      if (pack.holidayRules !== 'uk' && pack.holidayRules !== 'us') return json({ ok: true, accrued: 0, hours: 0, rate: 0, off: 'Holiday accrual is off for this country.' });
       const { data: settings } = await admin.from('wf_venue_settings').select('accrual_rate').eq('location_id', location_id).maybeSingle();
       const rate = Number(settings?.accrual_rate ?? 0.1207);
       // Classify staff: salaried (contract_type='salaried' or a salaried role with no hourly rate) → no accrual.
@@ -217,6 +220,40 @@ Deno.serve(async (req) => {
         if (role && role.salary_annual != null && role.base_rate == null) return false; // salaried role
         return true; // default to hourly (accrues)
       };
+      // 5.12.51: US PAID TIME OFF. Off until the venue switches it on (Workforce settings, Paid time off).
+      // 1 hour for every N hours worked (default 30), capped per calendar year when a cap is set; hourly
+      // staff only, as the UK rule. Same ledger, so balances, requests and payroll work unchanged.
+      if (pack.holidayRules === 'us') {
+        const { data: vsr } = await admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle();
+        const rules = ptoRules((vsr as any)?.settings ?? null);
+        if (!rules.on) return json({ ok: true, accrued: 0, hours: 0, rate: 0, off: 'Paid time off is switched off (Workforce settings, Paid time off).' });
+        const [{ data: usSheets }, { data: ledger }] = await Promise.all([
+          admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, currency, clock_in')
+            .eq('location_id', location_id).in('status', ['approved', 'paid']).limit(20000),
+          admin.from('wf_holiday_accrual').select('staff_id, accrued_hours, source_timesheet_id')
+            .eq('location_id', location_id).eq('kind', 'accrual').not('source_timesheet_id', 'is', null).limit(20000),
+        ]);
+        const yearOf: Record<string, string> = {};
+        (usSheets ?? []).forEach((t: any) => { yearOf[t.id] = String(venueDay(t.clock_in, venue.timezone) || '').slice(0, 4); });
+        const earned: Record<string, number> = {};
+        const doneIds = new Set<string>();
+        (ledger ?? []).forEach((e: any) => {
+          doneIds.add(e.source_timesheet_id);
+          const y = yearOf[e.source_timesheet_id]; if (!y) return;
+          const k = `${e.staff_id}|${y}`; earned[k] = round2((earned[k] ?? 0) + Number(e.accrued_hours || 0));
+        });
+        const fresh = (usSheets ?? []).filter((t: any) => !doneIds.has(t.id) && yearOf[t.id]).map((t: any) => ({ ...t, year: yearOf[t.id] }));
+        const rows = ptoAccruals(fresh, earned, rules, isHourly).map((r: any) => ({
+          location_id, org_id: org, staff_id: r.staff_id, kind: 'accrual', accrued_hours: r.accrued_hours,
+          accrued_pay: r.accrued_pay, accrual_rate: r.rate, currency: r.currency || cur, source_timesheet_id: r.source_timesheet_id,
+        }));
+        if (!rows.length) return json({ ok: true, accrued: 0, hours: 0, rate: round2(1 / rules.every * 10000) / 10000 });
+        const { error } = await admin.from('wf_holiday_accrual').insert(rows);
+        if (error) return json({ error: error.message }, 500);
+        const totalHrs = round2(rows.reduce((a: number, r: any) => a + r.accrued_hours, 0));
+        await writeAudit(location_id, org, 'accrual.run', { actorId: user.id, reason: `PTO: ${rows.length} timesheets at 1 h per ${rules.every} h -> ${totalHrs}h`, after: { count: rows.length, hours: totalHrs } });
+        return json({ ok: true, accrued: rows.length, hours: totalHrs, rate: round2(1 / rules.every * 10000) / 10000, pto: true });
+      }
       const { data: tss } = await admin.from('wf_timesheets')
         .select('id, staff_id, actual_hours, effective_rate, currency').eq('location_id', location_id).eq('status', 'approved');
       const { data: existing } = await admin.from('wf_holiday_accrual')

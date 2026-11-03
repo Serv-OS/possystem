@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.51',
+    date: '3 Nov 2026',
+    items: [
+      'US paid time off (PTO): Workforce settings (US venues only), Paid time off. Off until you switch it on, as no US law requires it. Hourly staff earn 1 hour for every 30 hours worked (or your own number) from approved timesheets when you press Run accrual, with an optional most PTO earned in a year. Salaried staff are left out, as with UK holiday.',
+      'PTO uses the holiday ledger, so balances, time off requests and approvals, the staff app and payroll\'s paid time work as they do for UK holiday. At US venues the Time off screen says PTO balances, and the UK holiday accrual rate is hidden.',
+      'UK venues are unchanged: they still accrue 12.07% and never see the PTO settings.',
+      'Needs workforce-compute deployed.',
+    ],
+  },
+  {
     v: '5.12.50',
     date: '3 Nov 2026',
     items: [
