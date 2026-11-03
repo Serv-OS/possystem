@@ -22,6 +22,7 @@ import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.101: the venue's region (currency, US overtime) and the pay premiums, applied at last.
 import { regionPack } from '../_shared/regionPack.js';
 import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, venueDay } from '../_shared/payPremiums.js';
+import { tipCreditTopUps } from '../_shared/tipCredit.js';
 import { acaReport, monthsBetween } from '../_shared/acaHours.js';
 import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime.js';
 
@@ -507,6 +508,8 @@ Deno.serve(async (req) => {
       // worked; the half time is owed at the week's blended regular rate (_shared/multiSiteOvertime.js).
       // A record that is not linked reads exactly as before, plus the premium and the rate.
       let overtime: Record<string, { regular: number; overtime: number; otherSiteHours: number; overtimePremium: number; regularRate: number | null }> | null = null;
+      // 5.12.47: the whole work weeks this site's tip credit top up is worked out on (set below).
+      let tipWeeks: { sheets: any[]; spanFrom: string; spanTo: string; span: { from: string; to: string }; wsd: number; sheetRules: (t: any) => { exempt: boolean; min_wage: number }; premiumHere: (t: any) => number } | null = null;
       if (pack.overtimeWeeklyHours) {
         const wsd = Number.isInteger(Number(policy.workweekStart)) && Number(policy.workweekStart) >= 0 && Number(policy.workweekStart) <= 6 ? Number(policy.workweekStart) : 1;
         const span = workweekSpan(from, to, wsd);
@@ -582,6 +585,7 @@ Deno.serve(async (req) => {
           ...otherSheets.map((t: any) => ({ ...t, person: personOf[t.staff_id] || t.staff_id, tz: zoneOf[t.location_id] || venue.timezone, week_start_dow: wsdOf[t.location_id] ?? 1, premium_pay: premiumPay(t, t.location_id), ...rulesOf(t, t.location_id) })),
         ];
         overtime = overtimeAcrossSites(all, pack.overtimeWeeklyHours, { tz: venue.timezone, weekStartDow: wsd, from, to, here: location_id });
+        tipWeeks = { sheets: weekSheets ?? [], spanFrom, spanTo, span, wsd, sheetRules: (t: any) => rulesOf(t, location_id), premiumHere: (t: any) => premiumPay(t, location_id) };
       }
 
       const troncTips: Record<string, number> = {};
@@ -628,6 +632,59 @@ Deno.serve(async (req) => {
         });
       }
 
+      // 5.12.47: US TIP CREDIT TOP UP (federal FLSA, _shared/tipCredit.js). A server paid below the
+      // minimum wage (a Provo server on $2.13) must reach it each work week with their tips; when the
+      // cash wage plus the tips they kept falls short, the employer pays the difference. Worked per
+      // work week from this site's sheets, card tips on their own checks and their pooled tip share.
+      // Cash tips are not recorded yet, so a top up can be higher than owed, never lower.
+      let topUps: Record<string, { topUp: number; weeks: any[] }> = {};
+      if (tipWeeks && pack.country === 'US') {
+        const tw = tipWeeks;
+        const sheetsTC = tw.sheets.map((t: any) => {
+          const rules = tw.sheetRules(t);
+          if (rules.exempt) return null;
+          const hrs = Number(t.actual_hours || 0) + Number(t.paid_break_mins || 0) / 60;
+          return { staff_id: t.staff_id, hours: hrs, rate: Number(t.effective_rate || 0), rate_source: t.rate_source ?? null,
+            pay: round2(hrs * Number(t.effective_rate || 0)) + tw.premiumHere(t), clock_in: t.clock_in, min_wage: rules.min_wage };
+        }).filter(Boolean) as any[];
+        const tipped = sheetsTC.some((t: any) => t.rate_source !== 'salaried' && t.hours > 0 && t.rate < t.min_wage - 1e-9);
+        if (tipped) {
+          const tipRows: { staff_id: string; amount: number; day: string }[] = [];
+          const runFrom = new Date(Date.parse(`${tw.span.from}T00:00:00Z`) - 6 * 86400000).toISOString().slice(0, 10);
+          const [{ data: spanChecks }, { data: wfSellers }, { data: spanRuns }] = await Promise.all([
+            directShare > 0
+              ? admin.from('closed_checks').select('tip, staff_id, server, status, closed_at').eq('location_id', String(location_id))
+                .gte('closed_at', tw.spanFrom).lt('closed_at', tw.spanTo).neq('status', 'voided').gt('tip', 0).limit(20000)
+              : Promise.resolve({ data: [] as any[] }),
+            admin.from('wf_staff').select('id, name, pos_user_id').eq('location_id', location_id),
+            tipMode !== 'direct'
+              ? admin.from('wf_tronc_runs').select('id, week_start').eq('location_id', location_id).gte('week_start', runFrom).lte('week_start', tw.span.to).neq('status', 'draft')
+              : Promise.resolve({ data: [] as any[] }),
+          ]);
+          const byPos2: Record<string, string> = {}; const byName2: Record<string, string> = {}; const byFirst2: Record<string, string | false> = {};
+          (wfSellers ?? []).forEach((w: any) => {
+            if (w.pos_user_id) byPos2[w.pos_user_id] = w.id;
+            const full = String(w.name || '').trim().toLowerCase(); if (!full) return;
+            byName2[full] = w.id; const first = full.split(/\s+/)[0];
+            byFirst2[first] = byFirst2[first] === undefined ? w.id : false;
+          });
+          (spanChecks ?? []).forEach((c: any) => {
+            const tip = Number(c.tip) || 0; if (!tip) return;
+            const server = String(c.server || '').trim().toLowerCase();
+            const sid = (c.staff_id && byPos2[c.staff_id]) || (server && byName2[server]) || (server && byFirst2[server] ? byFirst2[server] : null) || null;
+            const day = venueDay(c.closed_at, venue.timezone);
+            if (sid && day) tipRows.push({ staff_id: sid, amount: tip * directShare, day });
+          });
+          const runDay: Record<string, string> = {}; (spanRuns ?? []).forEach((r: any) => { runDay[r.id] = r.week_start; });
+          const spanRunIds = Object.keys(runDay);
+          if (spanRunIds.length) {
+            const { data: spanLines } = await admin.from('wf_tronc_lines').select('run_id, staff_id, payout').in('run_id', spanRunIds);
+            (spanLines ?? []).forEach((l: any) => { if (l.staff_id && runDay[l.run_id]) tipRows.push({ staff_id: l.staff_id, amount: Number(l.payout || 0), day: runDay[l.run_id] }); });
+          }
+          topUps = tipCreditTopUps(sheetsTC, tipRows, { tz: venue.timezone, weekStartDow: tw.wsd, from, to });
+        }
+      }
+
       // Mondays inside [from, to] with no tronc run = pooled tips not yet
       // distributed (only matters when something is pooled).
       const missingWeeks: string[] = [];
@@ -667,7 +724,7 @@ Deno.serve(async (req) => {
         });
       }
 
-      const ids = new Set([...Object.keys(base), ...Object.keys(troncTips), ...Object.keys(directTips), ...Object.keys(holiday)]);
+      const ids = new Set([...Object.keys(base), ...Object.keys(troncTips), ...Object.keys(directTips), ...Object.keys(holiday), ...Object.keys(topUps)]);
       const staff = [...ids].map((id) => {
         const b = base[id] ?? { hours: 0, pay: 0 };
         const tronc = round2(troncTips[id] ?? 0);
@@ -691,6 +748,8 @@ Deno.serve(async (req) => {
           line.regular_rate = o?.regularRate ?? null;
           line.total = round2(line.total + line.overtime_premium);
         }
+        // 5.12.47: only a US venue with a tip credit week carries these keys.
+        if (topUps[id]) { line.tip_credit_topup = topUps[id].topUp; line.tip_credit_weeks = topUps[id].weeks; line.total = round2(line.total + line.tip_credit_topup); }
         return line as { staff_id: string; hours: number; pay: number; holiday_hours: number; holiday_pay: number; tips_tronc: number; tips_direct: number; tips: number; total: number; premium_pay?: number };
       }).sort((a, b) => b.total - a.total);
       const totals: Record<string, number> = {
@@ -703,6 +762,7 @@ Deno.serve(async (req) => {
       };
       if (withPremiums) totals.premium_pay = round2(staff.reduce((a, s) => a + (s.premium_pay || 0), 0));
       if (overtime) totals.overtime_premium = round2(staff.reduce((a, s: any) => a + (s.overtime_premium || 0), 0));
+      if (Object.keys(topUps).length) totals.tip_credit_topup = round2(staff.reduce((a, s: any) => a + (s.tip_credit_topup || 0), 0));
       const payload = {
         ok: true, from, to, staff, totals,
         policy: { tipMode, directPct: Math.round(directShare * 100), allocator, troncmasterName: policy.troncmasterName ?? null },

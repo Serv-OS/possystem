@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.47',
+    date: '3 Nov 2026',
+    items: [
+      'US tip credit top up: a server paid below the minimum wage (a Provo server on $2.13) must reach the minimum wage each work week with their tips. When their cash wage plus the tips they kept comes to less than the minimum wage for every hour that week, payroll adds the difference as a Tip top up. Weeks are never averaged.',
+      'Payroll shows a Tip top up column at US venues when anyone is owed one; hover a figure for each week (hours, owed, paid, tips). The US payroll export has a Tip credit top up column and a note for the payroll provider. The total includes it.',
+      'Tips counted: card tips on their own checks and their share of pooled tips. Cash tips are not recorded yet, so add any declared cash tips before paying a top up. The minimum wage is the Workforce settings one (federal $7.25 when blank). UK venues are unchanged.',
+      'Needs workforce-compute deployed.',
+    ],
+  },
+  {
     v: '5.12.46',
     date: '3 Nov 2026',
     items: [
