@@ -40,6 +40,7 @@ import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 import { venueFacts, regionForApp, swapsSnapshot, handleSwapAction } from './openShifts.ts';
 import { regionPack } from '../_shared/regionPack.js';
 import { linkedShiftsFor } from '../_shared/linkedShifts.js';
+import { asksCashTips } from '../_shared/cashTips.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -488,10 +489,14 @@ Deno.serve(async (req) => {
         .eq('staff_id', staff.id).is('clock_out', null)
         .order('clock_in', { ascending: false }).limit(1).maybeSingle();
       const { data: vs } = await admin.from('wf_venue_settings')
-        .select('clock_geofence').eq('location_id', staff.location_id).maybeSingle();
+        .select('clock_geofence, settings').eq('location_id', staff.location_id).maybeSingle();
       const g = (vs?.clock_geofence ?? {}) as Record<string, unknown>;
+      // 5.12.49: a US venue asks for cash tips at clock out (Workforce settings); never a UK venue.
+      const { data: curRow } = await admin.from('locations').select('currency').eq('id', staff.location_id).maybeSingle();
+      const askCashTips = asksCashTips({ country: regionPack({ currency: curRow?.currency || 'GBP' }).country, settings: (vs as any)?.settings ?? null });
       return json({
         ok: true,
+        ask_cash_tips: askCashTips,
         on_shift: !!open,
         on_break: !!open?.break_open_at,
         since: open?.clock_in ?? null,
@@ -541,7 +546,9 @@ Deno.serve(async (req) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json',
                    Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}` },
-        body: JSON.stringify({ action: kind, staff_id: staff.id, location_id: staff.location_id }),
+        body: JSON.stringify({ action: kind, staff_id: staff.id, location_id: staff.location_id,
+          // 5.12.49: the cash tips they declared (workforce-clock keeps them only where the venue asks).
+          ...(kind === 'out' && body.cash_tips !== undefined ? { cash_tips: body.cash_tips } : {}) }),
       }).catch(() => null);
 
       const wc = wcRes ? await wcRes.json().catch(() => ({})) : {};
@@ -549,6 +556,7 @@ Deno.serve(async (req) => {
         // 409 = already in that state; the phone should just resync, not error.
         if (wcRes?.status === 409) { await recordClockEvent(evidence); return json({ ok: true, already: true }); }
         await recordClockEvent({ ...evidence, refused: true, verdict: 'error' });
+        if (wcRes?.status === 400 && wc?.field === 'cash_tips') return json({ error: wc.error, field: 'cash_tips' }, 200);
         return json({ error: wc?.error || 'Could not record that punch. Try again.' }, 502);
       }
 

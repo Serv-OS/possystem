@@ -108,6 +108,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   // 5.12.41 (US): the minimum wage tip credit overtime is worked out on, and which positions earn no
   // overtime (exempt). One rule with payroll and the reports (_shared/multiSiteOvertime.js overtimeRules).
   const [minimumWage, setMinimumWage] = useState('');
+  // 5.12.49: US venues ask staff for cash tips at clock out unless switched off (_shared/cashTips.js).
+  const [askCashTips, setAskCashTips] = useState(true);
   const [otExempt, setOtExempt] = useState({});
   // v5.11.101: pay premiums (wf_venue_settings.premiums), applied in payroll and the rota cost.
   const [premWeekend, setPremWeekend] = useState('');
@@ -145,6 +147,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setSwapMaxHours(sj.shiftSwaps?.maxWeeklyHours != null ? String(sj.shiftSwaps.maxWeeklyHours) : '');
     setWorkweekStart(String(Number.isInteger(Number(sj.workweekStart)) ? Number(sj.workweekStart) : 1));
     setMinimumWage(Number(sj.minimumWage) > 0 ? String(sj.minimumWage) : '');
+    setAskCashTips(sj.askCashTips !== false);
     setOtExempt(sj.overtimeExempt && typeof sj.overtimeExempt === 'object' ? sj.overtimeExempt : {});
     const pr = settings?.premiums || {};
     setPremWeekend(pr.weekend != null ? String(pr.weekend) : '');
@@ -230,6 +233,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         workweekStart: Math.min(6, Math.max(0, parseInt(workweekStart, 10) || 0)),
         // 5.12.41: blank = the federal minimum wage; a change recomputes the last 10 weeks' overtime.
         minimumWage: Number(minimumWage) > 0 ? Math.round(Number(minimumWage) * 100) / 100 : null,
+        ...(pack.country === 'US' ? { askCashTips } : {}),
         overtimeExempt: otExempt,
       },
     };
@@ -398,11 +402,22 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             ) : null}
             {pack.overtimeWeeklyHours ? (
               <div>
-                <label style={labelStyle}>Minimum wage, for tipped staff's overtime</label>
+                <label style={labelStyle}>Minimum wage, for tipped staff</label>
                 <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} inputMode="decimal" placeholder={`${FEDERAL_MINIMUM_WAGE.toFixed(2)} (federal)`}
                   value={minimumWage} onChange={e => setMinimumWage(e.target.value.replace(/[^\d.]/g, ''))} disabled={savingVenue} />
-                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Staff paid below it (a tip credit, such as $2.13) get their overtime worked out on it, as the law says. Blank uses the federal ${FEDERAL_MINIMUM_WAGE.toFixed(2)}; set your state's if it is higher.</div>
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Staff paid below it (a tip credit, such as $2.13) get their overtime worked out on it, and Payroll tops them up to it in any week their tips fall short, as the law says. Blank uses the federal ${FEDERAL_MINIMUM_WAGE.toFixed(2)}; set your state's if it is higher.</div>
               </div>
+            ) : null}
+            {pack.country === 'US' ? (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>
+                <input type="checkbox" checked={askCashTips} onChange={e => setAskCashTips(e.target.checked)} disabled={savingVenue} style={{ marginTop: 3 }} />
+                <span>
+                  <b>Ask for cash tips at clock out</b>
+                  <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>
+                    The Time Clock and the staff app ask "Cash tips this shift" when someone clocks out. The amount is kept on the timesheet, shown in Payroll and the US export, and counted toward the tip credit top up. US staff must report cash tips to you.
+                  </span>
+                </span>
+              </label>
             ) : null}
             {pack.overtimeWeeklyHours && (roles?.list || []).length > 0 ? (
               <div style={{ gridColumn: '1 / -1' }}>

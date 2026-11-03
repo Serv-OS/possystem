@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.49',
+    date: '3 Nov 2026',
+    items: [
+      'US cash tips at clock out: the Time Clock tablet and the staff app ask "Cash tips this shift" when someone clocks out at a US venue. Type the amount, tap No cash tips, or go Back. A bad amount is refused in words and nobody is clocked out by mistake.',
+      'Workforce settings (US venues only): Ask for cash tips at clock out, on by default. UK venues never see the setting or the question, and the server ignores any amount sent for them.',
+      'Timesheets show the cash tips under the pay and the editor has a Cash tips box (US). Payroll has a Cash tips (declared) column and the US payroll export carries it. Declared cash tips are reported for tax and never added to the total you pay.',
+      'The tip credit top up now counts declared cash tips: a server who kept enough cash tips is no longer topped up.',
+      'Needs SQL 20261117a in Ops first, then workforce-clock, staff-portal and workforce-compute deployed.',
+    ],
+  },
+  {
     v: '5.12.48',
     date: '3 Nov 2026',
     items: [

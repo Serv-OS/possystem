@@ -436,7 +436,7 @@ Deno.serve(async (req) => {
         admin.from('wf_venue_settings').select('settings, premiums').eq('location_id', location_id).maybeSingle(),
         // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
         // preview of a closed period faithful to what was actually paid).
-        admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, rate_source, paid_break_mins, pay_amount, clock_in, clock_out, status')
+        admin.from('wf_timesheets').select(`id, staff_id, actual_hours, effective_rate, rate_source, paid_break_mins, pay_amount, clock_in, clock_out, status${pack.country === 'US' ? ', declared_cash_tips' : ''}`)
           .eq('location_id', location_id).in('status', ['approved', 'paid'])
           .gte('clock_in', fromTs).lte('clock_in', toTs),
         admin.from('wf_tronc_runs').select('id, week_start, status, pool, total_paid')
@@ -474,6 +474,14 @@ Deno.serve(async (req) => {
       // until now. Weekend, public holiday and night premiums on hourly pay for positions marked premium
       // eligible; the higher one where two apply (_shared/payPremiums.js, one rule with the rota cost).
       // A venue with no premiums set (every venue on 24 Oct 2026) adds nothing and its lines read as before.
+      // 5.12.49: cash tips declared at clock out in the period (US venues; reported, never paid by the venue).
+      const cashDeclared: Record<string, number> = {};
+      let anyCashDeclared = false;
+      if (pack.country === 'US') (tss ?? []).forEach((t: any) => {
+        if (t.declared_cash_tips == null) return;
+        anyCashDeclared = true;
+        cashDeclared[t.staff_id] = round2((cashDeclared[t.staff_id] ?? 0) + Number(t.declared_cash_tips || 0));
+      });
       const premiums = (vs as any)?.premiums ?? {};
       const premium: Record<string, { hours: number; pay: number }> = {};
       const withPremiums = anyPremium(premiums);
@@ -514,7 +522,7 @@ Deno.serve(async (req) => {
         const wsd = Number.isInteger(Number(policy.workweekStart)) && Number(policy.workweekStart) >= 0 && Number(policy.workweekStart) <= 6 ? Number(policy.workweekStart) : 1;
         const span = workweekSpan(from, to, wsd);
         const spanFrom = venueMidnightIso(span.from, venue.timezone), spanTo = venueMidnightIso(nextDay(span.to), venue.timezone);
-        const sheetCols = 'staff_id, actual_hours, paid_break_mins, effective_rate, rate_source, clock_in, clock_out, status';
+        const sheetCols = `staff_id, actual_hours, paid_break_mins, effective_rate, rate_source, clock_in, clock_out, status${pack.country === 'US' ? ', declared_cash_tips' : ''}`;
         const [{ data: weekSheets }, { data: hereStaff }] = await Promise.all([
           admin.from('wf_timesheets').select(sheetCols).eq('location_id', location_id).in('status', ['approved', 'paid'])
             .gte('clock_in', spanFrom).lt('clock_in', spanTo),
@@ -681,6 +689,12 @@ Deno.serve(async (req) => {
             const { data: spanLines } = await admin.from('wf_tronc_lines').select('run_id, staff_id, payout').in('run_id', spanRunIds);
             (spanLines ?? []).forEach((l: any) => { if (l.staff_id && runDay[l.run_id]) tipRows.push({ staff_id: l.staff_id, amount: Number(l.payout || 0), day: runDay[l.run_id] }); });
           }
+          // 5.12.49: the cash tips they declared at clock out count as tips kept that week.
+          tw.sheets.forEach((t: any) => {
+            const ct = Number(t.declared_cash_tips || 0);
+            const day = ct > 0 ? venueDay(t.clock_in, venue.timezone) : null;
+            if (day) tipRows.push({ staff_id: t.staff_id, amount: ct, day });
+          });
           topUps = tipCreditTopUps(sheetsTC, tipRows, { tz: venue.timezone, weekStartDow: tw.wsd, from, to });
         }
       }
@@ -750,6 +764,8 @@ Deno.serve(async (req) => {
         }
         // 5.12.47: only a US venue with a tip credit week carries these keys.
         if (topUps[id]) { line.tip_credit_topup = topUps[id].topUp; line.tip_credit_weeks = topUps[id].weeks; line.total = round2(line.total + line.tip_credit_topup); }
+        // 5.12.49: declared cash tips are reported with the wages, never added to what the venue pays.
+        if (anyCashDeclared) line.tips_cash_declared = cashDeclared[id] ?? 0;
         return line as { staff_id: string; hours: number; pay: number; holiday_hours: number; holiday_pay: number; tips_tronc: number; tips_direct: number; tips: number; total: number; premium_pay?: number };
       }).sort((a, b) => b.total - a.total);
       const totals: Record<string, number> = {
@@ -763,6 +779,7 @@ Deno.serve(async (req) => {
       if (withPremiums) totals.premium_pay = round2(staff.reduce((a, s) => a + (s.premium_pay || 0), 0));
       if (overtime) totals.overtime_premium = round2(staff.reduce((a, s: any) => a + (s.overtime_premium || 0), 0));
       if (Object.keys(topUps).length) totals.tip_credit_topup = round2(staff.reduce((a, s: any) => a + (s.tip_credit_topup || 0), 0));
+      if (anyCashDeclared) totals.tips_cash_declared = round2(staff.reduce((a, s: any) => a + (s.tips_cash_declared || 0), 0));
       const payload = {
         ok: true, from, to, staff, totals,
         policy: { tipMode, directPct: Math.round(directShare * 100), allocator, troncmasterName: policy.troncmasterName ?? null },
