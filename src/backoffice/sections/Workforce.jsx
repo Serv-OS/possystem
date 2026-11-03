@@ -33,6 +33,7 @@ import WfSettings from './workforce/WfSettings';
 import WfChat from './workforce/WfChat';
 import { activeRegionPack, venueMoney } from '../../lib/regionPack';
 import { rotaStaffOf, headOfficeSwitchOn } from '../../lib/headOffice';
+import { adoptVenueRegion } from '../../lib/locationTime';
 
 // v5.11.101: the venue's money and region (the region pack follows the venue's currency). A UK venue
 // reads byte for byte as before.
@@ -79,6 +80,16 @@ export default function Workforce({ section, orgCtx }) {
   // Editable positions (wf_roles), sections (wf_sections) + venue settings.
   const [roles, setRoles] = useState({ list: [], map: {} });
   const [sections, setSections] = useState([]);
+  // 5.12.58: the site's own region (money, phone format, NI number or SSN) is set before any Workforce
+  // screen draws. It used to follow whichever venue the browser read last, so a US site opened after a
+  // UK one showed pounds, +44 phones and a National Insurance box (Peter, Mozz Woodbine, 3 Nov 2026).
+  const [regionFor, setRegionFor] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (!locationId) return undefined;
+    adoptVenueRegion(locationId).catch(() => null).then(() => { if (alive) setRegionFor(locationId); });
+    return () => { alive = false; };
+  }, [locationId]);
   const [settings, setSettings] = useState({ currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos' });
 
   // Holiday accrued per staff (hours, from the accrual ledger) — shown on the
@@ -107,13 +118,15 @@ export default function Workforce({ section, orgCtx }) {
     onSettingsSaved: setSettings,
     onRolesChanged: (list) => { const map = {}; (list || []).forEach(r => { map[r.key] = r; }); setRoles({ list: list || [], map }); },
   };
-  const rolesMap = (roles.map && Object.keys(roles.map).length) ? roles.map : ROLES;
+  // 5.12.58: the site's own positions only. An empty site used to fall back to the built in samples
+  // (Bartender, Barback, ... at 12.50), so deleted positions came back in Add staff member.
+  const rolesMap = roles.map || {};
   const [title, sub] = SUBS[section] || ['Workforce', ''];
 
   // Rota roster: real staff grouped by their role's section.
   const groups = useMemo(() => {
     const by = {};
-    staff.forEach(s => { const grp = ROLES[s.role]?.grp || 'floor'; (by[grp] = by[grp] || []).push(s); });
+    staff.forEach(s => { const grp = rolesMap[s.role]?.grp || 'floor'; (by[grp] = by[grp] || []).push(s); });
     return Object.keys(by).map(grp => ({ name: GRP_SECTION[grp] || grp, staff: by[grp] }));
   }, [staff]);
 
@@ -234,6 +247,8 @@ export default function Workforce({ section, orgCtx }) {
         {key === 'staff' && <button className="btn btn-acc" onClick={() => setAddOpen(true)}><Icon name="plus" size={15} /> Add staff member</button>}
       </div>
 
+      {locationId && regionFor !== locationId && <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading {locName}…</Card>}
+      {(!locationId || regionFor === locationId) && <>
       {key === 'dashboard' && <WfDashboard groups={groups} staffCount={staff.length} />}
       {/* 5.12.56: head office staff are salaried and never clock in, so they never go on the rota (no rota cost at the site). */}
       {key === 'rota' && <WfRota {...sectionProps} staff={rotaStaffOf(staff, settings)} />}
@@ -256,6 +271,7 @@ export default function Workforce({ section, orgCtx }) {
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
       {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
+      </>}
     </div>
   );
 }
@@ -355,8 +371,8 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], headOffic
   const pack = activeRegionPack();
   const usFields = pack.payrollFields.includes('ssnLast4');
   const [f, setF] = useState(isEdit
-    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '', ...(usFields ? { ssnLast4: staff.ssnLast4 || '', payrollEmployeeId: staff.payrollEmployeeId || '' } : {}) }
-    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '', ...(usFields ? { ssnLast4: '', payrollEmployeeId: '' } : {}) });
+    ? { name: staff.name || '', role: staff.role && roles[staff.role] ? staff.role : '', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '', ...(usFields ? { ssnLast4: staff.ssnLast4 || '', payrollEmployeeId: staff.payrollEmployeeId || '' } : {}) }
+    : { name: '', role: roleOpts[0]?.[0] || '', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '', ...(usFields ? { ssnLast4: '', payrollEmployeeId: '' } : {}) });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   // 5.12.56: head office (Workforce settings, Head office staff). Only carried while the switch is on,
   // so a site that never turned it on never writes the two columns.
@@ -365,7 +381,8 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], headOffic
   // so the column was empty everywhere and anything keyed on it was dead.
   const [secIds, setSecIds] = useState((isEdit && Array.isArray(staff.sectionIds)) ? staff.sectionIds : []);
   const toggleSec = (id) => setSecIds(cur => cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
-  const valid = f.name.trim().length > 1;
+  // 5.12.58: a real position of this site is needed (its pay rate and rota come from it).
+  const valid = f.name.trim().length > 1 && !!f.role && !!roles[f.role];
   const roleRate = roles[f.role]?.rate;
   const submit = () => {
     const { ecName, ecPhone, ecRelation, ...rest } = f;
@@ -382,7 +399,14 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], headOffic
         <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>{isEdit ? `Editing ${staff.name}'s HR record at ${locName}.` : `HR record for ${locName}. Set them as a POS user afterwards to grant till access.`}</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Full name</label><input style={inputStyle} value={f.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Jordan Lee" autoFocus /></div>
-          <div><label style={labelStyle}>Position</label><select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>{roleOpts.map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}</select></div>
+          <div><label style={labelStyle}>Position</label>
+            {roleOpts.length === 0
+              ? <div style={{ ...inputStyle, display: 'flex', alignItems: 'center', height: 'auto', minHeight: 42, color: 'var(--amber)', fontSize: 12 }}>No positions yet. Add one in Workforce, Positions first.</div>
+              : <select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>
+                  {!f.role && <option value="">{isEdit && staff.role ? 'Their position was removed: pick one' : 'Pick a position'}</option>}
+                  {roleOpts.map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}
+                </select>}
+          </div>
           <div><label style={labelStyle}>Pay rate override ({pack.currencySymbol}/h)</label><input style={inputStyle} value={f.rateOverride} onChange={e => set('rateOverride', e.target.value.replace(/[^0-9.]/g, ''))} placeholder={roleRate != null ? `Position default ${venueMoney(roleRate, 2)}` : 'Position default'} inputMode="decimal" /></div>
           <div><label style={labelStyle}>Contract</label><select style={inputStyle} value={f.contractType} onChange={e => set('contractType', e.target.value)}><option value="zeroHours">Zero hours</option><option value="partTime">Part time</option><option value="fullTime">Full time</option><option value="salaried">Salaried</option></select></div>
           {headOffice && (

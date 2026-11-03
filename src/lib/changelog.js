@@ -3,6 +3,8 @@ export const CHANGELOG = [
     v: '5.12.57',
     date: '3 Nov 2026',
     items: [
+      'US sites showed UK money and fields in the Back Office (Mozz Woodbine): the pound sign, +44 phone formats, a National Insurance box instead of SSN, and pounds across Workforce settings and the tip pool. The screen followed whichever venue the browser had read last. Now the currency is set only by the venue being worked on, on every location switch, and Workforce loads the site\'s own region before it draws. Staff texts are read with the right country too.',
+      'Add staff member offered the built in sample positions (Bartender, Barback, and the rest at 12.50) when a site had none, so deleted positions came back. Now only the site\'s own positions are listed; with none it says to add one first, and a removed position must be picked again before saving.',
       'Staff app, head office staff: the Clock in card shows "Head office staff do not clock in. Your salary is paid each pay period." instead of a Clock in button, so they are never asked for their location first. The same as the till since 5.12.56. Nothing to deploy.',
     ],
   },

@@ -800,7 +800,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
 
 // ── Offer-letter & contract templates (create / edit / merge) ────────────────
 const TOKENS = ['first_name', 'full_name', 'position', 'rate', 'contract_type', 'start_date', 'weekly_hours', 'business_name', 'today'];
-const SAMPLE_VARS = { first_name: 'Jordan', full_name: 'Jordan Lee', position: 'Bartender', rate: '£12.50 per hour', contract_type: 'Part time', start_date: '1 July 2026', weekly_hours: '20', business_name: 'The Anchor', today: '9 June 2026' };
+const SAMPLE_VARS = { first_name: 'Jordan', full_name: 'Jordan Lee', position: 'Bartender', rate: '12.50 per hour', contract_type: 'Part time', start_date: '1 July 2026', weekly_hours: '20', business_name: 'The Anchor', today: '9 June 2026' };
 
 function WfTemplatesCard({ ctx, roles, showToast }) {
   const [tpls, setTpls] = useState([]);
@@ -877,7 +877,8 @@ function TemplateEditor({ tpl, onClose, onSave }) {
   const [f, setF] = useState({ id: tpl.id, kind: tpl.kind || 'offer', name: tpl.name || '', body: tpl.body || '', contractType: tpl.contractType || '' });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const valid = f.name.trim() && f.body.trim();
-  const preview = wf.mergeTemplate(f.body, SAMPLE_VARS);
+  // 5.12.58: the sample rate in the venue's own money (it was always pounds).
+  const preview = wf.mergeTemplate(f.body, { ...SAMPLE_VARS, rate: `${activeRegionPack().currencySymbol}12.50 per hour` });
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box" style={{ maxWidth: 760, maxHeight: '88vh', overflowY: 'auto' }}>
