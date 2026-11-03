@@ -140,6 +140,7 @@ const cut = (text, from, to) => {
 };
 
 test('one site: Location settings is main\'s file plus one import and one card line (sha256)', () => {
+  // 5.12.48: the time zone list moved to lib/timezones.js (one list for every venue picker); was f08d748d58f0.
   const now = readSrc('backoffice/sections/LocationSettings.jsx');
   const IMPORT = "import SiteGroupsCard from './stock/SiteGroupsCard';\n";
   const CARD = '      <SiteGroupsCard />\n';
@@ -155,7 +156,7 @@ test('one site: Location settings is main\'s file plus one import and one card l
   once(now, CAL_CARD);
   once(now, KIND_IMPORT);
   once(now, KIND_CARD);
-  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), 'f08d748d58f08fa3dac08006847b46b386fa108c687ca7fc12cbced018e3fc18');   // 29 Oct 2026 (Drop D): main's file now says Adyen, not Stripe, in one comment and one label. 3 Nov 2026 (5.12.43): heading emoji are line icons
+  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), '0ed9f16cfdd13a89affa5718562981b5c63c79b2b95f9f66477c8aa9ec8db3da');   // 29 Oct 2026 (Drop D): main's file now says Adyen, not Stripe, in one comment and one label. 3 Nov 2026 (5.12.43): heading emoji are line icons
   const card = readSrc('backoffice/sections/stock/SiteGroupsCard.jsx');
   assert.ok(card.includes('export default function SiteGroupsCard() {\n  const sc = useStockScope();\n  if (!groupsCardShows(sc)) return null;\n'), 'nothing at all before the scope says multi and All sites');
 });

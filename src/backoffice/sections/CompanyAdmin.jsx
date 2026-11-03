@@ -7,6 +7,7 @@ import { CURRENCIES } from '../../lib/currency';
 import { newVenueSubscription } from '../../lib/saasNewVenue';
 import { seedVenueTaxRates, seedWords } from '../../lib/venueTaxRates';
 import { Icon } from '../../components/ServOSIcons';
+import TimezoneOptions from '../../components/TimezoneOptions';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -351,11 +352,7 @@ export default function CompanyAdmin() {
             <div>
               <label style={S.label}>Timezone</label>
               <select style={S.input} value={form.locTz || 'Europe/London'} onChange={e => f('locTz', e.target.value)}>
-                <option value="Europe/London">Europe/London (GMT/BST)</option>
-                <option value="Europe/Paris">Europe/Paris (CET)</option>
-                <option value="America/New_York">America/New_York (EST)</option>
-                <option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
-                <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                <TimezoneOptions value={form.locTz || 'Europe/London'} />
               </select>
             </div>
             <div>
