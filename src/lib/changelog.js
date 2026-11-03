@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.53',
+    date: '3 Nov 2026',
+    items: [
+      'California daily overtime: a venue with State break rules set to California gets two settings, both on: California daily overtime and California meal break premium. Payroll pays time and a half over 8 hours in a day, double time over 12, and weekly overtime over 40 counting only hours not already daily overtime.',
+      'California meal break premium: when a shift needed a meal break (30 minutes past 5 hours, a second past 10) and the clocked break was shorter, Payroll adds one hour of pay at the regular rate for that day.',
+      'Payroll shows double time under the overtime hours and a Meal premium column; the US export has Double time hours and Meal break premium. Every other venue (Utah included) is unchanged.',
+      'Not covered yet: the seventh consecutive day rule and rest break premiums. Needs workforce-compute deployed.',
+    ],
+  },
+  {
     v: '5.12.52',
     date: '3 Nov 2026',
     items: [

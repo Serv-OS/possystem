@@ -84,6 +84,9 @@ function prepare(sheets, { tz, weekStartDow, blend }) {
     .sort((a, b) => a.ms - b.ms || textOrder(String(a.t.staff_id), String(b.t.staff_id)) || textOrder(String(a.t.id ?? ''), String(b.t.id ?? '')));
 }
 
+// 5.12.53: California's daily rules (caOvertime.js) start from the same prepared, ordered sheets.
+export { prepare as prepareSheets };
+
 /** The core: each sheet's overtime hours and its half time, at its person-week's blended rate. */
 function walk(rows, weekly) {
   const blend = {};

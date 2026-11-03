@@ -41,6 +41,8 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
   const withTopUp = usExport && !!run?.staff?.some(r => Number(r.tip_credit_topup) > 0);
   // 5.12.49: cash tips declared at clock out (US). Reported with wages; not part of what the venue pays.
   const withCashTips = usExport && run?.totals?.tips_cash_declared != null;
+  // 5.12.53: California daily rules (double time, meal break premium).
+  const withCa = usExport && run?.totals?.meal_premium != null;
   const topUpTitle = (r) => (r.tip_credit_weeks || []).filter(w => w.topUp > 0)
     .map(w => `Week of ${w.week}: ${Number(w.hours).toFixed(2)}h owed ${money(w.owed)}, paid ${money(w.pay)} + tips ${money(w.tips)}, top up ${money(w.topUp)}`).join('\n') || undefined;
   useEffect(() => { setPeriod(payPeriod(payCfg)); setRun(null); }, [payCfg]);
@@ -105,13 +107,13 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
       return [parts.slice(0, -1).join(' ') || parts[0] || '', parts.length > 1 ? parts[parts.length - 1] : ''];
     };
     const rows = [
-      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Hours at other sites', 'Regular rate (blended)', 'Overtime premium', 'Tip credit top up', 'Gross wages', ...(withPrem ? ['Premium pay'] : []), 'Holiday hours', 'Holiday pay', 'Tips (direct)', 'Tips (pooled)', 'Cash tips (declared)', 'Total'],
+      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Hours at other sites', 'Regular rate (blended)', 'Overtime premium', 'Double time hours', 'Meal break premium', 'Tip credit top up', 'Gross wages', ...(withPrem ? ['Premium pay'] : []), 'Holiday hours', 'Holiday pay', 'Tips (direct)', 'Tips (pooled)', 'Cash tips (declared)', 'Total'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
         const [first, last] = names(r.staff_id);
         return [s.payrollEmployeeId || '', first, last, s.ssnLast4 || '', period.startIso, period.endIso,
           Number(r.regular_hours ?? r.hours ?? 0).toFixed(2), Number(r.overtime_hours || 0).toFixed(2),
-          Number(r.other_site_hours || 0).toFixed(2), r.regular_rate != null ? Number(r.regular_rate).toFixed(4) : '', Number(r.overtime_premium || 0).toFixed(2), Number(r.tip_credit_topup || 0).toFixed(2),
+          Number(r.other_site_hours || 0).toFixed(2), r.regular_rate != null ? Number(r.regular_rate).toFixed(4) : '', Number(r.overtime_premium || 0).toFixed(2), Number(r.double_time_hours || 0).toFixed(2), Number(r.meal_premium || 0).toFixed(2), Number(r.tip_credit_topup || 0).toFixed(2),
           Number(r.pay || 0).toFixed(2),
           ...(withPrem ? [Number(r.premium_pay || 0).toFixed(2)] : []), Number(r.holiday_hours || 0).toFixed(2), Number(r.holiday_pay || 0).toFixed(2),
           Number(r.tips_direct || 0).toFixed(2), Number(r.tips_tronc || 0).toFixed(2), Number(r.tips_cash_declared || 0).toFixed(2), Number(r.total || 0).toFixed(2)];
@@ -274,6 +276,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     {usExport && <th style={{ ...th, textAlign: 'right' }}>Overtime</th>}
                     {usExport && <th style={{ ...th, textAlign: 'right' }} title="Half time on each overtime hour, at the week's blended regular rate across every site">OT premium</th>}
                     {withTopUp && <th style={{ ...th, textAlign: 'right' }} title="Paid when a tipped server's cash wage plus tips comes to less than the minimum wage for the week">Tip top up</th>}
+                    {withCa && <th style={{ ...th, textAlign: 'right' }} title="California: one hour at the regular rate for each day a needed meal break was missed or short">Meal premium</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Base pay</th>
                     {withPrem && <th style={{ ...th, textAlign: 'right' }}>Premiums</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Holiday</th>
@@ -300,13 +303,14 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                         {/* 5.12.36: the same person's hours at their other sites count toward their 40. */}
                         {usExport && Number(r.other_site_hours) > 0 && <div style={{ fontSize: 10.5, color: 'var(--t3)' }}>+{Number(r.other_site_hours).toFixed(2)} at other sites</div>}
                       </td>
-                      {usExport && <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.overtime_hours || 0).toFixed(2)}</td>}
+                      {usExport && <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.overtime_hours || 0).toFixed(2)}{Number(r.double_time_hours) > 0 && <div style={{ fontSize: 10.5, color: 'var(--t3)' }}>+{Number(r.double_time_hours).toFixed(2)} double time</div>}</td>}
                       {usExport && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.regular_rate != null ? `Blended regular rate ${money(r.regular_rate)} an hour` : undefined}>
                         {r.overtime_premium ? money(r.overtime_premium) : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>}
                       {withTopUp && <td style={{ ...td, textAlign: 'right' }} className="mono" title={topUpTitle(r)}>
                         {r.tip_credit_topup ? money(r.tip_credit_topup) : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>}
+                      {withCa && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.meal_premium_days ? `${r.meal_premium_days} day${r.meal_premium_days === 1 ? '' : 's'}` : undefined}>{r.meal_premium ? money(r.meal_premium) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>}
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{money(r.pay)}</td>
                       {withPrem && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.premium_hours ? `${Number(r.premium_hours).toFixed(1)}h at a premium` : undefined}>{r.premium_pay ? money(r.premium_pay) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>}
                       <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.holiday_hours ? `${Number(r.holiday_hours).toFixed(1)}h paid holiday` : undefined}>
@@ -326,6 +330,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <td style={{ ...td, borderBottom: 'none' }} />
                     {usExport && <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.overtime_premium || 0)}</td>}
                     {withTopUp && <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tip_credit_topup || 0)}</td>}
+                    {withCa && <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.meal_premium || 0)}</td>}
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.pay)}</td>
                     {withPrem && <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.premium_pay || 0)}</td>}
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.holiday_pay || 0)}</td>
