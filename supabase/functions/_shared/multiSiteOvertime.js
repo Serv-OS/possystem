@@ -17,6 +17,14 @@
 //     Work week starts). Linked sites normally share both; when they do not, each sheet still lands
 //     in one week, the same week for payroll and the reports.
 //
+// Two rules from Workforce settings, per site (5.12.41, overtimeRules below):
+//   * EXEMPT positions (most salaried managers) earn no overtime: their timesheets are left out of
+//     the count altogether. Salaried positions are exempt unless switched off; any position can be
+//     switched on (Workforce settings, Overtime).
+//   * TIP CREDIT: a timesheet paid below the site's minimum wage (a tipped server on $2.13) counts
+//     in the blend at the minimum wage (federal $7.25 unless the site sets its own), so the half time
+//     is half the minimum wage, as the law works it: 1.5 x 7.25 less the 5.12 tip credit.
+//
 // Two blends:
 //   'rate'        hours x snapshotted rate + pay premium: payroll (never the client writable pay_amount)
 //   'pay_amount'  the stored pay of the sheet: the reports' column, kept by the database
@@ -27,21 +35,46 @@
 import { venueDay, workweekStart } from './payPremiums.js';
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+// Money to the cent the way Postgres rounds a numeric: to 6 places first, then half up, so an exact
+// half cent (5 x 2.13 x 0.5 = 5.325) is 5.33 in payroll and in the database's column alike
+// (wf_ot_recompute: round(round(x, 6), 2)). Plain r2 gives 5.32 because 5.325 is 5.32499... as a float.
+const pennies = (n) => Math.round(Math.round((Number(n) || 0) * 1e6) / 1e4) / 100;
 const r4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
 const textOrder = (a, b) => (a < b ? -1 : a > b ? 1 : 0);   // byte order, as Postgres "C"
+
+export const FEDERAL_MINIMUM_WAGE = 7.25;
+
+/**
+ * The overtime rules for one timesheet at its site (5.12.41).
+ *   settings   the site's wf_venue_settings.settings ({ overtimeExempt: { roleKey: bool }, minimumWage })
+ *   roleKey    the staff record's position at that site; payType its wf_roles.pay_type
+ *   rateSource the timesheet's rate_source ('salaried' when paid a salary's hourly equivalent)
+ * Returns { exempt, minWage }. The SQL twin is _wf_ot_rules (20261114a).
+ */
+export function overtimeRules({ settings = null, roleKey = null, payType = null, rateSource = null } = {}) {
+  const map = settings && typeof settings.overtimeExempt === 'object' && settings.overtimeExempt ? settings.overtimeExempt : {};
+  const set = roleKey != null && Object.prototype.hasOwnProperty.call(map, roleKey) ? map[roleKey] : undefined;
+  const exempt = set === true || set === 'true' ? true : set === false || set === 'false' ? false : (payType === 'salaried' || rateSource === 'salaried');
+  const mw = Number(settings?.minimumWage);
+  return { exempt, minWage: Number.isFinite(mw) && mw > 0 ? Math.round(mw * 100) / 100 : FEDERAL_MINIMUM_WAGE };
+}
 
 /** Each sheet with its venue day, its week, its hours and its pay, in the order they were worked. */
 function prepare(sheets, { tz, weekStartDow, blend }) {
   return (sheets || [])
-    .filter((t) => t && t.staff_id)
+    .filter((t) => t && t.staff_id && t.exempt !== true)   // 5.12.41: exempt positions earn no overtime
     .map((t) => {
       const day = t.clock_in ? venueDay(t.clock_in, t.tz || tz) : null;
       const dow = Number.isInteger(Number(t.week_start_dow)) && t.week_start_dow !== null && t.week_start_dow !== '' ? Number(t.week_start_dow) : weekStartDow;
       const hrs = Math.max(0, Number(t.actual_hours) || 0);
       const paidHrs = hrs + Math.max(0, Number(t.paid_break_mins) || 0) / 60;
-      const pay = blend === 'pay_amount'
+      const rate = Number(t.effective_rate) || 0;
+      // 5.12.41: tip credit. Paid below the minimum wage: counts at the minimum wage in the blend.
+      const mw = Number(t.min_wage) > 0 ? Number(t.min_wage) : 0;
+      const topUp = mw > rate ? (mw - rate) * paidHrs : 0;
+      const pay = (blend === 'pay_amount'
         ? Math.max(0, Number(t.pay_amount) || 0)
-        : paidHrs * (Number(t.effective_rate) || 0) + Math.max(0, Number(t.premium_pay) || 0);
+        : paidHrs * rate + Math.max(0, Number(t.premium_pay) || 0)) + topUp;
       return {
         t, day, hrs, paidHrs, pay, ms: Date.parse(t.clock_in) || 0,
         person: String(t.person || t.staff_id),
@@ -69,7 +102,7 @@ function walk(rows, weekly) {
     running[k] = after;
     const ot = Math.max(0, after - weekly) - Math.max(0, before - weekly);
     const rate = blend[k].hours > 0 ? blend[k].pay / blend[k].hours : 0;
-    return { r, ot, rate, premium: ot > 0 ? r2(ot * rate * 0.5) : 0 };
+    return { r, ot, rate, premium: ot > 0 ? pennies(ot * rate * 0.5) : 0 };
   });
 }
 
@@ -135,7 +168,7 @@ export function overtimeAcrossSites(sheets, weekly, { tz = 'Europe/London', week
   for (const o of Object.values(out)) {
     o.regularRate = o.overtime > 0 ? r4(o.otRateWeight / o.overtime) : null;
     o.regular = r2(o.regular); o.overtime = r2(o.overtime);
-    o.otherSiteHours = r2(o.otherSiteHours); o.overtimePremium = r2(o.overtimePremium);
+    o.otherSiteHours = r2(o.otherSiteHours); o.overtimePremium = pennies(o.overtimePremium);
     delete o.otRateWeight;
   }
   return out;

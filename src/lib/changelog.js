@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.41',
+    date: '3 Nov 2026',
+    items: [
+      'US overtime, tip credit: staff paid below the minimum wage (a tipped server on $2.13) have their overtime worked out on the minimum wage, as the law says: the half time is half of $7.25, not half of $2.13. A 45 hour week is now $18.13 of overtime premium, not $5.33. Workforce settings, Minimum wage: blank uses the federal $7.25; set your state\'s if it is higher.',
+      'US overtime, exempt positions: Workforce settings, Positions with no overtime. Salaried positions start ticked (most salaried managers are exempt) and any position can be ticked or unticked. A ticked position never earns overtime and its hours do not count toward 40.',
+      'Payroll, the US export and every labour report (Daily trading, Owner and Manager apps, Stock and GP) follow both rules, and a change to either setting recomputes the last 10 weeks by itself. Payroll and the database now round an exact half cent the same way.',
+      'Needs the SQL 20261114a in the Ops database, then workforce-compute deployed.',
+    ],
+  },
+  {
     v: '5.12.40',
     date: '2 Nov 2026',
     items: [

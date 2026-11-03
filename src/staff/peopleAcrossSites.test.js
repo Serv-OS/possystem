@@ -61,7 +61,7 @@ test('linkErrorWords: the database refusal in plain words', () => {
 
 test('payroll counts a linked person across sites (workforce-compute reads person_id and the shared rule)', () => {
   const fn = read('../../supabase/functions/workforce-compute/index.ts');
-  assert.match(fn, /import \{ overtimeAcrossSites \} from '\.\.\/_shared\/multiSiteOvertime\.js'/);
+  assert.match(fn, /import \{ overtimeAcrossSites(, overtimeRules)? \} from '\.\.\/_shared\/multiSiteOvertime\.js'/);
   assert.match(fn, /select\('id, person_id, role_key'\)\.eq\('location_id', location_id\)/);
   assert.match(fn, /\.eq\('org_id', org\)\.in\('person_id', persons\)\.neq\('location_id', location_id\)/);
   assert.match(fn, /overtimeAcrossSites\(all, pack\.overtimeWeeklyHours, \{ tz: venue\.timezone, weekStartDow: wsd, from, to, here: location_id \}\)/);

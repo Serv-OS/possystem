@@ -13,6 +13,7 @@ import * as wf from '../../../staff/wfData';
 import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
 import WfGeofenceCard from './WfGeofenceCard';
 import { activeRegionPack } from '../../../lib/regionPack';
+import { overtimeRules, FEDERAL_MINIMUM_WAGE } from '../../../../supabase/functions/_shared/multiSiteOvertime.js';
 import { CURRENCIES as ALL_CURRENCIES } from '../../../lib/currency';
 
 // v5.11.101: pay period types and their names. Which ones a venue may pick follows the region pack
@@ -104,6 +105,10 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [swapMaxHours, setSwapMaxHours] = useState('');
   // v5.11.101: the day the work week starts (US overtime counts hours over 40 in a work week).
   const [workweekStart, setWorkweekStart] = useState('1');
+  // 5.12.41 (US): the minimum wage tip credit overtime is worked out on, and which positions earn no
+  // overtime (exempt). One rule with payroll and the reports (_shared/multiSiteOvertime.js overtimeRules).
+  const [minimumWage, setMinimumWage] = useState('');
+  const [otExempt, setOtExempt] = useState({});
   // v5.11.101: pay premiums (wf_venue_settings.premiums), applied in payroll and the rota cost.
   const [premWeekend, setPremWeekend] = useState('');
   const [premHoliday, setPremHoliday] = useState('');
@@ -139,6 +144,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setSwapApproval(sj.shiftSwaps?.approval === 'instant' ? 'instant' : 'manager');
     setSwapMaxHours(sj.shiftSwaps?.maxWeeklyHours != null ? String(sj.shiftSwaps.maxWeeklyHours) : '');
     setWorkweekStart(String(Number.isInteger(Number(sj.workweekStart)) ? Number(sj.workweekStart) : 1));
+    setMinimumWage(Number(sj.minimumWage) > 0 ? String(sj.minimumWage) : '');
+    setOtExempt(sj.overtimeExempt && typeof sj.overtimeExempt === 'object' ? sj.overtimeExempt : {});
     const pr = settings?.premiums || {};
     setPremWeekend(pr.weekend != null ? String(pr.weekend) : '');
     setPremHoliday(pr.bankHoliday != null ? String(pr.bankHoliday) : '');
@@ -221,6 +228,9 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         troncmasterName: troncmasterName.trim() || null,
         shiftSwaps: { approval: swapApproval === 'instant' ? 'instant' : 'manager', maxWeeklyHours: swapMaxHours === '' ? null : maxH },
         workweekStart: Math.min(6, Math.max(0, parseInt(workweekStart, 10) || 0)),
+        // 5.12.41: blank = the federal minimum wage; a change recomputes the last 10 weeks' overtime.
+        minimumWage: Number(minimumWage) > 0 ? Math.round(Number(minimumWage) * 100) / 100 : null,
+        overtimeExempt: otExempt,
       },
     };
     try {
@@ -384,6 +394,32 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
                   {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => <option key={d} value={String(i)}>{d}</option>)}
                 </select>
                 <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Overtime is hours over {pack.overtimeWeeklyHours} in a work week; a week across two pay periods is counted whole.</div>
+              </div>
+            ) : null}
+            {pack.overtimeWeeklyHours ? (
+              <div>
+                <label style={labelStyle}>Minimum wage, for tipped staff's overtime</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} inputMode="decimal" placeholder={`${FEDERAL_MINIMUM_WAGE.toFixed(2)} (federal)`}
+                  value={minimumWage} onChange={e => setMinimumWage(e.target.value.replace(/[^\d.]/g, ''))} disabled={savingVenue} />
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Staff paid below it (a tip credit, such as $2.13) get their overtime worked out on it, as the law says. Blank uses the federal ${FEDERAL_MINIMUM_WAGE.toFixed(2)}; set your state's if it is higher.</div>
+              </div>
+            ) : null}
+            {pack.overtimeWeeklyHours && (roles?.list || []).length > 0 ? (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={labelStyle}>Positions with no overtime (exempt)</label>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {(roles.list || []).map(r => {
+                    const on = overtimeRules({ settings: { overtimeExempt: otExempt }, roleKey: r.key, payType: r.payType }).exempt;
+                    return (
+                      <button key={r.key} type="button" className="btn btn-ghost btn-xs" disabled={savingVenue}
+                        onClick={() => setOtExempt(m => ({ ...m, [r.key]: !on }))}
+                        style={{ border: `1.5px solid ${on ? 'var(--acc)' : 'var(--bdr2)'}`, color: on ? 'var(--acc)' : 'var(--t2)' }}>
+                        {on ? '✓ ' : ''}{r.lbl}{r.payType === 'salaried' ? ' (salaried)' : ''}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Ticked positions never earn overtime and their hours do not count toward {pack.overtimeWeeklyHours}. Salaried positions start ticked (most salaried managers are exempt); untick one that is paid overtime. Saving recomputes the last 10 weeks.</div>
               </div>
             ) : null}
             <div>
