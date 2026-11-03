@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
+import { Icon } from '../../components/ServOSIcons';
 
 /**
  * Shift section (v4.6.37).
@@ -155,14 +156,14 @@ export default function Shift() {
           )}
 
           {!allDrawersIdle && (
-            <div style={{ fontSize:11, color:'var(--amb,#e8a020)', marginTop:12, padding:'8px 10px', background:'rgba(232,160,32,.08)', borderRadius:6 }}>
-              ⚠ One or more drawers are still open or counting. Close shift is blocked until every drawer is idle. Cash up from EOD Close.
+            <div style={{ fontSize:11, color:'var(--amb,#e8a020)', marginTop:12, padding:'8px 10px', background:'rgba(232,160,32,.08)', borderRadius:6, display:'flex', alignItems:'flex-start', gap:6 }}>
+              <Icon name="warn" size={13} style={{ marginTop:1 }} />One or more drawers are still open or counting. Close shift is blocked until every drawer is idle. Cash up from EOD Close.
             </div>
           )}
         </div>
       ) : (
         <div style={{ background:'var(--bg1)', border:'1px dashed var(--bdr2)', borderRadius:14, padding:'28px 20px', textAlign:'center', marginBottom:20 }}>
-          <div style={{ fontSize:36, marginBottom:8, opacity:.35 }}>⏸</div>
+          <div style={{ marginBottom:8, opacity:.35, display:'flex', justifyContent:'center' }}><Icon name="clock" size={36} /></div>
           <div style={{ fontSize:14, fontWeight:700, color:'var(--t3)' }}>No shift is currently open</div>
           <div style={{ fontSize:12, color:'var(--t4)', marginTop:4 }}>Normally the shift opens automatically at app mount. If you need to start one manually, click below.</div>
           <button onClick={handleOpen}

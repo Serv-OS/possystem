@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Icon } from './ServOSIcons';
 
 export default function UpdateBanner() {
   const [updateReady, setUpdateReady] = useState(false);
@@ -79,7 +80,7 @@ export default function UpdateBanner() {
       minWidth: 300,
       maxWidth: 420,
     }}>
-      <div style={{ fontSize: 22 }}>🔄</div>
+      <div style={{ fontSize: 22, color: '#f1f5f9' }}><Icon name="refresh" size={22} /></div>
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9', marginBottom: 2 }}>
           Update available

@@ -19,6 +19,7 @@ import { stockApi } from '../../../lib/stock/stockApi';
 import { listWords } from '../../../lib/stock/siteScope';
 import { Btn } from '../msm/msmUi';
 import { ui } from '../msm/msmStyle';
+import { Icon } from '../../../components/ServOSIcons';
 
 const strip = { display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', borderRadius: 8, background: 'var(--bg2)', color: 'var(--t3)', fontSize: 13, lineHeight: 1.45 };
 
@@ -52,7 +53,7 @@ export default function LockLine({ entity = null, id = null, recordName = '', ki
   return (
     <div style={{ display: 'grid', gap: 8 }} data-testid="stock-lock-line">
       <div style={strip}>
-        <span style={{ flex: '1 1 260px', minWidth: 0 }}>🔒 Set by head office. Ask {sc.editorsText || 'head office'} to change it.</span>
+        <span style={{ flex: '1 1 260px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="lock" size={14}/>Set by head office. Ask {sc.editorsText || 'head office'} to change it.</span>
         {canSuggest && !open && <Btn small kind="soft" onClick={() => setOpen(true)}>Suggest a change</Btn>}
       </div>
       {canSuggest && open && (

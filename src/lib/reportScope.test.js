@@ -490,7 +490,7 @@ test('pin: the overview compares the scope\'s sites, per currency, on one row bu
   // 6 Oct 2026 (review): and ONLY the scope's sites. The fallback to every user_locations row
   // (every company) is gone: without a scope nothing is read and the screen says so.
   assert.doesNotMatch(lc, /fetchAccessibleLocations/);
-  assert.match(lc, /if \(!scopeSites\) \{\s+return <EmptyState icon="📍" message="Sites could not be worked out\. Choose the report again\."\/>;/);
+  assert.match(lc, /if \(!scopeSites\) \{\s+return <EmptyState icon="mapPin" message="Sites could not be worked out\. Choose the report again\."\/>;/);
   // and the shell never draws a report body (the overview included) before the scope is in
   assert.match(read('../backoffice/sections/BOReports.jsx'), /\(loadingRange \|\| !locationConfig \|\| !scopeReady\) \? \(/);
   assert.match(lc, /stop: \(\) => stale, budget,/);

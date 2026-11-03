@@ -12,14 +12,15 @@ import { pctDelta, reportClock, mixSeries, mixLabel } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 import { aggregate, StackedBarChart, MixSites } from './OrderTypes';
 import { isSplit } from '../../../lib/reportSplit.js';
+import { Icon, hasIcon } from '../../../components/ServOSIcons';
 
 const SOURCE_STYLE = {
-  pos:      { label:'POS',      color:'#e8a020', icon:'🖥' },
-  mpos:     { label:'Mobile POS', color:'#22d3ee', icon:'📲' },
-  kiosk:    { label:'Kiosk',    color:'#0ea5e9', icon:'📟' },
-  online:   { label:'Online',   color:'#10b981', icon:'🌐' },
-  qr:       { label:'QR code',  color:'#a855f7', icon:'📱' },
-  catering: { label:'Catering', color:'#f97316', icon:'🍽' },
+  pos:      { label:'POS',      color:'#e8a020', icon:'monitor' },
+  mpos:     { label:'Mobile POS', color:'#22d3ee', icon:'phone' },
+  kiosk:    { label:'Kiosk',    color:'#0ea5e9', icon:'tablet' },
+  online:   { label:'Online',   color:'#10b981', icon:'globe' },
+  qr:       { label:'QR code',  color:'#a855f7', icon:'phone' },
+  catering: { label:'Catering', color:'#f97316', icon:'utensils' },
 };
 // Distinct colours for the delivery platforms (assigned in revenue order).
 const PLATFORM_COLORS = ['#ef4444', '#3b82f6', '#84cc16', '#ec4899', '#14b8a6', '#eab308'];
@@ -39,14 +40,14 @@ export const srcKey = (c) => c.source === 'hubrise'
 export default function OrderSources(props) {
   if (!isSplit(props.sites)) return <OrderSourcesOne {...props}/>;
   return <MixSites {...props} name="order-sources" keyOf={srcKey} fromSums={null}
-    styleOf={sourceStyles} first="Order source" keyLabel="Source" leadLabel="Biggest source" icon="🛵"/>;
+    styleOf={sourceStyles} first="Order source" keyLabel="Source" leadLabel="Biggest source" icon="scooter"/>;
 }
 
 // Platform keys (not in SOURCE_STYLE) get colours by revenue rank, as on one site.
 function sourceStyles(all) {
   const map = {};
   Object.keys(all).filter(k => !SOURCE_STYLE[k]).sort((a, b) => (all[b]?.revenue || 0) - (all[a]?.revenue || 0))
-    .forEach((k, i) => { map[k] = { label: k, color: PLATFORM_COLORS[i % PLATFORM_COLORS.length], icon: '🛵' }; });
+    .forEach((k, i) => { map[k] = { label: k, color: PLATFORM_COLORS[i % PLATFORM_COLORS.length], icon: 'scooter' }; });
   return (k) => SOURCE_STYLE[k] || map[k] || { label: k, color: 'var(--t4)', icon: '?' };
 }
 
@@ -63,7 +64,7 @@ function OrderSourcesOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
       .filter(k => !SOURCE_STYLE[k])
       .sort((a, b) => (cur[b]?.revenue || 0) - (cur[a]?.revenue || 0));
     const map = {};
-    platformKeys.forEach((k, i) => { map[k] = { label: k, color: PLATFORM_COLORS[i % PLATFORM_COLORS.length], icon: '🛵' }; });
+    platformKeys.forEach((k, i) => { map[k] = { label: k, color: PLATFORM_COLORS[i % PLATFORM_COLORS.length], icon: 'scooter' }; });
     return (k) => SOURCE_STYLE[k] || map[k] || { label: k, color: 'var(--t4)', icon: '?' };
   }, [cur, prev]);
 
@@ -99,7 +100,7 @@ function OrderSourcesOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
     downloadCsv(`order-sources-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
-  if (rows.length === 0 || totalRev === 0) return <EmptyState icon="🛵" message="No orders in this period."/>;
+  if (rows.length === 0 || totalRev === 0) return <EmptyState icon="scooter" message="No orders in this period."/>;
 
   const dominant = rows[0];
   const fastestGrowth = [...rows].filter(r => r.revDelta !== null && r.prevRevenue > 0).sort((a, b) => (b.revDelta || 0) - (a.revDelta || 0))[0];
@@ -155,7 +156,7 @@ function OrderSourcesOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
           const st = styleFor(r.key);
           return (
             <div key={r.key} style={{ display:'grid', gridTemplateColumns:'50px 1.3fr 80px 110px 90px 80px 100px', padding:'10px 14px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8 }}>
-              <span style={{ fontSize:16, textAlign:'center' }}>{st.icon}</span>
+              <span style={{ fontSize:16, display:'flex', justifyContent:'center' }}>{hasIcon(st.icon) ? <Icon name={st.icon} size={16}/> : st.icon}</span>
               <span style={{ color:'var(--t1)', fontWeight:600 }}>{st.label}</span>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checks}</span>
               <span style={{ textAlign:'right', color: st.color, fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(r.revenue)}</span>

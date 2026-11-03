@@ -20,6 +20,7 @@ import { computeSurcharge } from '../../lib/delivery/surcharge';
 import { money } from '../../lib/currency';
 import MoneyField from '../../components/MoneyField';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
+import { Icon } from '../../components/ServOSIcons';
 
 const S = {
   wrap: { maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -160,15 +161,15 @@ export default function UberDirect() {
         <h2 style={S.h2}>How are deliveries fulfilled?</h2>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {[
-            ['self', '🚶 I deliver it myself', 'The order just fires to your POS / kitchen. You arrange the delivery. No courier dispatch, no account needed.'],
-            ['uber', '🚗 Stuart courier', "A Stuart courier is dispatched automatically with a live price + ETA and a tracking link. Connect this venue's Stuart account below."],
-          ].map(([val, title, desc]) => (
+            ['self', 'walk', 'I deliver it myself', 'The order just fires to your POS / kitchen. You arrange the delivery. No courier dispatch, no account needed.'],
+            ['uber', 'car', 'Stuart courier', "A Stuart courier is dispatched automatically with a live price + ETA and a tracking link. Connect this venue's Stuart account below."],
+          ].map(([val, ico, title, desc]) => (
             <div key={val} onClick={() => set('delivery_mode', val)} style={{
               flex: '1 1 240px', cursor: 'pointer', borderRadius: 12, padding: '14px 16px',
               border: `2px solid ${form.delivery_mode === val ? 'var(--acc)' : 'var(--bdr)'}`,
               background: form.delivery_mode === val ? 'var(--acc-d, rgba(232,160,32,.08))' : 'var(--bg3)',
             }}>
-              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>{title}</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 6 }}><Icon name={ico} size={16} />{title}</div>
               <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>{desc}</div>
             </div>
           ))}
@@ -230,7 +231,7 @@ export default function UberDirect() {
 
       {/* Warn if courier mode is on but nothing can actually price/dispatch a delivery. */}
       {isCourier && !form.stuart_connected && form.flat_fee_minor == null && (
-        <div style={S.note(true)}>⚠ Delivery is set to use a Stuart courier, but this venue isn't connected to Stuart yet and no fallback delivery charge is set — connect Stuart above (or set a delivery charge) before turning delivery on.</div>
+        <div style={{ ...S.note(true), display: 'flex', alignItems: 'flex-start', gap: 6 }}><Icon name="warn" size={15} style={{ marginTop: 1 }} /><span>Delivery is set to use a Stuart courier, but this venue isn't connected to Stuart yet and no fallback delivery charge is set — connect Stuart above (or set a delivery charge) before turning delivery on.</span></div>
       )}
 
       {/* Pickup */}

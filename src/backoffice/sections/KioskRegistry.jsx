@@ -18,6 +18,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase, getLocationId } from '../../lib/supabase';
 import { issuePairingCodeWithFallback, formatPairingCode } from '../../lib/deviceFence';
 import KioskSettings from './KioskSettings';
+import { Icon } from '../../components/ServOSIcons';
 
 // Database fence stage 1 (contract A6): kiosk codes come from the SERVER
 // (issue_pairing_code, 60 minutes). This browser made code is the FENCE STAGE 1 FALLBACK
@@ -182,7 +183,7 @@ export default function KioskRegistry() {
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--t3)' }}>Loading…</div>
         ) : kiosks.length === 0 ? (
           <div style={{ padding: 50, textAlign: 'center', background: 'var(--bg2)', border: '1px dashed var(--bdr)', borderRadius: 12 }}>
-            <div style={{ fontSize: 38, marginBottom: 10 }}>🖥️</div>
+            <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center', color: 'var(--t3)' }}><Icon name="monitor" size={38} /></div>
             <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>No kiosks yet</div>
             <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>Add your first self-ordering screen.</div>
           </div>
@@ -201,7 +202,7 @@ export default function KioskRegistry() {
               return (
                 <div key={k.id} style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr 1fr 1.2fr 130px', gap: 10, padding: '14px 16px', borderTop: '1px solid var(--bdr)', alignItems: 'center', fontSize: 13 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 18 }}>🖥️</span>
+                    <span style={{ display: 'flex', color: 'var(--t2)' }}><Icon name="monitor" size={18} /></span>
                     <span style={{ fontWeight: 600 }}>{k.name}</span>
                   </div>
                   <div>

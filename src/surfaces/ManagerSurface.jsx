@@ -226,7 +226,7 @@ function Shell({ ctx, tabs, active, onTab, onLogout, hideNav, children }) {
             visibly acknowledged. */}
         <RefreshButton onRefresh={ctx.refreshSnap} />
         <button onClick={ctx.toggleTheme} aria-label="Theme" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0, ...L.s.hit }}>
-          {ctx.dark ? '☾' : '☀'}
+          <Icon name={ctx.dark ? 'moon' : 'sun'} size={18} />
         </button>
         <button onClick={onLogout} aria-label="Sign out" title="Sign out" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--red)', border: '1px solid var(--bdr)', flexShrink: 0, ...L.s.hit }}>
           <Icon name="signout" size={18} />

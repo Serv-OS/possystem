@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { Icon } from '../../../components/ServOSIcons';
 
 const SOURCE_LABEL = { google: 'Google', tripadvisor: 'TripAdvisor', facebook: 'Facebook', thefork: 'TheFork', trustpilot: 'Trustpilot', booking: 'Booking.com', yelp: 'Yelp', opentable: 'OpenTable', ubereats: 'Uber Eats', deliveroo: 'Deliveroo', justeat: 'Just Eat' };
 const TONES = ['Warm', 'Professional', 'Apologetic', 'Brief'];
@@ -119,7 +120,7 @@ export default function ReviewQueue() {
 
       {error && <div style={S.err}>{error}</div>}
       {loading ? <div style={S.empty}>Loading…</div>
-        : shown.length === 0 ? <div style={S.empty}>🎉 Nothing waiting — every review has been handled.</div>
+        : shown.length === 0 ? <div style={{ ...S.empty, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><Icon name="party" size={16}/>Nothing waiting — every review has been handled.</div>
         : shown.map(fb => {
           const d = drafts[fb.id] || {};
           return (

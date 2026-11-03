@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { money } from '../../lib/currency';  // v5.5.326: multi-currency
+import { Icon } from '../../components/ServOSIcons';
 
 const DENOMS_ORDER = [50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01];
 const DENOM_LABEL = {
@@ -516,7 +517,7 @@ function Alert({ tone = 'info', title, body, children }) {
   return (
     <div style={{ background: palette.bg, border: `1.5px solid ${palette.border}`, borderRadius:14, padding:'16px 18px', marginBottom:20 }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
-        <span style={{ fontSize:20 }}>{tone === 'warn' ? '⚠' : tone === 'danger' ? '⛔' : 'ⓘ'}</span>
+        <span style={{ fontSize:20 }}>{tone === 'warn' ? <Icon name="warn" size={20} style={{ color: palette.text }} /> : tone === 'danger' ? <Icon name="ban" size={20} style={{ color: palette.text }} /> : 'ⓘ'}</span>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:14, fontWeight:800, color: palette.text }}>{title}</div>
           {body && <div style={{ fontSize:12, color:'var(--t3)', marginTop:4, lineHeight:1.5 }}>{body}</div>}

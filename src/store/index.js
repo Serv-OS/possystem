@@ -4385,7 +4385,7 @@ export const useStore = create((set, get) => ({
       set({ customer: c, allergens: [...c.allergens] });
       const labels = c.allergens.map(a => (ALLERGEN_DEFS.find(x => x.id === a)?.label || a)).join(', ');
       const st = get();
-      if (typeof st.showToast === 'function') st.showToast(`⚠️ ALLERGY — ${c.name || 'Customer'}: ${labels}`, 'error');
+      if (typeof st.showToast === 'function') st.showToast(`ALLERGY — ${c.name || 'Customer'}: ${labels}`, 'error');
     } else {
       set({ customer: c });
     }
@@ -4958,8 +4958,8 @@ export const useStore = create((set, get) => ({
               setTimeout(() => {
                 get().showToast?.(
                   j.is_new_member
-                    ? `⭐ Welcome! ${j.points_earned} loyalty points earned`
-                    : `⭐ ${j.points_earned} loyalty points earned (balance: ${j.balance})`,
+                    ? `Welcome! ${j.points_earned} loyalty points earned`
+                    : `${j.points_earned} loyalty points earned (balance: ${j.balance})`,
                   'success'
                 );
               }, 1500);
@@ -4970,8 +4970,8 @@ export const useStore = create((set, get) => ({
                 setTimeout(() => {
                   get().showToast?.(
                     sa.completed
-                      ? `☕ ${sa.program_name} COMPLETE! Reward earned 🎁`
-                      : `☕ +${sa.stamps} stamp${sa.stamps > 1 ? 's' : ''} on ${sa.program_name} (${sa.new_total} collected)`,
+                      ? `${sa.program_name} COMPLETE! Reward earned`
+                      : `+${sa.stamps} stamp${sa.stamps > 1 ? 's' : ''} on ${sa.program_name} (${sa.new_total} collected)`,
                     sa.completed ? 'success' : 'info'
                   );
                 }, 2500 + idx * 1200);
@@ -8951,7 +8951,7 @@ export const useStore = create((set, get) => ({
           if (!useStore._colWarningShown) {
             useStore._colWarningShown = true;
             useStore.getState().showToast?.(
-              '⚠ Duplicate prints risk: order_queue.kitchen_routed_at column missing. Run: alter table order_queue add column if not exists kitchen_routed_at timestamptz; (one-time, on Supabase SQL editor)',
+              'Duplicate prints risk: order_queue.kitchen_routed_at column missing. Run: alter table order_queue add column if not exists kitchen_routed_at timestamptz; (one-time, on Supabase SQL editor)',
               'error', 15000
             );
           }
@@ -9116,7 +9116,7 @@ export const useStore = create((set, get) => ({
       if (order.source === 'hubrise') {
         const unknown = order.items.filter(i => !allMenuItems.find(m => m.id === (i.itemId || i.id)));
         if (unknown.length) {
-          showToast?.(`⚠ ${srcLabel} ${order.ref}: ${unknown.length} item(s) not in our menu (${unknown.map(i => i.name).join(', ')}) — sent to default centre. Re-push the HubRise catalog.`, 'warning');
+          showToast?.(`${srcLabel} ${order.ref}: ${unknown.length} item(s) not in our menu (${unknown.map(i => i.name).join(', ')}) — sent to default centre. Re-push the HubRise catalog.`, 'warning');
         }
       }
       const sentAt = order.sentAt || Date.now();
@@ -9335,7 +9335,7 @@ export const useStore = create((set, get) => ({
         // v5.8.63: name the order type too. A centre can be narrowed to certain order
         // types now, and the per-item fallback means the CATEGORY is what failed here.
         else reason = `item cats (${dump.allCats?.join(', ')}) don\'t match any centre that takes ${orderTypeLabelOf(typeKey) || 'this order type'}`;
-        showToast?.(`⚠ ${srcLabel} ${order.ref} did not print: ${reason}`, 'error');
+        showToast?.(`${srcLabel} ${order.ref} did not print: ${reason}`, 'error');
       }
       // v5.11.52 (the quiet till): an order that was routed with nothing wrong shows NOTHING on
       // the till. The "routed" tick and the "no printer mapped (KDS only)" warning that were

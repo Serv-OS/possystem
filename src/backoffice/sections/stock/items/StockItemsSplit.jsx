@@ -39,6 +39,7 @@ import { legacyAreaFor, areasBelowZero } from '../../../../lib/stock/areaRules';
 import { reportSave } from '../../../../lib/saveHealth';
 import { fetchRecipes, saveRecipeWithLines } from '../../../../lib/stock/recipes';
 import { toBase, fromBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../../../lib/stock/uom';
+import { Icon } from '../../../../components/ServOSIcons';
 
 const KINDS = [
   { id: 'PURCHASED', label: 'Purchased', desc: 'Bought from a supplier — cost comes from invoices/packs.' },
@@ -257,7 +258,7 @@ export default function StockItemsSplit({ orgCtx = null, siteId = null }) {
                 background: sel ? 'var(--bg2)' : 'transparent',
               }}>
                 <div style={{ width: 34, height: 34, borderRadius: 7, background: 'var(--bg3)', flexShrink: 0, display: 'grid', placeItems: 'center', fontSize: 15 }}>
-                  {it.kind === 'MADE' ? '🍲' : '📦'}
+                  <Icon name={it.kind === 'MADE' ? 'cookingPot' : 'package'} size={16}/>
                 </div>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -287,7 +288,7 @@ export default function StockItemsSplit({ orgCtx = null, siteId = null }) {
         {!draft && (
           <div style={{ display: 'grid', placeItems: 'center', height: '100%', color: 'var(--t3)', textAlign: 'center', padding: 24 }}>
             <div>
-              <div style={{ fontSize: 40, marginBottom: 10 }}>📦</div>
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}><Icon name="package" size={40}/></div>
               <div style={{ fontSize: 15, color: 'var(--t2)' }}>Select a stock item, or press + to add one.</div>
               <div style={{ fontSize: 12, marginTop: 6, maxWidth: 360 }}>
                 Stock items are what you hold and buy or make — separate from menu products. Link them to dishes with recipes (coming next).
@@ -605,7 +606,7 @@ function StockTab({ draft, locId, onChanged, showToast, areas = null, holdings =
             {parBase.reorderPoint !== '' && <> · reorder at {Math.round(Number(parBase.reorderPoint) * 1000) / 1000} {draft.baseUnit}</>}
           </div>
         )}
-        {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8 }}>{draft.kind === 'MADE' ? '⚠ below the make-more level — batch needed' : '⚠ at/below reorder point — time to order'}</div>}
+        {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="warn" size={14}/>{draft.kind === 'MADE' ? 'below the make-more level — batch needed' : 'at/below reorder point — time to order'}</div>}
       </div>
 
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
@@ -772,8 +773,8 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
             <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600, minWidth: 90 }}>1 {p.name}</span>
             <span style={{ fontSize: 12, color: 'var(--t3)' }}>= {sizeLabel(p)}</span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-              {p.isCountDefault ? <span style={badge('count')}>📋 count</span> : <button onClick={() => makeDefault(p.id, 'count')} style={ghostBtn}>set count</button>}
-              {p.isPurchaseDefault ? <span style={badge('buy')}>🛒 buy</span> : <button onClick={() => makeDefault(p.id, 'purchase')} style={ghostBtn}>set buy</button>}
+              {p.isCountDefault ? <span style={{ ...badge('count'), display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="clipboard" size={12}/>count</span> : <button onClick={() => makeDefault(p.id, 'count')} style={ghostBtn}>set count</button>}
+              {p.isPurchaseDefault ? <span style={{ ...badge('buy'), display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="cart" size={12}/>buy</span> : <button onClick={() => makeDefault(p.id, 'purchase')} style={ghostBtn}>set buy</button>}
               <button onClick={() => remove(p.id)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
             </div>
           </div>

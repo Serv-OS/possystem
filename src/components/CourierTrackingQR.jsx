@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
+import { Icon } from './ServOSIcons';
 
 export default function CourierTrackingQR({ trackingUrl, courierName, courierPhone, size = 88, muted = 'var(--t3)', fg = 'var(--t1)' }) {
   const [qr, setQr] = useState(null);
@@ -29,8 +30,8 @@ export default function CourierTrackingQR({ trackingUrl, courierName, courierPho
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 12, fontWeight: 800, color: fg }}>Scan for the live map</div>
         <div style={{ fontSize: 11, color: muted, marginTop: 2, lineHeight: 1.4 }}>Point a phone camera at the code to track the courier.</div>
-        {courierName && <div style={{ fontSize: 11.5, color: fg, marginTop: 6 }}>👤 {courierName}</div>}
-        {courierPhone && <div style={{ fontSize: 11.5, color: muted, marginTop: 1 }}>📞 {courierPhone}</div>}
+        {courierName && <div style={{ fontSize: 11.5, color: fg, marginTop: 6, display: 'flex', alignItems: 'center', gap: 5 }}><Icon name="user" size={13}/>{courierName}</div>}
+        {courierPhone && <div style={{ fontSize: 11.5, color: muted, marginTop: 1, display: 'flex', alignItems: 'center', gap: 5 }}><Icon name="phoneCall" size={13}/>{courierPhone}</div>}
       </div>
     </div>
   );

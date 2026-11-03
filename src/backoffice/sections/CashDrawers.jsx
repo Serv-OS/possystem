@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import DrawerCashModal from '../../components/DrawerCashModal';
 import { money } from '../../lib/currency';
+import { Icon } from '../../components/ServOSIcons';
 
 /**
  * Cash Drawers registry (v4.6.35).
@@ -141,7 +142,7 @@ export default function CashDrawers() {
         <div style={{ flex:1, overflowY:'auto' }}>
           {cashDrawers.length === 0 && !isNew && (
             <div style={{ padding:'28px 20px', textAlign:'center', color:'var(--t4)' }}>
-              <div style={{ fontSize:30, marginBottom:8, opacity:.35 }}>💰</div>
+              <div style={{ marginBottom:8, opacity:.35, display:'flex', justifyContent:'center' }}><Icon name="money" size={30} /></div>
               <div style={{ fontSize:13, fontWeight:700, color:'var(--t3)' }}>No drawers yet</div>
               <div style={{ fontSize:11, marginTop:4, lineHeight:1.4 }}>Click + Add to define your first cash drawer, then bind it to a printer and a POS device.</div>
             </div>
@@ -161,9 +162,9 @@ export default function CashDrawers() {
                   <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{d.name}</div>
                   <div style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:6, background:status.bg, color:status.color }}>{status.label}</div>
                 </div>
-                <div style={{ fontSize:11, color:'var(--t3)', lineHeight:1.4 }}>
-                  {printer ? `🖨  ${printer.name}` : '⚠ no printer'}
-                  {d.deviceId ? ` · 📟 ${d.deviceId.slice(0, 12)}` : ' · unassigned'}
+                <div style={{ fontSize:11, color:'var(--t3)', lineHeight:1.4, display:'flex', alignItems:'center', gap:4, flexWrap:'wrap' }}>
+                  {printer ? <><Icon name="print" size={12} />{printer.name}</> : <><Icon name="warn" size={12} />no printer</>}
+                  {d.deviceId ? <><span> · </span><Icon name="tablet" size={12} />{d.deviceId.slice(0, 12)}</> : <span> · unassigned</span>}
                 </div>
                 {Number(d.currentFloat) !== 0 && (
                   <div style={{ fontSize:11, color:'var(--t4)', marginTop:3, fontFamily:'var(--font-mono)' }}>Float: {money(Number(d.currentFloat || 0))}</div>
@@ -200,7 +201,7 @@ export default function CashDrawers() {
       <div style={{ flex:1, overflowY:'auto', padding:'22px 28px' }}>
         {(!sel && !isNew) ? (
           <div style={{ textAlign:'center', padding:'80px 20px', color:'var(--t4)' }}>
-            <div style={{ fontSize:46, marginBottom:10, opacity:.25 }}>💰</div>
+            <div style={{ marginBottom:10, opacity:.25, display:'flex', justifyContent:'center' }}><Icon name="money" size={44} /></div>
             <div style={{ fontSize:15, fontWeight:700, color:'var(--t3)' }}>Select a drawer to edit</div>
             <div style={{ fontSize:12, marginTop:4 }}>Or click + Add to create a new one.</div>
           </div>

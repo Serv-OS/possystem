@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
+import { Icon } from '../components/ServOSIcons';
 import { biometricCaps, biometricIdentify } from '../lib/biometric';
 import { nfcAvailable } from '../lib/nfc';
 import { useCardScan } from '../lib/useCardScan';
@@ -118,7 +119,7 @@ export default function PINScreen() {
         <ServOSWordmark fontSize={24} />
         <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 6 }}>
           {loadedStaff === null ? 'Loading staff…'
-            : staff.length ? ((nfcOn || hasCards) ? '💳 Tap your card, or enter your PIN' : 'Enter your PIN to sign in')
+            : staff.length ? ((nfcOn || hasCards) ? <><Icon name="card" size={14} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />Tap your card, or enter your PIN</> : 'Enter your PIN to sign in')
             : 'No staff configured — go to Back Office → Team'}
         </div>
       </div>
@@ -143,7 +144,7 @@ export default function PINScreen() {
 
           {caps.identify && (
             <button onClick={scanFingerprint} disabled={bioBusy} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 18px', borderRadius: 12, background: bioBusy ? 'var(--bg3)' : 'var(--acc)', color: bioBusy ? 'var(--t2)' : '#0b0c10', border: 'none', fontSize: 14, fontWeight: 800, cursor: bioBusy ? 'wait' : 'pointer', fontFamily: 'inherit' }}>
-              <span style={{ fontSize: 20 }}>👆</span>{bioBusy ? 'Scanning…' : 'Sign in with fingerprint'}
+              <Icon name="fingerprint" size={20} />{bioBusy ? 'Scanning…' : 'Sign in with fingerprint'}
             </button>
           )}
 
@@ -161,7 +162,7 @@ export default function PINScreen() {
         <div style={{ textAlign: 'center' }}>
           {!isMock ? (
             <div style={{ maxWidth: 320 }}>
-              <div style={{ fontSize: 32, marginBottom: 12 }}>👥</div>
+              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center', color: 'var(--t2)' }}><Icon name="users" size={32} /></div>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 8 }}>No staff members set up yet</div>
               <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 20, lineHeight: 1.6 }}>Go to <strong>Back Office → Team</strong> and add your staff members. They'll appear here automatically.</div>
               <button onClick={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.reload(); }} style={{ padding: '10px 20px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', background: 'var(--acc)', border: 'none', color: '#fff', fontSize: 13, fontWeight: 700, display: 'block', width: '100%' }}>Go to Back Office →</button>

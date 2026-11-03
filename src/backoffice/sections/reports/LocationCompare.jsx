@@ -50,6 +50,7 @@ import { compareRange, compareChip, notLoaded } from '../../../lib/reportCompare
 import { groupCompare, groupCompareWords, MIXED_COMPARE_TEXT } from '../../../lib/reportScope.js';
 import { money } from '../../../lib/currency';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
+import { Icon } from '../../../components/ServOSIcons';
 import { toCsv, downloadCsv } from './_csv';
 import { venueRange } from './_filters';
 import { salesBreakdown } from '../../../lib/salesBreakdown';
@@ -298,18 +299,18 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
     return <div style={{ padding:'40px 0', textAlign:'center', color:'var(--t4)', fontSize:12 }}>{progress?.total > 1 ? `${loadingText(progress)} (every location you have access to)` : 'Loading every location you have access to…'}</div>;
   }
   if (error) {
-    return <EmptyState icon="⚠" message={isTooManyRows(error) ? TOO_LONG_TEXT : `Could not load locations: ${error.message}`}/>;
+    return <EmptyState icon="warn" message={isTooManyRows(error) ? TOO_LONG_TEXT : `Could not load locations: ${error.message}`}/>;
   }
   if (!scopeSites) {
-    return <EmptyState icon="📍" message="Sites could not be worked out. Choose the report again."/>;
+    return <EmptyState icon="mapPin" message="Sites could not be worked out. Choose the report again."/>;
   }
   if (!locations || locations.length === 0) {
-    return <EmptyState icon="📍" message="No locations accessible. Check that your user_locations junction has rows for your user."/>;
+    return <EmptyState icon="mapPin" message="No locations accessible. Check that your user_locations junction has rows for your user."/>;
   }
   if (locations.length === 1) {
     return (
       <div>
-        <EmptyState icon="📍" message={`Only one location accessible: ${locations[0].name}. Compare view kicks in once you have more than one site linked via user_locations.`}/>
+        <EmptyState icon="mapPin" message={`Only one location accessible: ${locations[0].name}. Compare view kicks in once you have more than one site linked via user_locations.`}/>
         <div style={{ marginTop:10, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)' }}>
           ⓘ Add additional sites under Settings → Locations (Wave 7) or directly via the user_locations table in Supabase.
         </div>
@@ -317,7 +318,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
     );
   }
   if (!anyRevenue) {
-    return <EmptyState icon="📍" message={`${locations.length} locations accessible, but no net sales in this period.`}/>;
+    return <EmptyState icon="mapPin" message={`${locations.length} locations accessible, but no net sales in this period.`}/>;
   }
 
   return (
@@ -350,7 +351,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       {g.alerts.length > 0 && (
         <div style={{ marginBottom:14 }}>
           <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
-            <span>⚠</span> Outlier alerts — {g.alerts.length}
+            <Icon name="warn" size={13}/> Outlier alerts — {g.alerts.length}
           </div>
           <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
             {g.alerts.map((a, i) => (

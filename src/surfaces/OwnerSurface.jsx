@@ -49,6 +49,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
 import { VERSION } from '../lib/version';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
+import { Icon } from '../components/ServOSIcons';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
 import { createSecondStepClient } from '../lib/secondStep/client';
@@ -170,7 +171,7 @@ function Shell({ children }) {
 
 const ThemeBtn = ({ theme, onClick }) => (
   <button onClick={onClick} title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label="Toggle theme" style={iconBtn}>
-    {theme === 'dark' ? '☀' : '☾'}
+    <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} style={{ margin: '0 auto' }} />
   </button>
 );
 

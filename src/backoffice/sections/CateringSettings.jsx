@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { CUSTOMER_ROOT, customerUrl, groupCaterUrl } from '../../lib/env';
 import { parsePctList } from '../../lib/tipping';
+import { Icon } from '../../components/ServOSIcons';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -180,7 +181,7 @@ export default function CateringSettings() {
             <option value="gbp">£ GBP</option><option value="usd">$ USD</option><option value="eur">€ EUR</option>
           </select>
         </div>
-        {s.enabled && need.length > 0 && <div style={{ ...S.warn, marginTop: 12 }}>⚠ Setup incomplete — still needed: <b>{need.join(', ')}</b>. The site won’t save as ON until these are filled.</div>}
+        {s.enabled && need.length > 0 && <div style={{ ...S.warn, marginTop: 12 }}><Icon name="warn" size={14} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 6 }} />Setup incomplete — still needed: <b>{need.join(', ')}</b>. The site won’t save as ON until these are filled.</div>}
         <div style={{ ...S.field, marginTop: 12 }}>
           <label style={S.label}>Your catering site</label>
           {venueSlug ? (
@@ -342,7 +343,7 @@ function GroupCaterLinkCard({ group }) {
   if (!url) return null;
   return (
     <div style={S.card}>
-      <h2 style={S.h2}>🏢 Group catering link</h2>
+      <h2 style={{ ...S.h2, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="building" size={17} />Group catering link</h2>
       <div style={{ ...S.hint, marginTop: 0, marginBottom: 12 }}>
         <b>{group.name}</b> has {group.count} locations. Put this ONE link on the group's website —
         customers see every venue that offers catering (with its delivery / collection options) and pick
@@ -354,7 +355,7 @@ function GroupCaterLinkCard({ group }) {
           style={{ ...S.input, flex: '1 1 260px', width: 'auto', fontFamily: 'var(--font-mono, monospace)', fontSize: 12, color: 'var(--t2)' }} />
         <button onClick={() => { navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
           style={{ ...S.btn, background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr2)' }}>
-          {copied ? '✓ Copied' : '📋 Copy'}
+          {copied ? '✓ Copied' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="clipboard" size={14} />Copy</span>}
         </button>
         <a href={url} target="_blank" rel="noopener"
           style={{ ...S.btn, background: 'transparent', color: 'var(--acc)', border: '1px solid var(--bdr2)', textDecoration: 'none', display: 'inline-block' }}>

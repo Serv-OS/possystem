@@ -26,16 +26,17 @@ import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLine
 import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { compareMenuItems } from '../lib/menuItemOrder.js';
+import { Icon, EmojiIcon } from '../components/ServOSIcons';
 
 const CAT_META = {
-  quick:    { icon:'⚡', color:'#e8a020' },
-  starters: { icon:'🥗', color:'#22c55e' },
-  mains:    { icon:'🍽', color:'#3b82f6' },
-  pizza:    { icon:'🍕', color:'#f07020' },
-  sides:    { icon:'🍟', color:'#a855f7' },
-  desserts: { icon:'🍮', color:'#e84066' },
-  drinks:   { icon:'🍷', color:'#e84040' },
-  cocktails:{ icon:'🍸', color:'#22d3ee' },
+  quick:    { icon:'bolt', color:'#e8a020' },
+  starters: { icon:'salad', color:'#22c55e' },
+  mains:    { icon:'utensils', color:'#3b82f6' },
+  pizza:    { icon:'pizza', color:'#f07020' },
+  sides:    { icon:'utensils', color:'#a855f7' },
+  desserts: { icon:'dessert', color:'#e84066' },
+  drinks:   { icon:'wine', color:'#e84040' },
+  cocktails:{ icon:'cocktail', color:'#22d3ee' },
 };
 
 const STATUS_META = {
@@ -111,7 +112,8 @@ function OpenTabModal({ onConfirm, onCancel }) {
                 border:`1.5px solid ${'roaming'===seatId||seatId===''?'var(--acc)':'var(--bdr)'}`,
                 background:'roaming'===seatId||seatId===''?'var(--acc-d)':'var(--bg3)',
                 color:'roaming'===seatId||seatId===''?'var(--acc)':'var(--t2)', fontSize:12, fontWeight:700, whiteSpace:'nowrap',
-              }}>🚶 Roaming</button>
+              display:'inline-flex', alignItems:'center', justifyContent:'center', gap:6,
+              }}><Icon name="walk" size={14} />Roaming</button>
             </div>
           </div>
 
@@ -645,7 +647,7 @@ export default function BarSurface() {
         <div style={{ flex:1, overflowY:'auto', padding:'8px 10px' }}>
           {filteredTabs.length===0&&(
             <div style={{ textAlign:'center', padding:'40px 0', color:'var(--t3)' }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>🍸</div>
+              <div style={{ fontSize:32, marginBottom:8, display:'flex', justifyContent:'center' }}><Icon name="cocktail" size={32} /></div>
               <div style={{ fontSize:13, fontWeight:600, color:'var(--t2)', marginBottom:4 }}>No open tabs</div>
               <div style={{ fontSize:12 }}>Tap + New to open a tab</div>
             </div>
@@ -673,7 +675,7 @@ export default function BarSurface() {
                       <span>·</span>
                       <span>{tab.rounds.length} round{tab.rounds.length!==1?'s':''}</span>
                     </div>
-                    {tab.note&&<div style={{ fontSize:10,color:'#f97316',marginTop:3,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>📝 {tab.note}</div>}
+                    {tab.note&&<div style={{ fontSize:10,color:'#f97316',marginTop:3,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}><Icon name="note" size={11} style={{ display:'inline-block', verticalAlign:'-1px', marginRight:4 }} />{tab.note}</div>}
                     {tab._orphan&&<div style={{ fontSize:10,fontWeight:700,color:'#ef4444',marginTop:3 }}>Closed on another till. Unsent changes here: check before charging.</div>}
                   </div>
                 </div>
@@ -692,7 +694,7 @@ export default function BarSurface() {
 
         {!activeTab ? (
           <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', color:'var(--t3)', padding:24 }}>
-            <div style={{ fontSize:40,marginBottom:12,opacity:.4 }}>🍺</div>
+            <div style={{ fontSize:40,marginBottom:12,opacity:.4 }}><Icon name="beer" size={40} /></div>
             <div style={{ fontSize:14,fontWeight:600,color:'var(--t2)',marginBottom:6 }}>Select a tab</div>
             <div style={{ fontSize:12,textAlign:'center',lineHeight:1.6 }}>Tap a tab from the list, or open a new one to start ordering</div>
             <button onClick={()=>setShowOpenModal(true)} className="btn btn-acc" style={{ marginTop:20, height:42 }}>Open new tab</button>
@@ -718,7 +720,7 @@ export default function BarSurface() {
                     {/* v5.5.324: badge only when a REAL hold exists on the card,
                         not merely the "pre-auth" intent toggle (which previously
                         showed a hold that was never actually placed). */}
-                    {activeTab.preAuthPaymentIntentId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--blu-d)',color:'var(--blu)',border:'1px solid var(--blu-b)'}}>💳 Held {currencySymbol()}{(((activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount))||0).toFixed(0)}</span>}
+                    {activeTab.preAuthPaymentIntentId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--blu-d)',color:'var(--blu)',border:'1px solid var(--blu-b)',display:'inline-flex',alignItems:'center',gap:4}}><Icon name="card" size={11} />Held {currencySymbol()}{(((activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount))||0).toFixed(0)}</span>}
                     {activeTab.preAuthPaymentIntentId&&(()=>{ const cap=(activeTab.preAuthHeldMinor!=null?activeTab.preAuthHeldMinor/100:activeTab.preAuthAmount)||0; if(cap<=0) return null; const left=cap-(activeTab.total||0); const t = left<=0 ? {bg:'var(--red-d)',c:'var(--red)',b:'var(--red-b)'} : left<=cap*0.2 ? {bg:'var(--acc-d)',c:'var(--orn)',b:'var(--bdr2)'} : {bg:'var(--grn-d)',c:'var(--grn)',b:'var(--grn-b)'}; return <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:t.bg,color:t.c,border:`1px solid ${t.b}`}}>{left<=0?'Hold full':`${money(left)} left`}</span>; })()}
                     {activeTab.preAuthPaymentIntentId&&<button onClick={()=>increaseHold(activeTab)} disabled={holdBusy} title="Raise the card hold (incremental authorization — keeps one running bill)" style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:20,background:'var(--bg3)',color:'var(--t1)',border:'1px solid var(--bdr)',cursor:'pointer',fontFamily:'inherit',opacity:holdBusy?0.6:1}}>{holdBusy?'…':'＋ Increase hold'}</button>}
                     {activeTab.tableId&&<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--bg3)',color:'var(--t2)'}}>Table linked</span>}
@@ -741,7 +743,7 @@ export default function BarSurface() {
                 </div>
               ) : (
                 <div onClick={()=>{setEditingNote(true);setNoteVal(activeTab.note);}} style={{ marginTop:8,padding:'6px 10px',borderRadius:8,cursor:'pointer',background:'var(--bg3)',border:'1px dashed var(--bdr2)',fontSize:12, display:'flex',alignItems:'center',gap:6 }}>
-                  {activeTab.note ? <span style={{color:'#f97316'}}>📝 {activeTab.note}</span> : <span style={{color:'var(--t4)'}}>Add tab note...</span>}
+                  {activeTab.note ? <span style={{color:'#f97316',display:'inline-flex',alignItems:'center',gap:6}}><Icon name="note" size={13} />{activeTab.note}</span> : <span style={{color:'var(--t4)'}}>Add tab note...</span>}
                 </div>
               )}
             </div>
@@ -750,7 +752,7 @@ export default function BarSurface() {
             <div ref={roundListRef} style={{ flex:1, overflowY:'auto', padding:'10px 12px' }}>
               {activeTab.rounds.length===0&&roundItems.length===0&&(
                 <div style={{ textAlign:'center',padding:'30px 0',color:'var(--t3)' }}>
-                  <div style={{ fontSize:28,marginBottom:8,opacity:.5 }}>🍹</div>
+                  <div style={{ fontSize:28,marginBottom:8,opacity:.5,display:'flex',justifyContent:'center' }}><Icon name="cocktail" size={28} /></div>
                   <div style={{ fontSize:12 }}>No rounds yet — pick items from the menu →</div>
                 </div>
               )}
@@ -759,8 +761,8 @@ export default function BarSurface() {
               {roundItems.length>0&&(
                 <div style={{ marginBottom:14, background:'rgba(232,160,32,.06)', border:'1px solid var(--acc-b)', borderRadius:12, overflow:'hidden' }}>
                   <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--acc-b)', display:'flex',alignItems:'center',justifyContent:'space-between' }}>
-                    <span style={{ fontSize:11,fontWeight:700,color:'var(--acc)',textTransform:'uppercase',letterSpacing:'.06em' }}>
-                      🔥 Round {activeTab.rounds.length+1} — building
+                    <span style={{ fontSize:11,fontWeight:700,color:'var(--acc)',textTransform:'uppercase',letterSpacing:'.06em',display:'inline-flex',alignItems:'center',gap:6 }}>
+                      <Icon name="fire" size={13} />Round {activeTab.rounds.length+1} — building
                     </span>
                     <span style={{ fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>{money(roundTotal)}</span>
                   </div>
@@ -802,7 +804,7 @@ export default function BarSurface() {
                           <span style={{ color:'var(--t3)',fontFamily:'DM Mono,monospace' }}>{money(((item.price||0)*(item.qty||1)))}</span>
                         </div>
                       ))}
-                      {round.note&&<div style={{ fontSize:11,color:'#f97316',marginTop:4,fontStyle:'italic' }}>📝 {round.note}</div>}
+                      {round.note&&<div style={{ fontSize:11,color:'#f97316',marginTop:4,fontStyle:'italic',display:'flex',alignItems:'center',gap:4 }}><Icon name="note" size={12} />{round.note}</div>}
                     </div>
                   </div>
                 );
@@ -836,8 +838,8 @@ export default function BarSurface() {
               })()}
               <div style={{ display:'flex',gap:6 }}>
                 {roundItems.length>0 && (
-                  <button onClick={fireRound} style={{ flex:2,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0e0f14',fontSize:13,fontWeight:700 }}>
-                    🔥 Send round {activeTab.rounds.length+1} · {money(roundTotal)}
+                  <button onClick={fireRound} style={{ flex:2,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0e0f14',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:6 }}>
+                    <Icon name="fire" size={14} />Send round {activeTab.rounds.length+1} · {money(roundTotal)}
                   </button>
                 )}
                 {activeTab.status!=='closed' && activeTab.total > 0 && (
@@ -861,7 +863,7 @@ export default function BarSurface() {
         <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0 }}>
           <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:8 }}>
             <div style={{ position:'relative', flex:1 }}>
-              <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:'var(--t3)',fontSize:13 }}>🔍</span>
+              <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:'var(--t3)',fontSize:13 }}><Icon name="search" size={14} /></span>
               <input className="input" placeholder="Search drinks & food…" value={search} onChange={e=>setSearch(e.target.value)} style={{ paddingLeft:32,height:34,fontSize:12 }}/>
               {search&&<button onClick={()=>setSearch('')} style={{ position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:15 }}>×</button>}
             </div>
@@ -877,7 +879,8 @@ export default function BarSurface() {
                   whiteSpace:'nowrap',cursor:'pointer',border:`1px solid ${isActive?color+'88':'var(--bdr)'}`,
                   background:isActive?(color+'18'):'transparent',
                   color:isActive?color:'var(--t3)',fontFamily:'inherit',
-                }}>{c.icon} {c.label}</button>
+                  display:'inline-flex',alignItems:'center',gap:5,
+                }}><EmojiIcon value={c.icon} fallback={c.icon ? 'utensils' : null} size={13} />{c.label}</button>
               );
             })}
           </div>
@@ -908,13 +911,13 @@ export default function BarSurface() {
                   {inRound>0&&<div style={{ position:'absolute',top:6,right:6,width:18,height:18,borderRadius:'50%',background:m.color,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:800,color:'#fff',zIndex:1 }}>{inRound}</div>}
                   <div style={{ height:3,background:is86?'var(--bg5)':m.color+'66',width:'100%' }}/>
                   <div style={{ padding:'10px 10px 9px',flex:1,display:'flex',flexDirection:'column' }}>
-                    <div style={{ fontSize:20,marginBottom:6 }}>{m.icon}</div>
+                    <div style={{ fontSize:20,marginBottom:6,color:m.color }}><EmojiIcon value={m.icon} fallback="cocktail" size={20} /></div>
                     <div style={{ fontSize:12,fontWeight:700,color:'var(--t1)',lineHeight:1.3,marginBottom:3,flex:1 }}>{item.menuName||item.menu_name||item.name||'Item'}</div>
                     {item.description&&<div style={{ fontSize:10,color:'var(--t3)',lineHeight:1.3,marginBottom:4,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden' }}>{item.description}</div>}
                     <div style={{ fontSize:14,fontWeight:800,color:m.color,fontFamily:'DM Mono,monospace',marginTop:'auto' }}>
                       {item.type==='variants'?`from ${money((fromPrice||0))}`:`${money((fromPrice||0))}`}
                     </div>
-                    {item.type!=='simple'&&<div style={{ fontSize:9,color:'var(--t3)',marginTop:2 }}>{item.type==='variants'?'▼ sizes':item.type==='modifiers'?'⊕ options':'🍕 build'}</div>}
+                    {item.type!=='simple'&&<div style={{ fontSize:9,color:'var(--t3)',marginTop:2 }}>{item.type==='variants'?'▼ sizes':item.type==='modifiers'?'⊕ options':<span style={{display:'inline-flex',alignItems:'center',gap:3}}><Icon name="pizza" size={10} />build</span>}</div>}
                   </div>
                 </button>
               );
@@ -1034,12 +1037,12 @@ export default function BarSurface() {
                 {row('Bill total', gbp(totalMinor))}
                 {row('Held on card', gbp(heldMinor))}
                 {row('Will charge now', gbp(captureMinor), true)}
-                {shortfall > 0 && <div style={{ fontSize:11, color:'#e8a020', marginTop:8, lineHeight:1.4 }}>⚠ Bill is {gbp(shortfall)} over the hold — only the held amount can be captured. Collect the {gbp(shortfall)} difference separately after closing.</div>}
+                {shortfall > 0 && <div style={{ fontSize:11, color:'#e8a020', marginTop:8, lineHeight:1.4, display:'flex', alignItems:'flex-start', gap:6 }}><Icon name="warn" size={13} style={{ marginTop:1 }} /><span>Bill is {gbp(shortfall)} over the hold — only the held amount can be captured. Collect the {gbp(shortfall)} difference separately after closing.</span></div>}
               </div>
               {holdCloseState === 'error' && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{holdCloseErr}</div>}
               <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                 <button className="btn btn-acc btn-full" disabled={busy} onClick={() => captureHeldTab(tab)}>
-                  {busy ? 'Charging…' : `🔒 Charge ${gbp(captureMinor)} to held card`}
+                  {busy ? 'Charging…' : <span style={{display:'inline-flex',alignItems:'center',gap:6}}><Icon name="lock" size={15} />{`Charge ${gbp(captureMinor)} to held card`}</span>}
                 </button>
                 <button className="btn btn-ghost btn-full" disabled={busy} onClick={async () => { await releaseHold(tab); setHoldClose(null); setHoldCloseState('idle'); setShowTabCheckout(true); }}>
                   Pay another way (release hold)
@@ -1086,7 +1089,7 @@ function RoundItem({ item, onQty, onRemove, flash=false }) {
         <div style={{ flex:1 }}>
           <div style={{ fontSize:12,fontWeight:600,color:'var(--t1)' }}>{item.menuName||item.menu_name||item.name||'Item'}</div>
           {item.mods?.length>0&&<div style={{ fontSize:10,color:'var(--t3)' }}>{item.mods.map(m=>m.label).join(', ')}</div>}
-          {item.notes&&!editNote&&<div style={{ fontSize:10,color:'#f97316',fontStyle:'italic' }}>📝 {item.notes}</div>}
+          {item.notes&&!editNote&&<div style={{ fontSize:10,color:'#f97316',fontStyle:'italic',display:'flex',alignItems:'center',gap:4 }}><Icon name="note" size={11} />{item.notes}</div>}
           {editNote&&(
             <input value={note} onChange={e=>setNote(e.target.value)} onBlur={()=>{item.notes=note;setEditNote(false);}} onKeyDown={e=>e.key==='Enter'&&(item.notes=note,setEditNote(false))} placeholder="Item note..." autoFocus style={{ marginTop:3,width:'100%',background:'var(--bg4)',border:'1px solid var(--acc-b)',borderRadius:5,padding:'3px 7px',color:'var(--t1)',fontSize:11,fontFamily:'inherit',outline:'none' }}/>
           )}
@@ -1099,7 +1102,7 @@ function RoundItem({ item, onQty, onRemove, flash=false }) {
           <div style={{ width:22,height:20,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:'var(--t1)' }}>{item.qty}</div>
           <button onClick={()=>onQty(1)} style={{ width:22,height:20,background:'transparent',border:'none',color:'var(--t2)',fontSize:14,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center' }}>+</button>
         </div>
-        <button onClick={()=>{setEditNote(true);setNote(item.notes||'');}} style={{ fontSize:10,color:item.notes?'#f97316':'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit' }}>📝 {item.notes?'Edit note':'Add note'}</button>
+        <button onClick={()=>{setEditNote(true);setNote(item.notes||'');}} style={{ fontSize:10,color:item.notes?'#f97316':'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',display:'inline-flex',alignItems:'center',gap:4 }}><Icon name="note" size={11} />{item.notes?'Edit note':'Add note'}</button>
         <button onClick={onRemove} style={{ marginLeft:'auto',fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit' }}>Remove</button>
       </div>
     </div>

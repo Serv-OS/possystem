@@ -20,6 +20,7 @@ import { SITE_CSS } from '../../../surfaces/website/siteStyles.js';
 // 5.12.9: the default venue's live menu, read once per venue, so the Live menu block shows real
 // items in the editor and the Menu and Categories pickers list real menus and categories.
 import { loadMenu } from '../../../surfaces/website/data/loadMenu.js';
+import { Icon } from '../../../components/ServOSIcons';
 
 const EMPTY_LAYOUT = { content: [], root: { props: {} } };
 const AUTOSAVE_MS = 3000;
@@ -74,7 +75,7 @@ function EditorHeader() {
         </div>
         <button style={W.ghost} disabled={!history.hasPast} onClick={() => history.back()} title="Undo">↶ Undo</button>
         <button style={W.ghost} disabled={!history.hasFuture} onClick={() => history.forward()} title="Redo">↷ Redo</button>
-        <button style={W.ghost} onClick={() => onAskDesigner?.(page?.id)}>✨ Ask designer</button>
+        <button style={{ ...W.ghost, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => onAskDesigner?.(page?.id)}><Icon name="sparkles" size={14}/>Ask designer</button>
         <button style={W.ghost} onClick={() => onPreview?.(pagePath(page))}>Preview ↗</button>
         <button style={W.btn} disabled={publishing} onClick={onPublish}>{publishing ? 'Publishing…' : 'Publish'}</button>
       </div>

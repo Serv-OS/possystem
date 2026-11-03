@@ -5,6 +5,7 @@ import { Fragment } from 'react';
 import { currencySymbol } from '../../../lib/currency';
 import { hourBarHeightPx } from '../../../lib/hourBar';
 import { compareChip, pctWords } from '../../../lib/reportCompare.js';
+import { EmojiIcon } from '../../../components/ServOSIcons';
 
 // Period-over-period delta chip. Inverted=true when a decrease is the good outcome
 // (e.g. void rate, discount leakage) — the chip flips red/green accordingly.
@@ -90,10 +91,10 @@ export function ExportBtn({ onClick, label = 'Export CSV' }) {
   );
 }
 
-export function EmptyState({ icon = '📊', message }) {
+export function EmptyState({ icon = 'chart', message }) {
   return (
     <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>
-      <div style={{ fontSize:36, marginBottom:10 }}>{icon}</div>
+      <div style={{ display:'flex', justifyContent:'center', marginBottom:10 }}><EmojiIcon value={icon} fallback="chart" size={36}/></div>
       {message}
     </div>
   );

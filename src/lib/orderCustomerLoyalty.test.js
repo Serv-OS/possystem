@@ -145,13 +145,13 @@ test('checkout: a stamps only member with no free drink ready now shows (the Lee
   const v = checkoutLoyaltyView(d);
   assert.ok(v);
   assert.equal(v.pointsOn, false, 'pointsEnabled false is honoured (the old code read points_enabled)');
-  assert.equal(v.line, '☕ Free Drink 5/10 · Nothing to redeem yet');
+  assert.equal(v.line, 'Free Drink 5/10 · Nothing to redeem yet');
   assert.equal(v.rewardCount, 0);
 });
 
 test('checkout: a ready stamp card says there is a reward to redeem', () => {
   const v = checkoutLoyaltyView(lookupAnswer({ stampCards: [CARD(10, 1)], rewards: [STAMP_REWARD] }));
-  assert.equal(v.line, '☕ Free Drink 10/10 · 1 reward to redeem');
+  assert.equal(v.line, 'Free Drink 10/10 · 1 reward to redeem');
   assert.equal(v.rewardCount, 1);
 });
 
@@ -161,7 +161,7 @@ test('checkout: a points venue shows the points, 0 included, and its rewards', (
   assert.equal(checkoutLoyaltyView(lookupAnswer({ ...pts, credit: 1 })).line, '1 point · Nothing to redeem yet');
   assert.equal(checkoutLoyaltyView(lookupAnswer({ ...pts, credit: 120, rewards: [{ id: 'r1' }, { id: 'r2' }] })).line, '120 points · 2 rewards to redeem');
   // both halves on
-  assert.equal(checkoutLoyaltyView(lookupAnswer({ pointsEnabled: true, credit: 40 })).line, '40 points · ☕ Free Drink 5/10 · Nothing to redeem yet');
+  assert.equal(checkoutLoyaltyView(lookupAnswer({ pointsEnabled: true, credit: 40 })).line, '40 points · Free Drink 5/10 · Nothing to redeem yet');
   // loyalty-balance's own spelling of the switch is honoured too
   assert.equal(checkoutLoyaltyView(lookupAnswer({ pointsEnabled: undefined, points_enabled: false })).pointsOn, false);
 });

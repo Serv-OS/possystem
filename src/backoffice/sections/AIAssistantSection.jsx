@@ -1,4 +1,5 @@
 import AIChat from '../../components/AIChat';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function AIAssistantSection() {
   return (
@@ -18,8 +19,8 @@ export default function AIAssistantSection() {
 
         {/* Capabilities */}
         <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:12 }}>
-          {['📊 Sales & revenue', '🍺 Item sales lookup', '⏰ Hourly breakdown', '👤 Server performance', '🪑 Open tables', '💳 Payment breakdown', '📋 Menu & allergens', '✨ Add/update items'].map(c => (
-            <span key={c} style={{ fontSize:11, padding:'3px 8px', borderRadius:20, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', fontWeight:600 }}>{c}</span>
+          {[['chart', 'Sales & revenue'], ['beer', 'Item sales lookup'], ['clock', 'Hourly breakdown'], ['user', 'Server performance'], ['seat', 'Open tables'], ['card', 'Payment breakdown'], ['clipboard', 'Menu & allergens'], ['sparkles', 'Add/update items']].map(([ic, c]) => (
+            <span key={c} style={{ fontSize:11, padding:'3px 8px', borderRadius:20, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', fontWeight:600, display:'inline-flex', alignItems:'center', gap:5 }}><Icon name={ic} size={12} />{c}</span>
           ))}
         </div>
 

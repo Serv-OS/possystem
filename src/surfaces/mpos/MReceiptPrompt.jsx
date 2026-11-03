@@ -12,6 +12,7 @@ import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { recordCheckBasis } from '../../lib/taxBasis';
 import { receiptTargetStatus } from '../../lib/printer';
 import { Sx } from './MShellStyles';
+import { Icon, hasIcon } from '../../components/ServOSIcons';
 
 export default function MReceiptPrompt({ check, onDone }) {
   const { customer, walkInOrder, locationConfig, printCustomerReceipt } = useStore();
@@ -107,8 +108,8 @@ export default function MReceiptPrompt({ check, onDone }) {
           </div>
 
           <div style={{ padding:'14px 16px', display:'flex', flexDirection:'column', gap:8 }}>
-            <Method icon="✉️" title="Email" desc="Send a digital receipt to the customer's inbox" onClick={() => setMode('email')} />
-            <Method icon="🧾" title="Print at counter"
+            <Method icon="mail" title="Email" desc="Send a digital receipt to the customer's inbox" onClick={() => setMode('email')} />
+            <Method icon="receipt" title="Print at counter"
               desc={printable.ok ? "Fire to the location's receipt printer" : printable.reason}
               disabled={!printable.ok}
               onClick={() => setMode('print')} />
@@ -174,7 +175,7 @@ export default function MReceiptPrompt({ check, onDone }) {
         </div>
         <div style={Sx.scroller}>
           <div style={{ padding:'40px 16px', textAlign:'center' }}>
-            <div style={{ fontSize:48, marginBottom:14 }}>🧾</div>
+            <div style={{ fontSize:48, marginBottom:14, display:'flex', justifyContent:'center', color:'var(--t2)' }}><Icon name="receipt" size={48} /></div>
             <div style={{ fontSize:15, color:'var(--t2)', maxWidth:340, margin:'0 auto', lineHeight:1.5 }}>
               The receipt will print at the location's receipt printer. Direct the customer to the counter to collect it.
             </div>
@@ -205,7 +206,7 @@ function Method({ icon, title, desc, onClick, disabled = false }) {
       background:'var(--bg2)', cursor: disabled ? 'not-allowed' : 'pointer', fontFamily:'inherit', textAlign:'left',
       display:'flex', alignItems:'center', gap:14, minHeight:72, opacity: disabled ? .5 : 1,
     }}>
-      <div style={{ fontSize:30, flexShrink:0, width:48, textAlign:'center' }}>{icon}</div>
+      <div style={{ fontSize:30, flexShrink:0, width:48, textAlign:'center', display:'flex', justifyContent:'center', color:'var(--t2)' }}>{hasIcon(icon) ? <Icon name={icon} size={28} /> : icon}</div>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>{title}</div>
         <div style={{ fontSize:12, color: disabled ? 'var(--red)' : 'var(--t3)', marginTop:2, lineHeight:1.4 }}>{desc}</div>

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { callResetFunction } from '../../lib/secondStep/client';
 import { explainError } from '../../lib/secondStep/rules';
+import { Icon } from '../../components/ServOSIcons';
 
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 20, marginBottom: 16 };
 
@@ -46,7 +47,7 @@ export default function AdminSecondSteps() {
 
   return (
     <div data-testid="admin-second-steps">
-      <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>🔐 Sign in security</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="lock" size={20} />Sign in security</div>
       <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 20 }}>
         Every Back Office login and whether it has set up its second step.
         {data && ` ${data.set_up} of ${data.total} set up.`} Switch the server check on only when everyone active has (docs/SECOND_STEP.md).

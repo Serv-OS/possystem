@@ -4,6 +4,7 @@ import AllergenChips, { TILL_ALLERGEN_PALETTE } from './AllergenChips.js';
 import { ALLERGENS, PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } from '../data/seed';
 import { money, currencySymbol } from '../lib/currency';
 import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
+import { Icon } from './ServOSIcons';
 
 // ── Main product modal dispatcher ─────────────────────────────────────────────
 export default function ProductModal({ item, activeAllergens = [], onConfirm, onCancel }) {
@@ -43,8 +44,8 @@ function ModalShellWrapper({ item, price, children, onAdd, canAdd, onCancel, add
               own allergens stand out. */}
           <AllergenChips ids={item.allergens} size="detail" active={activeAllergens} palette={TILL_ALLERGEN_PALETTE} fontSize={12} style={{ marginTop:10 }} />
           {flagged.length > 0 && (
-            <div style={{ marginTop:10, padding:'8px 12px', borderRadius:8, background:'var(--red-d)', border:'1px solid var(--red-b)', fontSize:12, color:'var(--red)' }}>
-              ⚠ Contains active guest allergen — confirm before adding
+            <div style={{ marginTop:10, padding:'8px 12px', borderRadius:8, background:'var(--red-d)', border:'1px solid var(--red-b)', fontSize:12, color:'var(--red)', display:'flex', alignItems:'center', gap:6 }}>
+              <Icon name="warn" size={14} />Contains active guest allergen — confirm before adding
             </div>
           )}
         </div>
@@ -842,7 +843,7 @@ export function AllergenModal({ item, activeAllergens, onConfirm, onCancel }) {
   return (
     <div className="modal-back">
       <div className="modal-box" style={{ maxWidth:380 }}>
-        <div style={{ width:52, height:52, borderRadius:'50%', background:'var(--red-d)', border:'2px solid var(--red-b)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, margin:'0 auto 16px' }}>⚠</div>
+        <div style={{ width:52, height:52, borderRadius:'50%', background:'var(--red-d)', border:'2px solid var(--red-b)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, margin:'0 auto 16px', color:'var(--red)' }}><Icon name="warn" size={24} /></div>
         <div style={{ fontSize:18, fontWeight:600, textAlign:'center', marginBottom:4 }}>Allergen warning</div>
         <div style={{ fontSize:13, color:'var(--t2)', textAlign:'center', marginBottom:20 }}>This item contains an active guest allergen filter</div>
         <div style={{ fontSize:15, fontWeight:500, marginBottom:10 }}>{item.name}</div>

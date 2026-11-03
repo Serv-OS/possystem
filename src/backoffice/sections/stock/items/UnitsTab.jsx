@@ -19,6 +19,7 @@ import { useStore } from '../../../../store';
 import { stockApi } from '../../../../lib/stock/stockApi';
 import { reportSave } from '../../../../lib/saveHealth';
 import { queuedNote, packsOf } from '../../../../lib/stock/itemPageRules';
+import { Icon } from '../../../../components/ServOSIcons';
 
 const fieldStyle = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const badge = () => ({ fontSize: 10, fontWeight: 700, color: 'var(--acc)', padding: '3px 7px', borderRadius: 20, background: 'var(--acc-d, rgba(249,115,22,0.12))' });
@@ -104,8 +105,8 @@ export default function UnitsTab({ detail, homeSiteId, locked = false, reload })
             <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600, minWidth: 90 }}>1 {p.name}</span>
             <span style={{ fontSize: 12, color: 'var(--t3)' }}>= {sizeLabel(p)}</span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-              {p.isCountDefault ? <span style={badge('count')}>📋 count</span> : <button disabled={locked} onClick={() => makeDefault(p.id, 'count')} style={{ ...ghostBtn, ...offLook(locked) }}>set count</button>}
-              {p.isPurchaseDefault ? <span style={badge('buy')}>🛒 buy</span> : <button disabled={locked} onClick={() => makeDefault(p.id, 'purchase')} style={{ ...ghostBtn, ...offLook(locked) }}>set buy</button>}
+              {p.isCountDefault ? <span style={{ ...badge('count'), display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="clipboard" size={12}/>count</span> : <button disabled={locked} onClick={() => makeDefault(p.id, 'count')} style={{ ...ghostBtn, ...offLook(locked) }}>set count</button>}
+              {p.isPurchaseDefault ? <span style={{ ...badge('buy'), display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="cart" size={12}/>buy</span> : <button disabled={locked} onClick={() => makeDefault(p.id, 'purchase')} style={{ ...ghostBtn, ...offLook(locked) }}>set buy</button>}
               <button disabled={locked} aria-label={`Remove ${p.name}`} onClick={() => remove(p.id)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16, ...offLook(locked) }}>×</button>
             </div>
           </div>

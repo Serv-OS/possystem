@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { forceSyncFromSupabase } from '../sync/MasterSync';
+import { Icon } from './ServOSIcons';
 
 export default function MasterOfflineModal({ masterName, lastSeen }) {
   const [syncing, setSyncing] = useState(false);
@@ -33,7 +34,7 @@ export default function MasterOfflineModal({ masterName, lastSeen }) {
         textAlign: 'center',
         boxShadow: '0 0 60px rgba(239,68,68,0.25)',
       }}>
-        <div style={{ fontSize: 52, marginBottom: 18 }}>📡</div>
+        <div style={{ fontSize: 52, marginBottom: 18, display: 'flex', justifyContent: 'center', color: '#ef4444' }}><Icon name="radio" size={52}/></div>
 
         <div style={{ fontSize: 22, fontWeight: 800, color: '#ef4444', marginBottom: 8 }}>
           Master POS offline

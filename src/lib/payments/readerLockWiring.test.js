@@ -464,7 +464,7 @@ test("the till's payment files are not part of the change: an old till reads the
   assert.ok(px.includes("if (r.kind === 'settled') {"));
   assert.ok(px.includes("if (['declined', 'cancelled', 'expired'].includes(job.status)) {"));
   before(px, "if (['declined', 'cancelled', 'expired'].includes(job.status)) {", 'onFailedRef.current?.(job);', 'cancelled goes through onFailed');
-  assert.ok(px.includes("cancelled:       { icon: '✋', title: 'Cancelled',                  sub: 'Nothing was charged.' },"));
+  assert.ok(px.includes("cancelled:       { icon: 'hand', title: 'Cancelled',                  sub: 'Nothing was charged.' },"));
   // The server's settled body carries the fields that path reads.
   assert.ok(charge.includes("ok: true, state, status: state, job_status: job.status,"));
 });

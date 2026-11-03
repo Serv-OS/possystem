@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase, isMock, platformSupabase, setResolvedLocationId, enforceTenantFence } from '../lib/supabase';
 import { reportSave } from '../lib/saveHealth';
 import { fetchAccessibleLocations } from '../lib/db';
+import { Icon } from '../components/ServOSIcons';
 
 export default function LocationSwitcher({ onClose }) {
   const [items, setItems] = useState([]);
@@ -204,7 +205,7 @@ export default function LocationSwitcher({ onClose }) {
                     style={{ width:'100%', textAlign:'left', padding:'13px 16px', marginBottom:6, borderRadius:12, border:`1.5px solid ${isCurrent ? 'var(--acc-b)' : 'var(--bdr)'}`, background:isCurrent ? 'var(--acc-d)' : 'var(--bg3)', cursor:isCurrent ? 'default' : 'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', gap:12, opacity:switching && !isLoading ? 0.5 : 1 }}
                     onMouseEnter={e => { if (!isCurrent) e.currentTarget.style.borderColor = 'var(--acc-b)'; }}
                     onMouseLeave={e => { if (!isCurrent) e.currentTarget.style.borderColor = 'var(--bdr)'; }}>
-                    <div style={{ width:34, height:34, borderRadius:9, flexShrink:0, background:isCurrent ? 'var(--acc)' : 'var(--bg)', border:`1px solid ${isCurrent ? 'var(--acc-b)' : 'var(--bdr)'}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 }}>📍</div>
+                    <div style={{ width:34, height:34, borderRadius:9, flexShrink:0, background:isCurrent ? 'var(--acc)' : 'var(--bg)', border:`1px solid ${isCurrent ? 'var(--acc-b)' : 'var(--bdr)'}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, color:isCurrent ? '#fff' : 'var(--t2)' }}><Icon name="mapPin" size={16} /></div>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:14, fontWeight:700, color:isCurrent ? 'var(--acc)' : 'var(--t1)', marginBottom:2, display:'flex', alignItems:'center', gap:8 }}>
                         <span>{loc.name}</span>

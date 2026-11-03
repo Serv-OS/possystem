@@ -29,6 +29,7 @@ import { StatTile, ExportBtn, EmptyState, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { reportClock, dayOfCheck, rangeDays, weekdayOf } from './_filters';
 import { bookingSites } from './_bookingSites.js';
+import { Icon } from '../../../components/ServOSIcons';
 
 const STATUS_META = {
   confirmed: { label:'Confirmed', bg:'var(--acc-d)',                 color:'var(--acc)' },
@@ -45,16 +46,27 @@ const STATUS_META = {
 };
 
 const SOURCE_LABELS = {
-  host:    '🧑‍💼 Host stand',
-  phone:   '📞 Phone',
-  widget:  '🌐 Web widget',
-  walk_in: '🚶 Walk-in',
-  events:  '🎉 Events',
-  pos:     '🧾 POS',
-  online:  '🌐 Web widget',
-  email:   '✉️ Email',
-  social:  '📣 Social',
+  host:    'Host stand',
+  phone:   'Phone',
+  widget:  'Web widget',
+  walk_in: 'Walk-in',
+  events:  'Events',
+  pos:     'POS',
+  online:  'Web widget',
+  email:   'Email',
+  social:  'Social',
   other:   'Other',
+};
+const SOURCE_ICONS = {
+  host: 'user', phone: 'phoneCall', widget: 'globe', walk_in: 'walk', events: 'party',
+  pos: 'receipt', online: 'globe', email: 'mail', social: 'megaphone',
+};
+// A booking source with its line icon, or the fallback when the source is not known.
+const sourceLabel = (src, fallback) => {
+  const label = SOURCE_LABELS[src];
+  if (!label) return fallback;
+  const ico = SOURCE_ICONS[src];
+  return ico ? <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}><Icon name={ico} size={14}/>{label}</span> : label;
 };
 
 
@@ -211,7 +223,7 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, range =
       { label:'Covers',  key:'covers' },
       { label:'Tables',  key: b => (b.tables || []).map(id => tableLabel(b, id)).join(' + ') },
       { label:'Status',  key: b => STATUS_META[b.status]?.label || b.status },
-      { label:'Source',  key: b => (SOURCE_LABELS[b.source] || b.source || '').replace(/^\S+\s/, '') },
+      { label:'Source',  key: b => SOURCE_LABELS[b.source] || b.source || '' },
       { label:'Package', key: b => pkgName(b) },
       { label:'Paid',    key: b => paidText(b) },
       { label:'Note',    key: b => b.note || '' },
@@ -225,10 +237,10 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, range =
     return <div style={{ padding:'40px 20px', textAlign:'center', color:'var(--t4)' }}>Loading bookings…</div>;
   }
   if (fault) {
-    return <EmptyState icon="⚠" message={faultText(fault)}/>;
+    return <EmptyState icon="warn" message={faultText(fault)}/>;
   }
   if (rows.length === 0) {
-    return <EmptyState icon="📅" message="No bookings in this range. Bookings taken at the host stand, by phone or through the web widget will appear here."/>;
+    return <EmptyState icon="calendar" message="No bookings in this range. Bookings taken at the host stand, by phone or through the web widget will appear here."/>;
   }
 
   const maxSourceBookings = Math.max(1, ...report.bySource.map(r => r.bookings));
@@ -364,7 +376,7 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, range =
           </div>
           {report.bySource.map((r, i) => (
             <div key={r.source} style={{ display:'grid', gridTemplateColumns:'1.3fr 70px 66px 76px 1fr', padding:'9px 16px', borderBottom: i === report.bySource.length - 1 ? 'none' : '1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8, minWidth:420, background: i % 2 === 0 ? 'transparent' : 'var(--bg2)' }}>
-              <span style={{ color:'var(--t1)', fontWeight:600 }}>{SOURCE_LABELS[r.source] || r.name}</span>
+              <span style={{ color:'var(--t1)', fontWeight:600 }}>{sourceLabel(r.source, r.name)}</span>
               <span style={{ ...numSt, color: r.bookings === maxSourceBookings ? 'var(--acc)' : 'var(--t2)', fontWeight:700 }}>{fmtN(r.bookings)}</span>
               <span style={numSt}>{fmtN(r.covers)}</span>
               <span style={{ ...numSt, color: r.noShows ? 'var(--red)' : 'var(--t3)' }}>{r.noShowRate.toFixed(1)}%</span>
@@ -410,7 +422,7 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, range =
               <span>
                 <span style={{ fontSize:10, fontWeight:800, padding:'2px 8px', borderRadius:5, background:st.bg, color:st.color, textTransform:'uppercase', letterSpacing:'.05em', whiteSpace:'nowrap' }}>{st.label}</span>
               </span>
-              <span style={{ color:'var(--t3)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{SOURCE_LABELS[b.source] || b.source}</span>
+              <span style={{ color:'var(--t3)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{sourceLabel(b.source, b.source)}</span>
               <span style={{ color: b.packageId ? 'var(--grn)' : 'var(--t4)', fontWeight:700, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.packageId ? pkgName(b) : '-'}</span>
             </div>
           );

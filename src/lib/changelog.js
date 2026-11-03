@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.43',
+    date: '3 Nov 2026',
+    items: [
+      'Icons, not emoji, everywhere else: Back Office (every section, reports, stock, purchasing, menu, loyalty, marketing, website builder, settings), the till and its pop ups, checkout, Orders Hub, floor plan, bar tabs, kitchen screens, the phone till, the Manager, Owner and Staff apps, the host stands and admin. Every picture emoji is now a ServOS line icon.',
+      'Icons a venue saved (categories, sections, stamp cards, rewards, tiers, print centres, segments) and chat reactions are drawn as their line icon. Pickers still save the same values, so nothing saved changes and older tills keep working.',
+      'Lists that can only hold words (report source, audience and category drop downs, toasts) drop the emoji instead.',
+      'Kitchen screens draw item notes with a note icon. Printed receipts lose their emoji.',
+      'A test now fails if a picture emoji comes back anywhere in the app outside saved data.',
+    ],
+  },
+  {
     v: '5.12.42',
     date: '3 Nov 2026',
     items: [

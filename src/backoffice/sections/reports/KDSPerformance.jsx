@@ -137,7 +137,7 @@ function KDSPerformanceOne({ kdsTickets = [], fmt, fmtN, locationConfig, sites }
   };
 
   if (analysis.totalCount === 0 && analysis.openCount === 0) {
-    return <EmptyState icon="👨‍🍳" message="No KDS tickets in this period. Kitchen display may be off, or the date range has no orders."/>;
+    return <EmptyState icon="chef" message="No KDS tickets in this period. Kitchen display may be off, or the date range has no orders."/>;
   }
 
   const maxCount = Math.max(1, ...analysis.stations.map(s => s.count));
@@ -227,7 +227,7 @@ function KDSPerformanceSites(props) {
 
   if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's stations…</div>;
   if (all.totalCount === 0 && all.openCount === 0) {
-    return <EmptyState icon="👨‍🍳" message="No KDS tickets at these sites in this period. Kitchen display may be off, or the date range has no orders."/>;
+    return <EmptyState icon="chef" message="No KDS tickets at these sites in this period. Kitchen display may be off, or the date range has no orders."/>;
   }
 
   const site = parts.map(p => ({ part: p, cells: bySite.get(p.id) }));

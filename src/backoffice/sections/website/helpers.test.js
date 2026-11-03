@@ -15,7 +15,7 @@ test('MenuAppearance SECTIONS has five entries and the fifth is the website buil
   assert.ok(block, 'SECTIONS list found');
   const entries = block[1].split('\n').map((l) => l.trim()).filter((l) => l.startsWith('['));
   assert.equal(entries.length, 5);
-  assert.match(entries[4], /\['website', '🌐', 'Website builder'\]/);
+  assert.match(entries[4], /\['website', 'globe', 'Website builder'\]/);
   assert.match(src, /WebsiteBuilder/);
 });
 

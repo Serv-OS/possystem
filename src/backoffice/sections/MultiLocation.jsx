@@ -9,6 +9,7 @@ import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
 import { saveLocation } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
+import { Icon } from '../../components/ServOSIcons';
 
 const TIMEZONES = [
   'Europe/London', 'Europe/Dublin', 'Europe/Paris', 'Europe/Berlin',
@@ -126,16 +127,16 @@ export default function MultiLocation() {
             <div style={{ padding:'18px 20px', background:'var(--acc-d)', border:'1.5px solid var(--acc-b)', borderRadius:16, marginBottom:20 }}>
               <div style={{ fontSize:10, fontWeight:800, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.1em', marginBottom:8 }}>Current location</div>
               <div style={{ display:'flex', alignItems:'center', gap:14 }}>
-                <div style={{ width:52, height:52, borderRadius:14, background:'var(--acc)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, flexShrink:0 }}>📍</div>
+                <div style={{ width:52, height:52, borderRadius:14, background:'var(--acc)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, flexShrink:0, color:'#0b0c10' }}><Icon name="mapPin" size={26} /></div>
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)' }}>{currentLocation.name}</div>
                   <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>{currentLocation.address}</div>
                   <div style={{ display:'flex', gap:10, marginTop:6, flexWrap:'wrap' }}>
-                    <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20, background:'var(--bg1)', color:'var(--t3)', border:'1px solid var(--bdr)' }}>
-                      🕐 {currentLocation.timezone || 'Europe/London'}
+                    <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20, background:'var(--bg1)', color:'var(--t3)', border:'1px solid var(--bdr)', display:'inline-flex', alignItems:'center', gap:4 }}>
+                      <Icon name="clock" size={11} />{currentLocation.timezone || 'Europe/London'}
                     </span>
-                    <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20, background:'var(--bg1)', color:'var(--t3)', border:'1px solid var(--bdr)' }}>
-                      💰 {currentLocation.currency || 'GBP'} · {currentLocation.vat || 20}% VAT
+                    <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20, background:'var(--bg1)', color:'var(--t3)', border:'1px solid var(--bdr)', display:'inline-flex', alignItems:'center', gap:4 }}>
+                      <Icon name="money" size={11} />{currentLocation.currency || 'GBP'} · {currentLocation.vat || 20}% VAT
                     </span>
                     {currentLocation.plan && (
                       <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20, background:'var(--bg1)', border:`1px solid ${PLAN_BADGES[currentLocation.plan]?.color||'var(--bdr)'}44`, color:PLAN_BADGES[currentLocation.plan]?.color||'var(--t3)' }}>
@@ -154,7 +155,7 @@ export default function MultiLocation() {
           {/* All locations */}
           {(locations || []).filter(l => l.id !== currentLocationId).map(loc => (
             <div key={loc.id} style={{ padding:'14px 16px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:13, marginBottom:8, display:'flex', alignItems:'center', gap:12 }}>
-              <div style={{ width:42, height:42, borderRadius:11, background:'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>🏪</div>
+              <div style={{ width:42, height:42, borderRadius:11, background:'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0, color:'var(--t2)' }}><Icon name="store" size={20} /></div>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{loc.name}</div>
                 <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{loc.address}</div>
@@ -172,7 +173,7 @@ export default function MultiLocation() {
 
           {(!locations || locations.length === 0) && (
             <div style={{ textAlign:'center', padding:'48px', color:'var(--t4)' }}>
-              <div style={{ fontSize:36, marginBottom:12, opacity:.2 }}>🏪</div>
+              <div style={{ marginBottom:12, opacity:.2, display:'flex', justifyContent:'center' }}><Icon name="store" size={36} /></div>
               <div style={{ fontSize:14, fontWeight:600, color:'var(--t2)', marginBottom:4 }}>No locations configured</div>
               <div style={{ fontSize:12, marginBottom:16 }}>Add your first location to get started with multi-site management.</div>
               <button onClick={startAdd} style={{ padding:'8px 18px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700 }}>
@@ -186,13 +187,13 @@ export default function MultiLocation() {
             <div style={{ fontSize:12, fontWeight:700, color:'var(--t2)', marginBottom:8 }}>How multi-location works</div>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               {[
-                '🏪 Each location has its own menus, floor plan, devices, and staff assignments',
-                '🔗 Menu items can be marked as Shared (name shared, price per-location) or Global (everything shared)',
-                '📊 Reports can be viewed per-location or rolled up across the whole organisation',
-                '🔄 Push to POS propagates config changes to all terminals at the active location',
-                '💳 Payment processing and receipts are configured independently per location',
-              ].map((line, i) => (
-                <div key={i} style={{ fontSize:11, color:'var(--t3)', lineHeight:1.5 }}>{line}</div>
+                ['store', 'Each location has its own menus, floor plan, devices, and staff assignments'],
+                ['link', 'Menu items can be marked as Shared (name shared, price per-location) or Global (everything shared)'],
+                ['chart', 'Reports can be viewed per-location or rolled up across the whole organisation'],
+                ['refresh', 'Push to POS propagates config changes to all terminals at the active location'],
+                ['card', 'Payment processing and receipts are configured independently per location'],
+              ].map(([icon, line], i) => (
+                <div key={i} style={{ fontSize:11, color:'var(--t3)', lineHeight:1.5, display:'flex', alignItems:'flex-start', gap:6 }}><Icon name={icon} size={13} style={{ marginTop:2 }} />{line}</div>
               ))}
             </div>
           </div>

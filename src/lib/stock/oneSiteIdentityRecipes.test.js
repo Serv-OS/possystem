@@ -27,7 +27,8 @@ const at = (p) => new URL(p, SRC);
 const SITE = at('backoffice/sections/produce/RecipesSite.jsx');
 const ROUTER = at('backoffice/sections/Recipes.jsx');
 // sha256 of main 3cde2fbd's Recipes.jsx from its first import line (contract 0)
-const PIN = '47af57b7958b29e0afbbc954dd0454b7fb54d06a9f660e1efd4e462f90aa6a55';
+// 5.12.43: line icons for emoji (before: 47af57b7958b29e0afbbc954dd0454b7fb54d06a9f660e1efd4e462f90aa6a55)
+const PIN = '0c2c8d9c046176d0506adb7e816b254a166180cf639e736039343ab19e30033f';
 
 const count = (text, part) => text.split(part).length - 1;
 // The edits the move is allowed to make (contract 3.1 edits 2 to 7, plus the reportKit path the
@@ -41,7 +42,7 @@ const EDITS = [
   { moved: "from '../../StockScope'", was: "from '../StockScope'", times: 1 },
   { moved: "from '../stock/LockLine'", was: "from './stock/LockLine'", times: 1 },
   { moved: "from '../reports/reportKit'", was: "from './reports/reportKit'", times: 1 },
-  { moved: "from '../../../", was: "from '../../", times: 11 },
+  { moved: "from '../../../", was: "from '../../", times: 12 }, // 5.12.43: plus the ServOSIcons import (line icons for emoji)
 ];
 const fromFirstImport = (text) => { const i = text.search(/^import /m); assert.ok(i >= 0, 'the file has an import line'); return text.slice(i); };
 
@@ -68,7 +69,7 @@ test('the moved file imports nothing new but RecipeFactsLine, and keeps every on
   const head = moved.slice(0, moved.search(/^import /m));
   assert.doesNotMatch(head, /[\u2013\u2014]/, 'the rewritten top comment has no long dash');
   const imports = [...moved.matchAll(/^(?:import [^;]*?from|\} from) '([^']+)';$/gm)].map((m) => m[1]);
-  assert.equal(imports.length, 16, 'react, eleven lib paths, StockScope, LockLine, reportKit and RecipeFactsLine');
+  assert.equal(imports.length, 17, 'react, eleven lib paths, ServOSIcons, StockScope, LockLine, reportKit and RecipeFactsLine');
   for (const p of imports) assert.ok(p === 'react' || p.startsWith('../../../') || ['../../StockScope', '../stock/LockLine', '../reports/reportKit', './RecipeFactsLine'].includes(p), p);
   assert.equal(count(moved.slice(head.length), 'RecipeFactsLine'), 3, 'the import (its name and its path) and the one render line, nothing else');
   // the one render line sits straight after the ingredient picker, inside the open recipe only

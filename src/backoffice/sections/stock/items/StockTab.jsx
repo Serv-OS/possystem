@@ -19,6 +19,7 @@ import { setInventoryOnHand, fetchItemMovements, movementLabel } from '../../../
 import { fetchParLevels, upsertParLevel } from '../../../../lib/stock/counts';
 import { reportSave } from '../../../../lib/saveHealth';
 import { toBase, fromBase, formatToken, displayInUnits } from '../../../../lib/stock/uom';
+import { Icon } from '../../../../components/ServOSIcons';
 
 const INV = Object.freeze({ section: 'inventory' });
 
@@ -185,7 +186,7 @@ export default function StockTab({ draft, locId, onChanged, showToast, areas = n
             {parBase.reorderPoint !== '' && <> · reorder at {Math.round(Number(parBase.reorderPoint) * 1000) / 1000} {draft.baseUnit}</>}
           </div>
         )}
-        {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8 }}>{draft.kind === 'MADE' ? '⚠ below the make more level: a batch is needed' : '⚠ at or below the reorder point: time to order'}</div>}
+        {belowReorder && <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red, #ef4444)', paddingBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="warn" size={14}/>{draft.kind === 'MADE' ? 'below the make more level: a batch is needed' : 'at or below the reorder point: time to order'}</div>}
       </div>
 
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>

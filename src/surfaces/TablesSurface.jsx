@@ -14,6 +14,7 @@ import { activePhoneRegion } from '../lib/customerLookup';
 import { money, currencySymbol } from '../lib/currency';
 import { OTHER_SECTION, orphanSectionTables, tablesForSectionView, effectiveSectionView } from '../lib/sectionPlan';
 import { withoutRecordNotes } from '../lib/orderCustomerNotes';
+import { Icon } from '../components/ServOSIcons';
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)', label:'Available' },
@@ -238,7 +239,7 @@ function ReservationModal({ table, existing, onConfirm, onCancel }) {
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                       {c.phone_raw || c.phone}
                       {Array.isArray(c.allergens) && c.allergens.length > 0 && (
-                        <span style={{ marginLeft: 6, color:'#e8a020' }}>· ⚠ {c.allergens.join(', ')}</span>
+                        <span style={{ marginLeft: 6, color:'#e8a020' }}>· <Icon name="warn" size={11} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{c.allergens.join(', ')}</span>
                       )}
                     </div>
                   </div>
@@ -705,7 +706,7 @@ export default function TablesSurface() {
 
                       {/* Covers */}
                       <div style={{ width:70, flexShrink:0 }}>
-                        <div style={{ fontSize:13, fontWeight:600, color:'var(--t2)' }}>🪑 {session.covers}</div>
+                        <div style={{ fontSize:13, fontWeight:600, color:'var(--t2)' }}><Icon name="seat" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{session.covers}</div>
                         <div style={{ fontSize:11, color:'var(--t3)' }}>covers</div>
                       </div>
 
@@ -719,7 +720,7 @@ export default function TablesSurface() {
 
                       {/* Time seated */}
                       <div style={{ width:70, flexShrink:0 }}>
-                        <div style={{ fontSize:13, fontWeight:600, color:'var(--t2)' }}>⏱ {seatedMins < 60 ? `${seatedMins}m` : `${Math.floor(seatedMins/60)}h${seatedMins%60}m`}</div>
+                        <div style={{ fontSize:13, fontWeight:600, color:'var(--t2)' }}><Icon name="clock" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{seatedMins < 60 ? `${seatedMins}m` : `${Math.floor(seatedMins/60)}h${seatedMins%60}m`}</div>
                         <div style={{ fontSize:11, color:'var(--t3)' }}>seated</div>
                       </div>
 
@@ -1017,12 +1018,12 @@ export default function TablesSurface() {
                         )}
                         {selectedBk.packageId && (
                           <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
-                            <span style={{ color:'var(--t3)' }}>Package</span><span style={{ color:'var(--t1)', fontWeight:600 }}>📦 {(packages || []).find(p => p.id === selectedBk.packageId)?.name || 'Package'}</span>
+                            <span style={{ color:'var(--t3)' }}>Package</span><span style={{ color:'var(--t1)', fontWeight:600 }}><Icon name="package" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{(packages || []).find(p => p.id === selectedBk.packageId)?.name || 'Package'}</span>
                           </div>
                         )}
                         {selectedBk.note && (
                           <div style={{ marginTop:4, fontSize:11, color:'var(--orn)', fontStyle:'italic', padding:'5px 8px', background:'rgba(249,115,22,.08)', borderRadius:6 }}>
-                            📝 {selectedBk.note}
+                            <Icon name="note" size={12} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{selectedBk.note}
                           </div>
                         )}
                       </div>
@@ -1101,7 +1102,7 @@ export default function TablesSurface() {
                     else if (!r?.text && r?.error !== 'table_open' && r?.error !== 'table_seated_empty') showToast(r?.error === 'unknown booking' ? 'This booking is not on the diary any more.' : 'Could not seat the booking', 'error');
                     setSelected(null);
                   }} style={{ height:44, fontSize:14 }}>Seat guests →</button>
-                  <button className="btn btn-ghost btn-full" onClick={()=>setEditBooking(selectedBk)}>✏ Edit reservation</button>
+                  <button className="btn btn-ghost btn-full" onClick={()=>setEditBooking(selectedBk)}><Icon name="pencil" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />Edit reservation</button>
                   <button className="btn btn-red btn-sm btn-full" style={{ height:32 }} onClick={()=>handleAction('cancel_reserve')}>Cancel reservation</button>
                 </>
               )}

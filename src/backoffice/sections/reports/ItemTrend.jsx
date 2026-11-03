@@ -13,6 +13,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { ExportBtn, EmptyState, StatTile } from './_charts';
+import { Icon } from '../../../components/ServOSIcons';
 import { toCsv, downloadCsv } from './_csv';
 import { dayOfCheck, dayText, rangeDays, weekdayOf } from './_filters';
 import { isSplit } from '../../../lib/reportSplit.js';
@@ -344,7 +345,7 @@ function ItemTrendOne({ checks, fmt, fmtN, range, sites }) {
 
   if (other.loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading this site's menu…</div>;
   if (!days.length || rows.length === 0) {
-    return <EmptyState icon="📈" message="No item sales in this range. Try widening the period."/>;
+    return <EmptyState icon="trendUp" message="No item sales in this range. Try widening the period."/>;
   }
 
   return (
@@ -381,8 +382,9 @@ function ItemTrendOne({ checks, fmt, fmtN, range, sites }) {
           padding:'6px 10px', borderRadius:8, background: showDebug ? 'var(--acc-d)' : 'var(--bg3)',
           border:`1px solid ${showDebug ? 'var(--acc-b)' : 'var(--bdr)'}`,
           color: showDebug ? 'var(--acc)' : 'var(--t3)', fontSize:12, cursor:'pointer', fontFamily:'inherit',
+          display:'inline-flex', alignItems:'center', gap:6,
         }} title="Diagnostic — shows every mod seen in the period and whether it resolved to a menu item">
-          🔍 Debug mods
+          <Icon name="search" size={14}/>Debug mods
         </button>
         <div style={{ flex:1 }}/>
         <ExportBtn onClick={exportCsv}/>
@@ -391,8 +393,8 @@ function ItemTrendOne({ checks, fmt, fmtN, range, sites }) {
       {/* Debug: modifier survey */}
       {showDebug && (
         <div style={{ background:'var(--bg2)', border:'1px solid var(--bdr2)', borderRadius:12, padding:'14px 16px', marginBottom:14 }}>
-          <div style={{ fontSize:12, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>
-            🔍 Modifier diagnostic — what's actually in your closed_checks
+          <div style={{ fontSize:12, fontWeight:800, color:'var(--t1)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
+            <Icon name="search" size={14}/>Modifier diagnostic — what's actually in your closed_checks
           </div>
           <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.5 }}>
             <b>{modSurvey.parentLinesWithMods}</b> parent line item{modSurvey.parentLinesWithMods === 1 ? '' : 's'} have mods,
@@ -401,8 +403,8 @@ function ItemTrendOne({ checks, fmt, fmtN, range, sites }) {
             If your Box of 3 sale is missing here, the parent line itself was added without any mods recorded — meaning the cart-add path didn't preserve the donut picks. If it shows as <b>unresolved</b>, the mod is there but the donut name doesn't match any menu_items row (check spelling / casing).
           </div>
           {modSurvey.entries.length === 0 ? (
-            <div style={{ fontSize:12, color:'var(--red)', padding:'10px 0' }}>
-              ⚠ Zero mod entries in this period. Every closed_check items[] row has empty mods[]. The cart-add path that produced these rows did not store mod selections at all. The Box of 3 component picks were lost at add-time.
+            <div style={{ fontSize:12, color:'var(--red)', padding:'10px 0', display:'flex', alignItems:'flex-start', gap:6 }}>
+              <Icon name="warn" size={14}/>Zero mod entries in this period. Every closed_check items[] row has empty mods[]. The cart-add path that produced these rows did not store mod selections at all. The Box of 3 component picks were lost at add-time.
             </div>
           ) : (
             <div style={{ maxHeight:280, overflowY:'auto', fontFamily:'var(--font-mono)', fontSize:11 }}>
@@ -626,7 +628,7 @@ function ItemTrendSites(props) {
 
   if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's menu…</div>;
   if (!days.length || parts.every(p => perSite.get(p.id).rows.length === 0)) {
-    return <EmptyState icon="📈" message="No item sales at these sites in this range. Try widening the period."/>;
+    return <EmptyState icon="trendUp" message="No item sales at these sites in this range. Try widening the period."/>;
   }
 
   return (

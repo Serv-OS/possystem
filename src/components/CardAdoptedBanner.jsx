@@ -1,4 +1,5 @@
 import { useStore } from '../store';
+import { Icon } from './ServOSIcons';
 
 /**
  * CardAdoptedBanner (30 Sep 2026): a card sale this till booked AFTER its checkout was closed.
@@ -27,7 +28,7 @@ export default function CardAdoptedBanner() {
       display: 'flex', alignItems: 'center', gap: 14,
       flexShrink: 0, animation: 'slideDown .25s cubic-bezier(.2,.8,.3,1)',
     }}>
-      <span style={{ fontSize: 18, flexShrink: 0 }}>✅</span>
+      <span style={{ fontSize: 18, flexShrink: 0, display: 'flex', color: 'var(--grn, #22c55e)' }}><Icon name="checkCircle" size={18}/></span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>{banner.text}</span>
         {time && <span style={{ fontSize: 12, color: 'var(--t3)', marginLeft: 10 }}>Approved at {time}</span>}

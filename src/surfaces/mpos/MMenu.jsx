@@ -9,6 +9,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 import MAllergenPicker from './MAllergenPicker';
 import MVoiceOrder from './MVoiceOrder';
 import { resolveItemPrice, variantFromPrice } from '../../lib/menuPricing';
@@ -213,7 +214,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
           ...Sx.iconBtn,
           background:'var(--acc-d)', border:'1px solid var(--acc-b)',
           color:'var(--acc)', fontSize:18,
-        }}>🎤</button>
+        }}><Icon name="mic" size={18} /></button>
         {/* Allergy chip — opens the picker. Active state when any allergen is filtered. */}
         <button onClick={() => setShowAllergens(true)} aria-label="Allergy filter" style={{
           ...Sx.iconBtn,
@@ -223,7 +224,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
           color: allergens.length > 0 ? 'var(--red)' : 'var(--t2)',
           fontSize:13, fontWeight:800,
         }}>
-          <span style={{ fontSize:14 }}>⚠</span>
+          <Icon name="warn" size={15} />
           {allergens.length > 0 && <span style={{ fontFamily:'var(--font-mono)' }}>{allergens.length}</span>}
         </button>
       </div>
@@ -231,7 +232,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
       {/* Search box — always visible */}
       <div style={{ padding:'10px 12px', flexShrink:0, background:'var(--bg)' }}>
         <div style={{ position:'relative' }}>
-          <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', fontSize:14, color:'var(--t4)', pointerEvents:'none' }}>🔍</span>
+          <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', fontSize:14, color:'var(--t4)', pointerEvents:'none', display:'flex' }}><Icon name="search" size={15} /></span>
           <input
             value={query} onChange={(e) => setQuery(e.target.value)}
             placeholder="Search the menu…"
@@ -269,8 +270,8 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
             eightySixIds={eightySixIds}
             empty={
               showSearch
-                ? { icon:'🔍', title:`No items match "${query}"`, sub:'Try a different search term.' }
-                : { icon:'🍽', title:'No items in this category', sub:'Pick another category.' }
+                ? { icon:'search', title:`No items match "${query}"`, sub:'Try a different search term.' }
+                : { icon:'utensils', title:'No items in this category', sub:'Pick another category.' }
             }
             onPick={onPickItem}
           />
@@ -284,7 +285,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
           background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)',
           fontSize:11, fontWeight:700, display:'flex', alignItems:'center', gap:8, flexShrink:0,
         }}>
-          <span style={{ fontSize:14 }}>⚠</span>
+          <Icon name="warn" size={15} />
           <span style={{ flex:1, lineHeight:1.4 }}>Filtering for {allergens.length} allergen{allergens.length === 1 ? '' : 's'} — flagged items shown crossed out</span>
           <button onClick={() => setShowAllergens(true)} style={{
             background:'transparent', border:'none', color:'var(--red)', fontWeight:800, fontSize:11,
@@ -327,7 +328,7 @@ function CategoriesGrid({ categories, countFor, onPick }) {
   if (!categories?.length) {
     return (
       <div style={Sx.emptyBlock}>
-        <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🍽</div>
+        <div style={{ fontSize:36, marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="utensils" size={36} /></div>
         <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>Menu not loaded yet</div>
         <div style={{ fontSize:12 }}>Categories will appear here once the menu syncs.</div>
       </div>
@@ -380,7 +381,7 @@ function ItemsList({ items, empty, onPick, allergenHits, variantInfo, priceOf, e
   if (!items.length) {
     return (
       <div style={Sx.emptyBlock}>
-        <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>{empty.icon}</div>
+        <div style={{ fontSize:36, marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name={empty.icon} size={36} /></div>
         <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>{empty.title}</div>
         <div style={{ fontSize:12 }}>{empty.sub}</div>
       </div>
@@ -453,8 +454,8 @@ function ItemRow({ item, onTap, allergenHits = [], variantInfo = null, ownPrice 
           {item.name}
         </div>
         {flagged ? (
-          <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, lineHeight:1.4 }}>
-            ⚠ Contains: {allergenHits.join(', ')}
+          <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, lineHeight:1.4, display:'flex', alignItems:'center', gap:4 }}>
+            <Icon name="warn" size={12} /> Contains: {allergenHits.join(', ')}
           </div>
         ) : item.description ? (
           <div style={{ fontSize:11, color:'var(--t4)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>

@@ -341,7 +341,7 @@ const IDENTITY = [
     ['from \'../../StockScope\'', 'from \'../StockScope\''],
     ['from \'../stock/LockLine\'', 'from \'./stock/LockLine\''],
     ['from \'../reports/reportKit\'', 'from \'./reports/reportKit\''],
-    ['from \'../../../', 'from \'../../', 11],
+    ['from \'../../../', 'from \'../../', 12], // 5.12.43: plus the ServOSIcons import
     ['\nimport { useSiteStockContext } from \'../../lib/stock/siteContext\';\nimport { useStockScope } from \'../StockScope\';\nimport LockLine from \'./stock/LockLine\';', ''],
     ['function UnitSelect({ value, onChange, width = 110, disabled = false }) {', 'function UnitSelect({ value, onChange, width = 110 }) {'],
     [' disabled={disabled} style={{ ...field, width, ...(disabled ? { opacity: 0.55 } : {}) }}>', ' style={{ ...field, width }}>'],
@@ -462,16 +462,19 @@ const MAIN_SHA = {
   // v5.11.99 (Reports align): the Wastage log values waste from the stock ledger for every company, so
   // the pin is that text (5.11.84's was 33e365b3...).
   'backoffice/sections/Wastage.jsx': '6a8def407a7d6caff38bb709a1cad974ad092c616ebf831430e0def626d79ed0',
-  'backoffice/sections/StockCounts.jsx': '44a539c1f9993b6cdf9143ab0b433c0ccbdeec750333125efc922004a96b7ed9',
+  // 5.12.43: line icons for emoji (5.11.84's was 44a539c1...)
+  'backoffice/sections/StockCounts.jsx': 'a5f3244734315a906f02f4829a7932bce7890cffed40f696f618d189da67bdbd',
   // v5.11.96 (Drop 3): moved whole into purchasing/, hashed from the first import line (full file was f18b04a253ad2845fcc2a94e061b12a9b30fda49f32e14824278313ef6a2513f)
-  'backoffice/sections/Invoices.jsx': '71ed5e4a30aa8c2fc4b2938282eb3b480d616a3928a13e8131495ed36830a039',
+  // 5.12.43: line icons for emoji (before: 71ed5e4a30aa8c2fc4b2938282eb3b480d616a3928a13e8131495ed36830a039)
+  'backoffice/sections/Invoices.jsx': '6f7c7ac8f72b45cd4cfe9b1b3f727ad6af38486502349d27962d56be4b3f557c',
   'backoffice/sections/PurchaseOrders.jsx': '5f5aaa8b6610886b3889e4c3e1dfaa9143fca50a3a7da645afaef61739dda6e7',
   // v5.11.99 (Reports align): the Recipe GP tab says its basis (menu price less plate cost, this venue only)
   // for every company, so the pin is that text (5.11.84's was 4d5ee256...).
   'backoffice/sections/StockReports.jsx': '2b4446f43840b31e688526da4cc6b38242381e0adc759a01df17cb377d53b149',
   'backoffice/sections/produce/BatchesSite.jsx': 'e1823ac578bc1964c1d77f8b9381273b84033fe408fe42bfc013705c6430d718',   // from the first import line (the moved file's comment is new)
   'backoffice/sections/OrderPad.jsx': '80255c600c51dde811b5bd2581cff78ad09219ca4d6c2c392203850601c3f9d3',
-  'backoffice/sections/produce/RecipesSite.jsx': 'b24f073d44369903c38f7a317da52f95d6ba94058f4b7c080ed8d27fefe34f87',   // from the first import line (the moved file's comment is new)
+  // 5.12.43: line icons for emoji (before: b24f073d44369903c38f7a317da52f95d6ba94058f4b7c080ed8d27fefe34f87)
+  'backoffice/sections/produce/RecipesSite.jsx': '390e3c9bbbf43791a46773a79cb0bfeea3ca9c33907b72030e6e42f62e2f1374',   // from the first import line (the moved file's comment is new)
   // v5.11.92: the drainer release changed this modal for every company (dish waste always goes
   // through stock_record_waste, no browser fallback), so the pin is that text, not 5.11.84's.
   'components/PosWasteModal.jsx': 'e5969f614a54d87dcd77498bdb126a5f718f8404b4504f5b74c55697a6f2d128',

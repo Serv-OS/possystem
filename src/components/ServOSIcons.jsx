@@ -6,6 +6,7 @@
 // adapts to the surrounding text colour + theme automatically.
 
 import {
+  Fingerprint, Info, Pause,
   Apple, Archive, Armchair, ArrowDown, ArrowUp, Award, BadgePercent, Ban,
   Banknote, Bean, Bed, Beef, Bike, Bird, BookOpen, Bot,
   Briefcase, Building2, Calendar, Car, ChartBar, ChefHat, Circle, CircleCheck,
@@ -28,6 +29,9 @@ import { emojiName } from '../lib/emojiIcons';
 
 // Lucide icons (ISC licence) for meanings the ServOS set does not draw yet. Same 24 grid and line weight.
 const LUCIDE = {
+  pause: Pause,
+  info: Info,
+  fingerprint: Fingerprint,
   phone: Smartphone,
   lock: Lock,
   unlock: LockOpen,

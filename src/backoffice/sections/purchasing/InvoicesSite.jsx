@@ -15,6 +15,7 @@ import { getLocationConfig } from '../../../lib/locationTime';
 import { money, currencySymbol } from '../../../lib/currency';
 import { fmtYmd, fmtVenueDate } from '../../../lib/venueDate';
 import NumberField from '../../../components/NumberField';
+import { Icon } from '../../../components/ServOSIcons';
 import { formatRateLabel, purchaseNet } from '../../../lib/tax';
 import { convert } from '../../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../../lib/stock/data';
@@ -237,7 +238,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
 
       {!review && (
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '11px 18px', borderRadius: 12, background: 'var(--acc)', color: '#0b0c10', fontSize: 13.5, fontWeight: 700, cursor: scanning ? 'default' : 'pointer', opacity: scanning ? 0.6 : 1 }}>
-          {scanning ? 'Scanning…' : '📷 Scan / upload invoice'}
+          {scanning ? 'Scanning…' : <><Icon name="camera" size={16} />Scan / upload invoice</>}
           <input {...photoInputProps(undefined, 'image/*,application/pdf')} onChange={onFile} disabled={scanning} style={{ display: 'none' }} />
         </label>
       )}
@@ -315,7 +316,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
                 <div style={{ fontSize: 13, color: 'var(--t1)', marginRight: 'auto' }}>
                   Subtotal (ex VAT): <b>{money(net)}</b> · VAT: <b>{money(vat)}</b> · Total: <b>{money(gross)}</b>
-                  {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amber)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? `⚠ read total ${money(read)} — check VAT/lines` : `✓ matches read total`}</span>}
+                  {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amber)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="warn" size={12} />read total {money(read)} — check VAT/lines</span> : `✓ matches read total`}</span>}
                 </div>
                 {areas.length > 0 && (
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>

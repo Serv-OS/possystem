@@ -17,6 +17,7 @@ import { buildBrief, siteUrl, freeHost } from './helpers.js';
 import { previewToken } from './adminClient.js';
 import PublishTermsModal from './PublishTermsModal.jsx';
 import { PUBLISH_TERMS_VERSION, publishTermsAccepted } from '../../../lib/website/publishTerms.js';
+import { Icon } from '../../../components/ServOSIcons';
 
 // Agent D owns the designer view. A glob import resolves to nothing (no build error) when
 // the file is not in the tree yet, so this tab still builds and shows a plain placeholder.
@@ -114,7 +115,7 @@ export default function WebsiteBuilder({ venueName: fallbackName, onBack }) {
       <div style={W.topBar}>
         <button style={W.ghost} onClick={onBack}>← Appearance</button>
         <div style={{ fontWeight: 800, color: 'var(--t1)', fontSize: 15 }}>{title}</div>
-        <span style={W.chip} title={ws.site?.slug ? freeHost(ws.site.slug) : 'No site yet'}>🏷 {name}{ws.site?.slug ? ` · ${ws.site.slug}` : ''}</span>
+        <span style={W.chip} title={ws.site?.slug ? freeHost(ws.site.slug) : 'No site yet'}><Icon name="tag" size={13}/>{name}{ws.site?.slug ? ` · ${ws.site.slug}` : ''}</span>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
           {VIEWS.map(([id, label]) => (
             <button key={id} style={W.tab(view === id)} onClick={() => setView(id)}>{label}</button>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { money, currencySymbol } from '../lib/currency';
+import { Icon } from '../components/ServOSIcons';
 // v5.7.34 rate-null guards: per-unit tax lines book rate: null in the breakdown
 import { breakdownLabel } from '../lib/receiptTax';
 // ══════════════════════════════════════════════════════════════════════════════
@@ -120,8 +121,8 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
             <div style={{ fontSize:17, fontWeight:700, marginBottom:4 }}>{money(grand)} due</div>
             <div style={{ fontSize:12, color:'var(--t3)', marginBottom:20 }}>Includes {money(tipAmt)} tip</div>
             {[
-              { id:'card', icon:'💳', label:'Card payment', sub:'Card terminal · tap, chip or swipe' },
-              { id:'cash', icon:'💵', label:'Cash payment', sub:'Enter tendered amount and calculate change' },
+              { id:'card', icon:'card', label:'Card payment', sub:'Card terminal · tap, chip or swipe' },
+              { id:'cash', icon:'money', label:'Cash payment', sub:'Enter tendered amount and calculate change' },
             ].map(m => (
               <div key={m.id} style={{
                 padding:16, background:'var(--bg3)', borderRadius:12, cursor:'pointer',
@@ -131,7 +132,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
               onMouseEnter={e=>e.currentTarget.style.borderColor='var(--acc-b)'}
               onMouseLeave={e=>e.currentTarget.style.borderColor='var(--bdr)'}
               onClick={() => setStep(m.id)}>
-                <div style={{ fontSize:26 }}>{m.icon}</div>
+                <div style={{ color:'var(--acc)' }}><Icon name={m.icon} size={26} /></div>
                 <div><div style={{fontWeight:500}}>{m.label}</div><div style={{fontSize:12,color:'var(--t3)',marginTop:2}}>{m.sub}</div></div>
               </div>
             ))}
@@ -141,7 +142,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
         {/* Card */}
         {step === 'card' && (
           <div style={{ textAlign:'center', padding:'32px 0' }}>
-            <div style={{ fontSize:56, marginBottom:20 }}>💳</div>
+            <div style={{ marginBottom:20, display:'flex', justifyContent:'center', color:'var(--acc)' }}><Icon name="card" size={52} /></div>
             <div style={{ fontSize:24, fontWeight:700, marginBottom:8 }}>{money(grand)}</div>
             <div style={{ fontSize:13, color:'var(--t3)', marginBottom:32 }}>Present card to the card terminal</div>
             <div style={{

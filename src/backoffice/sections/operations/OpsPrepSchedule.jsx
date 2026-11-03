@@ -125,7 +125,7 @@ export default function OpsPrepSchedule() {
                 return <option key={m.id} value={m.id}>{m.name}{showRec ? ` (${rec.name})` : ''}{rec ? '' : ' — no recipe yet'}</option>;
               })}
             </select>
-            {editing.outputItemId && !editing.recipeId && <div style={{ fontSize: 11, color: 'var(--amb,#e8a020)', marginBottom: 8 }}>⚠ This item has no batch recipe — add one on the item's Recipe tab, or the cook will log without moving stock.</div>}
+            {editing.outputItemId && !editing.recipeId && <div style={{ fontSize: 11, color: 'var(--amb,#e8a020)', marginBottom: 8, display: 'flex', alignItems: 'flex-start', gap: 6 }}><Icon name="warn" size={13} /><span>This item has no batch recipe — add one on the item's Recipe tab, or the cook will log without moving stock.</span></div>}
             <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. Chicken stock" style={field} autoFocus />
 
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>

@@ -10,6 +10,7 @@ import { useStore } from '../../store';
 import { fetchClosedChecks } from '../../lib/db';
 import { getLocationId } from '../../lib/supabase';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 
 const RANGES = [
   { id:'today',     label:'Today',      ms: 24*60*60*1000 },
@@ -155,7 +156,7 @@ export default function MOrderHistory({ onBack, onOpen }) {
       <div style={Sx.scroller}>
         {filtered.length === 0 ? (
           <div style={Sx.emptyBlock}>
-            <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>{loading ? '⏳' : '🧾'}</div>
+            <div style={{ fontSize:36, marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name={loading ? 'clock' : 'receipt'} size={36} /></div>
             <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>
               {loading ? 'Loading…' : 'No closed orders match'}
             </div>
@@ -203,10 +204,10 @@ function Row({ check, onClick }) {
           </span>
         </div>
         <div style={{ fontSize:11, color:'var(--t3)', display:'flex', gap:10, flexWrap:'wrap' }}>
-          {customerName && <span>👤 {customerName}</span>}
-          {check.server && <span>🧑 {check.server}</span>}
+          {customerName && <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="user" size={12} /> {customerName}</span>}
+          {check.server && <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="user" size={12} /> {check.server}</span>}
           <span>{(check.items || []).length} item{(check.items || []).length === 1 ? '' : 's'}</span>
-          <span>⏱ {elapsed(check.closedAt) || '—'} ago</span>
+          <span style={{ display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="clock" size={12} /> {elapsed(check.closedAt) || '—'} ago</span>
         </div>
         {refundedAmount > 0 && (
           <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, marginTop:4 }}>

@@ -17,6 +17,7 @@
 
 import { useState, useMemo } from 'react';
 import { signedMoney } from '../../../lib/currency';
+import { Icon } from '../../../components/ServOSIcons';
 
 /* ── Grading (GP% and similar rate metrics) ──────────────────────────────────
    ≥60 good · 40–59.9 mid · <40 bad. Amber for "thin", never red-vs-green alone. */
@@ -159,7 +160,7 @@ export function SegToggle({ value, onChange, options }) {
 export function SearchField({ value, onChange, placeholder = 'Search…', width = 240 }) {
   return (
     <div style={{ position:'relative', width, flexShrink:0 }}>
-      <span style={{ position:'absolute', left:11, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', pointerEvents:'none' }}>🔍</span>
+      <span style={{ position:'absolute', left:11, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', pointerEvents:'none', display:'flex' }}><Icon name="search" size={14}/></span>
       <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} aria-label={placeholder}
         style={{ width:'100%', height:38, borderRadius:11, border:'1.5px solid var(--bdr2)', background:'var(--bg1)',
           color:'var(--t1)', fontFamily:'inherit', fontSize:13, padding:'0 12px 0 32px', outline:'none' }}

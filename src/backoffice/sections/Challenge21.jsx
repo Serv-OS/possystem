@@ -20,6 +20,7 @@ import { saveLocation, resetChallenge21Counter } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
 import { useStore } from '../../store';
 import Challenge21Report from './Challenge21Report';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function Challenge21() {
   // v5.5.166: store key is `menuCategories` not `categories` — wrong key
@@ -253,7 +254,7 @@ export default function Challenge21() {
                         <input type="checkbox" checked={checked} onChange={() => toggleCat(c.id)}
                           style={{ width: 16, height: 16, cursor:'pointer' }}/>
                         <span style={{ flex: 1, fontWeight: checked ? 700 : 500 }}>{c.name || '(unnamed)'}</span>
-                        {checked && <span style={{ fontSize: 16 }}>🍺</span>}
+                        {checked && <Icon name="beer" size={16} />}
                       </label>
                     );
                   })}

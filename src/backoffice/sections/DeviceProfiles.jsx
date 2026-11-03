@@ -7,15 +7,16 @@ import { defaultOrderTypeFor, defaultOrderTypeSummary, cleanDefaultOrderType, ti
 import { useSyncExternalStore } from 'react';   // 30 Sep 2026: the editor watches the till order type column flag
 import { money } from '../../lib/currency';
 import { ServOSIcon } from '../../components/ServOSBrand';
+import { Icon } from '../../components/ServOSIcons';
 import { DISPLAY_BRAND_COLUMN, cleanDisplayBrand, displayBrandForDb, displayBrandFromKiosk, badDisplayBrandColours, hasDisplayBrandColumn, displayBrandIsSet, mergeDisplayBrand, normaliseHex, resolveDisplayBrand, EMPTY_DISPLAY_BRAND, DEFAULT_ACCENT_DARK } from '../../lib/customerDisplayBrand';
 import { displayAccent, accentUnreadable } from '../../lib/customerDisplayAccent';   // 2 Oct 2026: the preview shows the accent the display really draws
 
 const SURFACES = [
-  { id:'tables', label:'Floor plan', icon:'⬚', desc:'Opens to the table layout view' },
-  { id:'pos',    label:'POS ordering', icon:'⊞', desc:'Opens straight to the menu/ordering screen' },
-  { id:'bar',    label:'Bar tabs', icon:'🍸', desc:'Opens to the bar tab management screen' },
-  { id:'kds',    label:'Kitchen display', icon:'▣', desc:'Opens to the KDS screen (for kitchen units)' },
-  { id:'mpos',   label:'MPOS (mobile)', icon:'📱', desc:'Phone or Sunmi handheld for servers and runners. Card-only — the assigned Adyen reader.' },
+  { id:'tables', label:'Floor plan', icon:'floor', desc:'Opens to the table layout view' },
+  { id:'pos',    label:'POS ordering', icon:'pos', desc:'Opens straight to the menu/ordering screen' },
+  { id:'bar',    label:'Bar tabs', icon:'cocktail', desc:'Opens to the bar tab management screen' },
+  { id:'kds',    label:'Kitchen display', icon:'kds', desc:'Opens to the KDS screen (for kitchen units)' },
+  { id:'mpos',   label:'MPOS (mobile)', icon:'phone', desc:'Phone or Sunmi handheld for servers and runners. Card-only — the assigned Adyen reader.' },
 ];
 
 // MPOS payment mode — only relevant when defaultSurface === 'mpos'
@@ -34,12 +35,12 @@ const CUSTOMER_DISPLAY_MODES = [
 ];
 
 const ORDER_TYPES = [
-  { id:'dine-in',    label:'Dine in',    icon:'🍽' },
-  { id:'takeaway',   label:'Takeaway',   icon:'🥡' },
-  { id:'collection', label:'Collection', icon:'📦' },
+  { id:'dine-in',    label:'Dine in',    icon:'utensils' },
+  { id:'takeaway',   label:'Takeaway',   icon:'takeaway' },
+  { id:'collection', label:'Collection', icon:'package' },
   // Drive thru (16 Sep 2026): this tick IS the venue's switch. Off unless ticked, so a
   // till that never ticks it never offers it. No new column: device_profiles.enabled_order_types.
-  { id:'drive-thru', label:'Drive thru', icon:'🚗' },
+  { id:'drive-thru', label:'Drive thru', icon:'car' },
 ];
 const orderTypeLabel = (t) => ORDER_TYPES.find(o => o.id === t)?.label || (t === 'delivery' ? 'Delivery' : t);
 
@@ -477,9 +478,9 @@ export default function DeviceProfiles() {
 
                 {/* Config summary */}
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-                  {prof.trainingMode && <ConfigRow label="Training mode" value="🎓 ON — nothing committed" valueColor="#B45309"/>}
+                  {prof.trainingMode && <ConfigRow label="Training mode" value={<span style={{ display:'inline-flex', alignItems:'center', gap:5 }}><Icon name="graduation" size={13} />ON, nothing committed</span>} valueColor="#B45309"/>}
                   <ConfigRow label="Default screen" value={SURFACES.find(s => s.id === prof.defaultSurface)?.label}/>
-                  <ConfigRow label="Order types" value={orderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ') || 'None'}/>
+                  <ConfigRow label="Order types" value={orderTypes.length ? <span style={{ display:'inline-flex', alignItems:'center', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>{orderTypes.map((t, i) => { const o = ORDER_TYPES.find(x => x.id === t); return <span key={t} style={{ display:'inline-flex', alignItems:'center', gap:4 }}>{i > 0 && ' · '}{o?.icon && <Icon name={o.icon} size={13} />}{o?.label}</span>; })}</span> : 'None'}/>
                   <ConfigRow label="Starts on" value={defaultOrderTypeSummary(prof, orderTypeLabel)}/>
                   {prof.dineInFlagPrompt && <ConfigRow label="Flag number" value="Asked on dine in orders" valueColor="var(--acc)"/>}
                   <ConfigRow label="Table service" value={prof.tableServiceEnabled ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.tableServiceEnabled ? 'var(--grn)' : 'var(--red)'}/>
@@ -720,7 +721,7 @@ function TillOrderTypeSettings({ form, upd }) {
       <select aria-label="Order type the till starts on" value={current} onChange={e => upd('defaultOrderType', e.target.value || null)}
         style={{ width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
         <option value="">Automatic ({orderTypeLabel(auto)})</option>
-        {ORDER_TYPES.filter(t => enabled.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+        {ORDER_TYPES.filter(t => enabled.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
       </select>
       <div style={TILL_HINT}>The order type a till on this profile opens on, and goes back to after each order. Automatic means the only enabled type, or dine in. Floor tables are always dine in.</div>
 
@@ -869,7 +870,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
                   background: form.defaultSurface === s.id ? 'var(--acc-d)' : 'var(--bg3)',
                   border:`1.5px solid ${form.defaultSurface === s.id ? 'var(--acc)' : 'var(--bdr)'}`,
                 }}>
-                  <div style={{ fontSize:13, fontWeight:700, color: form.defaultSurface === s.id ? 'var(--acc)' : 'var(--t1)', marginBottom:2 }}>{s.icon} {s.label}</div>
+                  <div style={{ fontSize:13, fontWeight:700, color: form.defaultSurface === s.id ? 'var(--acc)' : 'var(--t1)', marginBottom:2, display:'flex', alignItems:'center', gap:6 }}><Icon name={s.icon} size={15} />{s.label}</div>
                   <div style={{ fontSize:10, color:'var(--t4)' }}>{s.desc}</div>
                 </button>
               ))}
@@ -879,7 +880,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
           {/* MPOS-only options — only shown when default surface is MPOS */}
           {form.defaultSurface === 'mpos' && (
             <div style={{ marginBottom:18, padding:14, borderRadius:12, background:'var(--acc-d)', border:'1px solid var(--acc-b)' }}>
-              <div style={{ fontSize:11, fontWeight:800, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:10 }}>📱 MPOS settings</div>
+              <div style={{ fontSize:11, fontWeight:800, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:10, display:'flex', alignItems:'center', gap:6 }}><Icon name="phone" size={14} />MPOS settings</div>
 
               {/* Runner mode */}
               <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer', marginBottom:14 }}>
@@ -927,7 +928,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
                     border:`1.5px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`,
                     color: on ? 'var(--acc)' : 'var(--t3)', transition:'all .1s',
                   }}>
-                    <div style={{ fontSize:18, marginBottom:2 }}>{t.icon}</div>
+                    <div style={{ marginBottom:4, display:'flex', justifyContent:'center' }}><Icon name={t.icon} size={20} /></div>
                     <div style={{ fontSize:11, fontWeight:700 }}>{t.label}</div>
                   </button>
                 );
@@ -1149,7 +1150,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
                   style={{ padding:'9px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', transition:'all .1s',
                     background: form.menuId === m.id ? 'var(--acc-d)' : 'var(--bg3)',
                     border:`1.5px solid ${form.menuId === m.id ? 'var(--acc)' : 'var(--bdr)'}` }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:form.menuId===m.id?'var(--acc)':'var(--t1)' }}>📋 {m.name}</div>
+                  <div style={{ fontSize:12, fontWeight:700, color:form.menuId===m.id?'var(--acc)':'var(--t1)', display:'flex', alignItems:'center', gap:6 }}><Icon name="clipboard" size={14} />{m.name}</div>
                   {m.description && <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>{m.description}</div>}
                 </button>
               ))}
@@ -1192,7 +1193,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
           onClick={() => upd('isMaster', !form.isMaster)}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <div>
-              <div style={{ fontSize:13, fontWeight:700, color: form.isMaster ? '#ca8a04' : 'var(--t1)' }}>👑 Master POS</div>
+              <div style={{ fontSize:13, fontWeight:700, color: form.isMaster ? '#ca8a04' : 'var(--t1)', display:'flex', alignItems:'center', gap:6 }}><Icon name="crown" size={15} />Master POS</div>
               <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>The master till sends QR, online and kiosk orders to the kitchen. Set it on one till per venue. A handheld or kiosk cannot be the master.</div>
             </div>
             <div style={{ width:36, height:20, borderRadius:10, background: form.isMaster ? '#ca8a04' : 'var(--bdr2)', position:'relative', flexShrink:0, transition:'background .2s' }}>
@@ -1210,7 +1211,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
           onClick={() => upd('trainingMode', !form.trainingMode)}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <div>
-              <div style={{ fontSize:13, fontWeight:700, color: form.trainingMode ? '#B45309' : 'var(--t1)' }}>🎓 Training mode</div>
+              <div style={{ fontSize:13, fontWeight:700, color: form.trainingMode ? '#B45309' : 'var(--t1)', display:'flex', alignItems:'center', gap:6 }}><Icon name="graduation" size={15} />Training mode</div>
               <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Terminals on this profile work normally but commit NOTHING — no orders, card charges, stock changes, receipts or kitchen tickets. A banner shows on screen. For staff training.</div>
             </div>
             <div style={{ width:36, height:20, borderRadius:10, background: form.trainingMode ? '#B45309' : 'var(--bdr2)', position:'relative', flexShrink:0, transition:'background .2s' }}>

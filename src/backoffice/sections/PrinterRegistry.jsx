@@ -7,27 +7,31 @@ import { PRINTER_MODELS, modelSetupNote, paperOptionsFor, resolvePrinterSpec } f
 import { printEnvironment, printFailureWords } from '../../lib/printPathWords';
 import { printerErrorGuidance, printerViewingDevice } from '../../lib/printerErrorWords';
 import PrinterErrorHelp from '../../components/PrinterErrorHelp';
+import { Icon } from '../../components/ServOSIcons';
+
+// Icon sitting inline before button or line text.
+const IC_INLINE = { display:'inline-block', verticalAlign:'-2px', marginRight:5 };
 
 // v5.8.84: the model list lives in lib/printerDialects.js next to the bytes each model
 // gets (ESC/POS, Star Line Mode, Star raster) and the plain words note about the mode the
 // physical printer must be in. `unavailable` models (the USB only TSP100 ECO) stay listed
 // so a row saved earlier still shows and prints, but cannot be picked for a new printer.
-const MODELS = PRINTER_MODELS.map(m => ({ ...m, icon:'🖨' }));
+const MODELS = PRINTER_MODELS.map(m => ({ ...m, icon:'print' }));
 
 // Only network is currently supported end-to-end (Android NetworkPrinter.java + iOS NetworkPrinter.swift).
 // Bluetooth and USB require additional native bridges, so they stay disabled until built.
 const CONN_TYPES = [
-  { id:'network',   label:'WiFi / Ethernet', icon:'🌐', placeholder:'192.168.1.100',              enabled:true,  note:'Recommended. Works on all supported printers.' },
-  { id:'bluetooth', label:'Bluetooth',       icon:'🔵', placeholder:'e.g. AA:BB:CC:DD:EE:FF',     enabled:false, note:'Coming soon. The native Bluetooth bridge is not built yet.' },
-  { id:'usb',       label:'USB',             icon:'🔌', placeholder:'Auto-detected',              enabled:false, note:'Coming soon. Needs a device specific driver.' },
+  { id:'network',   label:'WiFi / Ethernet', icon:'globe', placeholder:'192.168.1.100',              enabled:true,  note:'Recommended. Works on all supported printers.' },
+  { id:'bluetooth', label:'Bluetooth',       icon:'radio', placeholder:'e.g. AA:BB:CC:DD:EE:FF',     enabled:false, note:'Coming soon. The native Bluetooth bridge is not built yet.' },
+  { id:'usb',       label:'USB',             icon:'plug', placeholder:'Auto-detected',              enabled:false, note:'Coming soon. Needs a device specific driver.' },
 ];
 
 const ROLES = [
-  { id:'receipt',    label:'Customer receipts', icon:'🧾' },
-  { id:'kitchen',    label:'Kitchen / production', icon:'🍽' },
-  { id:'bar',        label:'Bar tickets', icon:'🍸' },
-  { id:'label',      label:'Label printer', icon:'🏷' },
-  { id:'general',    label:'General purpose', icon:'🖨' },
+  { id:'receipt',    label:'Customer receipts', icon:'receipt' },
+  { id:'kitchen',    label:'Kitchen / production', icon:'utensils' },
+  { id:'bar',        label:'Bar tickets', icon:'cocktail' },
+  { id:'label',      label:'Label printer', icon:'tag' },
+  { id:'general',    label:'General purpose', icon:'print' },
 ];
 
 const PAPER_LABEL = { 80:'80mm', 58:'58mm', 112:'112mm' };
@@ -191,7 +195,7 @@ function PrinterForm({ initial, onSave, onCancel }) {
                   opacity: isDisabled ? 0.55 : 1,
                   position:'relative',
                 }}>
-                {c.icon} {c.label}
+                <Icon name={c.icon} size={13} style={IC_INLINE} />{c.label}
                 {isDisabled && <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:'var(--t5)', textTransform:'uppercase', letterSpacing:0.5 }}>Soon</span>}
               </button>
             );
@@ -239,7 +243,7 @@ function PrinterForm({ initial, onSave, onCancel }) {
                 background: on ? 'var(--acc-d)' : 'var(--bg3)',
                 border: `1.5px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`,
                 color: on ? 'var(--acc)' : 'var(--t3)',
-              }}>{r.icon} {r.label}</button>
+              }}><Icon name={r.icon} size={13} style={IC_INLINE} />{r.label}</button>
             );
           })}
         </div>
@@ -404,7 +408,7 @@ export default function PrinterRegistry() {
       {/* Printer list */}
       {printers.length === 0 && !showForm && (
         <div style={{ background:'var(--bg1)', border:'1px dashed var(--bdr2)', borderRadius:16, padding:'48px 32px', textAlign:'center', marginBottom:24 }}>
-          <div style={{ fontSize:36, marginBottom:12 }}>🖨</div>
+          <div style={{ marginBottom:12, display:'flex', justifyContent:'center', color:'var(--t2)' }}><Icon name="print" size={36} /></div>
           <div style={{ fontSize:15, fontWeight:700, color:'var(--t2)', marginBottom:6 }}>No printers added yet</div>
           <div style={{ fontSize:13, color:'var(--t3)', marginBottom:20, lineHeight:1.7 }}>
             Add your receipt and kitchen printers here (Sunmi, Epson, Star, Bixolon, Citizen and more).<br/>
@@ -433,7 +437,7 @@ export default function PrinterRegistry() {
           <div key={printer.id} style={S.card}>
             <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:16 }}>
               <div style={{ display:'flex', alignItems:'flex-start', gap:14 }}>
-                <div style={{ width:44, height:44, borderRadius:10, background:'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>🖨</div>
+                <div style={{ width:44, height:44, borderRadius:10, background:'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0, color:'var(--t2)' }}><Icon name="print" size={22} /></div>
                 <div>
                   <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:3 }}>
                     {statusDot(printer.status)}
@@ -443,7 +447,7 @@ export default function PrinterRegistry() {
                   <div style={{ fontSize:12, color:'var(--t3)', lineHeight:1.8 }}>
                     <span>{model.label}</span>
                     <span style={{ margin:'0 6px', opacity:.4 }}>·</span>
-                    <span>{conn.icon} {printer.address || 'USB'}{printer.connectionType === 'network' && printer.port !== 9100 ? `:${printer.port}` : ''}</span>
+                    <span><Icon name={conn.icon} size={12} style={IC_INLINE} />{printer.address || 'USB'}{printer.connectionType === 'network' && printer.port !== 9100 ? `:${printer.port}` : ''}</span>
                     <span style={{ margin:'0 6px', opacity:.4 }}>·</span>
                     <span>{spec.paper}mm, {spec.cols} columns</span>
                     <span style={{ margin:'0 6px', opacity:.4 }}>·</span>
@@ -456,7 +460,7 @@ export default function PrinterRegistry() {
                     <div style={{ display:'flex', gap:4, marginTop:5 }}>
                       {printer.roles.map(rid => {
                         const r = ROLES.find(x => x.id === rid);
-                        return r ? <span key={rid} style={{ fontSize:10, padding:'2px 7px', borderRadius:20, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)', fontWeight:600 }}>{r.icon} {r.label}</span> : null;
+                        return r ? <span key={rid} style={{ fontSize:10, padding:'2px 7px', borderRadius:20, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)', fontWeight:600 }}><Icon name={r.icon} size={11} style={{ ...IC_INLINE, marginRight:4 }} />{r.label}</span> : null;
                       })}
                     </div>
                   )}
@@ -464,8 +468,8 @@ export default function PrinterRegistry() {
                     <div style={{ fontSize:11, marginTop:5, fontWeight:600,
                       color: result === 'online' ? 'var(--grn)' : result === 'queued' ? 'var(--acc)' : result === 'timeout' ? 'var(--acc)' : 'var(--red)' }}>
                       {result === 'online'       && '✓ Test page sent. Check it came out of the printer.'}
-                      {result === 'queued'       && '⏳ Job queued, waiting for a till to print it…'}
-                      {result === 'timeout'      && `⚠ ${printFailureWords(printEnvironment())}`}
+                      {result === 'queued'       && <><Icon name="clock" size={12} style={IC_INLINE} />Job queued, waiting for a till to print it…</>}
+                      {result === 'timeout'      && <><Icon name="warn" size={12} style={IC_INLINE} />{printFailureWords(printEnvironment())}</>}
                     </div>
                   )}
                   {help && (
@@ -482,7 +486,7 @@ export default function PrinterRegistry() {
 
               <div style={{ display:'flex', gap:6, flexShrink:0 }}>
                 <button onClick={() => handleTest(printer)} disabled={testing[printer.id] || printer.connectionType === 'usb'} style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)', fontSize:12 }}>
-                  {testing[printer.id] ? (testResult[printer.id] === 'queued' ? '⏳ Waiting…' : '…') : '🖨 Test'}
+                  {testing[printer.id] ? (testResult[printer.id] === 'queued' ? <><Icon name="clock" size={13} style={IC_INLINE} />Waiting…</> : '…') : <><Icon name="print" size={13} style={IC_INLINE} />Test</>}
                 </button>
                 <button onClick={() => setEditId(printer.id)} style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)', fontSize:12 }}>Edit</button>
                 <button onClick={() => handleDelete(printer.id)} style={{ ...S.btn, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)', fontSize:12 }}>Remove</button>

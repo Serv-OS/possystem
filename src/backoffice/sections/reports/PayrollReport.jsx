@@ -10,6 +10,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { getActiveLocationSync } from '../../../lib/supabase';
 import * as wf from '../../../staff/wfData';
+import { Icon } from '../../../components/ServOSIcons';
 
 const fmtDay = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return iso; } };
 const fmtShort = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); } catch { return iso; } };
@@ -89,7 +90,7 @@ export default function PayrollReport({ fmt }) {
   if (err) return <div style={{ ...S.empty, color: 'var(--red)' }}>{err}</div>;
   if (!runs.length) return (
     <div style={S.empty}>
-      <div style={{ fontSize: 34, marginBottom: 8 }}>💷</div>
+      <Icon name="pound" size={34} style={{ margin: '0 auto 8px' }} />
       No closed pay runs yet.
       <div style={{ ...S.note, marginTop: 8 }}>Close a pay period under Workforce → Payroll and it’ll appear here.</div>
     </div>

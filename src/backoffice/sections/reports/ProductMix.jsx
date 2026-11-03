@@ -8,6 +8,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
+import { Icon } from '../../../components/ServOSIcons';
 import { toCsv, downloadCsv } from './_csv';
 import { daySlot } from './_filters';
 import { isSplit, sumFields } from '../../../lib/reportSplit.js';
@@ -20,10 +21,10 @@ import { SplitHeader, Blocks, SiteRows, SiteMatrix } from './SiteSplit';
 const NONE = Object.freeze([]);
 
 const SUB_TABS = [
-  { id:'items',      label:'Items',      icon:'🍽' },
-  { id:'categories', label:'Categories', icon:'🗂' },
-  { id:'modifiers',  label:'Modifiers',  icon:'➕' },
-  { id:'eighty_six', label:"86'd",       icon:'🚫' },
+  { id:'items',      label:'Items',      icon:'utensils' },
+  { id:'categories', label:'Categories', icon:'folder' },
+  { id:'modifiers',  label:'Modifiers',  icon:'plus' },
+  { id:'eighty_six', label:"86'd",       icon:'ban' },
 ];
 
 // 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
@@ -206,7 +207,7 @@ function ProductMixOne({ checks, fmt, fmtN, locationConfig, sites }) {
             fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
             display:'flex', alignItems:'center', gap:6,
           }}>
-            <span style={{ fontSize:13 }}>{t.icon}</span>{t.label}
+            <Icon name={t.icon} size={14}/>{t.label}
           </button>
         ))}
         <div style={{ flex:1 }}/>
@@ -226,7 +227,7 @@ const date = () => new Date().toISOString().slice(0,10);
 // ----- Sub views -----
 
 function ItemsTable({ rows, totalRev, fmt, catLabel }) {
-  if (rows.length === 0) return <EmptyState icon="🍽" message="No items sold in this period."/>;
+  if (rows.length === 0) return <EmptyState icon="utensils" message="No items sold in this period."/>;
   return (
     <>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
@@ -284,7 +285,7 @@ function TimeOfDay({ item }) {
 }
 
 function CategoriesTable({ rows, totalRev, fmt }) {
-  if (rows.length === 0) return <EmptyState icon="🗂" message="No category data."/>;
+  if (rows.length === 0) return <EmptyState icon="folder" message="No category data."/>;
   return (
     <>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
@@ -320,7 +321,7 @@ function CategoriesTable({ rows, totalRev, fmt }) {
 }
 
 function ModifiersTable({ rows, totalItemCount, fmt, fmtN }) {
-  if (rows.length === 0) return <EmptyState icon="➕" message="No modifiers used in this period."/>;
+  if (rows.length === 0) return <EmptyState icon="plus" message="No modifiers used in this period."/>;
   return (
     <>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
@@ -359,7 +360,7 @@ function ModifiersTable({ rows, totalItemCount, fmt, fmtN }) {
 function EightySixList({ data, fmt, fmtN }) {
   const { activelyEightySixed, dormant } = data;
   const hasNothing = activelyEightySixed.length === 0 && dormant.length === 0;
-  if (hasNothing) return <EmptyState icon="🚫" message="No 86'd or dormant items. Menu is fully live."/>;
+  if (hasNothing) return <EmptyState icon="ban" message="No 86'd or dormant items. Menu is fully live."/>;
   return (
     <>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:10, marginBottom:14 }}>
@@ -493,7 +494,7 @@ function ProductMixSites(props) {
             fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
             display:'flex', alignItems:'center', gap:6,
           }}>
-            <span style={{ fontSize:13 }}>{t.icon}</span>{t.label}
+            <Icon name={t.icon} size={14}/>{t.label}
           </button>
         ))}
         <div style={{ flex:1 }}/>
@@ -516,7 +517,7 @@ function ProductMixSites(props) {
             const rows = joined(b, s => s.items, ['qty', 'rev'], { sortBy: metricPick });
             const site = b.parts.map(p => ({ part: p, cells: { ...sumFields(bySite.get(p.id).items.rows, ['qty', 'rev']), items: bySite.get(p.id).items.rows.length } }));
             const all = { ...sumFields(site.map(x => x.cells), ['qty', 'rev']), items: rows.length };
-            if (!rows.length) return <EmptyState icon="🍽" message="No items sold at these sites in this period."/>;
+            if (!rows.length) return <EmptyState icon="utensils" message="No items sold at these sites in this period."/>;
             return (
               <>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
@@ -541,7 +542,7 @@ function ProductMixSites(props) {
             const rows = joined(b, s => s.cats, ['qty', 'rev'], { sortBy: metricPick });
             const site = b.parts.map(p => ({ part: p, cells: { ...sumFields(bySite.get(p.id).cats.rows, ['qty', 'rev']), cats: bySite.get(p.id).cats.rows.length } }));
             const all = { ...sumFields(site.map(x => x.cells), ['qty', 'rev']), cats: rows.length };
-            if (!rows.length) return <EmptyState icon="🗂" message="No category data at these sites."/>;
+            if (!rows.length) return <EmptyState icon="folder" message="No category data at these sites."/>;
             return (
               <>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
@@ -565,7 +566,7 @@ function ProductMixSites(props) {
           const rows = joined(b, s => s.mods, ['qty', 'revenue'], { sortBy: modPick });
           const site = b.parts.map(p => ({ part: p, cells: { ...sumFields(bySite.get(p.id).mods.rows, ['qty', 'revenue']), mods: bySite.get(p.id).mods.rows.length, items: bySite.get(p.id).mods.totalItemCount } }));
           const all = { ...sumFields(site.map(x => x.cells), ['qty', 'revenue', 'items']), mods: rows.length };
-          if (!rows.length) return <EmptyState icon="➕" message="No modifiers used at these sites in this period."/>;
+          if (!rows.length) return <EmptyState icon="plus" message="No modifiers used at these sites in this period."/>;
           return (
             <>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>

@@ -87,7 +87,7 @@ function TablesOne({ checks, fmt, fmtN }) {
     downloadCsv(`tables-performance-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
-  if (rows.length === 0) return <EmptyState icon="🪑" message="No table activity in this period. (Walk-in / takeaway / delivery checks are excluded.)"/>;
+  if (rows.length === 0) return <EmptyState icon="seat" message="No table activity in this period. (Walk-in / takeaway / delivery checks are excluded.)"/>;
 
   const handleSort = (id) => {
     if (sortBy === id) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
@@ -182,7 +182,7 @@ function TablesSites(props) {
   };
 
   if (parts.every(p => bySite.get(p.id).tableCount === 0)) {
-    return <EmptyState icon="🪑" message="No table activity at these sites in this period. (Walk-in / takeaway / delivery checks are excluded.)"/>;
+    return <EmptyState icon="seat" message="No table activity at these sites in this period. (Walk-in / takeaway / delivery checks are excluded.)"/>;
   }
 
   return (

@@ -15,16 +15,17 @@ import { currencySymbol } from '../../../lib/currency';
 import { isSplit, keyedMatrix, orderTypesFromSums } from '../../../lib/reportSplit.js';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
+import { Icon, hasIcon } from '../../../components/ServOSIcons';
 
 const TYPE_STYLE = {
-  'dine-in':    { label:'Dine-in',    color:'#e8a020', icon:'🪑' },
-  'takeaway':   { label:'Takeaway',   color:'#22c55e', icon:'🥡' },
-  'collection': { label:'Collection', color:'#22c55e', icon:'📦' },
-  'delivery':   { label:'Delivery',   color:'#3b82f6', icon:'🛵' },
-  'bar':        { label:'Bar',        color:'#a78bfa', icon:'🍸' },
-  'counter':    { label:'Counter',    color:'#f97316', icon:'🏷' },
+  'dine-in':    { label:'Dine-in',    color:'#e8a020', icon:'seat' },
+  'takeaway':   { label:'Takeaway',   color:'#22c55e', icon:'takeaway' },
+  'collection': { label:'Collection', color:'#22c55e', icon:'package' },
+  'delivery':   { label:'Delivery',   color:'#3b82f6', icon:'scooter' },
+  'bar':        { label:'Bar',        color:'#a78bfa', icon:'cocktail' },
+  'counter':    { label:'Counter',    color:'#f97316', icon:'tag' },
   // Drive thru (16 Sep 2026): pink, the one hue no other row here uses.
-  'drive-thru': { label:'Drive thru', color:'#ec4899', icon:'🚗' },
+  'drive-thru': { label:'Drive thru', color:'#ec4899', icon:'car' },
   'other':      { label:'Other',      color:'var(--t4)', icon:'?' },
 };
 
@@ -50,7 +51,7 @@ const orderTypeStyles = () => styleFor;
 export default function OrderTypes(props) {
   if (!isSplit(props.sites)) return <OrderTypesOne {...props}/>;
   return <MixSites {...props} name="order-types" keyOf={orderTypeKey} fromSums={orderTypesFromSums}
-    styleOf={orderTypeStyles} first="Channel" keyLabel="Order type" leadLabel="Dominant channel" icon="📦"/>;
+    styleOf={orderTypeStyles} first="Channel" keyLabel="Order type" leadLabel="Dominant channel" icon="package"/>;
 }
 
 // Several sites, for a report that is a mix of named things (order types, order sources):
@@ -172,7 +173,7 @@ function OrderTypesOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare 
     downloadCsv(`order-types-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
-  if (rows.length === 0 || totalRev === 0) return <EmptyState icon="📦" message="No orders in this period."/>;
+  if (rows.length === 0 || totalRev === 0) return <EmptyState icon="package" message="No orders in this period."/>;
 
   const dominant = rows[0];
   const fastestGrowth = [...rows].filter(r => r.revDelta !== null && r.prevRevenue > 0).sort((a, b) => (b.revDelta || 0) - (a.revDelta || 0))[0];
@@ -227,7 +228,7 @@ function OrderTypesOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare 
           const st = styleFor(r.type);
           return (
             <div key={r.type} style={{ display:'grid', gridTemplateColumns:'50px 1.3fr 80px 110px 90px 80px 100px', padding:'10px 14px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8 }}>
-              <span style={{ fontSize:16, textAlign:'center' }}>{st.icon}</span>
+              <span style={{ fontSize:16, display:'flex', justifyContent:'center' }}>{hasIcon(st.icon) ? <Icon name={st.icon} size={16}/> : st.icon}</span>
               <span style={{ color:'var(--t1)', fontWeight:600 }}>{st.label}</span>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checks}</span>
               <span style={{ textAlign:'right', color: st.color, fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(r.revenue)}</span>

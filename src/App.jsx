@@ -69,8 +69,8 @@ function AIAssistantSurface() {
           </div>
         </div>
         <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:12 }}>
-          {['📊 Shift summary', '🍺 Item sales', '⏰ Busiest hour', '🪑 Open tables', '⚠️ Allergen lookup', '👤 Server stats', '🖨 Printers', '🚫 86 an item'].map(c => (
-            <span key={c} style={{ fontSize:11, padding:'3px 8px', borderRadius:20, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', fontWeight:600 }}>{c}</span>
+          {[['chart', 'Shift summary'], ['beer', 'Item sales'], ['clock', 'Busiest hour'], ['seat', 'Open tables'], ['warn', 'Allergen lookup'], ['user', 'Server stats'], ['print', 'Printers'], ['ban', '86 an item']].map(([ic, c]) => (
+            <span key={c} style={{ fontSize:11, padding:'3px 8px', borderRadius:20, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', fontWeight:600, display:'inline-flex', alignItems:'center', gap:5 }}><Icon name={ic} size={12} />{c}</span>
           ))}
         </div>
       </div>
@@ -1027,7 +1027,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
 
   if (deviceValid === 'kicked') return (
     <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'#0f1117', fontFamily:'inherit', gap:20, padding:40, position:'relative', zIndex:9999 }}>
-      <div style={{ fontSize:48 }}>⚠️</div>
+      <div style={{ color:'#f1f5f9' }}><Icon name="warn" size={48} /></div>
       <div style={{ fontSize:22, fontWeight:800, color:'#f1f5f9', textAlign:'center' }}>This terminal has been disconnected</div>
       <div style={{ fontSize:15, color:'#64748b', textAlign:'center', maxWidth:400, lineHeight:1.7 }}>
         Another device or browser window has connected to <strong style={{color:'#e2e8f0'}}>{pairedDevice.name}</strong>.<br/>
@@ -1465,15 +1465,15 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
   const [delayOpen, setDelayOpen] = useState(false);
 
   const SOURCE_META = {
-    kiosk:  { icon: '📟', label: 'Kiosk',    bg: '#0ea5e9' },  // sky-500
-    online: { icon: '🌐', label: 'Online',   bg: '#10b981' },  // emerald-500
-    qr:     { icon: '📱', label: 'QR Code',  bg: '#a855f7' },  // purple-500
-    hubrise:{ icon: '🛵', label: 'Delivery', bg: '#e8a020' },  // amber
+    kiosk:  { icon: 'tablet', label: 'Kiosk',    bg: '#0ea5e9' },  // sky-500
+    online: { icon: 'globe', label: 'Online',   bg: '#10b981' },  // emerald-500
+    qr:     { icon: 'phone', label: 'QR Code',  bg: '#a855f7' },  // purple-500
+    hubrise:{ icon: 'scooter', label: 'Delivery', bg: '#e8a020' },  // amber
   };
   const isCancel = alert.kind === 'cancel';
   const m = isCancel
-    ? { icon: '⚠️', label: alert.who || 'Channel', bg: '#dc2626' }
-    : (SOURCE_META[alert.source] || { icon: '🛎', label: alert.source || 'Order', bg: '#e8a020' });
+    ? { icon: 'warn', label: alert.who || 'Channel', bg: '#dc2626' }
+    : (SOURCE_META[alert.source] || { icon: 'serviceBell', label: alert.source || 'Order', bg: '#e8a020' });
   const total = Number(alert.total || 0);
 
   // A channel order that the operator still has to accept/reject (auto-accept off
@@ -1506,7 +1506,7 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
         {/* Coloured header */}
         <div style={{ background: m.bg, color: '#fff', padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ width: 52, height: 52, borderRadius: 14, background: 'rgba(255,255,255,0.22)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>{m.icon}</div>
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}><Icon name={m.icon} size={28} /></div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', opacity: 0.9 }}>
               {isCancel ? 'Order cancelled' : `New ${m.label} order`}
@@ -1562,7 +1562,7 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
               <button onClick={reject} style={orderAlertBtn('#dc2626')}>Reject</button>
               <button onClick={() => setDelayOpen(v => !v)}
                 style={{ ...orderAlertBtn(delayOpen ? '#b45309' : '#d97706'), flex: '0 0 auto', padding: '0 16px' }}>
-                ⏱ Delay
+                <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="clock" size={16} />Delay</span>
               </button>
               <button onClick={accept} style={orderAlertBtn('#16a34a')}>Accept</button>
             </>

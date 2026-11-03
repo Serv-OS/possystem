@@ -5,6 +5,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { mergeById, mergeKeys } from '../../lib/threeWayMerge';
 import PrintAgentKeys from './PrintAgentKeys';
 import { money } from '../../lib/currency';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 import { ORDER_TYPES } from '../../lib/orderScreen/orderScreenStatus';
 import {
   normaliseCentreOrderTypes, describeCentreOrderTypes, orderTypeLabelOf,
@@ -19,7 +20,10 @@ import {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => `pc-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
 
+// Saved on the centre as emoji (rule: a saved icon keeps its value); drawn as line icons.
 const CENTRE_ICONS = ['🔥','❄️','🍕','🍸','📋','🥗','🍔','🍣','🫕','🧁','🍳','🥩'];
+// Icon sitting inline before text.
+const IC_INLINE = { display:'inline-block', verticalAlign:'-2px', marginRight:5 };
 const CENTRE_TYPES = [
   { id:'kitchen', label:'Kitchen' },
   { id:'bar',     label:'Bar' },
@@ -215,7 +219,7 @@ function OrderTypeRouter({ centreId, centreName, routing, setRouting, centres, c
 
   return (
     <div style={OT.card}>
-      <h2 style={OT.title}>🍽 Order types</h2>
+      <h2 style={{ ...OT.title, display:'flex', alignItems:'center', gap:6 }}><Icon name="utensils" size={16} />Order types</h2>
       <p style={OT.help}>An item needs a <strong>ticked category</strong> and a <strong>ticked order type</strong> to reach this center.</p>
       <div style={OT.checkWrap}>
         {/* Disabled while it is on: a centre can never be saved serving nothing, so
@@ -412,7 +416,7 @@ function CategoryRouter({ centreId, centres, routing, setRouting, menuCategories
       <div key={node.id}>
         <div style={CR.row(st.comesHere)}>
           <RouteBox state={boxState} label={node.label} onClick={() => clickCat(node)} />
-          {node.icon && <span style={{ fontSize:18, lineHeight:1 }}>{node.icon}</span>}
+          {node.icon && <span style={{ lineHeight:1, display:'inline-flex', flexShrink:0 }}><EmojiIcon value={node.icon} fallback="utensils" size={17} /></span>}
           <div style={{ flex:1, minWidth:0, display:'flex', alignItems:'baseline', gap:'2px 10px', flexWrap:'wrap' }}>
             <span onClick={() => clickCat(node)} style={CR.name(st.comesHere)}>{node.label}</span>
             {note && <span style={CR.note}>{note}</span>}
@@ -640,12 +644,21 @@ export default function PrintRouting() {
           <label style={S.label}>Name *</label>
           <input style={S.input} value={form.name} onChange={e=>f('name',e.target.value)} placeholder="e.g. Hot kitchen" autoFocus />
         </div>
-        <div style={{ display:'grid', gridTemplateColumns:'60px 1fr', gap:8 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', gap:8 }}>
           <div>
             <label style={S.label}>Icon</label>
-            <select style={S.input} value={form.icon} onChange={e=>f('icon',e.target.value)}>
-              {CENTRE_ICONS.map(i=><option key={i} value={i}>{i}</option>)}
-            </select>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(6, 28px)', gap:4 }}>
+              {CENTRE_ICONS.map(i => {
+                const on = form.icon === i;
+                return (
+                  <button key={i} type="button" onClick={()=>f('icon',i)} aria-pressed={on}
+                    style={{ width:28, height:28, borderRadius:7, cursor:'pointer', padding:0, display:'flex', alignItems:'center', justifyContent:'center',
+                      border:`1.5px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--bg3)', color: on ? 'var(--acc)' : 'var(--t2)' }}>
+                    <EmojiIcon value={i} fallback="print" size={16} />
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div>
             <label style={S.label}>Type</label>
@@ -656,7 +669,7 @@ export default function PrintRouting() {
         </div>
       </div>
 
-      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:10, marginTop:4 }}>🖨 Printer</div>
+      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:10, marginTop:4, display:'flex', alignItems:'center', gap:6 }}><Icon name="print" size={15} />Printer</div>
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Assign printer</label>
         {printers.length === 0 ? (
@@ -668,7 +681,7 @@ export default function PrintRouting() {
             <option value="">No printer assigned</option>
             {printers.map(p => (
               <option key={p.id} value={p.id}>
-                🖨 {p.name}{p.location ? ` — ${p.location}` : ''}{p.address ? ` (${p.address})` : ''}
+                {p.name}{p.location ? ` — ${p.location}` : ''}{p.address ? ` (${p.address})` : ''}
               </option>
             ))}
           </select>
@@ -677,7 +690,7 @@ export default function PrintRouting() {
 
       {kdsDevices.length > 0 && (
         <>
-          <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:10 }}>📺 KDS screen</div>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:10, display:'flex', alignItems:'center', gap:6 }}><Icon name="tv" size={15} />KDS screen</div>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Assign a KDS device</label>
             <select style={{ ...S.input, maxWidth:300 }} value={form.kdsDeviceId} onChange={e=>f('kdsDeviceId',e.target.value)}>
@@ -688,7 +701,7 @@ export default function PrintRouting() {
         </>
       )}
 
-      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:10 }}>🎟 Docket options</div>
+      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:10, display:'flex', alignItems:'center', gap:6 }}><Icon name="ticket" size={15} />Docket options</div>
       <div style={{ marginBottom:14, padding:'10px 12px', background:'var(--bg3)', border:'1px solid var(--bdr)', borderRadius:8, display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
         <div style={{ minWidth:0 }}>
           <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>Print allergens on docket</div>
@@ -714,7 +727,7 @@ export default function PrintRouting() {
 
       <div style={{ marginBottom:14, padding:'10px 12px', background:'var(--bg3)', border:'1px solid var(--bdr)', borderRadius:8, display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
         <div style={{ minWidth:0 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>One ticket per item ☕ (sticker mode)</div>
+          <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)', display:'flex', alignItems:'center', gap:5 }}>One ticket per item <Icon name="cup" size={14} /> (sticker mode)</div>
           <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
             Coffee-shop style — prints a separate docket for every item (e.g. one sticker per cup), each numbered “ITEM 1 OF 3”. Off by default.
           </div>
@@ -768,7 +781,7 @@ export default function PrintRouting() {
                   <option value="">No default — these receipts won't print</option>
                   {printers.map(p => (
                     <option key={p.id} value={p.id}>
-                      🖨 {p.name}{p.location ? ` — ${p.location}` : ''}{p.address ? ` (${p.address})` : ''}
+                      {p.name}{p.location ? ` — ${p.location}` : ''}{p.address ? ` (${p.address})` : ''}
                     </option>
                   ))}
                 </select>
@@ -794,12 +807,12 @@ export default function PrintRouting() {
             return (
               <div key={c.id} onClick={()=>{ setSelected(c.id); setShowAdd(false); setEditCentre(null); }}
                 style={S.centreRow(selected===c.id)}>
-                <span style={{ fontSize:22, lineHeight:1 }}>{c.icon}</span>
+                <span style={{ lineHeight:1, display:'inline-flex', flexShrink:0, color:'var(--t2)' }}><EmojiIcon value={c.icon} fallback="print" size={20} /></span>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{c.name}</div>
                   <div style={{ fontSize:11, color:'var(--t3)', display:'flex', alignItems:'center', gap:5, flexWrap:'wrap' }}>
-                    {c.printer && <span>🖨 {c.printer.name}</span>}
-                    {kds && <span>📺 {kds.name}</span>}
+                    {c.printer && <span><Icon name="print" size={12} style={IC_INLINE} />{c.printer.name}</span>}
+                    {kds && <span><Icon name="tv" size={12} style={IC_INLINE} />{kds.name}</span>}
                     {catCount > 0 && <span style={{ color:'var(--acc)' }}>{catCount} categor{catCount===1?'y':'ies'}</span>}
                     {/* Only when the centre is narrowed: every centre reading "All order
                         types" says nothing and buries the one row that differs. 15px
@@ -841,13 +854,13 @@ export default function PrintRouting() {
           <>
             {/* Header */}
             <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20 }}>
-              <span style={{ fontSize:36 }}>{activeCentre.icon}</span>
+              <span style={{ display:'inline-flex', color:'var(--t2)' }}><EmojiIcon value={activeCentre.icon} fallback="print" size={34} /></span>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)' }}>{activeCentre.name}</div>
                 <div style={{ fontSize:12, color:'var(--t3)' }}>
                   {CENTRE_TYPES.find(t=>t.id===activeCentre.type)?.label}
-                  {activeCentre.printer && ` · 🖨 ${activeCentre.printer.name}`}
-                  {kdsForCentre(activeCentre.id) && ` · 📺 ${kdsForCentre(activeCentre.id).name}`}
+                  {activeCentre.printer && <>{' · '}<Icon name="print" size={12} style={IC_INLINE} />{activeCentre.printer.name}</>}
+                  {kdsForCentre(activeCentre.id) && <>{' · '}<Icon name="tv" size={12} style={IC_INLINE} />{kdsForCentre(activeCentre.id).name}</>}
                 </div>
               </div>
               <button onClick={()=>startEdit(activeCentre)} style={{ ...S.btn, ...S.btnGhost, fontSize:12 }}>Edit</button>
@@ -857,7 +870,7 @@ export default function PrintRouting() {
             {/* Hardware summary */}
             <div style={{ ...S.card, display:'flex', gap:16 }}>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:12, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>🖨 Printer</div>
+                <div style={{ fontSize:12, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6, display:'flex', alignItems:'center', gap:5 }}><Icon name="print" size={13} />Printer</div>
                 {activeCentre.printer ? (
                   <>
                     <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{activeCentre.printer.name}</div>
@@ -873,7 +886,7 @@ export default function PrintRouting() {
               </div>
               <div style={{ width:1, background:'var(--bdr)' }}/>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:12, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>📺 KDS Screen</div>
+                <div style={{ fontSize:12, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6, display:'flex', alignItems:'center', gap:5 }}><Icon name="tv" size={13} />KDS Screen</div>
                 {kdsForCentre(activeCentre.id) ? (
                   <>
                     <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{kdsForCentre(activeCentre.id).name}</div>
@@ -888,7 +901,7 @@ export default function PrintRouting() {
             {/* Category routing */}
             <div style={{ ...S.card }}>
               <div style={S.cardTitle}>
-                📋 Category routing
+                <Icon name="clipboard" size={15} style={IC_INLINE} />Category routing
                 <span style={{ fontSize:12, fontWeight:400, color:'var(--t3)', marginLeft:8 }}>
                   Select which categories print/display at this center
                 </span>
@@ -919,7 +932,7 @@ export default function PrintRouting() {
         {/* Empty state */}
         {!activeCentre && !showAdd && !editCentre && (
           <div style={{ textAlign:'center', padding:'80px 40px', color:'var(--t3)' }}>
-            <div style={{ fontSize:48, marginBottom:16 }}>🖨</div>
+            <div style={{ marginBottom:16, display:'flex', justifyContent:'center' }}><Icon name="print" size={44} /></div>
             <div style={{ fontSize:18, fontWeight:700, color:'var(--t2)', marginBottom:8 }}>Production printing</div>
             <div style={{ fontSize:14, lineHeight:1.6, marginBottom:24 }}>
               Create production centers for your kitchen, bar and expo stations.<br/>

@@ -11,6 +11,7 @@ import { CURRENCIES, money, setActiveCurrency } from '../../lib/currency';
 import SiteGroupsCard from './stock/SiteGroupsCard';
 import SiteKindCard from './stock/SiteKindCard';
 import CaloriesCard from './stock/CaloriesCard';
+import { Icon } from '../../components/ServOSIcons';
 
 // v5.7.29: the venue timezone drives EVERY business-time decision in the
 // system (menu schedules, dayparts, booking slots, report days, auto-capture
@@ -383,7 +384,7 @@ export default function LocationSettings() {
 
       {/* Timezone */}
       <div style={S.card}>
-        <div style={S.h2}>🌍 Timezone</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="earth" size={15} />Timezone</div>
         <div style={S.desc}>
           All timestamps, reporting, and shift calculations use this timezone.
           Reports will show "today's" data from the correct local midnight — not the server or device time.
@@ -419,7 +420,7 @@ export default function LocationSettings() {
 
       {/* v5.5.326: Currency */}
       <div style={S.card}>
-        <div style={S.h2}>💱 Currency</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="coins" size={15} />Currency</div>
         <div style={S.desc}>
           The currency this location trades in. Drives the symbol shown across POS, kiosk,
           online ordering and receipts, and the currency cards are charged in.
@@ -435,7 +436,7 @@ export default function LocationSettings() {
 
       {/* Business day start */}
       <div style={S.card}>
-        <div style={S.h2}>⏰ Business day start</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="clock" size={15} />Business day start</div>
         <label style={S.label}>Venue address</label>
         <div style={S.desc}>
           Printed on supplier order emails as the <strong>deliver-to</strong> address, so drivers
@@ -459,7 +460,7 @@ export default function LocationSettings() {
 
       {/* v4.6.60: Collection lead time */}
       <div style={S.card}>
-        <div style={S.h2}>🕐 Collection lead time</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="clock" size={15} />Collection lead time</div>
         <div style={S.desc}>
           When a customer schedules a collection time, the kitchen ticket fires this many minutes before the collection time.
           Set to <strong>30</strong> for a normal kitchen. Set to <strong>0</strong> to fire immediately on send.
@@ -478,7 +479,7 @@ export default function LocationSettings() {
 
       {/* Shifts */}
       <div style={S.card}>
-        <div style={S.h2}>🕐 Service periods</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="clock" size={15} />Service periods</div>
         <div style={S.desc}>
           Named shifts let you filter reports by period (Breakfast / Lunch / Dinner) and give the AI assistant
           shift context. Leave empty to use whole-day reporting only.
@@ -569,7 +570,7 @@ export default function LocationSettings() {
 
       {/* POS Display */}
       <div style={S.card}>
-        <div style={S.h2}>🖼 POS Display</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="image" size={15} />POS Display</div>
         <div style={S.desc}>
           When enabled, product images appear as background photos on the POS item buttons.
           Images can be added per-item in the menu manager. Images always show on long-press regardless of this setting.
@@ -600,7 +601,7 @@ export default function LocationSettings() {
           and name still forced"): the same setting now covers every till order type, dine in included
           (lib/customerDetailsRule.js). The key stays takeaway_customer_details for compatibility. */}
       <div style={S.card}>
-        <div style={S.h2}>👤 Customer details on the till</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="user" size={15} />Customer details on the till</div>
         <div style={S.desc}>
           What the till asks for when a customer goes on an order, for every order type: dine in, takeaway, collection and drive thru. Quick service: take just a name, or skip details completely.
         </div>
@@ -671,7 +672,7 @@ function OnlineOrderingCard({
 
   return (
     <div style={S.card}>
-      <div style={S.h2}>📱 Online ordering & QR code</div>
+      <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="phone" size={15} />Online ordering & QR code</div>
       <div style={S.desc}>
         Two customer-facing surfaces. <b>Online</b> is for remote orders (collection / delivery, pay online).
         <b>QR table-side</b> is for in-store guests scanning a code at their table — fires straight into the table's session on the POS.
@@ -702,7 +703,7 @@ function OnlineOrderingCard({
       <div style={{ marginTop:18, paddingTop:14, borderTop:'1px solid var(--bdr)' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 0', gap:10 }}>
           <div style={{ flex:1 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>🌐 Online ordering</div>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', display:'flex', alignItems:'center', gap:6 }}><Icon name="globe" size={14} />Online ordering</div>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
               {slug ? <><code style={{ fontFamily:'var(--font-mono)' }}>{onlineUrl}</code> — collection / delivery, customer details, Adyen online checkout.</> : 'Set a slug above first.'}
             </div>
@@ -711,7 +712,7 @@ function OnlineOrderingCard({
         </div>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 0', gap:10, borderTop:'1px solid var(--bdr)' }}>
           <div style={{ flex:1 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>📱 QR table-side ordering</div>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', display:'flex', alignItems:'center', gap:6 }}><Icon name="phone" size={14} />QR table-side ordering</div>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
               {slug ? <><code style={{ fontFamily:'var(--font-mono)' }}>{qrUrl}</code> — guests scan a QR at their table, items fire into that table's session on the POS.</> : 'Set a slug above first.'}
             </div>
@@ -814,7 +815,7 @@ function OpeningHoursCard({ hours, setHours, timezone, closedDateInput, setClose
 
   return (
     <div style={S.card}>
-      <div style={S.h2}>🚪 Opening hours</div>
+      <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="door" size={15} />Opening hours</div>
       <div style={S.desc}>
         Drives the kiosk and the online ordering surface. When you're closed, customers see a "Closed — opens at X" banner instead of an order button. Multi-window per day supports lunch / dinner with a break (e.g. 11:30-15:00 then 17:00-22:00). Overnight windows (close before open, e.g. 22:00-02:00) are valid.
       </div>
@@ -826,7 +827,7 @@ function OpeningHoursCard({ hours, setHours, timezone, closedDateInput, setClose
         border: `1px solid ${status.open ? 'var(--grn-b)' : 'var(--red-b)'}`,
         display:'flex', alignItems:'center', gap:10,
       }}>
-        <div style={{ fontSize:18 }}>{status.open ? '🟢' : '🔴'}</div>
+        <div style={{ display:'flex', color: status.open ? 'var(--grn)' : 'var(--red)' }}><Icon name="dot" size={16} fill="currentColor" /></div>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:13, fontWeight:800, color: status.open ? 'var(--grn)' : 'var(--red)' }}>
             {status.open ? 'Open right now' : 'Closed right now'}

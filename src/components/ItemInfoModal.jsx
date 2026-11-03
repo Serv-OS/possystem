@@ -9,6 +9,7 @@ import { money } from '../lib/currency';
 import { supabase, getActiveLocationSync } from '../lib/supabase';
 import { useRecipeCard, buildRows, cardSteps, cardKcalWords, portionHeading } from '../lib/recipeCard';
 import { kcalWords } from '../lib/menuStockFacts';
+import { Icon, EmojiIcon } from './ServOSIcons';
 
 // ── Set daily count numpad ────────────────────────────────────────────────────
 function CountSetter({ itemId, current, onClose }) {
@@ -127,7 +128,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
               <div style={{ position:'absolute', inset:0, background:'linear-gradient(to top, rgba(0,0,0,.5) 0%, transparent 60%)' }}/>
             </>
           ) : (
-            <span style={{ fontSize:72, filter:'drop-shadow(0 4px 12px rgba(0,0,0,.3))' }}>{m.icon||'🍽'}</span>
+            <span style={{ fontSize:72, filter:'drop-shadow(0 4px 12px rgba(0,0,0,.3))', display:'flex', color:m.color }}><EmojiIcon value={m.icon} fallback="utensils" size={72}/></span>
           )}
           {/* Category pill */}
           <div style={{ position:'absolute', top:14, left:16, padding:'4px 10px', borderRadius:20, background:'rgba(0,0,0,.4)', backdropFilter:'blur(8px)', fontSize:11, fontWeight:700, color:'#fff', letterSpacing:.04 }}>
@@ -160,7 +161,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
           {/* v5.11.93: '<n> kcal' when the recipe card or the stock facts carry it */}
           {kcalLine && (
             <div style={{ display:'flex', gap:12, marginTop:10 }}>
-              <div style={{ fontSize:11, color:'var(--t4)', display:'flex', alignItems:'center', gap:4 }}><span>⚡</span>{kcalLine}</div>
+              <div style={{ fontSize:11, color:'var(--t4)', display:'flex', alignItems:'center', gap:4 }}><Icon name="bolt" size={12}/>{kcalLine}</div>
             </div>
           )}
         </div>

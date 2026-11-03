@@ -30,9 +30,9 @@ import { useLayout } from './manager/useLayout';
 
 // unit-type → glyph + category hue (the OKLCH identity scale, --h)
 const TYPE_META = {
-  fridge:    { glyph: '❄', h: 210 }, freezer: { glyph: '❄', h: 230 }, cold_hold: { glyph: '❄', h: 200 },
-  hot_hold:  { glyph: '🔥', h: 38 }, cooking: { glyph: '🔥', h: 32 }, chill_down: { glyph: '❄', h: 220 },
-  delivery:  { glyph: '📦', h: 48 },
+  fridge:    { glyph: 'snow', h: 210 }, freezer: { glyph: 'snow', h: 230 }, cold_hold: { glyph: 'snow', h: 200 },
+  hot_hold:  { glyph: 'fire', h: 38 }, cooking: { glyph: 'fire', h: 32 }, chill_down: { glyph: 'snow', h: 220 },
+  delivery:  { glyph: 'package', h: 48 },
 };
 const AREA_HUE = { Temperature: 200, Deliveries: 48, Checklists: 150, Cleaning: 285, Maintenance: 28, Documents: 260, Forms: 330 };
 const CORRECTIVE_OPTIONS = [
@@ -795,7 +795,7 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
                 {meta && <div style={{ fontSize: 11, color: metaCol, marginTop: 2, ...mono }}>{meta}</div>}
               </div>
               {uploading
-                ? <span style={{ fontSize: 16, color: 'var(--acc)', flexShrink: 0 }}>⏳</span>
+                ? <Icon name="clock" size={16} style={{ color: 'var(--acc)' }} />
                 : photo
                 ? <img src={photo} alt="evidence" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover', flexShrink: 0, border: '1px solid var(--bdr)' }} />
                 : t.evidenceRequired

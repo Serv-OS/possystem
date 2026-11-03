@@ -7,6 +7,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { upsertDiscount, deleteDiscount, upsertDiscountRule, deleteDiscountRule } from '../../lib/db';
 import { money, currencySymbol } from '../../lib/currency';
 import { selectOnFocus } from '../../lib/selectOnFocus';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 import { ruleSentence } from '../../lib/discountWords';
 // v5.11.92 (20261023a): what a preset is for (Staff, Comp, Loyalty), shared with the till and SyncBridge.
 import { DISCOUNT_KIND_LABELS, DISCOUNT_KIND_HELP, DISCOUNT_KIND_NOT_SAVED, cleanDiscountKind } from '../../lib/discountKinds';
@@ -118,7 +119,7 @@ function CategoryPicker({ selected, onChange, categories }) {
               }}>
                 {selected.includes(cat.id) && <div style={{ width:8, height:8, borderRadius:2, background:'#fff' }} />}
               </div>
-              <span style={{ fontSize:12, color:'var(--t1)' }}>{cat.icon} {cat.label}</span>
+              <span style={{ fontSize:12, color:'var(--t1)', display:'inline-flex', alignItems:'center', gap:6 }}><EmojiIcon value={cat.icon} fallback="utensils" size={14} />{cat.label}</span>
             </div>
           ))}
           {!categories.length && <div style={{ padding:10, fontSize:12, color:'var(--t3)' }}>No categories found</div>}
@@ -763,7 +764,7 @@ export default function DiscountManager() {
 
           {discounts.length === 0 && !editingDiscount && (
             <div style={{ ...S.card, textAlign:'center', padding:40 }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>🏷</div>
+              <div style={{ marginBottom:8, display:'flex', justifyContent:'center', color:'var(--t3)' }}><Icon name="tag" size={32} /></div>
               <div style={{ fontSize:14, fontWeight:600, color:'var(--t2)', marginBottom:4 }}>No discounts yet</div>
               <div style={{ fontSize:12, color:'var(--t3)' }}>Add custom discounts your staff can apply at the POS</div>
             </div>
@@ -790,8 +791,8 @@ export default function DiscountManager() {
                       {disc.scope === 'global' ? 'All items' : `${disc.categoryIds.length} categories`}
                     </span>
                     {disc.requiresManager && (
-                      <span style={{ ...S.badge, background:'rgba(232,160,32,.1)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>
-                        🔑 Manager
+                      <span style={{ ...S.badge, background:'rgba(232,160,32,.1)', color:'var(--acc)', border:'1px solid var(--acc-b)', display:'inline-flex', alignItems:'center', gap:4 }}>
+                        <Icon name="key" size={12} />Manager
                       </span>
                     )}
                     {cleanDiscountKind(disc.kind) && (
@@ -834,7 +835,7 @@ export default function DiscountManager() {
 
           {rules.length === 0 && !editingRule && (
             <div style={{ ...S.card, textAlign:'center', padding:40 }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>🤖</div>
+              <div style={{ marginBottom:8, display:'flex', justifyContent:'center', color:'var(--t3)' }}><Icon name="robot" size={32} /></div>
               <div style={{ fontSize:14, fontWeight:600, color:'var(--t2)', marginBottom:4 }}>No auto-discount rules</div>
               <div style={{ fontSize:12, color:'var(--t3)' }}>Create rules like "Buy 2 pizzas, get 3rd 50% off" that apply automatically</div>
             </div>
@@ -867,7 +868,7 @@ export default function DiscountManager() {
                     </div>
                     {scheduleSummary(rule.schedule) && (
                       <div style={{ fontSize:11, color:'var(--t3)', marginBottom:6, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
-                        <span style={{ fontSize:9, fontWeight:800, color:'var(--acc)', border:'1px solid var(--acc-b)', background:'var(--acc-d)', borderRadius:4, padding:'1px 5px' }}>⏰ SCHEDULED</span>
+                        <span style={{ fontSize:9, fontWeight:800, color:'var(--acc)', border:'1px solid var(--acc-b)', background:'var(--acc-d)', borderRadius:4, padding:'1px 5px', display:'inline-flex', alignItems:'center', gap:3 }}><Icon name="clock" size={10} />SCHEDULED</span>
                         <span>{scheduleSummary(rule.schedule)}</span>
                       </div>
                     )}

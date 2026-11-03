@@ -18,6 +18,7 @@
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
+import { Icon } from '../../../components/ServOSIcons';
 import { toCsv, downloadCsv } from './_csv';
 import { dayOfCheck, dayText, prevRangeDays, rangeDays, weekdayOf } from './_filters';
 import { isSplit, sumFields, trendFromSums } from '../../../lib/reportSplit.js';
@@ -176,7 +177,7 @@ function DailyTrendOne({ checks, prevChecks = [], fmt, fmtN, range, sites, locat
   };
 
   if (!days.length || totals.totalChecks === 0) {
-    return <EmptyState icon="📈" message="No closed checks in this range. Try widening the period."/>;
+    return <EmptyState icon="trendUp" message="No closed checks in this range. Try widening the period."/>;
   }
 
   return (
@@ -201,8 +202,8 @@ function DailyTrendOne({ checks, prevChecks = [], fmt, fmtN, range, sites, locat
       {/* Best / worst day callouts */}
       {bestWorst && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:10, marginBottom:14 }}>
-          <Callout icon="🏆" label="Best day" value={fmt(bestWorst.best.revenue)} sub={fmtDayFull(bestWorst.best.date)} good/>
-          <Callout icon="🪨" label="Slowest day" value={fmt(bestWorst.worst.revenue)} sub={fmtDayFull(bestWorst.worst.date)}/>
+          <Callout icon="trophy" label="Best day" value={fmt(bestWorst.best.revenue)} sub={fmtDayFull(bestWorst.best.date)} good/>
+          <Callout icon="mountain" label="Slowest day" value={fmt(bestWorst.worst.revenue)} sub={fmtDayFull(bestWorst.worst.date)}/>
         </div>
       )}
 
@@ -229,7 +230,7 @@ function Callout({ icon, label, value, sub, good }) {
       padding:'12px 14px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12,
       display:'flex', alignItems:'center', gap:12,
     }}>
-      <div style={{ fontSize:24 }}>{icon}</div>
+      <Icon name={icon} size={24}/>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' }}>{label}</div>
         <div style={{ fontSize:18, fontWeight:800, color: good ? 'var(--grn)' : 'var(--t1)', fontFamily:'var(--font-mono)', marginTop:2 }}>{value}</div>
@@ -352,7 +353,7 @@ function DailyTrendSites(props) {
   };
 
   if (!days.length || parts.every(p => bySite.get(p.id).total.checks === 0)) {
-    return <EmptyState icon="📈" message="No closed checks at these sites in this range. Try widening the period."/>;
+    return <EmptyState icon="trendUp" message="No closed checks at these sites in this range. Try widening the period."/>;
   }
 
   return (

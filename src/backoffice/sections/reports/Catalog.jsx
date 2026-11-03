@@ -62,7 +62,7 @@ const icon = (name, size) => (ICONS[name] ? ICONS[name](size || 18) : null);
    report breadcrumb. `short` + `glyph` are additive, for the rail + sections. */
 export const CATEGORIES = [
   {
-    id: 'sales', label: 'Sales reports', short: 'Sales', icon: '📈', glyph: 'sales',
+    id: 'sales', label: 'Sales reports', short: 'Sales', icon: 'trendUp', glyph: 'sales',
     description: 'Net and gross sales, products, performance by channel and time.',
     reports: [
       { id:'daily_trading', label:'Daily trading (P&L)', desc:'Set a forecast per day (learns from last year), then sales vs theoretical vs actual costs → real operating profit' },
@@ -78,7 +78,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: 'staff', label: 'Staff reports', short: 'Staff', icon: '👥', glyph: 'staff',
+    id: 'staff', label: 'Staff reports', short: 'Staff', icon: 'users', glyph: 'staff',
     description: 'Per-server performance, shifts and tip pooling.',
     reports: [
       { id:'servers', label:'Server scorecard', desc:'Full perf — tip %, discount rate, void rate, peer rank' },
@@ -88,14 +88,14 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: 'exceptions', label: 'Exceptions & discounts', short: 'Exceptions', icon: '🛡', glyph: 'exceptions',
+    id: 'exceptions', label: 'Exceptions & discounts', short: 'Exceptions', icon: 'shield', glyph: 'exceptions',
     description: 'Voids, discounts and refunds with full audit trail.',
     reports: [
       { id:'exceptions', label:'Exceptions audit', desc:'Every void / discount / refund event, sortable by staff' },
     ],
   },
   {
-    id: 'fiscal', label: 'Fiscal reports', short: 'Fiscal', icon: '💰', glyph: 'fiscal',
+    id: 'fiscal', label: 'Fiscal reports', short: 'Fiscal', icon: 'money', glyph: 'fiscal',
     description: 'Tax summaries, cash reconciliation and end-of-day close.',
     reports: [
       { id:'zreport',  label:'Z-report',         desc:'Printable end-of-day snapshot — thermal 80mm or PDF' },
@@ -105,7 +105,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: 'orders', label: 'Order reports', short: 'Orders', icon: '📦', glyph: 'order',
+    id: 'orders', label: 'Order reports', short: 'Orders', icon: 'package', glyph: 'order',
     description: 'Live floor and order activity, per-table performance.',
     reports: [
       { id:'transactions', label:'Transactions & refunds', desc:'All closed checks with search, item details, and full or item-level refunds' },
@@ -116,14 +116,14 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: 'kitchen', label: 'Kitchen reports', short: 'Kitchen', icon: '👨‍🍳', glyph: 'kitchen',
+    id: 'kitchen', label: 'Kitchen reports', short: 'Kitchen', icon: 'chef', glyph: 'kitchen',
     description: 'KDS bump times, station throughput and kitchen pressure.',
     reports: [
       { id:'kds_perf', label:'KDS performance', desc:'Avg / p50 / p90 bump time by station and by hour' },
     ],
   },
   {
-    id: 'inventory', label: 'Inventory reports', short: 'Inventory', icon: '🗃', glyph: 'inventory',
+    id: 'inventory', label: 'Inventory reports', short: 'Inventory', icon: 'archive', glyph: 'inventory',
     description: 'Stock valuation, recipe margins and the variance gap.',
     // Opens the full Inventory → Reports screen (its own section), not an in-shell report.
     // v5.11.92 (Drop 4a): for a multi site company that screen forwards to Reports > Stock and GP, so
@@ -139,7 +139,7 @@ export const CATEGORIES = [
     // tile is gated on stock-gp (a multi site company whose stock scope has loaded, in a login with
     // Inventory, Produce or Purchasing), so one site companies and Reports only franchisees never see
     // the category. A tile with `later` waits for a later Drop: greyed, with its line, and never opens.
-    id: 'stock', label: 'Stock and GP', short: 'Stock and GP', icon: '📦', glyph: 'inventory',
+    id: 'stock', label: 'Stock and GP', short: 'Stock and GP', icon: 'package', glyph: 'inventory',
     description: 'Head office stock reports: every site side by side and the company total, on each venue\'s own business day.',
     reports: [
       { id:'stock_home', label:'Head office dashboard', desc:'Cards, key items, the site league and every report', gate:'stock-gp' },
@@ -166,7 +166,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: 'loyalty', label: 'Loyalty reports', short: 'Loyalty', icon: '💎', glyph: 'loyalty',
+    id: 'loyalty', label: 'Loyalty reports', short: 'Loyalty', icon: 'gem', glyph: 'loyalty',
     description: 'Member engagement, stamp cards, points circulation and reward redemptions.',
     reports: [
       { id:'loyalty_overview',      label:'Loyalty overview',   desc:'KPIs, tier distribution, stamp card summaries and period activity' },
@@ -176,7 +176,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: 'marketing', label: 'Marketing reports', short: 'Marketing', icon: '📣', glyph: 'marketing',
+    id: 'marketing', label: 'Marketing reports', short: 'Marketing', icon: 'megaphone', glyph: 'marketing',
     description: 'Campaign and offer attribution.',
     // Opens the full Customers → Marketing report screen (its own section).
     reports: [
@@ -185,7 +185,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: 'location', label: 'Multi-location reports', short: 'Multi-location', icon: '📍', glyph: 'multi',
+    id: 'location', label: 'Multi-location reports', short: 'Multi-location', icon: 'mapPin', glyph: 'multi',
     description: 'Compare performance across all your sites side by side.',
     reports: [
       { id:'location_compare', label:'All sites overview', desc:'Every site of your company side by side, with the change on last time and outlier alerts' },

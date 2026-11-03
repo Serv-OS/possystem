@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
 import { advanceStatusLabel, ezcaterBadge, ezcaterFlagText, isPrepaidByChannel } from '../../lib/ezcaterCatering';
+import { Icon } from '../../components/ServOSIcons';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -132,7 +133,7 @@ export default function CateringOrders() {
                       {c.tax_id && <div><b>Tax/VAT id:</b> {c.tax_id}</div>}
                       {c.notes && <div style={{ gridColumn: '1 / -1' }}><b>Notes:</b> {c.notes}</div>}
                       {ezcaterBadge(o) && <div style={{ gridColumn: '1 / -1' }}><b>Channel:</b> {ezcaterBadge(o)} · paid through ezCater · our ref {o.ref}</div>}
-                      {ezcaterFlagText(o) && <div style={{ gridColumn: '1 / -1', color: 'var(--red, #ef4444)', fontWeight: 800 }}>⚠ {ezcaterFlagText(o)}</div>}
+                      {ezcaterFlagText(o) && <div style={{ gridColumn: '1 / -1', color: 'var(--red, #ef4444)', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="warn" size={14} />{ezcaterFlagText(o)}</div>}
                     </div>
                     <div style={{ fontSize: 12.5 }}>
                       {(o.items || []).map((i, idx) => (

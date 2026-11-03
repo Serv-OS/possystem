@@ -1,4 +1,5 @@
 import { ALLERGENS } from '../data/seed';
+import { Icon } from './ServOSIcons';
 
 /**
  * Shown before checkout when any items on the order have allergens.
@@ -29,7 +30,7 @@ export default function AllergenCheckoutModal({ items, onConfirm, onCancel }) {
         {/* Red header (fixed) */}
         <div style={{ background:'var(--red-d)', borderBottom:'1px solid var(--red-b)', padding:'16px 20px', flexShrink:0 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{ width:36, height:36, borderRadius:10, background:'var(--red)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>⚠</div>
+            <div style={{ width:36, height:36, borderRadius:10, background:'var(--red)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0, color:'#fff' }}><Icon name="warn" size={20}/></div>
             <div>
               <div style={{ fontSize:16, fontWeight:800, color:'var(--red)' }}>Allergen check required</div>
               <div style={{ fontSize:11, color:'var(--red)', opacity:.8, marginTop:2 }}>

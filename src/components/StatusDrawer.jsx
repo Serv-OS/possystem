@@ -10,6 +10,7 @@ import { printerErrorGuidance, printerViewingDevice } from '../lib/printerErrorW
 import { resolvePrinterSpec } from '../lib/printerDialects';
 import StatusDrawerCardReaders from './StatusDrawerCardReaders';
 import PrinterErrorHelp from './PrinterErrorHelp';
+import { Icon } from './ServOSIcons';
 import { venueBusinessDayStart } from '../lib/kds/kdsTicket';
 import { serverNowFrom, screenStatus, heardWords, waitingSummary, waitingWords, testTicketWords } from '../lib/kds/kdsScreenWatch';
 
@@ -368,8 +369,8 @@ export default function StatusDrawer({ onClose }) {
       <button
         onClick={onTest}
         disabled={ts === 'testing'}
-        style={{ padding:'3px 10px', borderRadius:8, cursor:ts==='testing'?'default':'pointer', fontFamily:'inherit', fontSize:10, fontWeight:700, border:'1px solid var(--bdr)', background:'var(--bg2)', color:'var(--t2)', transition:'all .1s', flexShrink:0 }}>
-        {ts === 'testing' ? '⏳' : `${icon} Test`}
+        style={{ padding:'3px 10px', borderRadius:8, cursor:ts==='testing'?'default':'pointer', fontFamily:'inherit', fontSize:10, fontWeight:700, border:'1px solid var(--bdr)', background:'var(--bg2)', color:'var(--t2)', transition:'all .1s', flexShrink:0, display:'inline-flex', alignItems:'center', gap:4 }}>
+        {ts === 'testing' ? <Icon name="clock" size={11} /> : <><Icon name={icon} size={11} />Test</>}
       </button>
     );
   };
@@ -383,8 +384,8 @@ export default function StatusDrawer({ onClose }) {
         <div style={{ padding:'16px 18px 14px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
           <div>
             <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>Terminal status</div>
-            <div style={{ fontSize:11, color:hasIssues?'var(--red)':'var(--t3)', marginTop:2 }}>
-              {hasIssues ? '⚠ Hardware issues detected' : '✓ Systems operational'}
+            <div style={{ fontSize:11, color:hasIssues?'var(--red)':'var(--t3)', marginTop:2, display:'flex', alignItems:'center', gap:4 }}>
+              {hasIssues ? <><Icon name="warn" size={12} />Hardware issues detected</> : '✓ Systems operational'}
             </div>
           </div>
           <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22 }}>×</button>
@@ -428,7 +429,7 @@ export default function StatusDrawer({ onClose }) {
                   return (
                     <div key={printer.id} style={{ padding:'11px 14px', borderRadius:12, border:`1px solid ${sbdr(st)}`, background:sbg(st) }}>
                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                        <span style={{ fontSize:18, flexShrink:0 }}>🖨</span>
+                        <span style={{ fontSize:18, flexShrink:0, color:'var(--t2)' }}><Icon name="print" size={18} /></span>
                         <div style={{ flex:1, minWidth:0 }}>
                           <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', display:'flex', alignItems:'center', gap:5, flexWrap:'wrap' }}>
                             {printer.name}
@@ -441,7 +442,7 @@ export default function StatusDrawer({ onClose }) {
                             <div style={{ width:7, height:7, borderRadius:'50%', background:sc(st), boxShadow:st==='online'?`0 0 5px ${sc(st)}`:undefined }}/>
                             <span style={{ fontSize:10, fontWeight:700, color:sc(st), textTransform:'uppercase' }}>{st}</span>
                           </div>
-                          <TestBtn id={printer.id} onTest={() => testPrinter(printer)} icon="🖨"/>
+                          <TestBtn id={printer.id} onTest={() => testPrinter(printer)} icon="print"/>
                         </div>
                       </div>
                       {err ? (
@@ -472,7 +473,7 @@ export default function StatusDrawer({ onClose }) {
                   return (
                     <div key={device.id} style={{ padding:'11px 14px', borderRadius:12, border:`1px solid ${sbdr(st)}`, background:sbg(st) }}>
                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                        <span style={{ fontSize:18, flexShrink:0 }}>📺</span>
+                        <span style={{ fontSize:18, flexShrink:0, color:'var(--t2)' }}><Icon name="tv" size={18} /></span>
                         <div style={{ flex:1, minWidth:0 }}>
                           <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{device.name}</div>
                           <div style={{ fontSize:10, color: st === 'offline' ? 'var(--red)' : 'var(--t4)', marginTop:1, fontWeight: st === 'offline' ? 700 : 400 }}>
@@ -487,7 +488,7 @@ export default function StatusDrawer({ onClose }) {
                             <div style={{ width:7, height:7, borderRadius:'50%', background:sc(st), boxShadow:st==='online'?`0 0 5px ${sc(st)}`:undefined }}/>
                             <span style={{ fontSize:10, fontWeight:700, color:sc(st), textTransform:'uppercase' }}>{st}</span>
                           </div>
-                          <TestBtn id={device.id} onTest={() => testKDS(device)} icon="📺"/>
+                          <TestBtn id={device.id} onTest={() => testKDS(device)} icon="tv"/>
                         </div>
                       </div>
                       {msg && (
@@ -528,7 +529,7 @@ export default function StatusDrawer({ onClose }) {
                         <div style={{ width:7, height:7, borderRadius:'50%', background:jsc, flexShrink:0 }}/>
                         <div style={{ flex:1, minWidth:0 }}>
                           <div style={{ fontSize:11, fontWeight:700, color:'var(--t1)' }}>
-                            {permanent && <span style={{ color:'var(--red)', marginRight:6 }}>⚠ Action required:</span>}
+                            {permanent && <span style={{ color:'var(--red)', marginRight:6, display:'inline-flex', alignItems:'center', gap:4, verticalAlign:'middle' }}><Icon name="warn" size={12} />Action required:</span>}
                             {job.job_type?.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())} — {printer?.name || job.printer_ip}
                           </div>
                           <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>
@@ -572,7 +573,7 @@ export default function StatusDrawer({ onClose }) {
 
         <div style={{ padding:'12px 18px', borderTop:'1px solid var(--bdr)', flexShrink:0 }}>
           <button onClick={() => { setAppMode('backoffice'); onClose(); }} style={{ width:'100%', padding:'10px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:13, fontWeight:600, display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
-            ⚙ Open Back Office
+            <Icon name="settings" size={14} />Open Back Office
           </button>
         </div>
       </div>

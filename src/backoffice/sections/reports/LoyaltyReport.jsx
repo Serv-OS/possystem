@@ -8,6 +8,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../../lib/supabase';
 import { money } from '../../../lib/currency';
+import { EmojiIcon } from '../../../components/ServOSIcons';
 
 // 28 Sep 2026 (Peter: "its also capped to 1000 in the loyalty reports"): the API returns at most
 // 1,000 rows per request, so members and stamp cards stopped at 1,000 and the period's
@@ -236,7 +237,7 @@ function OverviewTab({ data }) {
                 const completions = cards.reduce((s, c) => s + (c.completed_count || 0), 0);
                 return (
                   <div key={prog.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: 'var(--bg2)', borderRadius: 8 }}>
-                    <span style={{ fontSize: 18 }}>{prog.icon || '☕'}</span>
+                    <span style={{ display: 'flex' }}><EmojiIcon value={prog.icon} fallback="cup" size={18} /></span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)' }}>{prog.name}</div>
                       <div style={{ fontSize: 11, color: 'var(--t4)' }}>{cards.length} members · {totalStamps} stamps · {completions} completions</div>
@@ -350,7 +351,7 @@ function StampsTab({ data }) {
         return (
           <div key={prog.id} style={S.card}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-              <span style={{ fontSize: 28 }}>{prog.icon || '☕'}</span>
+              <span style={{ display: 'flex' }}><EmojiIcon value={prog.icon} fallback="cup" size={28} /></span>
               <div>
                 <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>{prog.name}</div>
                 <div style={{ fontSize: 12, color: 'var(--t4)' }}>{prog.stamps_required} stamps to complete · {prog.reward_description || 'Free item'}</div>

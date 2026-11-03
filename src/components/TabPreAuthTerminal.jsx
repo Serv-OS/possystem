@@ -7,6 +7,7 @@ import { findPaxTerminal, getPosDeviceId } from '../lib/payments/terminalJobs';
 import { money } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 import { useStore } from '../store';
+import { Icon } from './ServOSIcons';
 
 // ─── v5.5.324: Bar-tab card pre-authorisation ──────────────────────────────
 // Places a card HOLD on the customer's card on the paired Adyen terminal when a bar tab is
@@ -156,7 +157,7 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
 
         {state === 'success' && (
           <div style={{ padding: '12px 0' }}>
-            <div style={{ fontSize: 44, marginBottom: 6 }}>🔒</div>
+            <div style={{ fontSize: 44, marginBottom: 6, display: 'flex', justifyContent: 'center', color: 'var(--grn)' }}><Icon name="lock" size={44} /></div>
             <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--grn)' }}>{pounds(amountMinor)} held</div>
           </div>
         )}

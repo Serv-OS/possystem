@@ -119,7 +119,7 @@ function MenuEngineeringOne({ checks, fmt, fmtN, sites }) {
   };
 
   if (other.loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading this site's menu…</div>;
-  if (items.length === 0) return <EmptyState icon="🎯" message="No items sold in this period. Widen the date range."/>;
+  if (items.length === 0) return <EmptyState icon="target" message="No items sold in this period. Widen the date range."/>;
 
   return (
     <div>
@@ -299,7 +299,7 @@ function MenuEngineeringSites(props) {
   };
 
   if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's menu…</div>;
-  if (parts.every(p => bySite.get(p.id).items.length === 0)) return <EmptyState icon="🎯" message="No items sold at these sites in this period. Widen the date range."/>;
+  if (parts.every(p => bySite.get(p.id).items.length === 0)) return <EmptyState icon="target" message="No items sold at these sites in this period. Widen the date range."/>;
 
   return (
     <div>
@@ -312,7 +312,7 @@ function MenuEngineeringSites(props) {
         group.items.forEach(i => byQ[i.quadrant].push(i));
         const site = b.parts.map(p => ({ part: p, cells: { ...counts(bySite.get(p.id).items), items: bySite.get(p.id).items.length } }));
         const all = { ...counts(group.items), items: group.items.length };
-        if (!group.items.length) return <EmptyState icon="🎯" message="No items sold at these sites in this period."/>;
+        if (!group.items.length) return <EmptyState icon="target" message="No items sold at these sites in this period."/>;
         return (
           <>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>

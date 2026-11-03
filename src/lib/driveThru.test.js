@@ -121,7 +121,7 @@ test('surfaces/POSSurface.jsx: the till segmented control lists drive thru', () 
   const list = declaration(read('../surfaces/POSSurface.jsx'), 'ALL_ORDER_TYPES', 'POSSurface.jsx');
   has(list, "'drive-thru'", 'ALL_ORDER_TYPES');
   has(list, 'Drive thru', 'ALL_ORDER_TYPES');
-  has(list, '🚗', 'ALL_ORDER_TYPES');
+  has(list, 'drivethru', 'ALL_ORDER_TYPES');
 });
 
 test('components/OrderTypeModal.jsx: TYPES lists drive thru', () => {
@@ -144,7 +144,7 @@ test('backoffice/sections/DeviceProfiles.jsx: the per till switch offers Drive t
   const list = declaration(read('../backoffice/sections/DeviceProfiles.jsx'), 'ORDER_TYPES', 'DeviceProfiles.jsx');
   hasRe(list, /id:\s*'drive-thru'/, 'ORDER_TYPES');
   hasRe(list, /label:\s*'Drive thru'/, 'ORDER_TYPES');
-  has(list, '🚗', 'ORDER_TYPES');
+  has(list, "icon:'car'", 'ORDER_TYPES');
 });
 
 test('backoffice/sections/reports/OrderTypes.jsx: TYPE_STYLE has a drive thru row', () => {

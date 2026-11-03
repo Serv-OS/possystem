@@ -9,6 +9,7 @@ import { useMemo } from 'react';
 import { useStore } from '../../store';
 import { computeCheckTotals } from '../../lib/payments/checkTotals';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onClose, onSendToKitchen }) {
   const { tables, sendToKitchen } = useStore();
@@ -43,7 +44,7 @@ export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onC
           <div style={Sx.hTitle}>Table not seated</div>
         </div>
         <div style={Sx.emptyBlock}>
-          <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🪑</div>
+          <div style={{ fontSize:36, marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="seat" size={36} /></div>
           <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700 }}>This table has no open session.</div>
         </div>
       </div>
@@ -73,7 +74,7 @@ export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onC
         {/* Order note (if set) */}
         {session.orderNote && (
           <div style={{ margin:'14px 14px 0', padding:'10px 12px', borderRadius:11, background:'var(--acc-d)', border:'1px solid var(--acc-b)', display:'flex', alignItems:'flex-start', gap:8 }}>
-            <span style={{ fontSize:14, flexShrink:0 }}>📝</span>
+            <span style={{ fontSize:14, flexShrink:0, color:'var(--acc)', marginTop:1 }}><Icon name="note" size={15} /></span>
             <div style={{ flex:1, fontSize:12, color:'var(--acc)', lineHeight:1.4, whiteSpace:'pre-wrap' }}>{session.orderNote}</div>
           </div>
         )}
@@ -111,7 +112,7 @@ export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onC
 
         {items.length === 0 && (
           <div style={Sx.emptyBlock}>
-            <div style={{ fontSize:36, marginBottom:8, opacity:.3 }}>🍽</div>
+            <div style={{ fontSize:36, marginBottom:8, opacity:.3, display:'flex', justifyContent:'center' }}><Icon name="utensils" size={36} /></div>
             <div style={{ fontSize:14, color:'var(--t3)', fontWeight:700, marginBottom:4 }}>No items yet</div>
             <div style={{ fontSize:12 }}>Tap "Add items" to start the order.</div>
           </div>
@@ -172,7 +173,7 @@ function ItemLine({ item, onClick }) {
           <div style={{ fontSize:11, color:'var(--t3)', lineHeight:1.4, marginTop:1 }}>+ {modsList.join(' · ')}</div>
         )}
         {item.notes && (
-          <div style={{ fontSize:11, color:'var(--acc)', lineHeight:1.4, marginTop:1 }}>📝 {item.notes}</div>
+          <div style={{ fontSize:11, color:'var(--acc)', lineHeight:1.4, marginTop:1, display:'flex', alignItems:'center', gap:4 }}><Icon name="note" size={12} /> {item.notes}</div>
         )}
       </div>
       <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{money(lineTotal)}</div>

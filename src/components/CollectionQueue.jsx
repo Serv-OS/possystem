@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
 import { shortOrderRef } from '../lib/db';
+import { Icon } from './ServOSIcons';
 
 const STATUS_FLOW = ['received', 'prep', 'ready', 'collected'];
 const STATUS_META = {
-  received:  { label: 'Received',   color: '#3b82f6', bg: 'rgba(59,130,246,.1)',   next: 'Start prep',    icon: '📥' },
-  prep:      { label: 'In prep',    color: '#f97316', bg: 'rgba(249,115,22,.1)',    next: 'Mark ready',    icon: '👨‍🍳' },
-  ready:     { label: 'Ready',      color: '#22c55e', bg: 'rgba(34,197,94,.1)',     next: 'Collected',     icon: '✅' },
-  collected: { label: 'Collected',  color: '#8a8890', bg: 'rgba(138,136,144,.1)',   next: null,            icon: '👋' },
+  received:  { label: 'Received',   color: '#3b82f6', bg: 'rgba(59,130,246,.1)',   next: 'Start prep',    icon: 'inbox' },
+  prep:      { label: 'In prep',    color: '#f97316', bg: 'rgba(249,115,22,.1)',    next: 'Mark ready',    icon: 'chef' },
+  ready:     { label: 'Ready',      color: '#22c55e', bg: 'rgba(34,197,94,.1)',     next: 'Collected',     icon: 'checkCircle' },
+  collected: { label: 'Collected',  color: '#8a8890', bg: 'rgba(138,136,144,.1)',   next: null,            icon: 'wave' },
 };
 
 export default function CollectionQueue({ onClose }) {
@@ -98,7 +99,7 @@ export default function CollectionQueue({ onClose }) {
           <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
             {Object.entries(STATUS_META).filter(([k])=>k!=='collected').map(([s, m]) => (
               <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 20, background: m.bg, border: `1px solid ${m.color}44` }}>
-                <span style={{ fontSize: 14 }}>{m.icon}</span>
+                <span style={{ fontSize: 14, display: 'flex', color: m.color }}><Icon name={m.icon} size={14}/></span>
                 <span style={{ fontSize: 12, fontWeight: 600, color: m.color }}>{m.label}</span>
                 <span style={{ fontSize: 14, fontWeight: 800, color: m.color }}>{counts[s] || 0}</span>
               </div>
@@ -123,7 +124,7 @@ export default function CollectionQueue({ onClose }) {
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
           {filtered.length === 0 && (
             <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--t3)' }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>📦</div>
+              <div style={{ fontSize: 40, marginBottom: 12, display: 'flex', justifyContent: 'center' }}><Icon name="package" size={40}/></div>
               <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--t2)', marginBottom: 6 }}>No orders here</div>
               <div style={{ fontSize: 12 }}>Takeaway and collection orders will appear here</div>
             </div>
@@ -133,7 +134,7 @@ export default function CollectionQueue({ onClose }) {
             const sm = STATUS_META[order.status];
             const urgency = getUrgency(order);
             const uc = urgencyColor[urgency];
-            const typeIcon = order.type === 'collection' ? '📦' : order.type === 'drive-thru' ? '🚗' : '🥡';
+            const typeIcon = order.type === 'collection' ? 'package' : order.type === 'drive-thru' ? 'car' : 'takeaway';
             const waitMins = order.collectionISO
               ? Math.round((new Date(order.collectionISO) - now) / 60000)
               : null;
@@ -146,7 +147,7 @@ export default function CollectionQueue({ onClose }) {
               }}>
                 {/* Order header */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderBottom: '1px solid var(--bdr)' }}>
-                  <div style={{ fontSize: 22 }}>{typeIcon}</div>
+                  <div style={{ fontSize: 22, display: 'flex' }}><Icon name={typeIcon} size={22}/></div>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
                       <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{shortOrderRef(order.ref)}</span>
@@ -171,12 +172,12 @@ export default function CollectionQueue({ onClose }) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px' }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: sm.bg, color: sm.color }}>
-                        {sm.icon} {sm.label}
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: sm.bg, color: sm.color, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <Icon name={sm.icon} size={12}/>{sm.label}
                       </span>
                       {order.type === 'collection' && (
-                        <span style={{ fontSize: 12, fontWeight: 700, color: uc }}>
-                          {order.isASAP ? '⚡ ASAP' : `🕐 ${order.customer.collectionTime}`}
+                        <span style={{ fontSize: 12, fontWeight: 700, color: uc, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <Icon name={order.isASAP ? 'bolt' : 'clock'} size={13}/>{order.isASAP ? 'ASAP' : order.customer.collectionTime}
                           {waitMins !== null && order.status !== 'collected' && (
                             <span style={{ marginLeft: 6, fontSize: 11, color: uc }}>
                               {waitMins < 0 ? `${Math.abs(waitMins)}m overdue` : waitMins === 0 ? 'now' : `in ${waitMins}m`}
@@ -193,8 +194,8 @@ export default function CollectionQueue({ onClose }) {
                       {order.items.length > 3 && <span> +{order.items.length - 3} more</span>}
                     </div>
                     {order.customer.notes && (
-                      <div style={{ fontSize: 11, color: '#f97316', marginTop: 4, fontStyle: 'italic' }}>
-                        📝 {order.customer.notes}
+                      <div style={{ fontSize: 11, color: '#f97316', marginTop: 4, fontStyle: 'italic', display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+                        <Icon name="note" size={12} style={{ marginTop: 1 }}/><span>{order.customer.notes}</span>
                       </div>
                     )}
                   </div>

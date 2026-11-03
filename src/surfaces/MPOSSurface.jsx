@@ -61,12 +61,13 @@ import MOrderDetail from './mpos/MOrderDetail';
 import { quoteForWalkIn } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's fee is bound to that order
 import MQueueDetail from './mpos/MQueueDetail';
 import { Sx, money } from './mpos/MShellStyles';
+import { Icon } from '../components/ServOSIcons';
 
 const TABS = [
-  { id:'home',   label:'Home',   icon:'🏠' },
-  { id:'orders', label:'Orders', icon:'📋' },
-  { id:'tables', label:'Tables', icon:'🪑' },
-  { id:'me',     label:'Me',     icon:'⚙' },
+  { id:'home',   label:'Home',   icon:'house' },
+  { id:'orders', label:'Orders', icon:'clipboard' },
+  { id:'tables', label:'Tables', icon:'seat' },
+  { id:'me',     label:'Me',     icon:'settings' },
 ];
 
 export default function MPOSSurface() {
@@ -1005,7 +1006,7 @@ function MPOSRouter() {
               display:'flex', flexDirection:'column', alignItems:'center', gap:3, minHeight:60,
               color: active ? 'var(--acc)' : 'var(--t4)',
             }}>
-              <div style={{ fontSize:22, lineHeight:1 }}>{t.icon}</div>
+              <div style={{ lineHeight:1 }}><Icon name={t.icon} size={22} /></div>
               <div style={{ fontSize:10, fontWeight:active ? 800 : 600, letterSpacing:'.04em' }}>{t.label}</div>
             </button>
           );
@@ -1042,7 +1043,7 @@ function MCloseFailed({ amount, queued, message, onRetry, onContinue }) {
         <div style={{ ...Sx.hTitle, color:'var(--red)' }}>Sale NOT recorded</div>
       </div>
       <div style={{ ...Sx.scroller, padding:'22px 14px' }}>
-        <div style={{ fontSize:46, textAlign:'center', marginBottom:8 }}>⚠️</div>
+        <div style={{ display:'flex', justifyContent:'center', marginBottom:8, color:'var(--red)' }}><Icon name="warn" size={44} /></div>
         <div style={{ fontSize:34, fontWeight:800, fontFamily:'var(--font-mono)', color:'var(--t1)', textAlign:'center' }}>
           {money(amount)}
         </div>
@@ -1092,7 +1093,7 @@ function MKitchenSendFailed({ count, message, continueLabel, onRetry, onContinue
         <div style={{ ...Sx.hTitle, color:'var(--red)' }}>Kitchen never got this order</div>
       </div>
       <div style={{ ...Sx.scroller, padding:'22px 14px' }}>
-        <div style={{ fontSize:46, textAlign:'center', marginBottom:8 }}>🍳</div>
+        <div style={{ display:'flex', justifyContent:'center', marginBottom:8, color:'var(--red)' }}><Icon name="cookingPot" size={44} /></div>
         <div style={{ ...Sx.card, borderColor:'var(--red-b)', background:'var(--red-d)' }}>
           <div style={{ fontSize:13, color:'var(--t1)', lineHeight:1.55 }}>
             {count === 1 ? '1 line' : `${count} lines`} could not be sent to the kitchen.

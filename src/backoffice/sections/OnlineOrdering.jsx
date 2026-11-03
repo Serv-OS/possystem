@@ -21,6 +21,10 @@ import MenuTranslations from './MenuTranslations';
 import { patchBranding } from '../../lib/locationAdmin';
 import { COUNTER_PATH, COUNTER_DEFAULT_LABEL, COUNTER_LABEL_MAX, counterCollect, counterCollectPatch } from '../../lib/counterOrder';
 import { callGiftPublic } from '../../surfaces/gift/giftHelpers';
+import { Icon } from '../../components/ServOSIcons';
+
+// Icon sitting inline before button or line text.
+const IC_INLINE = { display:'inline-block', verticalAlign:'-2px', marginRight:6 };
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -431,7 +435,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
   if (loading) return <div style={{ padding:40, color:'var(--t4)', fontSize:13 }}>Loading…</div>;
   if (!row) return (
     <div style={S.page}>
-      <div style={S.h1}>🌐 Online ordering</div>
+      <div style={{ ...S.h1, display:'flex', alignItems:'center', gap:8 }}><Icon name="globe" size={20} />Online ordering</div>
       <div style={{ marginTop:16, padding:'12px 14px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, color:'var(--t3)', fontSize:13 }}>
         Couldn't load this location's online settings. {can('location') ? <>Open <button onClick={() => setSection('location')} style={S.link}>Location settings</button> to set up.</> : 'Ask the owner to check Location settings.'}
       </div>
@@ -450,7 +454,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
 
   return (
     <div style={S.page}>
-      <div style={S.h1}>🌐 Online ordering</div>
+      <div style={{ ...S.h1, display:'flex', alignItems:'center', gap:8 }}><Icon name="globe" size={20} />Online ordering</div>
       <div style={S.sub}>
         Customer-facing settings for online + QR table-side ordering at <b>{row.name}</b>.
         {!slug && can('location') && <> · <button onClick={() => setSection('location')} style={S.link}>Set a slug in Location Settings</button> to enable customer URLs.</>}
@@ -459,10 +463,10 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
 
       {/* Status strip */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px, 1fr))', gap:12, marginBottom:24 }}>
-        <StatusPill title="🌐 Online" enabled={row.online_enabled} url={onlineUrl} preview={previewOnline}/>
-        <StatusPill title="📱 QR table-side" enabled={row.qr_enabled} url={qrUrl} preview={previewQr}/>
-        <StatusPill title="🎁 Gift cards" enabled={giftOn} url={giftUrl} preview={previewGift}/>
-        <StatusPill title="⭐ Loyalty portal" enabled={loyaltyOn} url={portalUrl} preview={previewPortal}/>
+        <StatusPill icon="globe" title="Online" enabled={row.online_enabled} url={onlineUrl} preview={previewOnline}/>
+        <StatusPill icon="phone" title="QR table-side" enabled={row.qr_enabled} url={qrUrl} preview={previewQr}/>
+        <StatusPill icon="gift" title="Gift cards" enabled={giftOn} url={giftUrl} preview={previewGift}/>
+        <StatusPill icon="star" title="Loyalty portal" enabled={loyaltyOn} url={portalUrl} preview={previewPortal}/>
       </div>
 
       {/* Multi-site group ordering link — one link for the whole group */}
@@ -470,7 +474,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
 
       {/* Menu picker */}
       <div style={S.card}>
-        <div style={S.h2}>🍽 Which menu shows online?</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="utensils" size={15} />Which menu shows online?</div>
         <div style={S.desc}>
           Choose which of your menus to expose on the customer-facing surfaces. If unset, the active menu (the one running in your POS / kiosk right now) is used as a fallback.
           A chosen menu follows its own times, as on a till: outside them, your default menu shows.
@@ -493,7 +497,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
 
       {/* v5.11.81: menu languages reach the online page, QR and catering too (as the kiosk). */}
       <div style={S.card}>
-        <div style={S.h2}>🌐 Menu languages</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="globe" size={15} />Menu languages</div>
         <div style={S.desc}>
           Guests whose phone is set to Spanish, French or Chinese see your menu in their language on the online page,
           QR and catering, with a switch back to English. Orders, tickets and receipts stay in English.
@@ -507,7 +511,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
 
       {/* Branding — consolidated into Menu appearance (v5.5.744) */}
       <div style={S.card}>
-        <div style={S.h2}>🎨 Branding</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="palette" size={15} />Branding</div>
         <div style={S.desc}>
           Your logo, colours, header style, header photo and page background for the online ordering &amp;
           catering pages are all set in <b>one place now — Back office → Menu appearance</b>, with a live
@@ -518,7 +522,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
 
       {/* Operational */}
       <div style={S.card}>
-        <div style={S.h2}>⚙️ Operational</div>
+        <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="settings" size={15} />Operational</div>
         <div style={S.desc}>
           Per-location settings that affect the customer-facing flow.
         </div>
@@ -744,8 +748,8 @@ function QrSettingsBlock({
       <div style={{ marginBottom: 14 }}>
         <div style={S.label}>Payment</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <button onClick={() => setPaymentMode('pay_now')}  style={radioStyle(paymentMode === 'pay_now')}>💳 Pay now</button>
-          <button onClick={() => setPaymentMode('open_tab')} style={radioStyle(paymentMode === 'open_tab')}>📋 Open tab</button>
+          <button onClick={() => setPaymentMode('pay_now')}  style={radioStyle(paymentMode === 'pay_now')}><Icon name="card" size={14} style={IC_INLINE} />Pay now</button>
+          <button onClick={() => setPaymentMode('open_tab')} style={radioStyle(paymentMode === 'open_tab')}><Icon name="clipboard" size={14} style={IC_INLINE} />Open tab</button>
           <button onClick={() => setPaymentMode('both')}     style={radioStyle(paymentMode === 'both')}>Both</button>
         </div>
         <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
@@ -757,9 +761,9 @@ function QrSettingsBlock({
       <div style={{ marginBottom: 14 }}>
         <div style={S.label}>Table identification</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <button onClick={() => setTableMode('fixed')}   style={radioStyle(tableMode === 'fixed')}>🔒 Fixed</button>
-          <button onClick={() => setTableMode('confirm')} style={radioStyle(tableMode === 'confirm')}>✅ Confirm</button>
-          <button onClick={() => setTableMode('free')}    style={radioStyle(tableMode === 'free')}>✏️ Free-type</button>
+          <button onClick={() => setTableMode('fixed')}   style={radioStyle(tableMode === 'fixed')}><Icon name="lock" size={14} style={IC_INLINE} />Fixed</button>
+          <button onClick={() => setTableMode('confirm')} style={radioStyle(tableMode === 'confirm')}><Icon name="checkCircle" size={14} style={IC_INLINE} />Confirm</button>
+          <button onClick={() => setTableMode('free')}    style={radioStyle(tableMode === 'free')}><Icon name="pencil" size={14} style={IC_INLINE} />Free-type</button>
         </div>
         <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
           {tableMode === 'fixed' && 'QR locks the table — customer can\'t change it.'}
@@ -800,7 +804,7 @@ function QrSettingsBlock({
           <div style={{ marginTop: 12 }}>
             <div style={S.label}>Customer warning message</div>
             <textarea value={tabWarning} onChange={e => setTabWarning(e.target.value)}
-              rows={2} placeholder="e.g. ⚠ Tabs left open at close incur a 10% surcharge."
+              rows={2} placeholder="e.g. Tabs left open at close incur a 10% surcharge."
               style={{ ...S.input, resize: 'vertical', minHeight: 56, fontFamily: 'inherit' }}/>
             <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
               Shown next to the "Open tab" option on the QR checkout. Plain text — no HTML.
@@ -866,7 +870,7 @@ function QrSettingsBlock({
             background:'#7c2d1220', border:'1px solid #f59e0b', color:'var(--t1)',
             fontSize:12, lineHeight:1.5,
           }}>
-            <strong>⚠ {tables.filter(t => t.isUnlabeled).length} of {tables.length} tables have no label set.</strong>
+            <strong><Icon name="warn" size={14} style={IC_INLINE} />{tables.filter(t => t.isUnlabeled).length} of {tables.length} tables have no label set.</strong>
             {' '}Their QR URLs will use the auto-generated id (e.g. <code>?t=t-1776905944421</code>) and customers will see "Table t-1776905944421" on the confirm screen.
             {' '}Open <strong>Floor Plan → click each table → set Label</strong> to "T4", "5", etc., then come back and re-download the QRs.
           </div>
@@ -882,7 +886,7 @@ function QrSettingsBlock({
                   display: 'flex', flexDirection: 'column', gap: 6,
                 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                    <span style={{ fontSize: 22 }}>📱</span>
+                    <span style={{ display: 'inline-flex', color: 'var(--t2)' }}><Icon name="phone" size={20} /></span>
                     <span style={{ fontSize: 14, fontWeight: 700, color:'var(--t1)' }}>Table {t.label || '(no label)'}</span>
                     {t.isUnlabeled && <span style={{ fontSize:9, fontWeight:800, color:'#92400e', background:'#fde68a', padding:'2px 6px', borderRadius:6 }}>UNLABELED</span>}
                     <span style={{ marginLeft:'auto', fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>id: {t.id.length > 12 ? t.id.slice(0,12)+'…' : t.id}</span>
@@ -900,7 +904,7 @@ function QrSettingsBlock({
                     <button onClick={() => { navigator.clipboard?.writeText(url); }} style={{
                       flex:1, padding:'6px 8px', borderRadius:6, fontSize:11, fontWeight:700,
                       background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr2)', cursor:'pointer',
-                    }}>📋 Copy URL</button>
+                    }}><Icon name="clipboard" size={13} style={IC_INLINE} />Copy URL</button>
                   </div>
                 </div>
               );
@@ -923,7 +927,7 @@ function GroupLinkCard({ group }) {
   if (!url) return null;
   return (
     <div style={S.card}>
-      <div style={S.h2}>🏢 Group ordering link</div>
+      <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="building" size={15} />Group ordering link</div>
       <div style={S.desc}>
         <b>{group.name}</b> has {group.count} locations. Put this ONE link on the group's website —
         customers pick their venue, then order online there (if only one venue has online ordering,
@@ -940,7 +944,7 @@ function GroupLinkCard({ group }) {
           style={{ ...S.input, flex:'1 1 260px', width:'auto', fontFamily:'var(--font-mono, monospace)', fontSize:12, color:'var(--t2)' }}/>
         <button onClick={() => { navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
           style={{ ...S.btn, background:'var(--bg3)', color:'var(--t1)', border:'1px solid var(--bdr)' }}>
-          {copied ? '✓ Copied' : '📋 Copy'}
+          {copied ? '✓ Copied' : <><Icon name="clipboard" size={14} style={IC_INLINE} />Copy</>}
         </button>
         <a href={url} target="_blank" rel="noopener"
           style={{ ...S.btn, background:'transparent', color:'var(--acc)', border:'1px solid var(--bdr)', textDecoration:'none', display:'inline-block' }}>
@@ -951,11 +955,11 @@ function GroupLinkCard({ group }) {
   );
 }
 
-function StatusPill({ title, enabled, url, preview }) {
+function StatusPill({ icon, title, enabled, url, preview }) {
   return (
     <div style={{ padding:'14px 16px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12 }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
-        <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>{title}</div>
+        <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', display:'flex', alignItems:'center', gap:6 }}>{icon && <Icon name={icon} size={14} />}{title}</div>
         <span style={{
           padding:'2px 8px', borderRadius:99, fontSize:9, fontWeight:800, letterSpacing:'.05em', textTransform:'uppercase',
           background: enabled ? 'var(--grn-d)' : 'var(--bg3)',
@@ -1179,7 +1183,7 @@ function TipRuleEditor({ title, intro, rule, onChange, warn }) {
           </label>
         </div>
       )}
-      {rule.on && warn ? <div style={{ fontSize: 11.5, color: 'var(--amber, #b45309)', marginTop: 8, lineHeight: 1.5 }}>⚠ {warn}</div> : null}
+      {rule.on && warn ? <div style={{ fontSize: 11.5, color: 'var(--amber, #b45309)', marginTop: 8, lineHeight: 1.5 }}><Icon name="warn" size={13} style={IC_INLINE} />{warn}</div> : null}
     </div>
   );
 }

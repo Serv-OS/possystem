@@ -14,6 +14,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { Sx } from './MShellStyles';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function MCustomerCapture({ orderType, onContinue, onSkip: skipProp, onBack: backProp }) {
   const { customer, setCustomer, searchCustomers, searchCustomersLive, autoJoinCustomerByEmail, showToast, showDelayedToast } = useStore();
@@ -207,8 +208,9 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip: skipPr
                     background: isASAP ? 'var(--acc-d)' : 'var(--bg2)',
                     color: isASAP ? 'var(--acc)' : 'var(--t2)',
                     fontSize:13, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
+                    display:'inline-flex', alignItems:'center', justifyContent:'center', gap:6,
                   }}>
-                  ⚡ {isASAP ? 'ASAP — selected' : 'Tap for ASAP'}
+                  <Icon name="bolt" size={15} /> {isASAP ? 'ASAP — selected' : 'Tap for ASAP'}
                 </button>
                 <input
                   value={time} onChange={(e) => { setTime(e.target.value); setIsASAP(false); }}

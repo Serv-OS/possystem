@@ -16,6 +16,7 @@ import { Sx, money } from './MShellStyles';
 import { venueDiscountList, NO_DISCOUNTS_TEXT } from '../../lib/venueDiscounts';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
 import MBottomSheet from './MBottomSheet';
+import { Icon, hasIcon } from '../../components/ServOSIcons';
 
 export default function MOrderActions({ onClose }) {
   const {
@@ -116,14 +117,14 @@ export default function MOrderActions({ onClose }) {
             )}
 
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-              <ActionRow icon="💸" label="Apply order discount" sub="Discount the whole order, not a single item" onClick={() => setView('discount')} />
+              <ActionRow icon="money" label="Apply order discount" sub="Discount the whole order, not a single item" onClick={() => setView('discount')} />
               {isTable && heldCourses.length > 0 && (
-                <ActionRow icon="🔥" label={`Fire course ${heldCourses[0]}`} sub={`${heldCourses.length} course${heldCourses.length === 1 ? '' : 's'} held — tap to fire`} onClick={() => setView('fire')} />
+                <ActionRow icon="fire" label={`Fire course ${heldCourses[0]}`} sub={`${heldCourses.length} course${heldCourses.length === 1 ? '' : 's'} held — tap to fire`} onClick={() => setView('fire')} />
               )}
               {isTable && (
                 <ActionRow icon="↔" label="Transfer to another table" sub="Move this session and its items to a different table" onClick={() => setView('transfer')} />
               )}
-              <ActionRow icon="📝" label={isTable && session?.orderNote ? 'Edit order note' : 'Add order note'} sub={isTable && session?.orderNote ? session.orderNote : 'Kitchen-bound note for the whole order'} onClick={() => setView('note')} />
+              <ActionRow icon="note" label={isTable && session?.orderNote ? 'Edit order note' : 'Add order note'} sub={isTable && session?.orderNote ? session.orderNote : 'Kitchen-bound note for the whole order'} onClick={() => setView('note')} />
               <button onClick={close} style={{ ...Sx.btnGhost, marginTop:6 }}>Cancel</button>
             </div>
           </>
@@ -173,7 +174,7 @@ export default function MOrderActions({ onClose }) {
                 }}>
                   <div style={{ width:32, textAlign:'center', fontWeight:800, fontSize:14, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{c}</div>
                   <div style={{ flex:1, fontSize:13, fontWeight:700, color:'var(--acc)' }}>Fire course {c} now</div>
-                  <span style={{ fontSize:18, color:'var(--acc)' }}>🔥</span>
+                  <span style={{ fontSize:18, color:'var(--acc)' }}><Icon name="fire" size={18} /></span>
                 </button>
               ))}
               {heldCourses.length === 0 && (
@@ -292,7 +293,7 @@ function ActionRow({ icon, label, sub, onClick }) {
       cursor:'pointer', fontFamily:'inherit', textAlign:'left',
       display:'flex', alignItems:'center', gap:12, minHeight:54,
     }}>
-      <div style={{ fontSize:20, width:32, textAlign:'center', flexShrink:0 }}>{icon}</div>
+      <div style={{ fontSize:20, width:32, textAlign:'center', flexShrink:0, display:'flex', justifyContent:'center', color:'var(--t2)' }}>{hasIcon(icon) ? <Icon name={icon} size={20} /> : icon}</div>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{label}</div>
         {sub && <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>{sub}</div>}

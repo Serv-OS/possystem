@@ -9,6 +9,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { Icon } from '../../components/ServOSIcons';
 
 const FUNC_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/message-templates`;
 
@@ -35,14 +36,14 @@ async function callApi(action, payload) {
 }
 
 const CHANNEL_LABELS = { email: 'Email', sms: 'SMS' };
-const CHANNEL_ICONS = { email: '✉️', sms: '📱' };
+const CHANNEL_ICONS = { email: 'mail', sms: 'phone' };
 const CATEGORY_ICONS = {
-  Orders: '📋',
-  'Gift Cards': '🎁',
-  Tables: '🍽️',
-  Bookings: '📅',
-  Receipts: '🧾',
-  Loyalty: '⭐',
+  Orders: 'clipboard',
+  'Gift Cards': 'gift',
+  Tables: 'utensils',
+  Bookings: 'calendar',
+  Receipts: 'receipt',
+  Loyalty: 'star',
 };
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -332,9 +333,9 @@ export default function MessageTemplates() {
               <div style={{
                 padding: '0 16px', marginBottom: 6, fontSize: 10,
                 fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em',
-                color: 'var(--t4)',
+                color: 'var(--t4)', display: 'flex', alignItems: 'center', gap: 6,
               }}>
-                {CATEGORY_ICONS[cat] || ''} {cat}
+                {CATEGORY_ICONS[cat] && <Icon name={CATEGORY_ICONS[cat]} size={12} />}{cat}
               </div>
               {catTypes.map(mt => {
                 const isSelected = selectedType === mt.type;
@@ -418,7 +419,7 @@ export default function MessageTemplates() {
                   background: 'rgba(59,130,246,0.10)', border: '1px solid rgba(59,130,246,0.35)',
                   display: 'flex', gap: 10, alignItems: 'flex-start',
                 }}>
-                  <span style={{ fontSize: 18, lineHeight: 1 }}>ℹ️</span>
+                  <span style={{ lineHeight: 1, display: 'inline-flex', color: 'var(--t2)' }}><Icon name="help" size={18} /></span>
                   <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--t1)' }}>
                     {currentMt.providerNote}
                   </div>
@@ -536,7 +537,7 @@ export default function MessageTemplates() {
                       fontWeight: selectedChannel === ch ? 700 : 500, fontSize: 13,
                     }}
                   >
-                    {CHANNEL_ICONS[ch]} {CHANNEL_LABELS[ch]}
+                    <Icon name={CHANNEL_ICONS[ch]} size={14} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 6 }} />{CHANNEL_LABELS[ch]}
                     {currentMt.templates[ch]?.isCustom && (
                       <span style={{ marginLeft: 6, fontSize: 9, opacity: 0.7 }}>(edited)</span>
                     )}

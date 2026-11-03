@@ -12,6 +12,7 @@ import { findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, getPosDev
 import { money, currencySymbol, venueCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 import { stageGiftCard } from '../lib/giftCommit';
+import { Icon } from './ServOSIcons';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
 // Sends the portion amount to the paired Adyen terminal as a terminal job — same flow as
@@ -215,7 +216,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   if (state === 'success') {
     return (
       <div style={{ textAlign: 'center', padding: '20px 0' }}>
-        <div style={{ fontSize: 48, marginBottom: 8 }}>✅</div>
+        <div style={{ fontSize: 48, marginBottom: 8, display: 'flex', justifyContent: 'center', color: 'var(--grn)' }}><Icon name="checkCircle" size={48} /></div>
         <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--grn)' }}>{money(amount)} paid</div>
         <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 4 }}>{portionLabel}</div>
       </div>
@@ -225,7 +226,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   if (state === 'error') {
     return (
       <div style={{ textAlign: 'center', padding: '16px 0' }}>
-        <div style={{ fontSize: 48, marginBottom: 8 }}>⚠️</div>
+        <div style={{ fontSize: 48, marginBottom: 8, display: 'flex', justifyContent: 'center', color: 'var(--red)' }}><Icon name="warn" size={48} /></div>
         <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--red)', marginBottom: 6 }}>Payment failed</div>
         <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 16, maxWidth: 340, margin: '0 auto 16px' }}>{errorMsg}</div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
@@ -246,7 +247,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         {portionLabel} — Card payment
       </div>
       <div style={{ padding: '16px 14px', borderRadius: 14, background: 'var(--bg3)', border: '1px solid var(--bdr)', marginBottom: 14 }}>
-        <div style={{ fontSize: 36, marginBottom: 6 }}>📲</div>
+        <div style={{ fontSize: 36, marginBottom: 6, color: 'var(--t2)' }}><Icon name="phone" size={36} /></div>
         <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--t1)', marginBottom: 4, fontFamily: 'DM Mono,monospace' }}>
           {money(amount)}
         </div>
@@ -459,21 +460,21 @@ function PortionTender({ portion, portionNum, total, canTakeCash = true, onCompl
           </div>
           <div style={{ display:'flex', gap:10, marginBottom:10 }}>
             <button onClick={()=>setScreen('card')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#1a2744,#0f1a35)', border:'1px solid rgba(100,140,255,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:28 }}>💳</span>
+              <span style={{ fontSize:28, color:'#e8f0ff' }}><Icon name="card" size={28} /></span>
               <span style={{ fontSize:14, fontWeight:800, color:'#e8f0ff' }}>Card</span>
               <span style={{ fontSize:10, color:'rgba(200,210,255,.5)' }}>Tap or chip</span>
             </button>
             {/* v5.5.180: only show Cash when this POS has a bound drawer */}
             {canTakeCash && (
               <button onClick={()=>setScreen('cash')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#162a1a,#0d1f10)', border:'1px solid rgba(60,180,80,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-                <span style={{ fontSize:28 }}>💵</span>
+                <span style={{ fontSize:28, color:'#d4f0d8' }}><Icon name="money" size={28} /></span>
                 <span style={{ fontSize:14, fontWeight:800, color:'#d4f0d8' }}>Cash</span>
                 <span style={{ fontSize:10, color:'rgba(160,210,170,.5)' }}>With change</span>
               </button>
             )}
             {/* v5.5.199: Gift card payment for split checks */}
             <button onClick={()=>setScreen('gift_card')} style={{ flex:1, padding:'18px 12px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'linear-gradient(135deg,#2a1a2e,#1a0f24)', border:'1px solid rgba(180,100,255,.3)', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:28 }}>🎁</span>
+              <span style={{ fontSize:28, color:'#f0e8ff' }}><Icon name="gift" size={28} /></span>
               <span style={{ fontSize:14, fontWeight:800, color:'#f0e8ff' }}>Gift Card</span>
               <span style={{ fontSize:10, color:'rgba(210,180,255,.5)' }}>Enter code</span>
             </button>
@@ -698,7 +699,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
 
                 {/* Even split */}
                 <button onClick={()=>setMode('even')} style={{ padding:'16px 18px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', display:'flex', alignItems:'center', gap:14, textAlign:'left' }}>
-                  <span style={{ fontSize:28 }}>⚖</span>
+                  <span style={{ fontSize:28, color:'var(--t2)' }}><Icon name="scale" size={28} /></span>
                   <div>
                     <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>Split evenly</div>
                     <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>Divide the total equally between guests</div>
@@ -707,7 +708,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
 
                 {/* By seat */}
                 <button onClick={()=>setMode('seat')} disabled={!hasSeatData} style={{ padding:'16px 18px', borderRadius:14, cursor:hasSeatData?'pointer':'not-allowed', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', display:'flex', alignItems:'center', gap:14, textAlign:'left', opacity:hasSeatData?1:.4 }}>
-                  <span style={{ fontSize:28 }}>🪑</span>
+                  <span style={{ fontSize:28, color:'var(--t2)' }}><Icon name="seat" size={28} /></span>
                   <div>
                     <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>By seat</div>
                     <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>
@@ -718,7 +719,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
 
                 {/* By item */}
                 <button onClick={()=>{ setMode('item'); initItemSplit(2); }} style={{ padding:'16px 18px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', display:'flex', alignItems:'center', gap:14, textAlign:'left' }}>
-                  <span style={{ fontSize:28 }}>🍽</span>
+                  <span style={{ fontSize:28, color:'var(--t2)' }}><Icon name="utensils" size={28} /></span>
                   <div>
                     <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>By item</div>
                     <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>Drag and drop items onto separate checks</div>
@@ -888,7 +889,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
             <>
               {allPaid && (
                 <div style={{ textAlign:'center', padding:'20px 0' }}>
-                  <div style={{ fontSize:52, marginBottom:12 }}>✅</div>
+                  <div style={{ fontSize:52, marginBottom:12, display:'flex', justifyContent:'center', color:'var(--grn)' }}><Icon name="checkCircle" size={52} /></div>
                   <div style={{ fontSize:22, fontWeight:800, color:'var(--grn)', marginBottom:6 }}>All paid</div>
                   <div style={{ fontSize:14, color:'var(--t3)' }}>Closing check…</div>
                 </div>
@@ -912,8 +913,8 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                         </div>
                         <div>
                           <div style={{ fontSize:14, fontWeight:600, color:p.paid?'var(--grn)':'var(--t1)' }}>{p.label}</div>
-                          {p.paid && <div style={{ fontSize:11, color:'var(--grn)', marginTop:1 }}>
-                            {p.method==='card'?'💳 Card':p.method==='cash'?`💵 Cash · change ${money((p.change||0))}`:p.method==='gift_card'?'🎁 Gift Card':'Paid'}
+                          {p.paid && <div style={{ fontSize:11, color:'var(--grn)', marginTop:1, display:'flex', alignItems:'center', gap:4 }}>
+                            {p.method==='card'?<><Icon name="card" size={12} />Card</>:p.method==='cash'?<><Icon name="money" size={12} />{`Cash · change ${money((p.change||0))}`}</>:p.method==='gift_card'?<><Icon name="gift" size={12} />Gift Card</>:'Paid'}
                           </div>}
                         </div>
                       </div>

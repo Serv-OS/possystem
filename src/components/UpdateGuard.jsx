@@ -22,6 +22,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { VERSION } from '../lib/version';
+import { Icon } from './ServOSIcons';
 import { canApplyUpdate, isPaymentBusy, subscribePaymentBusy, updateCountdownStep } from '../lib/paymentBusy';
 
 const POLL_MS = 3 * 60 * 1000;   // check every 3 minutes
@@ -136,10 +137,11 @@ export default function UpdateGuard() {
       padding: '12px 16px', background: '#1f6feb', color: '#fff', fontFamily: 'inherit',
       fontSize: 15, fontWeight: 600, boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
     }}>
-      <span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Icon name="refresh" size={16} />
         {waiting
-          ? `🔄 New version ${pending} is ready. This till updates once the payment is finished.`
-          : `🔄 New version ${pending} is ready. This till updates in ${count}s.`}
+          ? `New version ${pending} is ready. This till updates once the payment is finished.`
+          : `New version ${pending} is ready. This till updates in ${count}s.`}
       </span>
       <button
         onClick={updateNow}

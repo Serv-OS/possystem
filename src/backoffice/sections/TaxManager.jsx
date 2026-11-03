@@ -5,6 +5,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { useStore, loadVenueMenu } from '../../store';
 import { assembleTaxProfiles, mapTaxRateRow } from '../../lib/rowMapping';
 import { holdsOwnRates } from '../../lib/venueTaxRates';
+import { Icon } from '../../components/ServOSIcons';
 import { mapCopiesTaxFromMasters } from '../../lib/db';
 import { getActiveCurrencyCode } from '../../lib/currency';
 // v5.7.33: the REAL engine powers the builder's live preview. This is UI-only
@@ -1027,7 +1028,7 @@ function LegacyRatesSection() {
       {/* Info panels */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:24 }}>
         <div style={{ padding:'14px 16px', borderRadius:12, background:'var(--bg1)', border:'1px solid var(--bdr)' }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4 }}>🇬🇧 UK VAT (Inclusive)</div>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}><Icon name="pound" size={14} />UK VAT (Inclusive)</div>
           <div style={{ fontSize:12, color:'var(--t4)', lineHeight:1.7 }}>
             Price shown on POS includes tax. VAT is extracted at checkout. Standard 20%, Reduced 5%, Zero 0%.
             Items can be zero-rated for takeaway but standard-rated for dine-in.
@@ -1042,7 +1043,7 @@ function LegacyRatesSection() {
           )}
         </div>
         <div style={{ padding:'14px 16px', borderRadius:12, background:'var(--bg1)', border:'1px solid var(--bdr)' }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4 }}>🇺🇸 US Sales Tax (Exclusive)</div>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}><Icon name="money" size={14} />US Sales Tax (Exclusive)</div>
           <div style={{ fontSize:12, color:'var(--t4)', lineHeight:1.7 }}>
             Tax is added on top of the item price at checkout. Rate varies by state/city.
             The customer-facing total is subtotal + tax.

@@ -33,6 +33,7 @@ import { pollTerminalJob, cancelTerminalJob, fetchJob, checkJobWithReader, abort
 import { watchTerminalJob } from '../lib/payments/terminalJobCloser';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
+import { Icon } from '../components/ServOSIcons';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { amountMismatchCopy } from '../lib/payments/amountMismatchCopy';
 import { shouldAutoCheckReader, KICK_SETTLE_LIMIT_MS } from '../lib/payments/paxAutoCheck';
@@ -47,21 +48,21 @@ const MISMATCH_REPOLL_EVERY_MS = 3_000;
 const MISMATCH_REPOLL_LIMIT_MS = 20_000;
 
 const STATUS_COPY = {
-  pending:         { icon: '📲', title: 'Sent to the card machine',   sub: 'Hand it to the customer.' },
-  claimed:         { icon: '📲', title: 'On the card machine',        sub: 'Waiting for the customer.' },
-  tipping:         { icon: '💬', title: 'Choosing a tip',             sub: 'The customer is picking a gratuity.' },
-  charging_unsent: { icon: '💳', title: 'Ready to take the card',     sub: 'Tip settled — asking for the card.' },
+  pending:         { icon: 'phone', title: 'Sent to the card machine',   sub: 'Hand it to the customer.' },
+  claimed:         { icon: 'phone', title: 'On the card machine',        sub: 'Waiting for the customer.' },
+  tipping:         { icon: 'chat', title: 'Choosing a tip',             sub: 'The customer is picking a gratuity.' },
+  charging_unsent: { icon: 'card', title: 'Ready to take the card',     sub: 'Tip settled — asking for the card.' },
   // 30 Sep 2026: this screen now mounts while the customer is still paying (lib/payments/kickRace.js),
   // so say what staff should do: nothing. Peter's words, no dashes.
-  charging:        { icon: '💳', title: 'Taking the card',            sub: 'Customer is paying on the card machine. Keep this screen open, it finishes by itself.' },
-  approved:        { icon: '✅', title: 'Approved',                   sub: '' },
+  charging:        { icon: 'card', title: 'Taking the card',            sub: 'Customer is paying on the card machine. Keep this screen open, it finishes by itself.' },
+  approved:        { icon: 'checkCircle', title: 'Approved',                   sub: '' },
   // Same screen as approved: the reconciler simply booked the check before this
   // modal's poll caught up. Without an entry here the header fell back to blank.
-  reconciled:      { icon: '✅', title: 'Approved',                   sub: '' },
-  declined:        { icon: '⛔', title: 'Declined',                   sub: 'Ask for another card, or take cash.' },
-  cancelled:       { icon: '✋', title: 'Cancelled',                  sub: 'Nothing was charged.' },
-  expired:         { icon: '⏱', title: 'Timed out',                  sub: 'Nothing was charged — start again.' },
-  unknown:         { icon: '⚠️', title: 'Outcome not confirmed',      sub: '' },
+  reconciled:      { icon: 'checkCircle', title: 'Approved',                   sub: '' },
+  declined:        { icon: 'ban', title: 'Declined',                   sub: 'Ask for another card, or take cash.' },
+  cancelled:       { icon: 'hand', title: 'Cancelled',                  sub: 'Nothing was charged.' },
+  expired:         { icon: 'clock', title: 'Timed out',                  sub: 'Nothing was charged — start again.' },
+  unknown:         { icon: 'warn', title: 'Outcome not confirmed',      sub: '' },
 };
 
 export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete, onBack, onFailed, kickPending = false, kick = null, advisory = null }) {
@@ -403,7 +404,7 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
 
   return (
     <div style={{ textAlign: 'center', padding: '28px 20px' }}>
-      <div style={{ fontSize: 46, marginBottom: 12 }}>{copy.icon}</div>
+      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center', color: 'var(--t1)' }}><Icon name={copy.icon} size={44} /></div>
       <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--t1)' }}>{copy.title}</div>
       {copy.sub && (
         <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 6, lineHeight: 1.5 }}>{copy.sub}</div>

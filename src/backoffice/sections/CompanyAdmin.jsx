@@ -6,6 +6,7 @@ import { CURRENCIES } from '../../lib/currency';
 // 27 Oct 2026: a new venue starts on Starter in its own currency (99 GBP, 149 USD).
 import { newVenueSubscription } from '../../lib/saasNewVenue';
 import { seedVenueTaxRates, seedWords } from '../../lib/venueTaxRates';
+import { Icon } from '../../components/ServOSIcons';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -204,7 +205,7 @@ export default function CompanyAdmin() {
 
   return (
     <div style={S.page}>
-      <div style={S.h1}>🔐 Company Admin</div>
+      <div style={{ ...S.h1, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="lock" size={20} />Company Admin</div>
       <div style={S.sub}>Internal tool — create and manage restaurant organisations</div>
 
       {/* Tabs */}
@@ -232,7 +233,7 @@ export default function CompanyAdmin() {
       {/* ── All orgs ── */}
       {tab === 'orgs' && (
         <div style={S.card}>
-          <div style={S.cardTitle}>🏢 Organisations ({orgs.length})</div>
+          <div style={S.cardTitle}><Icon name="building" size={16} />Organisations ({orgs.length})</div>
           {loading ? <div style={{ color: 'var(--t3)', fontSize: 13 }}>Loading…</div> : (
             <table style={S.table}>
               <thead>
@@ -270,7 +271,7 @@ export default function CompanyAdmin() {
       {/* ── New org ── */}
       {tab === 'new-org' && (
         <div style={S.card}>
-          <div style={S.cardTitle}>🏢 Create new organisation</div>
+          <div style={S.cardTitle}><Icon name="building" size={16} />Create new organisation</div>
           <div style={S.row}>
             <div>
               <label style={S.label}>Restaurant / company name *</label>
@@ -291,17 +292,17 @@ export default function CompanyAdmin() {
       {tab === 'org-detail' && selectedOrg && (
         <>
           <div style={S.card}>
-            <div style={S.cardTitle}>🏢 {selectedOrg.name}
+            <div style={S.cardTitle}><Icon name="building" size={16} />{selectedOrg.name}
               <span style={{ ...S.badge, background: '#dcfce7', color: '#166534', marginLeft: 8 }}>{selectedOrg.status}</span>
             </div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 20, fontFamily: 'monospace' }}>ID: {selectedOrg.id}</div>
 
             <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
               <button onClick={() => { setTab('new-location'); setError(''); setSuccess(''); }} style={{ ...S.btn, ...S.btnPrimary }}>+ Add location</button>
-              <button onClick={() => { setTab('invite'); setError(''); setSuccess(''); }} style={{ ...S.btn, ...S.btnGhost }}>✉ Invite owner</button>
+              <button onClick={() => { setTab('invite'); setError(''); setSuccess(''); }} style={{ ...S.btn, ...S.btnGhost, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="mail" size={14} />Invite owner</button>
             </div>
 
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t2)', marginBottom: 12 }}>📍 Locations ({locations.length})</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t2)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="mapPin" size={14} />Locations ({locations.length})</div>
             {locations.length === 0
               ? <div style={{ color: 'var(--t3)', fontSize: 13, padding: '20px 0' }}>No locations yet — add the first one above</div>
               : (
@@ -335,7 +336,7 @@ export default function CompanyAdmin() {
       {/* ── New location ── */}
       {tab === 'new-location' && selectedOrg && (
         <div style={S.card}>
-          <div style={S.cardTitle}>📍 Add location to {selectedOrg.name}</div>
+          <div style={S.cardTitle}><Icon name="mapPin" size={16} />Add location to {selectedOrg.name}</div>
           <div style={S.row}>
             <div>
               <label style={S.label}>Location name *</label>
@@ -376,7 +377,7 @@ export default function CompanyAdmin() {
       {/* ── Invite owner ── */}
       {tab === 'invite' && selectedOrg && (
         <div style={S.card}>
-          <div style={S.cardTitle}>✉ Invite owner to {selectedOrg.name}</div>
+          <div style={S.cardTitle}><Icon name="mail" size={16} />Invite owner to {selectedOrg.name}</div>
           <p style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 20 }}>
             The owner will receive an email with a link to set their password and access the back office.
           </p>
@@ -391,13 +392,13 @@ export default function CompanyAdmin() {
             </div>
           </div>
           <div style={{ padding: '12px 16px', borderRadius: 8, background: 'var(--acc-d)', border: '1px solid var(--acc-b)', fontSize: 12, color: 'var(--t2)', marginBottom: 16 }}>
-            ⚠️ <strong>Note:</strong> Sending invitations requires a Supabase service role key (not safe to put in the browser). 
+            <Icon name="warn" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} /><strong>Note:</strong> Sending invitations requires a Supabase service role key (not safe to put in the browser). 
             Until we add a backend Edge Function, invite users directly via <strong>Supabase → Authentication → Users → Send invitation</strong>, 
             then update their <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3 }}>user_profiles</code> row to set <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3 }}>org_id = {selectedOrg.id}</code> and <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3 }}>role = owner</code>.
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={inviteOwner} disabled={working} style={{ ...S.btn, ...S.btnPrimary }}>
-              {working ? 'Sending…' : '✉ Send invitation'}
+              {working ? 'Sending…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="mail" size={14} />Send invitation</span>}
             </button>
             <button onClick={() => setTab('org-detail')} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
           </div>

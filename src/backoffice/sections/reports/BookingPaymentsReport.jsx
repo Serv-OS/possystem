@@ -127,9 +127,9 @@ export default function BookingPaymentsReport({ range = null, sites = [], fmtN =
   if (!readSites.length || !ready) {
     return <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--t4)' }}>Loading booking payments…</div>;
   }
-  if (state.fault) return <EmptyState icon="⚠" message={faultText(state.fault)} />;
+  if (state.fault) return <EmptyState icon="warn" message={faultText(state.fault)} />;
   if (!lines.length) {
-    return <EmptyState icon="💳" message="No booking payments in this period. Money taken with online bookings, saved cards and no show charges appear here." />;
+    return <EmptyState icon="card" message="No booking payments in this period. Money taken with online bookings, saved cards and no show charges appear here." />;
   }
 
   const currencies = Object.keys(totals);

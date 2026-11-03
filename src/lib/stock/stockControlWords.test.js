@@ -155,7 +155,7 @@ test('one site: Location settings is main\'s file plus one import and one card l
   once(now, CAL_CARD);
   once(now, KIND_IMPORT);
   once(now, KIND_CARD);
-  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), '2ce2c50cec8845534f42ca6fb657bca7034ddfdb08f491a6f94b2d076da397c5');   // 29 Oct 2026 (Drop D): main's file now says Adyen, not Stripe, in one comment and one label
+  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), 'f08d748d58f08fa3dac08006847b46b386fa108c687ca7fc12cbced018e3fc18');   // 29 Oct 2026 (Drop D): main's file now says Adyen, not Stripe, in one comment and one label. 3 Nov 2026 (5.12.43): heading emoji are line icons
   const card = readSrc('backoffice/sections/stock/SiteGroupsCard.jsx');
   assert.ok(card.includes('export default function SiteGroupsCard() {\n  const sc = useStockScope();\n  if (!groupsCardShows(sc)) return null;\n'), 'nothing at all before the scope says multi and All sites');
 });
@@ -184,7 +184,7 @@ test('one site: the Team screen is main\'s file once the Stock control line is t
   t = t.replace('  let hasSections = true;', "  const read = (cols) => supabase.from('user_profiles').select(cols).in('id', ids);\n  let hasSections = true;");
   t = cut(t, '  // v5.11.89 (multi site stock Drop 1, map 4.25): Stock control, a line on each login card', '  // v5.5.17: BO-access state.');
   t = cut(t, '  // saveStockControl (v5.11.89)', '  // unlinkBOAccess:');
-  assert.equal(sha(t), '3464bc3e6a115703f38adb1cad9f4ee2ad1416c9fe9afb2a949720636033ed79', 'everything else is main\'s text byte for byte');
+  assert.equal(sha(t), 'a48dc427d83bae2f30d9de904d81752088a6f539f46b4bf4b4313374f235e24a', 'everything else is main\'s text byte for byte');   // 5.12.43: line icons for emoji
   // the one thing drawn is behind multi; the save is the database function and believes its answer
   assert.match(now, /const stockMulti = !isMock && stockScope\.ready && stockScope\.multi;/);
   assert.equal(now.split('const stockControlAccess = (staffId, link) => {').length - 1, 1, 'defined once');

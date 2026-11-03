@@ -29,6 +29,7 @@ import {
 } from '../../../lib/stock/recipeRules';
 import { Btn, Pill, PageHead, TabBar, CatchingUp, ErrorLine, Field, SiteChecklist, Notice, useConfirm, ui } from '../stock/stockUi';
 import LockLine from '../stock/LockLine';
+import { Icon } from '../../../components/ServOSIcons';
 import RecipeDetailsTab, { RecipeDetailsFields } from './RecipeDetailsTab';
 import RecipeIngredientsTab from './RecipeIngredientsTab';
 import RecipeLinesEditor from './RecipeLinesEditor';
@@ -150,7 +151,7 @@ export default function RecipePage({ recipeId, startTab = 'sites', focusSiteId =
         {state.error && <ErrorLine error={state.error} />}
         {showLock && (
           <div style={{ display: 'grid', gap: 8 }}>
-            <div style={ui.lockline} data-testid="recipe-lock-line">🔒 Company recipe, set by head office. You see cost and GP for {mySiteName} and the recipe card.</div>
+            <div style={ui.lockline} data-testid="recipe-lock-line"><Icon name="lock" size={15} /><span>Company recipe, set by head office. You see cost and GP for {mySiteName} and the recipe card.</span></div>
             <LockLine kind="company" entity="recipe" id={recipe.id} recordName={recipe.name} />
           </div>
         )}

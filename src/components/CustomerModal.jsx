@@ -11,6 +11,7 @@ import { storedPhoneIs } from '../../supabase/functions/_shared/phoneKey.js';
 import { orderNotesFromForm } from '../lib/orderCustomerNotes';
 // 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
 import { customerFieldsFor, customerFormProblem } from '../lib/customerDetailsRule';
+import { Icon } from './ServOSIcons';
 
 // forTable: a dine in form opened on a floor table ('Attach to table'); false for a walk in dine in
 // order ('Add customer to order'). Missing means a table (TablesSurface never passes it).
@@ -241,8 +242,9 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         {/* Header */}
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 20 }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t1)' }}>
-              {isDriveThru ? '🚗 Drive thru order' : orderType === 'collection' ? '📦 Collection order' : isDineIn ? (forTable ? '👤 Add customer to table' : '👤 Add customer to order') : isDelivery ? '🚗 Delivery order' : '🥡 Takeaway order'}
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Icon name={isDriveThru ? 'car' : orderType === 'collection' ? 'package' : isDineIn ? 'user' : isDelivery ? 'car' : 'takeaway'} size={18}/>
+              {isDriveThru ? 'Drive thru order' : orderType === 'collection' ? 'Collection order' : isDineIn ? (forTable ? 'Add customer to table' : 'Add customer to order') : isDelivery ? 'Delivery order' : 'Takeaway order'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>
               {existing ? 'Editing customer details: update only what you need' : (isDriveThru ? 'Name or car, so the order reaches the right window' : orderType === 'collection' ? 'Customer collects from the counter' : isDineIn ? (fields.phone ? 'Attach a customer so this visit counts toward their loyalty' : 'A name is enough. Add the phone so this visit counts toward their loyalty') : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
@@ -338,16 +340,18 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
                 background: isASAP ? 'var(--acc)' : 'transparent',
                 color: isASAP ? '#0e0f14' : 'var(--t2)',
                 border: 'none', fontSize: 13, fontWeight: 700, transition: 'all .15s',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               }}>
-                ⚡ ASAP ({slots[0]?.label})
+                <Icon name="bolt" size={14}/>ASAP ({slots[0]?.label})
               </button>
               <button onClick={() => setIsASAP(false)} style={{
                 flex: 1, padding: '10px', cursor: 'pointer', fontFamily: 'inherit',
                 background: !isASAP ? 'var(--acc)' : 'transparent',
                 color: !isASAP ? '#0e0f14' : 'var(--t2)',
                 border: 'none', fontSize: 13, fontWeight: 700, transition: 'all .15s',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               }}>
-                🕐 Scheduled time
+                <Icon name="clock" size={14}/>Scheduled time
               </button>
             </div>
 

@@ -30,6 +30,7 @@
 import { useEffect, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { saveReaderSettingsWithFallback } from '../../lib/readerSettingsClient';
+import { Icon } from '../../components/ServOSIcons';
 
 const S = {
   card:    { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:24, marginBottom:20 },
@@ -277,7 +278,7 @@ export default function PaxTerminals() {
 
   return (
     <div style={S.card}>
-      <div style={S.h2}>🧾 Terminals running the ServOS app</div>
+      <div style={{ ...S.h2, display:'flex', alignItems:'center', gap:6 }}><Icon name="receipt" size={15} />Terminals running the ServOS app</div>
       <div style={S.desc}>
         Card terminals that run our own app on their own screen. The terminal shows a pairing code,
         type it in below. Once paired it can pull up an open table, take the whole bill and close it,
@@ -621,7 +622,7 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
         <select value={boundTill} onChange={e => setBoundTill(e.target.value)} style={{ ...S.input, maxWidth:360 }}>
           <option value="">— Not assigned —</option>
           {posDevices.map(d => (
-            <option key={d.id} value={d.id}>{d.type === 'kiosk' ? `🖥 ${d.name || d.id} (kiosk)` : (d.name || d.id)}</option>
+            <option key={d.id} value={d.id}>{d.type === 'kiosk' ? `${d.name || d.id} (kiosk)` : (d.name || d.id)}</option>
           ))}
         </select>
         {posDevices.length === 0 && (
@@ -717,7 +718,7 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
                 disabled={ssUploading}
                 onChange={e => { const f = e.target.files?.[0]; if (f) uploadIdleImage(f); e.target.value = ''; }}
               />
-              <span style={{ fontSize:18 }}>{ssUploading ? '⏳' : '🖼️'}</span>
+              <Icon name={ssUploading ? 'clock' : 'image'} size={18} />
               {ssUploading ? 'Uploading…' : ssImage ? 'Replace image' : 'Choose an image'}
             </label>
             <div style={S.sub}>

@@ -25,6 +25,7 @@ import { displayLinesFor } from '../lib/displayLines';
 import { isTrainingMode } from '../lib/trainingMode';
 import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';   // 16 Oct 2026: the amount used, surplus flagged
 import PaxTerminal from './PaxTerminal';
+import { Icon } from '../components/ServOSIcons';
 import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, fetchJobCapture,
   fetchJobs, markJobReconciled,
@@ -156,7 +157,7 @@ function CardTerminal({ items, grand, onComplete, onBack }) {
 function CardUnavailable({ detail, onBack }) {
   return (
     <div style={{ padding:'20px 8px', textAlign:'center' }}>
-      <div style={{ fontSize:48, marginBottom:8 }}>📵</div>
+      <div style={{ marginBottom:8, display:'flex', justifyContent:'center', color:'var(--red)' }}><Icon name="phoneOff" size={44} /></div>
       <div style={{ fontSize:18, fontWeight:800, color:'var(--red)', marginBottom:6 }}>Card payments unavailable</div>
       <div style={{ fontSize:13, color:'var(--t2)', marginBottom:16, maxWidth:380, margin:'0 auto 16px' }}>{detail}</div>
       <button className="btn btn-ghost" style={{ height:46, padding:'0 22px' }} onClick={onBack}>← Back</button>
@@ -784,7 +785,7 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
                           background: ticked ? 'rgba(34,197,94,.15)' : 'var(--bg2)', color: ticked ? 'var(--grn)' : 'var(--t2)',
                           cursor: other ? 'not-allowed' : 'pointer', opacity: other ? 0.45 : 1,
                         }}>
-                        {ticked ? '☑' : '☐'} {u.name} · {money(u.priceMinor / 100)}
+                        <Icon name={ticked ? 'checkSquare' : 'square'} size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{u.name} · {money(u.priceMinor / 100)}
                       </button>
                     );
                   })}
@@ -2107,11 +2108,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                             {m.price>0&&<span style={{ color:'var(--acc)', marginLeft:6, fontFamily:'var(--font-mono)' }}>+{money(m.price)}</span>}
                           </div>
                         ))}
-                        {!namesOnly && item.notes && <div style={{ fontSize:11, color:'var(--orn)', marginTop:2 }}>📝 {item.notes}</div>}
-                        {!namesOnly && disc && <div style={{ fontSize:11, color:'var(--grn)', marginTop:2, fontWeight:600 }}>🏷 {disc.label}</div>}
+                        {!namesOnly && item.notes && <div style={{ fontSize:11, color:'var(--orn)', marginTop:2, display:'flex', alignItems:'center', gap:4 }}><Icon name="note" size={12} />{item.notes}</div>}
+                        {!namesOnly && disc && <div style={{ fontSize:11, color:'var(--grn)', marginTop:2, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}><Icon name="tag" size={12} />{disc.label}</div>}
                         {item.allergens?.length>0 && (
-                          <div style={{ fontSize:10, color:'var(--red)', marginTop:2, fontWeight:600 }}>
-                            ⚠ {item.allergens.map(a=>ALLERGENS.find(x=>x.id===a)?.label).filter(Boolean).join(' · ')}
+                          <div style={{ fontSize:10, color:'var(--red)', marginTop:2, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
+                            <Icon name="warn" size={12} />{item.allergens.map(a=>ALLERGENS.find(x=>x.id===a)?.label).filter(Boolean).join(' · ')}
                           </div>
                         )}
                       </div>
@@ -2137,7 +2138,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   padding: '10px 14px', borderRadius: 10,
                   background: 'var(--acc-d, #2a1a0a)', border: '1px solid var(--acc-b, #E8743C33)',
                 }}>
-                  <span style={{ fontSize: 18 }}>{'⭐'}</span>
+                  <span style={{ display:'flex', color:'var(--acc)' }}><Icon name="star" size={18} /></span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--acc)' }}>
                       {loyaltyData.memberCode || customer?.name || 'Loyalty member'}
@@ -2249,7 +2250,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 {loyaltyApplied && receiptRewardLines(loyaltyApplied).map((l, i) => (
                   <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>
-                      {'⭐'} {l.label.replace(/^Reward: /, '')}{l.points > 0 ? ` (${l.points} pts)` : ''}
+                      <Icon name="star" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{l.label.replace(/^Reward: /, '')}{l.points > 0 ? ` (${l.points} pts)` : ''}
                       {i === 0 && (
                         <button onClick={() => { setLoyaltyApplied(null); setScreen('loyalty_rewards'); }}
                           style={{ marginLeft:8, padding:'1px 8px', fontSize:10, fontWeight:700, borderRadius:6, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit' }}>
@@ -2375,7 +2376,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--sh2)';}}
                 onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
                   <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-                    <span style={{ fontSize:compact?17:20 }}>💳</span>
+                    <span style={{ display:'flex', color:'var(--card-text)' }}><Icon name="card" size={compact?17:20} /></span>
                     <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>
                       {paxBusy ? 'Sending to the card machine…' : 'Card'}
                     </span>
@@ -2455,7 +2456,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 }}
                 onMouseEnter={e=>{ if (splitWithReader || splitWithBookingCredit) return; e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
                 onMouseLeave={e=>{ if (splitWithReader || splitWithBookingCredit) return; e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
-                  <span>⚖</span>
+                  <Icon name="scale" size={16} />
                   {(splitWithReader || splitWithBookingCredit)
                     ? 'Split unavailable'
                     : <>Split check · {covers} {covers===1?'guest':'guests'}</>}

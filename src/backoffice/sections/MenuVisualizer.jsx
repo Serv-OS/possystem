@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useCallback } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
 import { compareMenuItems } from '../../lib/menuItemOrder.js';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MENU VISUALIZER
@@ -12,10 +13,10 @@ import { compareMenuItems } from '../../lib/menuItemOrder.js';
 // ══════════════════════════════════════════════════════════════════════════════
 
 const CHANNELS = [
-  { id:'pos',     label:'POS',     icon:'🖥' },
-  { id:'kiosk',   label:'Kiosk',   icon:'📲' },
-  { id:'online',  label:'Online',  icon:'🌐' },
-  { id:'delivery',label:'Delivery',icon:'🚗' },
+  { id:'pos',     label:'POS',     icon:'monitor' },
+  { id:'kiosk',   label:'Kiosk',   icon:'phone' },
+  { id:'online',  label:'Online',  icon:'globe' },
+  { id:'delivery',label:'Delivery',icon:'car' },
 ];
 
 export default function MenuVisualizer() {
@@ -168,7 +169,7 @@ export default function MenuVisualizer() {
             const on = channels[ch.id]!==false; // default to true
             return (
               <button key={ch.id} onClick={()=>toggleChannel(ch.id)} style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:on?700:400, border:`1.5px solid ${on?'var(--grn-b)':'var(--bdr)'}`, background:on?'var(--grn-d)':'var(--bg3)', color:on?'var(--grn)':'var(--t4)', transition:'all .12s' }}>
-                <span>{ch.icon}</span>{ch.label}
+                <Icon name={ch.icon} size={13} />{ch.label}
               </button>
             );
           })}
@@ -197,7 +198,7 @@ export default function MenuVisualizer() {
 
           {cats.length === 0 && (
             <div style={{ margin:'60px auto', textAlign:'center', color:'var(--t4)' }}>
-              <div style={{ fontSize:48, marginBottom:12, opacity:.15 }}>🍽</div>
+              <div style={{ marginBottom:12, opacity:.15, display:'flex', justifyContent:'center' }}><Icon name="utensils" size={44} /></div>
               <div style={{ fontSize:15, fontWeight:600, color:'var(--t3)', marginBottom:8 }}>No categories yet</div>
               <div style={{ fontSize:12, color:'var(--t4)', marginBottom:16 }}>Add a category to start building this menu</div>
               <button onClick={()=>setAddingCat(true)} style={{ padding:'8px 20px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700 }}>+ Add first category</button>
@@ -227,7 +228,7 @@ export default function MenuVisualizer() {
                 <div style={{ padding:'10px 12px 8px', borderBottom:'1px solid var(--bdr)', background:color+'18', flexShrink:0 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:7 }}>
                     <span style={{ fontSize:8, color:'var(--t4)', cursor:'grab', flexShrink:0 }}>⠿</span>
-                    <span style={{ fontSize:18, flexShrink:0 }}>{cat.icon}</span>
+                    <span style={{ flexShrink:0, display:'inline-flex' }}><EmojiIcon value={cat.icon} fallback="utensils" size={17} /></span>
                     <span style={{ fontSize:13, fontWeight:800, color:color, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{cat.label}</span>
                     <span style={{ fontSize:9, color:color, fontWeight:700, flexShrink:0 }}>{items.length}</span>
                     <button onClick={()=>{ if(confirm(`Delete "${cat.label}"?`)){removeCategory(cat.id);markBOChange();}}} style={{ width:18,height:18,borderRadius:5,border:'none',background:'transparent',color:'var(--t4)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
@@ -504,7 +505,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
                 );
               })}
               <div style={{ position:'relative',marginTop:4 }}>
-                <span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)' }}>🔍</span>
+                <span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)' }}><Icon name="search" size={13} /></span>
                 <input style={{...inp,paddingLeft:28,fontSize:12}} value={modSearch} onChange={e=>setModSearch(e.target.value)} placeholder="Search modifier groups…"/>
               </div>
               {filteredMods.slice(0,6).map(g=>(
@@ -518,7 +519,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
             <div>
               <div style={{ fontSize:10,fontWeight:700,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:8 }}>Instruction groups</div>
               {assignedInst.map(gid=>{const def=(allInsts||[]).find(g=>g.id===gid);return def?<div key={gid} style={{ display:'flex',alignItems:'center',gap:8,padding:'6px 10px',marginBottom:4,borderRadius:8,border:'1.5px solid var(--grn-b)',background:'var(--grn-d)' }}><span style={{ fontSize:12,fontWeight:700,color:'var(--grn)',flex:1 }}>{def.name}</span><button onClick={()=>removeInst(gid)} style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--grn-b)',background:'transparent',color:'var(--grn)',cursor:'pointer',fontSize:12 }}>×</button></div>:null;})}
-              <div style={{ position:'relative' }}><span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)' }}>🔍</span><input style={{...inp,paddingLeft:28,fontSize:12}} value={instSearch} onChange={e=>setInstSearch(e.target.value)} placeholder="Search instruction groups…"/></div>
+              <div style={{ position:'relative' }}><span style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'var(--t4)' }}><Icon name="search" size={13} /></span><input style={{...inp,paddingLeft:28,fontSize:12}} value={instSearch} onChange={e=>setInstSearch(e.target.value)} placeholder="Search instruction groups…"/></div>
               {filteredInst.slice(0,4).map(g=>(
                 <div key={g.id} onClick={()=>addInst(g.id)} style={{ display:'flex',alignItems:'center',gap:8,padding:'7px 10px',marginTop:4,borderRadius:8,border:'1px solid var(--bdr)',cursor:'pointer' }} onMouseEnter={e=>e.currentTarget.style.background='var(--bg3)'} onMouseLeave={e=>e.currentTarget.style.background=''}>
                   <div style={{ flex:1 }}><div style={{ fontSize:12,fontWeight:600 }}>{g.name}</div></div>
@@ -552,11 +553,11 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
 
         {sec==='allergens' && (
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:5 }}>
-            {[{id:'gluten',icon:'🌾',label:'Gluten'},{id:'milk',icon:'🥛',label:'Milk'},{id:'eggs',icon:'🥚',label:'Eggs'},{id:'nuts',icon:'🥜',label:'Nuts'},{id:'fish',icon:'🐟',label:'Fish'},{id:'shellfish',icon:'🦐',label:'Shellfish'},{id:'soya',icon:'🫘',label:'Soya'},{id:'sesame',icon:'⬛',label:'Sesame'},{id:'celery',icon:'🌿',label:'Celery'},{id:'mustard',icon:'🌱',label:'Mustard'},{id:'sulphites',icon:'🍷',label:'Sulphites'},{id:'lupin',icon:'🌼',label:'Lupin'},{id:'molluscs',icon:'🐚',label:'Molluscs'},{id:'peanuts',icon:'🥜',label:'Peanuts'}].map(a=>{
+            {[{id:'gluten',icon:'wheat',label:'Gluten'},{id:'milk',icon:'milk',label:'Milk'},{id:'eggs',icon:'egg',label:'Eggs'},{id:'nuts',icon:'nut',label:'Nuts'},{id:'fish',icon:'fish',label:'Fish'},{id:'shellfish',icon:'shrimp',label:'Shellfish'},{id:'soya',icon:'bean',label:'Soya'},{id:'sesame',icon:'dot',label:'Sesame'},{id:'celery',icon:'leaf',label:'Celery'},{id:'mustard',icon:'sprout',label:'Mustard'},{id:'sulphites',icon:'wine',label:'Sulphites'},{id:'lupin',icon:'flower',label:'Lupin'},{id:'molluscs',icon:'shell',label:'Molluscs'},{id:'peanuts',icon:'nut',label:'Peanuts'}].map(a=>{
               const on=(item.allergens||[]).includes(a.id);
               return <button key={a.id} onClick={()=>f('allergens',on?(item.allergens||[]).filter(x=>x!==a.id):[...(item.allergens||[]),a.id])} style={{ display:'flex',alignItems:'center',gap:6,padding:'6px 8px',borderRadius:8,cursor:'pointer',fontFamily:'inherit',border:`1.5px solid ${on?'var(--red)':'var(--bdr)'}`,background:on?'var(--red-d)':'var(--bg3)' }}>
                 <div style={{ width:14,height:14,borderRadius:3,border:`2px solid ${on?'var(--red)':'var(--bdr2)'}`,background:on?'var(--red)':'transparent',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center' }}>{on&&<div style={{ width:5,height:5,borderRadius:1,background:'#fff' }}/>}</div>
-                <span style={{ fontSize:11,fontWeight:on?700:400,color:on?'var(--red)':'var(--t1)' }}>{a.icon} {a.label}</span>
+                <span style={{ fontSize:11,fontWeight:on?700:400,color:on?'var(--red)':'var(--t1)',display:'inline-flex',alignItems:'center',gap:5 }}><Icon name={a.icon} size={13} />{a.label}</span>
               </button>;
             })}
           </div>

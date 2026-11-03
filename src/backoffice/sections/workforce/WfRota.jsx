@@ -36,7 +36,7 @@ function WarnBox({ warnings }) {
   if (!warnings?.length) return null;
   return (
     <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(245,166,35,.10)', border: '1px solid rgba(245,166,35,.30)', borderRadius: 10, fontSize: 12.5, color: 'var(--amber)', lineHeight: 1.6 }}>
-      {warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+      {warnings.map((w, i) => <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}><Icon name="warn" size={14} style={{ marginTop: 3 }}/><span>{w}</span></div>)}
     </div>
   );
 }
@@ -1393,10 +1393,10 @@ function RotaGroup({ g, wk, roles, shiftsFor, otherFor, weekLineFor, warnFor, on
                     <button
                       key={sh.id}
                       onClick={() => onCell(s, d, sh)}
-                      title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}${warns.length ? `\n⚠ ${warns.join('\n⚠ ')}` : ''}`}
+                      title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}${warns.length ? `\n• ${warns.join('\n• ')}` : ''}`}
                       style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', opacity: sh.status === 'no_show' ? 0.75 : 1, background: sh.status === 'published' ? cellTint(col, 16) : sh.status === 'no_show' ? 'rgba(255,90,74,.10)' : 'var(--inset)', border: `1px solid ${sh.status === 'no_show' ? 'rgba(255,90,74,.45)' : warns.length ? 'rgba(245,166,35,.45)' : sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
                     >
-                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)', textDecoration: sh.status === 'no_show' ? 'line-through' : 'none' }}>{warns.length ? '⚠ ' : ''}{sh.start}–{sh.finish}</div>
+                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)', textDecoration: sh.status === 'no_show' ? 'line-through' : 'none' }}>{warns.length ? <Icon name="warn" size={11} style={{ display: 'inline-block', verticalAlign: '-1px', marginRight: 3, color: 'var(--amber)' }}/> : ''}{sh.start}–{sh.finish}</div>
                       <div style={{ fontSize: 10, color: sh.status === 'no_show' ? 'var(--red)' : 'var(--t3)', marginTop: 1, fontWeight: sh.status === 'no_show' ? 700 : 400 }}>{sh.status === 'no_show' ? 'NO SHOW' : `${Number(sh.computedHours || 0).toFixed(1)}h${sh.status !== 'published' ? ' · draft' : ''}`}</div>
                     </button>
                   ))}

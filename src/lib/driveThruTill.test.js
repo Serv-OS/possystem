@@ -57,7 +57,7 @@ test('ServOSIcons.jsx: a drivethru glyph exists for the segmented control', () =
 test('OrderTypeModal.jsx: drive thru entry, quick service fast path, name only step, profile gate', () => {
   const src = read('../components/OrderTypeModal.jsx');
   const types = declaration(src, 'TYPES', 'OrderTypeModal.jsx');
-  hasRe(types, /id:\s*'drive-thru',\s*label:\s*'Drive thru',\s*icon:\s*'🚗'/, 'TYPES');
+  hasRe(types, /id:\s*'drive-thru',\s*label:\s*'Drive thru',\s*icon:\s*'car'/, 'TYPES');
   has(src, "(type.id === 'takeaway' || type.id === 'collection' || type.id === 'drive-thru') && takeawayMode === 'none'", 'handleTypeSelect');
   has(src, "onComplete({ type: 'drive-thru', name: form.name.trim(), phone: '', time: '', isASAP: true, orderType: 'drive-thru', channel: 'drive-thru' })", 'confirmDriveThru');
   has(src, "selectedType?.id === 'drive-thru'", 'details step');
@@ -75,7 +75,7 @@ test('CustomerModal.jsx: name only, heading, subtitle and button', () => {
   for (const mode of ['full', 'name', 'none']) {
     assert.deepEqual(customerFieldsFor({ orderType: 'drive-thru', mode }), { name: true, phone: false, phoneShown: false, address: false }, `drive thru is name only under ${mode}`);
   }
-  has(src, "isDriveThru ? '🚗 Drive thru order'", 'heading');
+  has(src, "isDriveThru ? 'Drive thru order'", 'heading');
   has(src, "isDriveThru ? 'Confirm drive thru →'", 'button');
   // No slot grid and no address for drive thru: those stay keyed on collection and delivery.
   has(src, '{isCollection && (', 'slot grid gate');
@@ -97,14 +97,14 @@ test('ReceiptModal.jsx and CollectionQueue.jsx: on screen labels', () => {
   has(r, "const orderTypeLabel = orderType === 'drive-thru' ? 'Drive thru' : orderType;", 'ReceiptModal label');
   has(r, '{tableLabel || orderTypeLabel}', 'ReceiptModal preview header');
   const q = read('../components/CollectionQueue.jsx');
-  has(q, "order.type === 'drive-thru' ? '🚗'", 'CollectionQueue icon');
+  has(q, "order.type === 'drive-thru' ? 'car'", 'CollectionQueue icon');
   has(q, "order.type === 'drive-thru' ? 'Drive thru'", 'CollectionQueue label');
 });
 
 test('OrdersHub.jsx: the Drive thru tab has its own colour and shows only where drive thru is on', () => {
   const src = read('../surfaces/OrdersHub.jsx');
   const tabs = declaration(src, 'FILTER_TABS', 'OrdersHub.jsx');
-  hasRe(tabs, /id:'drive-thru',\s*label:'Drive thru',\s*icon:'🚗',\s*color:'#ec4899'/, 'FILTER_TABS');
+  hasRe(tabs, /id:'drive-thru',\s*label:'Drive thru',\s*icon:'car',\s*color:'#ec4899'/, 'FILTER_TABS');
   const colours = declaration(src, 'SECTION_COLORS', 'OrdersHub.jsx');
   const hexes = [...colours.matchAll(/'#([0-9a-f]{6})'/gi)].map(m => m[1].toLowerCase());
   assert.equal(hexes.length, 7, 'seven section colours');
@@ -116,7 +116,7 @@ test('OrdersHub.jsx: the Drive thru tab has its own colour and shows only where 
 // ── MPOS ─────────────────────────────────────────────────────────────────────
 
 test('MPOS: picker entry, capture gate, name only capture, cart label, orders filter', () => {
-  hasRe(declaration(read('../surfaces/mpos/MNewOrder.jsx'), 'TYPES', 'MNewOrder.jsx'), /id:'drive-thru',\s*label:'Drive thru',\s*icon:'🚗'/, 'MNewOrder TYPES');
+  hasRe(declaration(read('../surfaces/mpos/MNewOrder.jsx'), 'TYPES', 'MNewOrder.jsx'), /id:'drive-thru',\s*label:'Drive thru',\s*icon:'drivethru'/, 'MNewOrder TYPES');
   const s = read('../surfaces/MPOSSurface.jsx');
   has(s, "type === 'takeaway' || type === 'drive-thru') {", 'customerCapture gate');
   has(s, "orderType === 'drive-thru' ? 'DRIVE THRU'", 'menu header');

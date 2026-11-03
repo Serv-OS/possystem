@@ -16,6 +16,7 @@ import EzcaterSettings from './EzcaterSettings';
 import EzcaterItemMatching from './EzcaterItemMatching';
 import { ezcaterStatus } from '../../lib/ezcater';
 import { ezcaterVisible } from '../../lib/ezcaterVisibility';
+import { Icon } from '../../components/ServOSIcons';
 
 const S = {
   wrap: { maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -154,7 +155,7 @@ export default function HubRise() {
   return (
     <div style={S.wrap}>
       <div>
-        <h1 style={S.h1}>🔗 3rd Party orders — HubRise</h1>
+        <h1 style={{ ...S.h1, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="link" size={20} />3rd Party orders — HubRise</h1>
         <div style={S.sub}>
           Connect this venue to HubRise to receive Deliveroo / Uber Eats / Just Eat and HubRise
           online orders straight into the Orders Hub + kitchen, publish your menu to those channels,
@@ -307,7 +308,7 @@ export default function HubRise() {
       {ezShow && (
         <>
           <div style={{ marginTop: 8 }}>
-            <h1 style={S.h1}>🍽 ezCater</h1>
+            <h1 style={{ ...S.h1, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="utensils" size={20} />ezCater</h1>
             <div style={S.sub}>
               Connect your ezCater account to take their catering orders here. ezCater sends us orders
               but not their menu, so you also match their items to yours once.

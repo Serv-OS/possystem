@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CANVAS MENU MANAGER
@@ -181,7 +182,7 @@ export default function CanvasMenu({ catId }) {
           {/* Category filter */}
           <div style={{ flex:1, overflowY:'auto', padding:'6px' }}>
             <div style={{ fontSize:9, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', padding:'4px 6px 6px' }}>Filter by category</div>
-            {[{id:'all', label:'All items', icon:'🍽', color:'var(--acc)'}, ...roots].map(c => {
+            {[{id:'all', label:'All items', icon:'utensils', color:'var(--acc)'}, ...roots].map(c => {
               const count = c.id === 'all' ? canvasItems.length : menuItems.filter(i => !i.archived && !i.parentId && i.cat === c.id).length;
               const active = catFilter === c.id;
               return (
@@ -189,7 +190,7 @@ export default function CanvasMenu({ catId }) {
                   style={{ display:'flex', alignItems:'center', gap:7, width:'100%', padding:'7px 8px', borderRadius:8, border:'none', cursor:'pointer', fontFamily:'inherit', marginBottom:2,
                     background: active ? (c.color||'var(--acc)')+'18' : 'transparent',
                     color: active ? (c.color||'var(--acc)') : 'var(--t2)' }}>
-                  <span style={{ fontSize:16 }}>{c.icon}</span>
+                  <EmojiIcon value={c.icon} fallback="utensils" size={16} />
                   <span style={{ flex:1, fontSize:11, fontWeight:active?700:400, textAlign:'left' }}>{c.label}</span>
                   <span style={{ fontSize:9, color:'var(--t4)' }}>{count}</span>
                 </button>
@@ -275,8 +276,8 @@ export default function CanvasMenu({ catId }) {
                   <div style={{ display:'flex', gap:3, flexWrap:'wrap' }}>
                     {hasVars && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:5, background:color+'22', color, fontWeight:700 }}>▼ {variantKids.length} sizes</span>}
                     {hasMods && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:5, background:'var(--acc-d)', color:'var(--acc)', fontWeight:700 }}>⊕</span>}
-                    {(item.allergens||[]).length>0 && <span style={{ fontSize:8, color:'var(--red)', fontWeight:700 }}>⚠</span>}
-                    {cat && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:5, background:color+'18', color }}>{cat.icon}</span>}
+                    {(item.allergens||[]).length>0 && <span style={{ fontSize:8, color:'var(--red)', fontWeight:700, display:'inline-flex', alignItems:'center' }}><Icon name="warn" size={10} /></span>}
+                    {cat && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:5, background:color+'18', color, display:'inline-flex', alignItems:'center' }}><EmojiIcon value={cat.icon} fallback="utensils" size={9} /></span>}
                   </div>
                 </div>
               </div>
@@ -310,7 +311,7 @@ export default function CanvasMenu({ catId }) {
         {/* Empty state */}
         {canvasItems.length === 0 && (
           <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:10, color:'var(--t4)', pointerEvents:'none' }}>
-            <span style={{ fontSize:48, opacity:.1 }}>🍽</span>
+            <span style={{ opacity:.1 }}><Icon name="utensils" size={48} /></span>
             <span style={{ fontSize:14, fontWeight:600 }}>No items in this category</span>
           </div>
         )}
