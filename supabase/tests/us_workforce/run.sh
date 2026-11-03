@@ -3,6 +3,8 @@
 #   clockin: staff app clock in follows the shift across linked sites (UK and US): lands at the shift's
 #            site, asks which site with no shift, uses a picked site, refuses while open elsewhere and
 #            clocks out there, leaves out a refusing site, a one site person is never asked.
+#   leave:   holiday and PTO at the primary location (UK and US): a request filed at Daybreak is moved
+#            to the Provo primary, charged there, and the balance adds up every linked site.
 #   zsh supabase/tests/us_workforce/run.sh
 # Bundles workforce-clock and workforce-compute with rolldown, points supabase-js at mockdb.mjs, then:
 #   clock:   US asks and keeps cash tips; setting off, UK venue, older app keep nothing; a bad amount is
@@ -51,4 +53,7 @@ want clockin-pick   "$(k pick)"   '{"sc":"pick","statusSite":null,"ask":["Provo"
 want clockin-open   "$(k open)"   '{"sc":"open","statusSite":null,"ask":null,"elsewhere":"Provo","landed":null,"out":true,"sheets":"rp:closed"}'
 want clockin-refuse "$(k refuse)" '{"sc":"refuse","statusSite":null,"ask":["Provo"],"elsewhere":null,"landed":null,"out":null,"sheets":""}'
 want clockin-single "$(k single)" '{"sc":"single","statusSite":"Provo","ask":null,"elsewhere":null,"landed":"Provo","out":null,"sheets":"rp:open"}'
-echo "us_workforce: 22 checks pass"
+l() { node "$HERE/leave.mjs" "$1" 2>/dev/null | tail -1; }
+want leave-primary "$(l primary)" '{"sc":"primary","ok":true,"error":null,"request":"rp@LP","taken":"rp@LP:-2","balance":0.5}'
+want leave-single  "$(l single)"  '{"sc":"single","ok":true,"error":null,"request":"rp@LP","taken":"rp@LP:-2","balance":-0.5}'
+echo "us_workforce: 24 checks pass"

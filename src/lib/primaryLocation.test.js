@@ -26,3 +26,24 @@ test('one balance from every site: earned at both, taken at the primary', () => 
   assert.equal(personBalance([{ accrued_hours: 1.5 }, { accrued_hours: 1 }, { accrued_hours: -2 }]), 0.5);
   assert.equal(personBalance([]), 0);
 });
+
+import { readFileSync } from 'node:fs';
+const read = (p) => readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8');
+
+test('the decision, the staff app and the Sites panel all use the primary location', () => {
+  const fn = read('supabase/functions/workforce-compute/index.ts');
+  assert.match(fn, /const prim = primaryRecord\(linkedRecs\) \|\| meRec;/);
+  assert.match(fn, /if \(status === 'approved' && prim && prim\.id !== req\.staff_id\) \{/);
+  assert.match(fn, /location_id: chargeLoc, org_id: org, staff_id: req\.staff_id, kind: 'taken',/);
+  assert.match(fn, /const balance = personBalance\(led \?\? \[\]\);/);
+  const sp = read('supabase/functions/staff-portal/index.ts');
+  assert.match(sp, /location_id: homeRec\.location_id, org_id: staff\.org_id, staff_id: homeRec\.id,/);
+  const data = read('src/staff/wfData.js');
+  assert.match(data, /else row\.primary_venue_id = locationId;/, 'set once, at creation');
+  assert.doesNotMatch(data, /primary_venue_id: locationId, venue_ids/, 'a save never rewrites it');
+  assert.match(data, /peopleDoor\('wf_staff_set_primary'/);
+  const sql = read('supabase/migrations/20261118a_OPS_wf_staff_primary_location.sql');
+  assert.match(sql, /perform public\.wf_people_assert_access\(st\.org_id, v_locs\);/, 'needs access to every site');
+  assert.match(sql, /if not \(p_location = any\(v_locs\)\) then/);
+  assert.ok([...sql].every((c) => c.charCodeAt(0) < 128));
+});

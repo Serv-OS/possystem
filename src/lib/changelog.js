@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.55',
+    date: '3 Nov 2026',
+    items: [
+      'Primary location for holiday and PTO (UK and US): someone who works at more than one site earns holiday or PTO at every site into ONE balance, and time off is taken and paid at their primary location only.',
+      'Workforce, Staff, a person, Sites: Primary location for holiday and PTO. Only someone with access to every site the person works at can change it. A new record starts on the site it was made at; saving a person at another site no longer moves it.',
+      'Approving a request filed at another site moves it to the primary location first, so the deduction, rota, labour and payroll land there. The staff app files requests at the primary location and shows the one balance.',
+      'Someone at one site only sees no change. Needs SQL 20261118a, then workforce-compute and staff-portal deployed.',
+    ],
+  },
+  {
     v: '5.12.54',
     date: '3 Nov 2026',
     items: [
