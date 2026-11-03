@@ -55,11 +55,19 @@ export function sitesToAdd(me, records, sites) {
   return (sites || []).filter((s) => s && !taken.has(s.id)).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
+/** Till user rows (staff_members) as these rules read records: switched off reads as a leaver. */
+export function asTillRecords(rows) {
+  return (rows || []).filter((r) => r && r.location_id).map((r) => ({
+    id: r.id, name: r.name, location_id: r.location_id, person_id: r.person_id || null,
+    status: r.active === false ? 'leaver' : 'active',
+  }));
+}
+
 /** The server's refusal in words for the panel (the SQL already says most of it). */
 export function linkErrorWords(err) {
   const m = String(err?.message || err || '');
   const code = String(err?.code || '');
-  if (code === 'PGRST202' || code === '42883' || /function .*wf_staff_(add_site|link|unlink).* does not exist|Could not find the function/i.test(m)) {
+  if (code === 'PGRST202' || code === '42883' || /function .*wf_(staff|till)_(add_site|link|unlink).* does not exist|Could not find the function/i.test(m)) {
     return 'Linking sites needs a database update first. Ask your ServOS contact to run release 5.12.36.';
   }
   if (/every site/i.test(m)) return 'You need access to both sites to do that. Ask an owner.';
