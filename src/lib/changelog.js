@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.39',
+    date: '2 Nov 2026',
+    items: [
+      'Team, Sites: on a till user, tick the sites they also work at (Select all for every site) and Add. They get a till user at each with the same PIN, card, sign in method, till role and permissions; their till role and permissions can then be set per site. A till user with the same name at another site is suggested, and Link makes them one person (the other takes this one\'s PIN and card). Unlink puts them back to one site. When the till user has a Workforce record, its Workforce record is made at each site too.',
+      'Workforce, Staff, Sites: tick any number of sites at once, each with their position and pay rate there (it was one site at a time).',
+      'A Workforce record made later for a linked till user (on their first clock in at a new site, or Set up on the POS) joins the person by itself, so their hours count across sites with no extra step.',
+      'Needs the SQL 20261113a in the Ops database. Until it runs, Team shows the sites and suggestions but adding or linking says a database update is needed.',
+    ],
+  },
+  {
     v: '5.12.38',
     date: '2 Nov 2026',
     items: [

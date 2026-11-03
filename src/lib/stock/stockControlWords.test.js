@@ -173,6 +173,9 @@ test('one site: the Team screen is main\'s file once the Stock control line is t
     '    orgId: p.org_id === undefined ? undefined : (p.org_id ?? null),\n',
     '    stockControl: p.stock_control ?? null,\n',
     '                    {stockMulti && stockControlAccess(sel.id, link)}\n',
+    // 5.12.39: Team, Sites (TillSitesPanel), its import and its one block.
+    "import TillSitesPanel from './TillSitesPanel';\n",
+    '            {/* 5.12.39: Sites. Which sites they work at (same PIN and card everywhere), the same link as\n                Workforce, Staff, Sites (Peter, 2 Nov 2026: "we need both"). */}\n            <TillSitesPanel member={sel} orgCtx={orgCtx} showToast={showToast} />\n\n',
   ]) { once(t, line); t = t.replace(line, ''); }
   // the teammate read: the stock columns ride along, today's read and fallbacks are unchanged
   t = cut(t, '// v5.11.89 (multi site stock Drop 1, map 4.25): org_id and stock_control ride along', 'async function readLogins(ids) {');

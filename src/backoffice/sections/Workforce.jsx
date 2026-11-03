@@ -616,10 +616,10 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
 function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
   const [state, setState] = useState({ loading: true, sites: [], records: [] });
   const [tick, setTick] = useState(0);
-  const [addSite, setAddSite] = useState('');
-  const [addRoles, setAddRoles] = useState([]);
-  const [addRole, setAddRole] = useState('');
-  const [addRate, setAddRate] = useState('');
+  // 5.12.39 (Peter: "people might work across all sites"): tick any number of sites, each with its
+  // own position and pay rate there.
+  const [picked, setPicked] = useState({});        // { locationId: { role, rate } }
+  const [siteRoles, setSiteRoles] = useState({});  // { locationId: [role] }
   const [busy, setBusy] = useState('');
   const [confirmLink, setConfirmLink] = useState(null);
   const [confirmUnlink, setConfirmUnlink] = useState(false);
@@ -631,12 +631,24 @@ function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
     })();
     return () => { live = false; };
   }, [ctx.orgId, s.id, tick]);
+  // Each ticked site's own positions (read only; never seeds defaults at another site).
+  const pickedKey = Object.keys(picked).sort().join(',');
   useEffect(() => {
     let live = true;
-    if (!addSite) return undefined;
-    loadSiteRoles(addSite).then((list) => { if (live) { setAddRoles(list); setAddRole(list.some(r => r.key === s.role) ? s.role : (list[0]?.key || '')); } });
+    const need = Object.keys(picked).filter(id => !siteRoles[id]);
+    if (!need.length) return undefined;
+    Promise.all(need.map(id => loadSiteRoles(id).then(list => [id, list]))).then(rows => {
+      if (!live) return;
+      setSiteRoles(prev => ({ ...prev, ...Object.fromEntries(rows) }));
+      setPicked(prev => {
+        const next = { ...prev };
+        for (const [id, list] of rows) if (next[id] && !next[id].role) next[id] = { ...next[id], role: list.some(r => r.key === s.role) ? s.role : (list[0]?.key || s.role || '') };
+        return next;
+      });
+    });
     return () => { live = false; };
-  }, [addSite, s.role]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedKey, s.role]);
 
   const names = useMemo(() => Object.fromEntries(state.sites.map(x => [x.id, x.name])), [state.sites]);
   const me = useMemo(() => {
@@ -646,11 +658,13 @@ function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
   const linked = otherSites(me, state.records, names);
   const candidates = linkCandidates(me, state.records, names);
   const canAdd = sitesToAdd(me, state.records, state.sites);
-  const roleName = (key) => roles[key]?.lbl || addRoles.find(r => r.key === key)?.lbl || key || 'No position';
+  const roleName = (key, loc) => roles[key]?.lbl || (siteRoles[loc] || []).find(r => r.key === key)?.lbl || key || 'No position';
+  const togglePick = (id) => setPicked(p => { const n = { ...p }; if (n[id]) delete n[id]; else n[id] = { role: '', rate: '' }; return n; });
+  const pickedIds = Object.keys(picked);
 
   const run = async (label, fn, done) => {
     setBusy(label);
-    try { await fn(); showToast?.(done, 'success'); setTick(t => t + 1); onChanged?.(); }
+    try { await fn(); if (done) showToast?.(done, 'success'); setTick(t => t + 1); setPicked({}); onChanged?.(); }
     catch (e) { showToast?.(linkErrorWords(e), 'error'); }
     finally { setBusy(''); setConfirmLink(null); setConfirmUnlink(false); }
   };
@@ -667,7 +681,7 @@ function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
           </div>
           {linked.map(l => (
             <div key={l.staffId} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '3px 0' }}>
-              <b>{l.site}</b><span style={{ color: 'var(--t3)' }}>{roleName(l.role)}{l.rate != null ? ` · ${rateText(l.rate)}` : ''}</span>
+              <b>{l.site}</b><span style={{ color: 'var(--t3)' }}>{roleName(l.role, l.locationId)}{l.rate != null ? ` · ${rateText(l.rate)}` : ''}</span>
               {l.leaver && <Badge tone="grey">Leaver</Badge>}
             </div>
           ))}
@@ -698,26 +712,51 @@ function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
       ))}
 
       {canAdd.length > 0 && (
-        <div style={{ ...box, display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <label style={{ fontSize: 12, color: 'var(--t3)' }}>Also works at
-            <select value={addSite} onChange={e => setAddSite(e.target.value)} style={{ ...inputStyle, width: 'auto', display: 'block', minWidth: 150, marginTop: 4 }}>
-              <option value="">Pick a site</option>
-              {canAdd.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
-            </select>
-          </label>
-          {addSite && <label style={{ fontSize: 12, color: 'var(--t3)' }}>Position there
-            <select value={addRole} onChange={e => setAddRole(e.target.value)} style={{ ...inputStyle, width: 'auto', display: 'block', minWidth: 130, marginTop: 4 }}>
-              {addRoles.length === 0 && <option value={s.role || ''}>{roleName(s.role)}</option>}
-              {addRoles.map(r => <option key={r.key} value={r.key}>{r.lbl}</option>)}
-            </select>
-          </label>}
-          {addSite && <label style={{ fontSize: 12, color: 'var(--t3)' }}>Pay rate there
-            <input inputMode="decimal" placeholder="Position rate" value={addRate} onChange={e => setAddRate(e.target.value.replace(/[^\d.]/g, ''))} style={{ ...inputStyle, display: 'block', width: 110, marginTop: 4 }} />
-          </label>}
-          <button className="btn btn-acc btn-sm" disabled={!addSite || !!busy}
-            onClick={() => run('add', () => addStaffSite(s.id, addSite, addRole || s.role || null, addRate), `${s.name} now also works at ${names[addSite] || 'that site'}${s.posUserId ? ', with the same PIN' : ''}`)}>
-            {busy === 'add' ? 'Adding…' : 'Add site'}
-          </button>
+        <div style={box}>
+          <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 8 }}><b>Also works at</b>: tick every site that applies, with their position and pay rate there.</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: pickedIds.length ? 10 : 0 }}>
+            {canAdd.map(x => {
+              const on = !!picked[x.id];
+              return (
+                <button key={x.id} className="btn btn-ghost btn-xs" onClick={() => togglePick(x.id)}
+                  style={{ border: `1.5px solid ${on ? 'var(--acc)' : 'var(--bdr2)'}`, color: on ? 'var(--acc)' : 'var(--t2)' }}>{on ? '✓ ' : ''}{x.name}</button>
+              );
+            })}
+            {canAdd.length > 1 && (
+              <button className="btn btn-ghost btn-xs" onClick={() => setPicked(pickedIds.length === canAdd.length ? {} : Object.fromEntries(canAdd.map(x => [x.id, picked[x.id] || { role: '', rate: '' }])))}>
+                {pickedIds.length === canAdd.length ? 'Clear' : 'Select all'}
+              </button>
+            )}
+          </div>
+          {pickedIds.length > 0 && (
+            <>
+              {canAdd.filter(x => picked[x.id]).map(x => (
+                <div key={x.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+                  <b style={{ fontSize: 13, minWidth: 110 }}>{x.name}</b>
+                  <select value={picked[x.id].role} onChange={e => setPicked(p => ({ ...p, [x.id]: { ...p[x.id], role: e.target.value } }))}
+                    style={{ ...inputStyle, width: 'auto', minWidth: 130, height: 36, padding: '6px 10px' }} aria-label={`Position at ${x.name}`}>
+                    {(siteRoles[x.id] || []).length === 0 && <option value={s.role || ''}>{roleName(s.role)}</option>}
+                    {(siteRoles[x.id] || []).map(r => <option key={r.key} value={r.key}>{r.lbl}</option>)}
+                  </select>
+                  <input inputMode="decimal" placeholder="Position rate" value={picked[x.id].rate}
+                    onChange={e => { const v = e.target.value.replace(/[^\d.]/g, ''); setPicked(p => ({ ...p, [x.id]: { ...p[x.id], rate: v } })); }}
+                    style={{ ...inputStyle, width: 120, height: 36, padding: '6px 10px' }} aria-label={`Pay rate at ${x.name}`} />
+                </div>
+              ))}
+              <button className="btn btn-acc btn-sm" disabled={!!busy} style={{ marginTop: 4 }}
+                onClick={() => run('add', async () => {
+                  // One site at a time: each press of the database door checks access to every site so far.
+                  const done = [];
+                  for (const id of pickedIds) {
+                    try { await addStaffSite(s.id, id, picked[id].role || s.role || null, picked[id].rate); done.push(names[id] || 'a site'); }
+                    catch (e) { if (done.length) showToast?.(`Added at ${done.join(', ')}.`, 'success'); throw e; }
+                  }
+                  showToast?.(`${s.name} now also works at ${done.join(', ')}${s.posUserId ? ', with the same PIN' : ''}`, 'success');
+                }, null)}>
+                {busy === 'add' ? 'Adding…' : pickedIds.length > 1 ? `Add ${pickedIds.length} sites` : 'Add site'}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
