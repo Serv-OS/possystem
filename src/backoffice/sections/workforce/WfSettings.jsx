@@ -120,6 +120,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [askCashTips, setAskCashTips] = useState(true);
   // 5.12.54 (UK and US): a staff app clock in with no shift at a linked site asks which site, or refuses.
   const [clockInNoShift, setClockInNoShift] = useState('ask');
+  // 5.12.56 (UK and US): head office staff (_shared/headOffice.js). Off by default; off, nothing changes.
+  const [headOffice, setHeadOffice] = useState(false);
   // 5.12.51: US paid time off (_shared/usPto.js). Off by default; no law requires it.
   const [ptoEnabled, setPtoEnabled] = useState(false);
   const [ptoEvery, setPtoEvery] = useState('30');
@@ -165,6 +167,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setMinimumWage(Number(sj.minimumWage) > 0 ? String(sj.minimumWage) : '');
     setAskCashTips(sj.askCashTips !== false);
     setClockInNoShift(sj.clockInNoShift === 'refuse' ? 'refuse' : 'ask');
+    setHeadOffice(sj.headOffice === true);
     setPtoEnabled(sj.ptoEnabled === true);
     setPtoEvery(Number(sj.ptoEvery) >= 1 ? String(sj.ptoEvery) : '30');
     setPtoYearCap(Number(sj.ptoYearCap) > 0 ? String(sj.ptoYearCap) : '');
@@ -256,6 +259,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         // 5.12.41: blank = the federal minimum wage; a change recomputes the last 10 weeks' overtime.
         minimumWage: Number(minimumWage) > 0 ? Math.round(Number(minimumWage) * 100) / 100 : null,
         clockInNoShift,
+        headOffice: headOffice === true,
         ...(pack.country === 'US' ? { askCashTips } : {}),
         ...(pack.country === 'US' ? { ptoEnabled, ptoEvery: Math.min(200, Math.max(1, Number(ptoEvery) || 30)), ptoYearCap: Number(ptoYearCap) > 0 ? Math.round(Number(ptoYearCap) * 100) / 100 : null } : {}),
         overtimeExempt: otExempt,
@@ -383,6 +387,14 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               <option value="refuse">Refuse: a shift is needed</option>
             </select>
             <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Staff app. Clock in lands at the site of the shift someone is on (from 60 minutes before it starts), at any site they work at. With no shift, Allow asks which site; Refuse stops a clock in here without one.</div>
+          </div>
+          <div>
+            <label style={labelStyle}>Head office staff</label>
+            <select style={inputStyle} value={headOffice ? 'on' : 'off'} onChange={e => setHeadOffice(e.target.value === 'on')} disabled={savingVenue}>
+              <option value="off">Off</option>
+              <option value="on">On: tick head office people in Staff</option>
+            </select>
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>On adds a Head office tick and an annual salary to each person in Staff. A head office person is paid their salary each pay period with no timesheets, cannot clock in, is not on the rota, and is not in this site's labour or labour %. The Owner app shows their cost as its own Head office line, never shared across sites.</div>
           </div>
           <div>
             <label style={labelStyle}>Currency and country</label>

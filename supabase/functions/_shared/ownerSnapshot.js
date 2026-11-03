@@ -92,6 +92,7 @@ import {
 import { makeMixResolver, categoriesOfSite, newMix, addCheckToMix, mixView, mixRollup, catFamilyKey, nameAcross } from './salesMix.js';
 import { officeReachesVenue } from './stockOfficeReach.js';
 import { withoutDemoRows, isDemoCheck } from './demoHistory.js';
+import { headOfficeOn, headOfficeCost } from './headOffice.js';
 
 /** Requests in flight at once, for the whole snapshot. */
 export const MAX_READS = 8;
@@ -493,6 +494,8 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
     stockBlocks({ ops, opsIds, meta, plan, gate }),
   ]);
   const firstDay = Object.fromEntries(opsIds.map((id, i) => [id, firstDays[i]]));
+  // 5.12.56: head office salaries per venue (never part of the venue's labour), for the company line.
+  const headOffice = await headOfficeOf({ ops, opsIds, plan, gate });
 
   // Forecast per venue per day
   const fc = {};
@@ -601,11 +604,56 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   rollup.currency = currencies.length === 1 ? currencies[0] : null;
   rollup.currencies = currencies;
   rollup.by_currency = currencies.map((c) => ({ currency: c, ...rollupOf(locations.filter((l) => l.currency === c)) }));
+  // 5.12.56: the Head office line, only where a venue has head office staff (no key otherwise, so
+  // every other company reads exactly as before). Its own line: never added to labour or labour %.
+  const hoAll = headOfficeLine(locations, headOffice);
+  if (hoAll) {
+    if (rollup.currency) rollup.head_office = hoAll;
+    for (const b of rollup.by_currency) { const h = headOfficeLine(locations.filter((l) => l.currency === b.currency), headOffice); if (h) b.head_office = h; }
+  }
   // The plain rollup's mix would add pounds to dollars: it is kept only when every venue shares
   // a currency (the one group card then reads the whole rollup); each by_currency entry has its own.
   if (!rollup.currency) rollup.mix = null;
 
   return { period, locations, rollup };
+}
+
+// 5.12.56 HEAD OFFICE STAFF (_shared/headOffice.js). The salaries of the people ticked Head office at
+// venues whose Workforce settings have Head office staff on, spread over the year (salary / 365 a day)
+// for today and for the period, on each venue's own days. Read as the service role in two gated reads
+// (the switch, then the people). Never throws: a failed read, or a database before 20261119a, is no
+// head office at all, never a broken Owner app. { [venueId]: { today, period } } (each { cost, people }).
+async function headOfficeOf({ ops, opsIds, plan, gate }) {
+  const out = {};
+  try {
+    const vs = await gate(() => pagedRows('head office settings', () => ops.from('wf_venue_settings').select('location_id, settings').in('location_id', opsIds).order('location_id')));
+    const on = vs.filter((r) => headOfficeOn(r.settings)).map((r) => r.location_id);
+    if (!on.length) return out;
+    const staff = await gate(() => pagedRows('head office staff', () => ops.from('wf_staff').select('id, location_id, salary_annual, start_date, leaver_date').in('location_id', on).eq('head_office', true).order('id')));
+    for (const id of on) {
+      const mine = staff.filter((st) => st.location_id === id);
+      if (!mine.length) continue;
+      const p = plan[id];
+      const today = headOfficeCost(mine, { from: p.today, to: p.today });
+      // The period up to today (a period that ended before today stops at its own last day).
+      const period = headOfficeCost(mine, { from: p.range.from, to: p.range.to && p.range.to < p.today ? p.range.to : p.today });
+      if (today.people || period.people) out[id] = { today, period };
+    }
+  } catch (e) { console.warn('[owner snapshot] head office left out:', e?.message); }
+  return out;
+}
+
+// The company's Head office line for a set of venues: today and the period added up, or null when
+// none of them has head office staff.
+function headOfficeLine(locations, headOffice) {
+  const mine = locations.map((l) => headOffice[l.ops_location_id]).filter(Boolean);
+  if (!mine.length) return null;
+  return {
+    today: r2(mine.reduce((a, h) => a + h.today.cost, 0)),
+    period: r2(mine.reduce((a, h) => a + h.period.cost, 0)),
+    people: mine.reduce((a, h) => a + Math.max(h.today.people, h.period.people), 0),
+    shared: false,
+  };
 }
 
 // The group card for a set of venues. The week to date percent and the period percent come

@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.56',
+    date: '3 Nov 2026',
+    items: [
+      'Head office staff (UK and US): Workforce settings, Head office staff. Off by default; off, nothing changes. On adds a Head office tick and an Annual salary to each person in Staff.',
+      'A head office person is paid their salary each pay period with no timesheets: the year over the pay periods in a year (monthly is a twelfth), or the days employed when they start or leave inside the period. Payroll, the exports and the Payroll report show it as Salary.',
+      'Head office staff cannot clock in (the till and the staff app say so), are not on the rota and cannot take open shifts, so none of their cost lands in the site\'s labour or labour %. Their time off adds no hourly holiday pay on top of the salary.',
+      'The Owner app company card shows Head office as its own line with the salaries for the day or the period. It is never shared across the sites and never in Labour.',
+      'Someone who is head office and also covers shifts at another site keeps a normal linked record there: clock in lands on that one. Needs SQL 20261119a, then workforce-clock, workforce-compute, staff-portal and owner-snapshot deployed.',
+    ],
+  },
+  {
     v: '5.12.55',
     date: '3 Nov 2026',
     items: [

@@ -205,6 +205,8 @@ function mapStaff(r) {
     payrollEmployeeId: r.payroll_employee_id || null, ssnLast4: r.ssn_last4 || null,
     // 5.12.36: one person, many sites. Records with the same personId are one person (20261111a).
     personId: r.person_id || null, locationId: r.location_id || null,
+    // 5.12.56: head office staff (Workforce settings, Head office staff): salaried, no clock in, no rota.
+    headOffice: r.head_office === true, salaryAnnual: r.salary_annual != null ? Number(r.salary_annual) : null,
     // The staff app: do they have a login yet, and is an invite still live? The
     // onboarding screen needs both to say "invite sent" or "send it again"
     // (21 Sep 2026: an invite only ever fired at the moment onboarding started,
@@ -224,7 +226,9 @@ export async function loadStaff(locationId) {
   // v5.11.101: the two US payroll columns come with 20261031a. Until it has run, read without them
   // (a missing column would otherwise empty the whole staff list).
   // 5.12.36: person_id comes with 20261111a; until it has run, read without it (same reason).
-  let { data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id');
+  // 5.12.56: head_office and salary_annual come with 20261119a; until it has run, read without them.
+  let { data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id,head_office,salary_annual');
+  if (error && /head_office|salary_annual|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id'));
   if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4'));
   if (error && /payroll_employee_id|ssn_last4|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
@@ -264,6 +268,14 @@ export async function saveStaff(member, locationId, orgId) {
   // persisted, so resolveRate always fell back to the position's default rate (the "default takes over"
   // bug). '' / null clears it (→ back to the position default on purpose).
   if (member.rateOverride !== undefined) row.rate_override = (member.rateOverride === '' || member.rateOverride == null) ? null : Number(member.rateOverride);
+  // 5.12.56: head office, same "only when present" guard (the form carries them only while Workforce
+  // settings, Head office staff, is on, so a site without 20261119a never writes the columns).
+  if (member.headOffice !== undefined) row.head_office = member.headOffice === true;
+  if (member.salaryAnnual !== undefined) {
+    const s = member.salaryAnnual === '' || member.salaryAnnual == null ? null : Number(member.salaryAnnual);
+    if (s != null && (!Number.isFinite(s) || s < 0)) throw new Error('Annual salary must be a number of 0 or more');
+    row.salary_annual = s;
+  }
   const real = member.id && !String(member.id).startsWith('tmp-') && !String(member.id).startsWith('wf-');
   if (real) row.id = member.id;
   // 5.12.55: the primary location (holiday and PTO) is set once, when the record is made; after that only

@@ -5,6 +5,10 @@
 #            clocks out there, leaves out a refusing site, a one site person is never asked.
 #   leave:   holiday and PTO at the primary location (UK and US): a request filed at Daybreak is moved
 #            to the Provo primary, charged there, and the balance adds up every linked site.
+#   headoffice: head office staff (5.12.56, UK and US): a $60,000 salary pays $5,000 a month with no
+#            timesheets (UK GBP 5,000), 15 of 30 days for a mid month start, nothing with the switch off or
+#            before 20261119a; the till and the staff app refuse clock in in words; a cover shift at a
+#            normal linked record lands there; an open shift claim is refused.
 #   zsh supabase/tests/us_workforce/run.sh
 # Bundles workforce-clock and workforce-compute with rolldown, points supabase-js at mockdb.mjs, then:
 #   clock:   US asks and keeps cash tips; setting off, UK venue, older app keep nothing; a bad amount is
@@ -56,4 +60,15 @@ want clockin-single "$(k single)" '{"sc":"single","statusSite":"Provo","ask":nul
 l() { node "$HERE/leave.mjs" "$1" 2>/dev/null | tail -1; }
 want leave-primary "$(l primary)" '{"sc":"primary","ok":true,"error":null,"request":"rp@LP","taken":"rp@LP:-2","balance":0.5}'
 want leave-single  "$(l single)"  '{"sc":"single","ok":true,"error":null,"request":"rp@LP","taken":"rp@LP:-2","balance":-0.5}'
-echo "us_workforce: 24 checks pass"
+h() { node "$HERE/headoffice.mjs" "$1" 2>/dev/null | tail -1; }
+want ho-pay-us   "$(h payUs)"   '{"sc":"payUs","salary":5000,"basis":"period","hoTotal":5000,"server":300,"total":5300,"currency":"USD"}'
+want ho-pay-part "$(h payPart)" '{"sc":"payPart","salary":2500,"basis":"part","hoTotal":2500,"server":300,"total":2800,"currency":"USD"}'
+want ho-pay-off  "$(h payOff)"  '{"sc":"payOff","salary":null,"basis":null,"hoTotal":null,"server":300,"total":300,"currency":"USD"}'
+want ho-pay-uk   "$(h payUk)"   '{"sc":"payUk","salary":5000,"basis":"period","hoTotal":5000,"server":300,"total":5300,"currency":"GBP"}'
+want ho-pay-old  "$(h payOld)"  '{"sc":"payOld","salary":null,"basis":null,"hoTotal":null,"server":300,"total":300,"currency":"USD"}'
+want ho-till     "$(h tillHo)"  '{"sc":"tillHo","headOffice":true,"posLoginClockIn":false,"inStatus":409,"inError":"Head office staff do not clock in. Your salary is paid each pay period.","sheets":0}'
+want ho-till-off "$(h tillOff)" '{"sc":"tillOff","headOffice":false,"posLoginClockIn":true,"inStatus":200,"inError":null,"sheets":1}'
+want ho-app      "$(h appHo)"   '{"sc":"appHo","headOffice":true,"statusSite":null,"refused":true,"reason":"Head office staff do not clock in. Your salary is paid each pay period.","landed":null,"sheets":""}'
+want ho-cover    "$(h appCover)" '{"sc":"appCover","headOffice":false,"statusSite":"Daybreak","refused":false,"reason":null,"landed":"Daybreak","sheets":"rd:open"}'
+want ho-claim    "$(h appClaim)" '{"sc":"appClaim","error":"Head office staff do not take shifts. Your salary is paid each pay period.","code":"head_office"}'
+echo "us_workforce: 34 checks pass"

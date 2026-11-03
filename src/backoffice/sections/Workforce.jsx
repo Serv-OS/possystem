@@ -32,6 +32,7 @@ import WfSettings from './workforce/WfSettings';
 // 5.11.102: Team chat (groups, reports to check, settings, word lists, log, export, open a DM).
 import WfChat from './workforce/WfChat';
 import { activeRegionPack, venueMoney } from '../../lib/regionPack';
+import { rotaStaffOf, headOfficeSwitchOn } from '../../lib/headOffice';
 
 // v5.11.101: the venue's money and region (the region pack follows the venue's currency). A UK venue
 // reads byte for byte as before.
@@ -234,10 +235,11 @@ export default function Workforce({ section, orgCtx }) {
       </div>
 
       {key === 'dashboard' && <WfDashboard groups={groups} staffCount={staff.length} />}
-      {key === 'rota' && <WfRota {...sectionProps} />}
+      {/* 5.12.56: head office staff are salaried and never clock in, so they never go on the rota (no rota cost at the site). */}
+      {key === 'rota' && <WfRota {...sectionProps} staff={rotaStaffOf(staff, settings)} />}
       {key === 'staff' && (loading
         ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
-        : <WfStaff staff={staff} roles={rolesMap} holidayHours={holidayHours} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
+        : <WfStaff staff={staff} roles={rolesMap} holidayHours={holidayHours} headOffice={headOfficeSwitchOn(settings)} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
       {key === 'timesheets' && <WfTimesheets {...sectionProps} />}
       {key === 'payroll' && <WfPayroll {...sectionProps} />}
       {key === 'pay' && <WfPay {...sectionProps} />}
@@ -252,7 +254,7 @@ export default function Workforce({ section, orgCtx }) {
 
       {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
-      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} sections={sections} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
+      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
     </div>
   );
@@ -306,7 +308,7 @@ function WfDashboard({ groups, staffCount }) {
 }
 
 // ── Staff (HR list + CRUD) ──
-function WfStaff({ staff, roles = ROLES, holidayHours = {}, onAdd, onView, onEdit, onSetPos, onRemove }) {
+function WfStaff({ staff, roles = ROLES, holidayHours = {}, headOffice = false, onAdd, onView, onEdit, onSetPos, onRemove }) {
   if (staff.length === 0) return <EmptyState icon="team" title="No staff yet" body="Add your team here. Each person is an HR record — you can then set them as a POS user to give them till access on the Team page." cta="Add staff member" onCta={onAdd} />;
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
@@ -317,12 +319,14 @@ function WfStaff({ staff, roles = ROLES, holidayHours = {}, onAdd, onView, onEdi
             const role = roles[s.role];
             const baseRate = role ? (role.rate != null ? rateText(role.rate) : (role.salary ? salaryText(role.salary) : '—')) : '—';
             const hasOverride = s.rateOverride != null && s.rateOverride !== '';
-            const rateLbl = hasOverride ? rateText(s.rateOverride) : baseRate;
+            // 5.12.56: a head office person shows their salary and a Head office label instead of a rate.
+            const ho = headOffice && s.headOffice === true;
+            const rateLbl = ho ? (s.salaryAnnual ? salaryText(s.salaryAnnual) : 'No salary set') : hasOverride ? rateText(s.rateOverride) : baseRate;
             return (
               <tr key={s.id}>
                 <td style={td}><button onClick={() => onView?.(s)} title="View profile" style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}><span style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--t3)', flexShrink: 0 }}>{initials(s.name)}</span><b style={{ fontWeight: 600, color: 'var(--t1)', borderBottom: '1px dotted var(--bdr2)' }}>{s.name}</b></button></td>
                 <td style={td}><RoleChip role={s.role} roles={roles} /></td>
-                <td style={{ ...td, whiteSpace: 'nowrap' }}><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{rateLbl}</span>{hasOverride && <span style={{ marginLeft: 6 }}><Badge tone="blue">override</Badge></span>}</td>
+                <td style={{ ...td, whiteSpace: 'nowrap' }}><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{rateLbl}</span>{ho ? <span style={{ marginLeft: 6 }}><Badge tone="blue">Head office</Badge></span> : hasOverride && <span style={{ marginLeft: 6 }}><Badge tone="blue">override</Badge></span>}</td>
                 <td style={{ ...td, color: 'var(--t2)' }}>{s.contractType || '—'}</td>
                 <td style={{ ...td, whiteSpace: 'nowrap' }}>
                   {isHourly(s, role)
@@ -344,7 +348,7 @@ function WfStaff({ staff, roles = ROLES, holidayHours = {}, onAdd, onView, onEdi
 const inputStyle = { width: '100%', background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '10px 12px', height: 42, fontSize: 13, color: 'var(--t1)', fontFamily: 'inherit', outline: 'none' };
 const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 6 };
 
-function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, onSave }) {
+function AddStaffModal({ locName, staff, roles = ROLES, sections = [], headOffice = false, onClose, onSave }) {
   const isEdit = !!staff;
   const roleOpts = Object.entries(roles);
   const ec = (isEdit && staff.emergencyContact) || {};
@@ -354,6 +358,9 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, 
     ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '', ...(usFields ? { ssnLast4: staff.ssnLast4 || '', payrollEmployeeId: staff.payrollEmployeeId || '' } : {}) }
     : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '', ...(usFields ? { ssnLast4: '', payrollEmployeeId: '' } : {}) });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  // 5.12.56: head office (Workforce settings, Head office staff). Only carried while the switch is on,
+  // so a site that never turned it on never writes the two columns.
+  const [ho, setHo] = useState({ on: !!(isEdit && staff.headOffice), salary: isEdit && staff.salaryAnnual != null ? String(staff.salaryAnnual) : '' });
   // v5.5.993 — which sections this person works in. Never settable before,
   // so the column was empty everywhere and anything keyed on it was dead.
   const [secIds, setSecIds] = useState((isEdit && Array.isArray(staff.sectionIds)) ? staff.sectionIds : []);
@@ -364,6 +371,7 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, 
     const { ecName, ecPhone, ecRelation, ...rest } = f;
     const emergencyContact = (ecName || ecPhone || ecRelation) ? { name: ecName || null, phone: ecPhone || null, relationship: ecRelation || null } : null;
     const payload = { ...rest, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride), emergencyContact, sectionIds: secIds };
+    if (headOffice) { payload.headOffice = ho.on; payload.salaryAnnual = ho.salary === '' ? null : Number(ho.salary); }
     if (isEdit) payload.id = staff.id;
     onSave(payload);
   };
@@ -377,6 +385,24 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, 
           <div><label style={labelStyle}>Position</label><select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>{roleOpts.map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}</select></div>
           <div><label style={labelStyle}>Pay rate override ({pack.currencySymbol}/h)</label><input style={inputStyle} value={f.rateOverride} onChange={e => set('rateOverride', e.target.value.replace(/[^0-9.]/g, ''))} placeholder={roleRate != null ? `Position default ${venueMoney(roleRate, 2)}` : 'Position default'} inputMode="decimal" /></div>
           <div><label style={labelStyle}>Contract</label><select style={inputStyle} value={f.contractType} onChange={e => set('contractType', e.target.value)}><option value="zeroHours">Zero hours</option><option value="partTime">Part time</option><option value="fullTime">Full time</option><option value="salaried">Salaried</option></select></div>
+          {headOffice && (
+            <div style={{ gridColumn: '1 / -1', padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5, fontWeight: 700, color: 'var(--t1)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={ho.on} onChange={e => setHo(p => ({ ...p, on: e.target.checked }))} />
+                Head office
+              </label>
+              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.5 }}>
+                Paid their annual salary each pay period. No clock in, not on the rota, and not in {locName}'s labour. Shown as Head office in the Owner app.
+              </div>
+              {ho.on && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={labelStyle}>Annual salary ({pack.currencySymbol})</label>
+                  <input style={inputStyle} value={ho.salary} onChange={e => setHo(p => ({ ...p, salary: e.target.value.replace(/[^0-9.]/g, '') }))} placeholder="e.g. 45000" inputMode="decimal" />
+                  {!ho.salary && <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 6 }}>No salary set: nothing is paid until you add one.</div>}
+                </div>
+              )}
+            </div>
+          )}
           {sections.length > 0 && (
             <div style={{ gridColumn: '1 / -1' }}>
               <label style={labelStyle}>Sections they work in</label>

@@ -67,16 +67,20 @@ export default function PayrollReport({ fmt }) {
     pay: a.pay + Number(h.totals?.pay || 0),
     tips: a.tips + tipsOf(h.totals),
     total: a.total + Number(h.totals?.total || 0),
-  }), { pay: 0, tips: 0, total: 0 }), [runs]);
+    headOffice: a.headOffice + Number(h.totals?.head_office_salary || 0),
+  }), { pay: 0, tips: 0, total: 0, headOffice: 0 }), [runs]);
 
   const nameOf = (id) => names[id] || id;
+  // 5.12.56: a head office person's salary is their base pay for the period (no timesheets behind it).
+  const lineName = (l) => l.head_office ? `${nameOf(l.staff_id)} (head office)` : nameOf(l.staff_id);
+  const basePay = (l) => Number(l.pay || 0) + Number(l.salary || 0);
 
   const exportCsv = (h) => {
     const esc = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
     const rows = [
       ['Staff', 'Hours', 'Base pay', 'Tips (direct)', 'Tips (pooled)', 'Total'],
-      ...(h.lines || []).map(l => [nameOf(l.staff_id), Number(l.hours || 0).toFixed(2), Number(l.pay || 0).toFixed(2), Number(l.tips_direct || 0).toFixed(2), Number(l.tips_tronc || 0).toFixed(2), Number(l.total || 0).toFixed(2)]),
-      ['TOTAL', '', Number(h.totals?.pay || 0).toFixed(2), Number(h.totals?.tips_direct || 0).toFixed(2), Number(h.totals?.tips_tronc || 0).toFixed(2), Number(h.totals?.total || 0).toFixed(2)],
+      ...(h.lines || []).map(l => [lineName(l), Number(l.hours || 0).toFixed(2), basePay(l).toFixed(2), Number(l.tips_direct || 0).toFixed(2), Number(l.tips_tronc || 0).toFixed(2), Number(l.total || 0).toFixed(2)]),
+      ['TOTAL', '', (Number(h.totals?.pay || 0) + Number(h.totals?.head_office_salary || 0)).toFixed(2), Number(h.totals?.tips_direct || 0).toFixed(2), Number(h.totals?.tips_tronc || 0).toFixed(2), Number(h.totals?.total || 0).toFixed(2)],
     ];
     const blob = new Blob([rows.map(r => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -102,6 +106,7 @@ export default function PayrollReport({ fmt }) {
         <div style={S.kpi}><div style={S.kLab}>Pay runs</div><div style={S.kVal}>{runs.length}</div>
           <div style={S.kSub}>last {fmtShort(runs[runs.length - 1].periodStart)} → {fmtShort(runs[0].periodEnd)}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Wages paid</div><div style={S.kVal}>{money(totals.pay)}</div></div>
+        {totals.headOffice > 0 && <div style={S.kpi}><div style={S.kLab}>Head office salaries</div><div style={S.kVal}>{money(totals.headOffice)}</div><div style={S.kSub}>not in site labour</div></div>}
         <div style={S.kpi}><div style={S.kLab}>Tips paid</div><div style={S.kVal}>{money(totals.tips)}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Total paid out</div><div style={S.kVal}>{money(totals.total)}</div></div>
       </div>
@@ -141,9 +146,9 @@ export default function PayrollReport({ fmt }) {
                           <tbody>
                             {(h.lines || []).map((l, i) => (
                               <tr key={l.staff_id || i}>
-                                <td style={{ ...S.subTd, textAlign: 'left' }}>{nameOf(l.staff_id)}</td>
+                                <td style={{ ...S.subTd, textAlign: 'left' }}>{lineName(l)}</td>
                                 <td style={S.subTd}>{Number(l.hours || 0).toFixed(2)}</td>
-                                <td style={S.subTd}>{money(l.pay || 0)}</td>
+                                <td style={S.subTd}>{money(basePay(l))}</td>
                                 <td style={S.subTd}>{l.tips_direct ? money(l.tips_direct) : '—'}</td>
                                 <td style={S.subTd}>{l.tips_tronc ? money(l.tips_tronc) : '—'}</td>
                                 <td style={{ ...S.subTd, fontWeight: 700 }}>{money(l.total || 0)}</td>

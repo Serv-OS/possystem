@@ -182,7 +182,9 @@ export default function TimeClockSurface() {
             </div>
           ) : (
           <div style={{ display: 'grid', gap: 12, marginTop: 30 }}>
-            {s.state === 'out' && <BigBtn icon="clock" label="Clock in" tone="acc" onClick={() => doAction('in')} busy={busy} />}
+            {/* 5.12.56: head office staff are paid their salary and never clock in (workforce-clock refuses it too). */}
+            {s.state === 'out' && s.headOffice && <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--t2)', lineHeight: 1.5 }}>{s.headOfficeWords || 'Head office staff do not clock in.'}</div>}
+            {s.state === 'out' && !s.headOffice && <BigBtn icon="clock" label="Clock in" tone="acc" onClick={() => doAction('in')} busy={busy} />}
             {s.state === 'in' && <>
               <BigBtn icon="clock" label="Clock out" tone="acc" onClick={() => doAction('out')} busy={busy} />
               <BigBtn icon="status" label="Start break" tone="ghost" onClick={() => doAction('break_start')} busy={busy} />

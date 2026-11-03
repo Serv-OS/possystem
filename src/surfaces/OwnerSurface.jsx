@@ -70,6 +70,7 @@ import { DEMO_NOTE } from '../../supabase/functions/_shared/demoHistory.js';
 import OwnerDetail from './owner/OwnerDetail';
 import MixBar from './owner/MixBar';
 import { money, toneColor, periodChip, periodChipOn } from './owner/style';
+import { headOfficeLineView } from '../lib/headOffice';
 
 /** A refresh that has not answered by now is never going to (a woken phone). */
 const LOAD_TIMEOUT_MS = 15000;
@@ -476,6 +477,16 @@ function GroupCard({ g, shown, basis, multi, mixed, onOpen, bar }) {
         <Mini label="Live now" value={rv.live_orders} />
         <Mini label="On floor" value={rv.open_tables} />
       </div>
+      {/* 5.12.56: head office salaries, its own line: never shared across the venues, never in Labour above. */}
+      {(() => {
+        const ho = headOfficeLineView(r?.head_office, rv.period === 'today');
+        return ho ? (
+          <div style={{ fontSize: 12.5, color: 'var(--t2)', marginTop: 12, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+            <span style={{ fontWeight: 700 }}>Head office</span>
+            <span><span className="mono" style={{ fontWeight: 800, color: 'var(--t1)' }}>{money(ho.amount, cur)}</span> <span style={{ color: 'var(--t3)' }}>{ho.words}</span></span>
+          </div>
+        ) : null;
+      })()}
       {/* The comparison line is ALWAYS drawn, and the pounds are always the comparison's. */}
       {line && (
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
