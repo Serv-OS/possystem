@@ -671,7 +671,7 @@ function NewsTab({ snap }) {
       {items.map((a, i) => (
         <div key={i} className="sv-glass" style={glass}>
           <div style={{ fontSize: 14, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{a.body}</div>
-          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>{a.author || 'Management'} · {fmtStamp(a.at)}</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>{a.author || 'Management'}{a.site ? ` · ${a.site}` : ''} · {fmtStamp(a.at)}</div>
         </div>
       ))}
     </div>
@@ -692,7 +692,7 @@ function SheetsTab({ snap }) {
         <div key={i} className="sv-glass" style={{ ...glass, display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13.5, fontWeight: 700 }}>{fmtStamp(t.in)}</div>
-            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>{t.breakMins ? `${t.breakMins}m break · ` : ''}{t.status}</div>
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>{t.site ? `${t.site} · ` : ''}{t.breakMins ? `${t.breakMins}m break · ` : ''}{t.status}</div>
           </div>
           <div className="mono" style={{ fontSize: 14.5, fontWeight: 800 }}>{t.hours != null ? hm(t.hours) : '—'}</div>
         </div>

@@ -56,6 +56,9 @@ export default function ClockCard({ call, venueFallbackName }) {
   const [loaded, setLoaded] = useState(false);
   // 5.12.49: a US venue asks for cash tips before the clock out (Workforce settings).
   const [askingTips, setAskingTips] = useState(false);
+  // 5.12.54: clock in follows the shift across linked sites; with no shift the server asks which site.
+  const [siteChoice, setSiteChoice] = useState(null);   // [{ location_id, site }] or null
+  const [elsewhere, setElsewhere] = useState(null);     // { site, since } when still clocked in at another site
 
   const refresh = useCallback(async () => {
     try {
@@ -114,12 +117,14 @@ export default function ClockCard({ call, venueFallbackName }) {
         // v5.8.79: the Android app exposes version() as a method (android/webshell ShellActivity).
         app_version: window.RposIOS?.version || (typeof window.RposAndroid?.version === 'function' ? window.RposAndroid.version() : null) || null,
       });
-      if (res?.refused) { setMsg({ tone: 'warn', text: res.reason || 'That was refused.' }); }
+      if (res?.ask_site) { setSiteChoice(res.ask_site); setMsg({ tone: 'warn', text: 'You have no shift right now. Which site are you working at?' }); }
+      else if (res?.open_elsewhere) { setElsewhere(res.open_elsewhere); setMsg({ tone: 'warn', text: res.reason }); }
+      else if (res?.refused) { setMsg({ tone: 'warn', text: res.reason || 'That was refused.' }); }
       else if (res?.error) { setMsg({ tone: 'bad', text: res.error }); }
       else {
-        setAskingTips(false);
+        setAskingTips(false); setSiteChoice(null); setElsewhere(null);
         setMsg({ tone: 'ok', text: {
-          in: 'Clocked in. Have a good shift.',
+          in: res?.site && state?.multi_site ? `Clocked in at ${res.site}. Have a good shift.` : 'Clocked in. Have a good shift.',
           out: 'Clocked out. Thanks.',
           break_start: 'Break started.',
           break_end: 'Back on shift.',
@@ -171,13 +176,24 @@ export default function ClockCard({ call, venueFallbackName }) {
         }}>{msg.text}</div>
       )}
 
+      {siteChoice && !onShift && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {siteChoice.map((c) => (
+            <button key={c.location_id} style={btn('var(--glass-bg)', 'var(--t1)')} disabled={!!busy} onClick={() => punch('in', { site_id: c.location_id })}>{c.site}</button>
+          ))}
+        </div>
+      )}
+      {elsewhere && (
+        <button style={btn('var(--grn, #15C26A)')} disabled={!!busy} onClick={() => { setElsewhere(null); punch('out'); }}>Clock out at {elsewhere.site}</button>
+      )}
+      {onShift && state?.multi_site && state?.open_site && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>On shift at {state.open_site}</div>}
       {askingTips ? (
         <CashTipsStep busy={!!busy} onSubmit={(v) => punch('out', { cash_tips: v })} onBack={() => { setAskingTips(false); setMsg(null); }} />
       ) : (
       <div style={{ display: 'flex', gap: 9 }}>
         {!onShift && (
           <button style={btn('var(--grn, #15C26A)')} disabled={!!busy} onClick={() => punch('in')}>
-            {busy === 'in' ? 'Checking…' : 'Clock in'}
+            {busy === 'in' ? 'Checking…' : (state?.multi_site && state?.clock_in_site ? `Clock in at ${state.clock_in_site}` : 'Clock in')}
           </button>
         )}
         {onShift && !onBreak && (
