@@ -91,3 +91,35 @@ test('no picture emoji anywhere in the app outside saved data', async () => {
   assert.ok(files.length > 500, 'the scan still finds the app');
   assert.deepEqual(found, []);
 });
+
+// 5.12.45: the cash count screen used <Icon> while its import sat inside a comment, so the till's
+// cash in, cash up and Back Office cash drawers crashed. ESLint's no-undef does not look at JSX
+// names, so this test does: every file that draws an icon imports it for real (comments ignored).
+test('every file that draws an icon really imports it', async () => {
+  const { readdirSync, statSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const root = new URL('../../', import.meta.url).pathname;
+  const files = [];
+  const walk = (p) => {
+    const abs = join(root, p);
+    if (statSync(abs).isDirectory()) { for (const f of readdirSync(abs)) walk(join(p, f)); return; }
+    if (/\.jsx?$/.test(p) && !/\.test\./.test(p)) files.push(p);
+  };
+  walk('src');
+  const missing = [];
+  for (const f of files) {
+    const code = readFileSync(join(root, f), 'utf8').replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const imported = new Set();
+    for (const m of code.matchAll(/^import\s*(?:(\w+)\s*,?\s*)?(?:\{([^}]*)\})?\s*from\s*['"][^'"]+['"]/gm)) {
+      if (m[1]) imported.add(m[1]);
+      for (const part of (m[2] || '').split(',')) { const n = part.trim().split(/\s+as\s+/).pop(); if (n) imported.add(n); }
+    }
+    for (const name of ['Icon', 'EmojiIcon']) {
+      const used = new RegExp(`<${name}[\\s/>]`).test(code);
+      const local = new RegExp(`(function|const|let|var)\\s+${name}\\b`).test(code);
+      if (used && !local && !imported.has(name)) missing.push(`${f}: draws <${name}> without importing it`);
+    }
+  }
+  assert.ok(files.length > 500);
+  assert.deepEqual(missing, []);
+});

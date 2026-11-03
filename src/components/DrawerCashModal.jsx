@@ -1,13 +1,13 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store';
 import { money } from '../lib/currency';  // v5.5.326: multi-currency
+import { Icon } from './ServOSIcons';
 
 /**
  * DrawerCashModal (v4.6.40)
  *
  * Shared denomination counter used for:
  *   - Cash in (open drawer with opening float)       — mode='in'
-import { Icon } from './ServOSIcons';
  *   - Cash out (close drawer, declare variance)      — mode='out'
  *
  * Renders the same UI for POS and back-office usage. The caller decides

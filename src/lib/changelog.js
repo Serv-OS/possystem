@@ -1,5 +1,13 @@
 export const CHANGELOG = [
   {
+    v: '5.12.45',
+    date: '3 Nov 2026',
+    items: [
+      'Fix: the cash count screen (cash in at the till lock, cash up, Back Office cash drawers) could crash in 5.12.43 because its icon was not loaded. It loads again.',
+      'A test now checks that every screen drawing an icon really loads it, so this cannot happen again.',
+    ],
+  },
+  {
     v: '5.12.44',
     date: '3 Nov 2026',
     items: [
