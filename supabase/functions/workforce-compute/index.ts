@@ -23,7 +23,7 @@ import { writeWfAudit } from '../_shared/wfAudit.js';
 import { regionPack } from '../_shared/regionPack.js';
 import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, venueDay } from '../_shared/payPremiums.js';
 import { acaReport, monthsBetween } from '../_shared/acaHours.js';
-import { overtimeAcrossSites } from '../_shared/multiSiteOvertime.js';
+import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -528,6 +528,13 @@ Deno.serve(async (req) => {
         // 5.12.38: each sheet's week is its own site's work week (the same rule the reports' column uses).
         const wsdOf: Record<string, number> = { [location_id]: wsd };
         const eligibleOf: Record<string, Record<string, boolean>> = {};
+        // 5.12.41: each site's overtime rules (exempt positions, the minimum wage for tip credit staff).
+        const settingsOf: Record<string, any> = { [location_id]: policy };
+        const payTypeOf: Record<string, Record<string, string>> = {};
+        {
+          const { data: hereRoles } = await admin.from('wf_roles').select('location_id, key, pay_type, premium_eligible').eq('location_id', location_id);
+          (hereRoles ?? []).forEach((r: any) => { (payTypeOf[location_id] ??= {})[r.key] = r.pay_type; (eligibleOf[location_id] ??= {})[r.key] = r.premium_eligible !== false; });
+        }
         if (persons.length) {
           const { data: linked } = await admin.from('wf_staff').select('id, person_id, location_id, role_key')
             .eq('org_id', org).in('person_id', persons).neq('location_id', location_id);
@@ -543,16 +550,17 @@ Deno.serve(async (req) => {
                 .gte('clock_in', wideFrom).lt('clock_in', wideTo),
               admin.from('locations').select('id, timezone').in('id', otherLocs),
               admin.from('wf_venue_settings').select('location_id, premiums, settings').in('location_id', otherLocs),
-              admin.from('wf_roles').select('location_id, key, premium_eligible').in('location_id', [location_id, ...otherLocs]),
+              admin.from('wf_roles').select('location_id, key, pay_type, premium_eligible').in('location_id', otherLocs),
             ]);
             otherSheets = os ?? [];
             (locs ?? []).forEach((l: any) => { zoneOf[l.id] = l.timezone || venue.timezone; });
             (vss ?? []).forEach((v: any) => {
               premiumsOf[v.location_id] = v.premiums ?? {};
+              settingsOf[v.location_id] = v.settings ?? {};
               const d = Number(v.settings?.workweekStart);
               wsdOf[v.location_id] = Number.isInteger(d) && d >= 0 && d <= 6 ? d : 1;
             });
-            (rls ?? []).forEach((r: any) => { (eligibleOf[r.location_id] ??= {})[r.key] = r.premium_eligible !== false; });
+            (rls ?? []).forEach((r: any) => { (eligibleOf[r.location_id] ??= {})[r.key] = r.premium_eligible !== false; (payTypeOf[r.location_id] ??= {})[r.key] = r.pay_type; });
           }
         }
         // Pay premiums are part of the regular rate (shift differentials count), each by its own site's rules.
@@ -564,9 +572,14 @@ Deno.serve(async (req) => {
           return premiumFor({ startMs: t.clock_in, endMs: t.clock_out, workedHours: Number(t.actual_hours || 0), rate: Number(t.effective_rate || 0),
             premiums: pr, tz: zoneOf[loc] || venue.timezone, country: pack.country, eligible: el, hourly: t.rate_source !== 'salaried' }).pay;
         };
+        const rulesOf = (t: any, loc: string) => {
+          const rk = roleOfStaff[t.staff_id]?.role ?? null;
+          const r = overtimeRules({ settings: settingsOf[loc] ?? {}, roleKey: rk, payType: rk ? payTypeOf[loc]?.[rk] ?? null : null, rateSource: t.rate_source ?? null });
+          return { exempt: r.exempt, min_wage: r.minWage };
+        };
         const all = [
-          ...(weekSheets ?? []).map((t: any) => ({ ...t, location_id, person: personOf[t.staff_id] || t.staff_id, tz: venue.timezone, week_start_dow: wsd, premium_pay: premiumPay(t, location_id) })),
-          ...otherSheets.map((t: any) => ({ ...t, person: personOf[t.staff_id] || t.staff_id, tz: zoneOf[t.location_id] || venue.timezone, week_start_dow: wsdOf[t.location_id] ?? 1, premium_pay: premiumPay(t, t.location_id) })),
+          ...(weekSheets ?? []).map((t: any) => ({ ...t, location_id, person: personOf[t.staff_id] || t.staff_id, tz: venue.timezone, week_start_dow: wsd, premium_pay: premiumPay(t, location_id), ...rulesOf(t, location_id) })),
+          ...otherSheets.map((t: any) => ({ ...t, person: personOf[t.staff_id] || t.staff_id, tz: zoneOf[t.location_id] || venue.timezone, week_start_dow: wsdOf[t.location_id] ?? 1, premium_pay: premiumPay(t, t.location_id), ...rulesOf(t, t.location_id) })),
         ];
         overtime = overtimeAcrossSites(all, pack.overtimeWeeklyHours, { tz: venue.timezone, weekStartDow: wsd, from, to, here: location_id });
       }

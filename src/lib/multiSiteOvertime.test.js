@@ -123,3 +123,73 @@ test('two people are never mixed, and no weekly rule (the UK) is null', () => {
   assert.deepEqual(overtimeAcrossSites([], 40, { tz: TZ }), {});
   assert.deepEqual(overtimeAcrossSites(null, 40, { tz: TZ }), {});
 });
+
+// 5.12.41: tip credit and exempt positions (Peter, 3 Nov 2026: "fix the tip credit and salaried
+// overtime limits").
+import { overtimeRules, sheetOvertime, FEDERAL_MINIMUM_WAGE } from '../../supabase/functions/_shared/multiSiteOvertime.js';
+
+test('tip credit: a $2.13 server works 45 h; the half time is on the $7.25 minimum wage, not $2.13', () => {
+  const days = ['10-26', '10-27', '10-28', '10-29', '10-30'];
+  const sheets = days.map((d) => ({ staff_id: 'sam', person: 'sam', location_id: PROVO, actual_hours: 9, effective_rate: 2.13, min_wage: 7.25, clock_in: `2026-${d}T15:00:00Z` }));
+  const r = overtimeAcrossSites(sheets, 40, { tz: TZ, here: PROVO });
+  assert.equal(r.sam.overtime, 5);
+  assert.equal(r.sam.regularRate, 7.25);
+  assert.equal(r.sam.overtimePremium, 18.13);   // 5 x 3.625: with the $2.13 cash per hour already paid, 5.755 an overtime hour, the law's 1.5 x 7.25 less the 5.12 tip credit
+  // Without the rule it was 5 x 1.065 = 5.325.
+  const before = overtimeAcrossSites(sheets.map((s) => ({ ...s, min_wage: undefined })), 40, { tz: TZ, here: PROVO });
+  assert.equal(before.sam.overtimePremium, 5.33);   // 5 x 1.065 = 5.325: half up to the cent, as the database rounds
+});
+
+test('tip credit across sites: server at $2.13 at Provo, host at $12 at Daybreak', () => {
+  const sheets = [
+    sheet('jane-provo', PROVO, '10-26', 10, 2.13, { min_wage: 7.25 }), sheet('jane-provo', PROVO, '10-27', 10, 2.13, { min_wage: 7.25 }),
+    sheet('jane-day', DAYBREAK, '10-29', 12, 12, { min_wage: 7.25 }), sheet('jane-day', DAYBREAK, '10-30', 13, 12, { min_wage: 7.25 }),
+  ];
+  const day = overtimeAcrossSites(sheets, 40, { tz: TZ, here: DAYBREAK });
+  // (20 x 7.25 + 25 x 12) / 45 = 445 / 45 = 9.8889; half on 5 h = 24.72.
+  assert.equal(day['jane-day'].overtime, 5);
+  assert.equal(day['jane-day'].regularRate, 9.8889);
+  assert.equal(day['jane-day'].overtimePremium, 24.72);
+  // A rate above the minimum wage is never lowered.
+  const high = overtimeAcrossSites(peterWeek().map((s) => ({ ...s, min_wage: 7.25 })), 40, { tz: TZ, here: DAYBREAK });
+  assert.equal(high['jane-day'].overtimePremium, 40.28);
+});
+
+test('exempt: a salaried manager on 50 h has no overtime, and an exempt site does not count toward 40', () => {
+  const days = ['10-26', '10-27', '10-28', '10-29', '10-30'];
+  const mgr = days.map((d) => ({ staff_id: 'max', person: 'max', location_id: PROVO, actual_hours: 10, effective_rate: 25, exempt: true, clock_in: `2026-${d}T15:00:00Z` }));
+  assert.deepEqual(overtimeAcrossSites(mgr, 40, { tz: TZ, here: PROVO }), {});
+  // Exempt at Provo (20 h as manager), hourly at Daybreak (25 h): only 25 h count, no overtime.
+  const mixed = peterWeek().map((s) => (s.location_id === PROVO ? { ...s, exempt: true } : s));
+  const day = overtimeAcrossSites(mixed, 40, { tz: TZ, here: DAYBREAK });
+  assert.equal(day['jane-day'].overtime, 0);
+  assert.equal(day['jane-day'].otherSiteHours, 0);
+  // The reports' column follows the same rule.
+  assert.deepEqual(sheetOvertime(mgr.map((s, i) => ({ ...s, id: `m${i}`, pay_amount: 250 })), 40), {});
+});
+
+test('overtimeRules: salaried positions exempt unless switched off; any position can be switched on; the minimum wage', () => {
+  assert.deepEqual(overtimeRules({ payType: 'salaried' }), { exempt: true, minWage: FEDERAL_MINIMUM_WAGE });
+  assert.deepEqual(overtimeRules({ payType: 'hourly' }), { exempt: false, minWage: 7.25 });
+  assert.equal(overtimeRules({ payType: 'hourly', rateSource: 'salaried' }).exempt, true);   // paid a salary's equivalent
+  assert.equal(overtimeRules({ settings: { overtimeExempt: { mgmt: false } }, roleKey: 'mgmt', payType: 'salaried' }).exempt, false);
+  assert.equal(overtimeRules({ settings: { overtimeExempt: { kitchen_lead: true } }, roleKey: 'kitchen_lead', payType: 'hourly' }).exempt, true);
+  assert.equal(overtimeRules({ settings: { minimumWage: '12.00' } }).minWage, 12);
+  assert.equal(overtimeRules({ settings: { minimumWage: 0 } }).minWage, 7.25);
+  assert.equal(overtimeRules({ settings: { minimumWage: 'abc' } }).minWage, 7.25);
+});
+
+test('payroll and Workforce settings use overtimeRules (5.12.41)', async () => {
+  const fs = await import('node:fs');
+  const fn = fs.readFileSync(new URL('../../supabase/functions/workforce-compute/index.ts', import.meta.url), 'utf8');
+  assert.match(fn, /import \{ overtimeAcrossSites, overtimeRules \} from '\.\.\/_shared\/multiSiteOvertime\.js'/);
+  assert.match(fn, /premium_pay: premiumPay\(t, location_id\), \.\.\.rulesOf\(t, location_id\) \}/);
+  assert.match(fn, /premium_pay: premiumPay\(t, t\.location_id\), \.\.\.rulesOf\(t, t\.location_id\) \}/);
+  const ui = fs.readFileSync(new URL('../backoffice/sections/workforce/WfSettings.jsx', import.meta.url), 'utf8');
+  assert.match(ui, /Positions with no overtime \(exempt\)/);
+  assert.match(ui, /minimumWage: Number\(minimumWage\) > 0/);
+  assert.match(ui, /overtimeExempt: otExempt,/);
+  const sql = fs.readFileSync(new URL('../../supabase/migrations/20261114a_OPS_wf_overtime_rules.sql', import.meta.url), 'utf8');
+  assert.match(sql, /cross join lateral public\._wf_ot_rules\(t\.location_id, ws\.role_key, t\.rate_source\) ru/);
+  assert.match(sql, /round\(round\(v_ot \* v_rate \* 0\.5, 6\), 2\)/);
+});
