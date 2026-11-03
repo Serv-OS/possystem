@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Icon } from '../components/ServOSIcons';
+import CashTipsStep from '../components/CashTipsStep';
 
 const glass = {
   background: 'var(--glass-bg)', border: '1px solid var(--glass-border)',
@@ -53,6 +54,8 @@ export default function ClockCard({ call, venueFallbackName }) {
   const [busy, setBusy]     = useState(null);   // which punch is running
   const [msg, setMsg]       = useState(null);   // { tone, text }
   const [loaded, setLoaded] = useState(false);
+  // 5.12.49: a US venue asks for cash tips before the clock out (Workforce settings).
+  const [askingTips, setAskingTips] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -81,7 +84,8 @@ export default function ClockCard({ call, venueFallbackName }) {
 
   if (!loaded) return null;
 
-  const punch = async (kind) => {
+  const punch = async (kind, extra = {}) => {
+    if (kind === 'out' && state?.ask_cash_tips && extra.cash_tips === undefined) { setMsg(null); setAskingTips(true); return; }
     setBusy(kind); setMsg(null);
     try {
       // Only clocking IN is fenced, so only clocking in pays the wait for a fix.
@@ -105,7 +109,7 @@ export default function ClockCard({ call, venueFallbackName }) {
       // the duplicate rather than opening a second shift.
       const punchId = (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`);
       const res = await call({
-        action: 'clock_punch', kind, fix, punch_id: punchId,
+        action: 'clock_punch', kind, fix, punch_id: punchId, ...extra,
         platform: window.RposIOS ? 'ios' : 'android',
         // v5.8.79: the Android app exposes version() as a method (android/webshell ShellActivity).
         app_version: window.RposIOS?.version || (typeof window.RposAndroid?.version === 'function' ? window.RposAndroid.version() : null) || null,
@@ -113,6 +117,7 @@ export default function ClockCard({ call, venueFallbackName }) {
       if (res?.refused) { setMsg({ tone: 'warn', text: res.reason || 'That was refused.' }); }
       else if (res?.error) { setMsg({ tone: 'bad', text: res.error }); }
       else {
+        setAskingTips(false);
         setMsg({ tone: 'ok', text: {
           in: 'Clocked in. Have a good shift.',
           out: 'Clocked out. Thanks.',
@@ -166,6 +171,9 @@ export default function ClockCard({ call, venueFallbackName }) {
         }}>{msg.text}</div>
       )}
 
+      {askingTips ? (
+        <CashTipsStep busy={!!busy} onSubmit={(v) => punch('out', { cash_tips: v })} onBack={() => { setAskingTips(false); setMsg(null); }} />
+      ) : (
       <div style={{ display: 'flex', gap: 9 }}>
         {!onShift && (
           <button style={btn('var(--grn, #15C26A)')} disabled={!!busy} onClick={() => punch('in')}>
@@ -188,6 +196,7 @@ export default function ClockCard({ call, venueFallbackName }) {
           </button>
         )}
       </div>
+      )}
     </div>
   );
 }

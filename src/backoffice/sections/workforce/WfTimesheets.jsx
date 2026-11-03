@@ -13,6 +13,7 @@
 import { useState, useEffect, useMemo, Fragment } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { activeCountry } from '../../../lib/regionPack';
+import { parseCashTips } from '../../../../supabase/functions/_shared/cashTips.js';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { hoursOf, resolveRate, breakShortfall, venueBreakPolicy, grossFromNet } from '../../../staff/labour';
@@ -82,6 +83,8 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   }, [ctx?.locationId, shifts]);
 
   const payCfg = useMemo(() => payCfgFrom(settings, activeCountry()), [settings]);
+  // 5.12.49: US venues keep the cash tips declared at clock out on each timesheet.
+  const isUS = activeCountry() === 'US';
   const [mode, setMode] = useState('week'); // week | period
   const [statusFilter, setStatusFilter] = useState('all'); // all | pending | approved | paid
   const [wk, setWk] = useState(() => buildWeek());
@@ -254,6 +257,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     const date = r.date || ip.date || new Date().toISOString().slice(0, 10);
     setEditId(r.ts.id);
     setEform({
+      cashTips: r.ts.declaredCashTips != null ? String(r.ts.declaredCashTips) : '',
       start: ip.hm || r.shift?.start || '09:00',
       end: op.hm || r.shift?.finish || '17:00',
       breakMins: String(r.breakMins || 0),
@@ -277,11 +281,18 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     const c = editCalc(r);
     if (!c) { showToast?.('Enter a start and end time', 'error'); return; }
     const sched = r.scheduled != null ? r.scheduled : (r.ts.scheduledHours != null ? round2(r.ts.scheduledHours) : null);
+    let cashTips;
+    if (isUS) {
+      const ct = parseCashTips(eform.cashTips);
+      if (ct.error) { showToast?.(ct.error, 'error'); return; }
+      cashTips = ct.value;   // blank clears it (not declared)
+    }
     const patch = {
       ...r.ts,
       clockIn: c.clockIn, clockOut: c.clockOut, breakTaken: c.mins, paidBreakMins: c.paidMins,
       actualHours: c.actual, variance: sched != null ? round2(c.actual - sched) : null,
       payAmount: c.pay, effectiveRate: r.rate, rateSource: r.rateSource,
+      ...(isUS ? { declaredCashTips: cashTips, cashTipsSet: true } : {}),
     };
     setSheets(prev => prev.map(t => t.id === r.ts.id ? { ...t, ...patch } : t));
     setEditId(null);
@@ -505,6 +516,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                       <td style={td}><VarianceCell variance={r.ts ? r.variance : null} /></td>
                       <td style={{ ...td, textAlign: 'right' }}>
                         {r.ts ? <span className="mono" style={{ fontWeight: 600 }}>{money(r.pay, 2)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
+                        {isUS && r.ts?.declaredCashTips != null && <div style={{ fontSize: 10.5, color: 'var(--t3)' }} title="Cash tips declared at clock out">cash tips {money(r.ts.declaredCashTips, 2)}</div>}
                       </td>
                       <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                         {!r.ts ? (
@@ -538,6 +550,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--t2)', cursor: 'pointer', marginBottom: 9 }} title="Paid break: these minutes are paid on top of worked hours (venue policy)">
                               <input type="checkbox" checked={eform.paid} onChange={e => setEform(f => ({ ...f, paid: e.target.checked }))} /> break paid
                             </label>
+                            {isUS && <div><label style={labelStyle}>Cash tips ($)</label><input inputMode="decimal" placeholder="not declared" style={{ ...inputStyle, width: 120 }} value={eform.cashTips ?? ''} onChange={e => setEform(f => ({ ...f, cashTips: e.target.value.replace(/[^\d.]/g, '') }))} /></div>}
                             <div style={{ marginBottom: 9, fontSize: 12.5, color: 'var(--t3)' }} className="mono">
                               {pv ? <>worked <b style={{ color: 'var(--t1)' }}>{hm(pv.actual)}</b> · pay <b style={{ color: 'var(--t1)' }}>{money(pv.pay, 2)}</b></> : 'enter start & end'}
                             </div>

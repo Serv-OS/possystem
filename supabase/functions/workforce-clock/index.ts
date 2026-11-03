@@ -32,6 +32,8 @@ import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 import { sheetPay, anyPremium } from '../_shared/payPremiums.js';
 import { regionPack } from '../_shared/regionPack.js';
 import { namedSheetId, openSheetFor } from '../_shared/clockSheet.js';
+// 5.12.49: declared cash tips at clock out (US venues, Workforce settings, Ask for cash tips at clock out).
+import { asksCashTips, parseCashTips } from '../_shared/cashTips.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -208,12 +210,15 @@ Deno.serve(async (req) => {
       // Office users, and a till runs an anonymous device session), so the
       // policy travels back with the status it already asks for.
       let posLoginClockIn = false;
+      let askCashTips = false;
       try {
         const { data: gs } = await admin.from('wf_venue_settings')
-          .select('clock_geofence').eq('location_id', location_id).maybeSingle();
+          .select('clock_geofence, settings').eq('location_id', location_id).maybeSingle();
         posLoginClockIn = !!(gs?.clock_geofence as any)?.pos_login_clock_in;
+        // 5.12.49: a US venue asks for cash tips at clock out unless switched off; never a UK venue.
+        askCashTips = asksCashTips({ country: regionPack({ currency: await currencyOf(location_id) }).country, settings: (gs as any)?.settings ?? null });
       } catch { /* policy is optional; never block a status read */ }
-      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding, posLoginClockIn });
+      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding, posLoginClockIn, askCashTips });
     }
 
     if (action === 'in') {
@@ -320,14 +325,32 @@ Deno.serve(async (req) => {
         actual_hours: actual, variance, pay_amount: pay, status: 'pending',
         paid_break_mins: paidBreakMins,
       };
+      // 5.12.49: the cash tips they declared, kept on the sheet, only where the venue asks (US, setting
+      // on). A UK venue, or a US venue with the setting off, ignores any amount sent. A bad amount
+      // refuses the clock out with words, so the person types it again; no amount (skipped, an older
+      // app, a manager's clock out) records nothing.
+      if (body.cash_tips !== undefined && body.cash_tips !== null && body.cash_tips !== '') {
+        const asks = asksCashTips({ country: regionPack({ currency: await currencyOf(location_id) }).country, settings: vs });
+        if (asks) {
+          const ct = parseCashTips(body.cash_tips);
+          if (ct.error) return json({ error: ct.error, field: 'cash_tips' }, 400);
+          if (ct.value !== null) update.declared_cash_tips = ct.value;
+        }
+      }
       if (autoApplied > 0) {
         // Visible audit trail: managers see WHY 30 min vanished with no punches.
         const segs = Array.isArray(open.breaks) ? open.breaks : [];
         update.breaks = [...segs, { auto: true, mins: autoApplied, at: now.toISOString() }];
       }
-      const { error } = await admin.from('wf_timesheets').update(update).eq('id', open.id);
+      let { error } = await admin.from('wf_timesheets').update(update).eq('id', open.id);
+      // 5.12.49: before 20261117a has run the column is missing; the clock out still goes through.
+      if (error && 'declared_cash_tips' in update && /declared_cash_tips/.test(error.message || '')) {
+        delete update.declared_cash_tips;
+        ({ error } = await admin.from('wf_timesheets').update(update).eq('id', open.id));
+      }
       if (error) return json({ error: error.message }, 500);
-      return json({ ok: true, staff: who, state: 'out', actualHours: actual, breakMins: breakTaken, autoBreak: autoApplied || undefined, pay });
+      return json({ ok: true, staff: who, state: 'out', actualHours: actual, breakMins: breakTaken, autoBreak: autoApplied || undefined, pay,
+        cashTips: (update.declared_cash_tips as number | undefined) ?? null });
     }
 
     return json({ error: `unknown action "${action}"` }, 400);

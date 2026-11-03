@@ -642,6 +642,8 @@ const mapTs = r => ({
   variance: r.variance != null ? Number(r.variance) : null, payAmount: r.pay_amount != null ? Number(r.pay_amount) : null,
   // 5.12.38: US overtime past 40 h in the work week, every linked site (kept by the database, 20261112a).
   overtimeHours: Number(r.overtime_hours ?? 0), overtimePremium: Number(r.overtime_premium ?? 0),
+  // 5.12.49: cash tips declared at clock out (US); null when not asked.
+  declaredCashTips: r.declared_cash_tips != null ? Number(r.declared_cash_tips) : null,
   effectiveRate: r.effective_rate != null ? Number(r.effective_rate) : null, rateSource: r.rate_source,
   status: r.status, approvedBy: r.approved_by, approvedAt: r.approved_at, payrollRunId: r.payroll_run_id || null,
 });
@@ -673,6 +675,8 @@ export async function saveTimesheet(ts, locationId, orgId) {
     effective_rate: ts.effectiveRate ?? null, rate_source: ts.rateSource || null, currency: ts.currency || getActiveCurrencyCode(),
     pay_amount: ts.payAmount ?? null, status: ts.status || 'pending',
   };
+  // 5.12.49: written only when a US editor set it (cashTipsSet), so no other save ever names the column.
+  if (ts.cashTipsSet === true) row.declared_cash_tips = ts.declaredCashTips ?? null;
   const real = ts.id && !String(ts.id).startsWith('tmp-') && !String(ts.id).startsWith('wf-');
   if (real) row.id = ts.id;
   const q = real ? supabase.from('wf_timesheets').upsert(row, { onConflict: 'id' }) : supabase.from('wf_timesheets').insert(row);

@@ -11,6 +11,7 @@ import { useStore } from '../store';
 import { supabase, isMock, getActiveLocationSync } from '../lib/supabase';
 import { getLocationConfig } from '../lib/locationTime';
 import { Icon } from '../components/ServOSIcons';
+import CashTipsStep from '../components/CashTipsStep';
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
 // Punches are stored UTC (the edge fn uses toISOString) — render in the VENUE tz, not the device's
@@ -73,14 +74,14 @@ export default function TimeClockSurface() {
   useEffect(() => { const id = setInterval(() => force(n => n + 1), 1000 * 20); return () => clearInterval(id); }, []);
   useEffect(() => () => { if (resetTimer.current) clearTimeout(resetTimer.current); }, []);
 
-  const callClock = useCallback(async (action, enteredPin) => {
+  const callClock = useCallback(async (action, enteredPin, extra = {}) => {
     if (isMock || !supabase) return mockClock(action, enteredPin, staffMembers);
     let token = null;
     try { const { ensureAuthToken } = await import('../lib/supabase'); token = await ensureAuthToken(); } catch { /* */ }
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/workforce-clock`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ location_id: locationId, pin: enteredPin, action }),
+      body: JSON.stringify({ location_id: locationId, pin: enteredPin, action, ...extra }),
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) { const e = new Error(j.error || 'Clock error'); e.code = res.status; throw e; }
@@ -119,11 +120,15 @@ export default function TimeClockSurface() {
     }
   };
 
-  const doAction = async (action) => {
+  // 5.12.49: a US venue asks for cash tips before the clock out (Workforce settings).
+  const [askingTips, setAskingTips] = useState(false);
+  const doAction = async (action, extra = {}) => {
     if (busy || !session) return;
+    if (action === 'out' && session.askCashTips && extra.cash_tips === undefined) { setError(''); setAskingTips(true); return; }
     setBusy(true); setError('');
     try {
-      const r = await callClock(action, session?.pin || pin);
+      const r = await callClock(action, session?.pin || pin, extra);
+      setAskingTips(false);
       const name = (r.staff?.name || '').split(' ')[0];
       // Show the punch time in the VENUE tz, not the device's (the punch is server-stamped UTC).
       const now = fmtTime(r.since || new Date().toISOString(), tz);
@@ -171,6 +176,11 @@ export default function TimeClockSurface() {
             {onShift && <span style={{ fontSize: 12, color: 'var(--t3)' }}>· since {fmtTime(s.since, tz)} · {fmtHrs(elapsed)}</span>}
           </div>
 
+          {askingTips ? (
+            <div style={{ marginTop: 30 }}>
+              <CashTipsStep big busy={busy} error={error} onSubmit={(v) => doAction('out', { cash_tips: v })} onBack={() => { setAskingTips(false); setError(''); }} />
+            </div>
+          ) : (
           <div style={{ display: 'grid', gap: 12, marginTop: 30 }}>
             {s.state === 'out' && <BigBtn icon="clock" label="Clock in" tone="acc" onClick={() => doAction('in')} busy={busy} />}
             {s.state === 'in' && <>
@@ -182,7 +192,8 @@ export default function TimeClockSurface() {
               <BigBtn icon="clock" label="Clock out" tone="ghost" onClick={() => doAction('out')} busy={busy} />
             </>}
           </div>
-          {error && <div style={{ marginTop: 16, color: 'var(--red)', fontSize: 13, fontWeight: 600 }}>{error}</div>}
+          )}
+          {error && !askingTips && <div style={{ marginTop: 16, color: 'var(--red)', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
           {/* Outstanding work (v5.6.0) — flagged at the clock because it is the
               one surface everyone touches every shift. Read-only: they DO the
