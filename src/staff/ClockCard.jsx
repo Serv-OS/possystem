@@ -160,7 +160,13 @@ export default function ClockCard({ call, venueFallbackName }) {
         )}
       </div>
 
-      {state?.location_required && !onShift && (
+      {/* 5.12.57: head office staff are paid their salary and do not clock in (staff-portal says so in
+          clock_status), so there is no Clock in button and no location prompt, as on the till. */}
+      {state?.head_office && !onShift && (
+        <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>{state.head_office_words || 'Head office staff do not clock in.'}</div>
+      )}
+
+      {state?.location_required && !onShift && !state?.head_office && (
         <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.5 }}>
           You can clock in when you are at {venue}.
         </div>
@@ -191,7 +197,7 @@ export default function ClockCard({ call, venueFallbackName }) {
         <CashTipsStep busy={!!busy} onSubmit={(v) => punch('out', { cash_tips: v })} onBack={() => { setAskingTips(false); setMsg(null); }} />
       ) : (
       <div style={{ display: 'flex', gap: 9 }}>
-        {!onShift && (
+        {!onShift && !state?.head_office && (
           <button style={btn('var(--grn, #15C26A)')} disabled={!!busy} onClick={() => punch('in')}>
             {busy === 'in' ? 'Checking…' : (state?.multi_site && state?.clock_in_site ? `Clock in at ${state.clock_in_site}` : 'Clock in')}
           </button>

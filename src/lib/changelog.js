@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.57',
+    date: '3 Nov 2026',
+    items: [
+      'Staff app, head office staff: the Clock in card shows "Head office staff do not clock in. Your salary is paid each pay period." instead of a Clock in button, so they are never asked for their location first. The same as the till since 5.12.56. Nothing to deploy.',
+    ],
+  },
+  {
     v: '5.12.56',
     date: '3 Nov 2026',
     items: [
