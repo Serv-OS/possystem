@@ -18,6 +18,7 @@ import { newVenueSubscription, saasPlanName } from '../lib/saasNewVenue';
 import { seedVenueTaxRates, seedWords } from '../lib/venueTaxRates';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
+import TimezoneOptions from '../components/TimezoneOptions';
 
 // v5.11.75: loaded only when a company is opened here, so the Multi site menu code never rides in
 // the bundle every till downloads.
@@ -777,10 +778,7 @@ function AdminPanel({ authUser }) {
                 <div style={S.row3}>
                   <div><label style={S.label}>Timezone</label>
                     <select style={S.input} value={form.locTz||'Europe/London'} onChange={e=>f('locTz',e.target.value)}>
-                      <option value="Europe/London">Europe/London</option>
-                      <option value="Europe/Paris">Europe/Paris</option>
-                      <option value="America/New_York">America/New_York</option>
-                      <option value="Asia/Dubai">Asia/Dubai</option>
+                      <TimezoneOptions value={form.locTz||'Europe/London'} />
                     </select>
                   </div>
                   <div><label style={S.label}>Currency</label>

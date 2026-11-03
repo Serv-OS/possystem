@@ -12,6 +12,7 @@ import SiteGroupsCard from './stock/SiteGroupsCard';
 import SiteKindCard from './stock/SiteKindCard';
 import CaloriesCard from './stock/CaloriesCard';
 import { Icon } from '../../components/ServOSIcons';
+import { TIMEZONE_GROUPS, TIMEZONES } from '../../lib/timezones';
 
 // v5.7.29: the venue timezone drives EVERY business-time decision in the
 // system (menu schedules, dayparts, booking slots, report days, auto-capture
@@ -22,50 +23,7 @@ import { Icon } from '../../components/ServOSIcons';
 // with a live UTC offset on every entry; a curated Common group sits on top
 // for the zones venues actually pick. Falls back to the curated list on
 // browsers without supportedValuesOf.
-const COMMON_TIMEZONES = [
-  ['Europe/London', 'United Kingdom'], ['Europe/Dublin', 'Ireland'],
-  ['America/New_York', 'US Eastern'], ['America/Chicago', 'US Central'],
-  ['America/Denver', 'US Mountain'], ['America/Phoenix', 'US Arizona (no DST)'],
-  ['America/Los_Angeles', 'US Pacific'], ['America/Anchorage', 'US Alaska'],
-  ['Pacific/Honolulu', 'US Hawaii'], ['America/Puerto_Rico', 'Puerto Rico'],
-  ['America/Toronto', 'Canada Eastern'], ['America/Winnipeg', 'Canada Central'],
-  ['America/Edmonton', 'Canada Mountain'], ['America/Vancouver', 'Canada Pacific'],
-  ['America/Halifax', 'Canada Atlantic'], ['America/St_Johns', 'Newfoundland'],
-  ['Europe/Paris', 'France'], ['Europe/Berlin', 'Germany'], ['Europe/Amsterdam', 'Netherlands'],
-  ['Europe/Madrid', 'Spain'], ['Europe/Rome', 'Italy'], ['Europe/Lisbon', 'Portugal'],
-  ['Asia/Dubai', 'UAE'], ['Asia/Singapore', 'Singapore'], ['Asia/Hong_Kong', 'Hong Kong'],
-  ['Asia/Tokyo', 'Japan'], ['Australia/Sydney', 'Australia Eastern'],
-  ['Australia/Brisbane', 'Australia Queensland (no DST)'], ['Australia/Adelaide', 'Australia Central'],
-  ['Australia/Perth', 'Australia Western'], ['Pacific/Auckland', 'New Zealand'],
-];
-
-// "UTC+01:00" style offset for a zone right now (DST aware).
-function tzOffsetLabel(tz) {
-  try {
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'longOffset' }).formatToParts(new Date());
-    const p = parts.find(x => x.type === 'timeZoneName')?.value || '';
-    return p === 'GMT' ? 'UTC+00:00' : p.replace('GMT', 'UTC');
-  } catch { return ''; }
-}
-
-function buildTimezoneGroups() {
-  const common = COMMON_TIMEZONES.map(([value, name]) => ({
-    value, label: `${name} (${value.replace(/_/g, ' ')}, ${tzOffsetLabel(value)})`,
-  }));
-  let all = [];
-  try { all = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []; } catch { all = []; }
-  const byRegion = {};
-  for (const tz of all) {
-    const region = tz.includes('/') ? tz.split('/')[0] : 'Other';
-    if (region === 'Etc' || region === 'SystemV' || region === 'US' || region === 'Canada') continue;
-    (byRegion[region] ||= []).push({ value: tz, label: `${tz.replace(/_/g, ' ')} (${tzOffsetLabel(tz)})` });
-  }
-  const groups = [{ label: 'Common', zones: common }];
-  for (const region of Object.keys(byRegion).sort()) groups.push({ label: region, zones: byRegion[region] });
-  return groups;
-}
-const TIMEZONE_GROUPS = buildTimezoneGroups();
-const TIMEZONES = TIMEZONE_GROUPS.flatMap(g => g.zones); // kept for any legacy reader
+// 5.12.48: the time zone list moved to lib/timezones.js so every venue picker shares it.
 
 // v5.8.13: 30-minute steps, 48 options, midnight labelled. v5.8.12 tried
 // 15-minute steps and relabelled every close option at or before the open time

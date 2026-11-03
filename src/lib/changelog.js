@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.48',
+    date: '3 Nov 2026',
+    items: [
+      'Time zones: Add location (ServOS admin and Back Office, Company admin) and the Back Office sites page offer every time zone, the same list as Location settings: US Eastern, Central, Mountain, Arizona, Pacific, Alaska and Hawaii first, then every zone by region. Before, they offered four or five and no US Mountain time.',
+      'A time zone changed in Location settings now reaches everything. Before, it reached online ordering and the stock clock but not the venue row that payroll, card payments, bookings, the Manager app and ezCater read. The venue clock now puts that row right after every save and every night, so the two cannot stay apart.',
+      'Mozz Pizza\'s four Utah sites (set to New York when they were added) are on Mountain time (SQL 20261116a, run 3 Nov).',
+      'Tests block a hand written time zone list on any screen and pin the venue clock fix.',
+    ],
+  },
+  {
     v: '5.12.47',
     date: '3 Nov 2026',
     items: [

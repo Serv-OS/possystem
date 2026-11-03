@@ -10,12 +10,8 @@ import { supabase, isMock } from '../../lib/supabase';
 import { saveLocation } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
 import { Icon } from '../../components/ServOSIcons';
+import TimezoneOptions from '../../components/TimezoneOptions';
 
-const TIMEZONES = [
-  'Europe/London', 'Europe/Dublin', 'Europe/Paris', 'Europe/Berlin',
-  'America/New_York', 'America/Chicago', 'America/Los_Angeles',
-  'Asia/Dubai', 'Asia/Singapore', 'Australia/Sydney',
-];
 
 const PLAN_BADGES = {
   standard:   { label:'Standard',   color:'#3b82f6' },
@@ -211,7 +207,7 @@ export default function MultiLocation() {
           </FormField>
           <FormField label="Timezone">
             <select value={form.timezone||'Europe/London'} onChange={e=>setForm(f=>({...f,timezone:e.target.value}))} style={{ ...inp, cursor:'pointer' }}>
-              {TIMEZONES.map(tz=><option key={tz} value={tz}>{tz}</option>)}
+              <TimezoneOptions value={form.timezone||'Europe/London'} />
             </select>
           </FormField>
           <FormField label="Currency">
