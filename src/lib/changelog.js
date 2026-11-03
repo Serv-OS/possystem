@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.46',
+    date: '3 Nov 2026',
+    items: [
+      'US cash drawer: a US venue counts its drawer in its own money. Cash in, cash up, the till lock and Back Office cash drawers list $100, $50, $20, $10, $5, $2 and $1 bills, then quarters, dimes, nickels and pennies. End of day shows the same labels.',
+      'Euro venues count euro notes and cent coins. UK venues see exactly the list they had.',
+      'Counts add up in pennies, so three 10p coins always make exactly 30p.',
+    ],
+  },
+  {
     v: '5.12.45',
     date: '3 Nov 2026',
     items: [
