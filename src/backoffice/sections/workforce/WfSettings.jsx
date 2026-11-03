@@ -110,6 +110,10 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [minimumWage, setMinimumWage] = useState('');
   // 5.12.49: US venues ask staff for cash tips at clock out unless switched off (_shared/cashTips.js).
   const [askCashTips, setAskCashTips] = useState(true);
+  // 5.12.51: US paid time off (_shared/usPto.js). Off by default; no law requires it.
+  const [ptoEnabled, setPtoEnabled] = useState(false);
+  const [ptoEvery, setPtoEvery] = useState('30');
+  const [ptoYearCap, setPtoYearCap] = useState('');
   const [otExempt, setOtExempt] = useState({});
   // v5.11.101: pay premiums (wf_venue_settings.premiums), applied in payroll and the rota cost.
   const [premWeekend, setPremWeekend] = useState('');
@@ -148,6 +152,9 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setWorkweekStart(String(Number.isInteger(Number(sj.workweekStart)) ? Number(sj.workweekStart) : 1));
     setMinimumWage(Number(sj.minimumWage) > 0 ? String(sj.minimumWage) : '');
     setAskCashTips(sj.askCashTips !== false);
+    setPtoEnabled(sj.ptoEnabled === true);
+    setPtoEvery(Number(sj.ptoEvery) >= 1 ? String(sj.ptoEvery) : '30');
+    setPtoYearCap(Number(sj.ptoYearCap) > 0 ? String(sj.ptoYearCap) : '');
     setOtExempt(sj.overtimeExempt && typeof sj.overtimeExempt === 'object' ? sj.overtimeExempt : {});
     const pr = settings?.premiums || {};
     setPremWeekend(pr.weekend != null ? String(pr.weekend) : '');
@@ -234,6 +241,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         // 5.12.41: blank = the federal minimum wage; a change recomputes the last 10 weeks' overtime.
         minimumWage: Number(minimumWage) > 0 ? Math.round(Number(minimumWage) * 100) / 100 : null,
         ...(pack.country === 'US' ? { askCashTips } : {}),
+        ...(pack.country === 'US' ? { ptoEnabled, ptoEvery: Math.min(200, Math.max(1, Number(ptoEvery) || 30)), ptoYearCap: Number(ptoYearCap) > 0 ? Math.round(Number(ptoYearCap) * 100) / 100 : null } : {}),
         overtimeExempt: otExempt,
       },
     };
@@ -316,15 +324,42 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="24" step="0.5" inputMode="decimal"
               value={minRestHours} onChange={e => setMinRestHours(e.target.value)} disabled={savingVenue} />
           </div>
-          <div>
+          {pack.holidayRules === 'uk' ? <div>
             <label style={labelStyle}>Holiday accrual rate %</label>
             <input
               style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }}
               type="number" min="0" max="100" step="0.01" inputMode="decimal"
               value={accrualRate} onChange={e => setAccrualRate(e.target.value)} disabled={savingVenue}
             />
-            {pack.holidayRules !== 'uk' && <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Off for US venues for now: there is no statutory accrual, so the accrual run writes nothing.</div>}
-          </div>
+          </div> : null}
+          {pack.country === 'US' ? (
+            <div style={{ gridColumn: '1 / -1', display: 'grid', gap: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>
+                <input type="checkbox" checked={ptoEnabled} onChange={e => setPtoEnabled(e.target.checked)} disabled={savingVenue} style={{ marginTop: 3 }} />
+                <span>
+                  <b>Paid time off (PTO)</b>
+                  <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>
+                    Hourly staff earn PTO from approved timesheets when you run accrual (Time off and availability). Balances, requests and payroll's paid time work as holiday does. Off until you switch it on: no US law requires it.
+                  </span>
+                </span>
+              </label>
+              {ptoEnabled && (
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                  <div>
+                    <label style={labelStyle}>1 hour of PTO for every</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input style={{ ...inputStyle, width: 90, fontFamily: 'var(--font-mono)' }} inputMode="decimal" value={ptoEvery} onChange={e => setPtoEvery(e.target.value.replace(/[^\d.]/g, ''))} disabled={savingVenue} />
+                      <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>hours worked</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Most PTO earned in a year (hours)</label>
+                    <input style={{ ...inputStyle, width: 120, fontFamily: 'var(--font-mono)' }} inputMode="decimal" placeholder="no cap" value={ptoYearCap} onChange={e => setPtoYearCap(e.target.value.replace(/[^\d.]/g, ''))} disabled={savingVenue} />
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
           <div>
             <label style={labelStyle}>Currency and country</label>
             <div style={{ ...inputStyle, display: 'flex', alignItems: 'center', color: 'var(--t2)' }}>{ALL_CURRENCIES[currency]?.label || currency} · {pack.countryName}</div>

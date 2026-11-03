@@ -12,10 +12,12 @@ import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, grou
 import * as wf from '../../../staff/wfData';
 import { isHourly, avgHoursPerDay, FIXED_HOLIDAY_DAYS } from '../../../staff/labour';
 import { proposeLeaveDays } from '../../../staff/leaveDays';
+// 5.12.51: US venues call it PTO (Workforce settings, Paid time off).
+import { activeCountry } from '../../../lib/regionPack';
 
 const TABS = [
   { key: 'leave', lbl: 'Leave requests', icon: 'note' },
-  { key: 'balances', lbl: 'Holiday balances', icon: 'sun' },
+  { key: 'balances', lbl: activeCountry() === 'US' ? 'PTO balances' : 'Holiday balances', icon: 'sun' },
   { key: 'avail', lbl: 'Availability', icon: 'status' },
 ];
 const LEAVE_TYPES = [
@@ -324,7 +326,7 @@ function BalancesSection({ staff, roles, balances, accrual, leave, timesheets, r
   });
   return (
     <Card>
-      <Toolbar title="Holiday balances" sub="Hourly staff accrue 12.07%; salaried staff get a fixed allowance" action={action} />
+      <Toolbar title={activeCountry() === 'US' ? 'PTO balances' : 'Holiday balances'} sub={activeCountry() === 'US' ? 'Hourly staff earn paid time off from approved timesheets when PTO is on (Workforce settings)' : 'Hourly staff accrue 12.07%; salaried staff get a fixed allowance'} action={action} />
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, color: 'var(--t3)', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, padding: '8px 12px', marginBottom: 14, lineHeight: 1.6 }}>
         <Icon name="warn" size={14} /> <span>UK statutory: <b>hourly / irregular-hours</b> staff accrue 12.07% of approved hours (server-computed); <b>salaried</b> staff get {FIXED_HOLIDAY_DAYS} days/year. For variable-hours staff, “a day” = their average hours per day worked over the statutory <b>52-week reference period</b> (weeks with no work skipped, 104-week max lookback, fewer weeks if they’re newer — the post-Apr 2020 gov.uk method), so a day is worth different hours per person.</span>
       </div>
