@@ -56,7 +56,7 @@ export default function ManagerHome({ ctx }) {
   const covers = (snap?.floor || []).reduce((n, t) => n + (Number(t.covers) || 0), 0);
   const onShift = snap?.team ? onShiftNow(snap.team.punches) : [];
   const noshow = snap?.team ? noShows(snap.team.shifts, snap.team.punches) : [];
-  const breaks = snap?.team ? breaksDue(snap.team.punches, { policy: snap.team.breakPolicy ? venueBreakPolicy(snap.team.breakPolicy) : null }) : [];
+  const breaks = snap?.team ? breaksDue(snap.team.punches, { policy: snap.team.breakPolicy ? venueBreakPolicy(snap.team.breakPolicy, snap?.currency === 'USD' ? 'US' : null) : null }) : [];
   const toOrder = snap?.kitchen ? belowPar(snap.kitchen.items).length : 0;
   const incoming = (snap?.kitchen?.deliveries || []).length;
   const opsMaint = snap?.ops?.openMaintenance || 0;

@@ -14,6 +14,12 @@
 // Deliberately dependency-free (labour.js pulls in ./seed, which Node's test
 // runner can't resolve) so this can be unit-tested directly. See
 // breakShortfall.test.js.
+//
+// 5.12.52: a US venue checks the MEAL break against its state's rule (Workforce settings, State break
+// rules; supabase/functions/_shared/usBreaks.js), never the UK Working Time Regulations. A UK venue
+// is exactly as before.
+
+import { usBreakRule, usMealBreakMins } from '../../supabase/functions/_shared/usBreaks.js';
 
 /**
  * UK statutory rest break due for a worked stretch (Working Time Regulations
@@ -47,9 +53,11 @@ export const DEFAULT_BREAK_THRESHOLD_HRS = 6;
 
 /** The venue's break policy, resolved once so every screen agrees. Pass the
  *  `settings` jsonb bag (i.e. `settings.settings`), not the whole row. */
-export function venueBreakPolicy(bag) {
+export function venueBreakPolicy(bag, country = null) {
   const s = bag || {};
   return {
+    // 5.12.52: which law the legal minimum comes from. 'uk' (WTR) unless the venue is in the US.
+    law: country === 'US' ? usBreakRule(s) : 'uk',
     defaultMins: s.defaultBreakMins == null ? DEFAULT_BREAK_MINS : Math.max(0, Number(s.defaultBreakMins) || 0),
     thresholdHrs: s.autoBreakHours == null ? DEFAULT_BREAK_THRESHOLD_HRS : Math.max(1, Number(s.autoBreakHours) || DEFAULT_BREAK_THRESHOLD_HRS),
     autoDeduct: s.autoBreak === true,
@@ -82,7 +90,8 @@ export function breakShortfall({
 } = {}) {
   const gross = Number(grossHours) || 0;
   const taken = Math.max(0, Number(breakMins) || 0);
-  const statutory = statutoryBreakMins(gross, dob);
+  const law = policy?.law;
+  const statutory = law && law !== 'uk' ? usMealBreakMins(gross, law) : statutoryBreakMins(gross, dob);
 
   // What this shift was meant to get: the roster's own number wins, because a
   // manager set it deliberately for this shift. Otherwise the venue default,

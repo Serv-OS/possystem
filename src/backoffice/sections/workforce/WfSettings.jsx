@@ -15,6 +15,7 @@ import WfGeofenceCard from './WfGeofenceCard';
 import { activeRegionPack } from '../../../lib/regionPack';
 import { overtimeRules, FEDERAL_MINIMUM_WAGE } from '../../../../supabase/functions/_shared/multiSiteOvertime.js';
 import { CURRENCIES as ALL_CURRENCIES } from '../../../lib/currency';
+import { US_STATE_BREAKS, usBreakRule, usBreakWords } from '../../../../supabase/functions/_shared/usBreaks.js';
 
 // v5.11.101: pay period types and their names. Which ones a venue may pick follows the region pack
 // (a US venue adds semi-monthly). Fixed lengths roll on from an anchor; semi-monthly is the 1st to
@@ -91,6 +92,10 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   // break was punched (customer ask: "30 min unpaid as standard, automatic").
   const [defaultBreakMins, setDefaultBreakMins] = useState('30');
   const [autoBreak, setAutoBreak] = useState(false);
+  // 5.12.52: US venues pick their state's meal break rule (_shared/usBreaks.js); none for Utah.
+  const [usBreakState, setUsBreakState] = useState('');
+  const [usMealAfter, setUsMealAfter] = useState('');
+  const [usMealMins, setUsMealMins] = useState('');
   const [autoBreakHours, setAutoBreakHours] = useState('6');
   // Tipping policy (Employment (Allocation of Tips) Act 2023): how card tips
   // are distributed + who decides allocation (drives NIC treatment).
@@ -141,6 +146,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setPaidBreaks(!!settings?.settings?.paidBreaks);
     setDefaultBreakMins(String(settings?.settings?.defaultBreakMins ?? 30));
     setAutoBreak(!!settings?.settings?.autoBreak);
+    { const ub = settings?.settings?.usBreaks || {}; setUsBreakState(String(ub.state || '').toUpperCase() === 'CUSTOM' ? 'custom' : String(ub.state || '').toUpperCase()); setUsMealAfter(ub.mealAfter ? String(ub.mealAfter) : ''); setUsMealMins(ub.mealMins ? String(ub.mealMins) : ''); }
     setAutoBreakHours(String(settings?.settings?.autoBreakHours ?? 6));
     const sj = settings?.settings || {};
     setTipMode(['pool', 'direct', 'hybrid'].includes(sj.tipMode) ? sj.tipMode : 'pool');
@@ -231,6 +237,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         // venue can never configure itself below UK law on a triggering shift.
         defaultBreakMins: Math.min(120, Math.max(0, parseInt(defaultBreakMins, 10) || 0)),
         autoBreak,
+        ...(pack.country === 'US' ? { usBreaks: { state: usBreakState || '', ...(usBreakState === 'custom' ? { mealAfter: Number(usMealAfter) || null, mealMins: Number(usMealMins) || null } : {}) } } : {}),
         autoBreakHours: Math.min(13, Math.max(1, Number(autoBreakHours) || 6)),
         tipMode,
         directPct: Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)),
@@ -611,12 +618,31 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         {/* ── Breaks policy (UK Working Time Regs 1998: 20-min break due over
               6h worked, 30-min for under-18s over 4.5h — paying it is optional
               and set here; timesheets flag any shortfall either way) ── */}
+        {pack.country === 'US' && (
+          <div style={{ marginTop: 14, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div>
+              <label style={labelStyle}>State break rules</label>
+              <select style={{ ...inputStyle, width: 260 }} value={usBreakState} onChange={e => setUsBreakState(e.target.value)} disabled={savingVenue}>
+                <option value="">No state rule (federal, for example Utah)</option>
+                {Object.entries(US_STATE_BREAKS).sort((a, b) => a[1].label.localeCompare(b[1].label)).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                <option value="custom">Your own rule</option>
+              </select>
+            </div>
+            {usBreakState === 'custom' && <>
+              <div><label style={labelStyle}>Meal break after (hours)</label><input style={{ ...inputStyle, width: 110, fontFamily: 'var(--font-mono)' }} inputMode="decimal" value={usMealAfter} onChange={e => setUsMealAfter(e.target.value.replace(/[^\d.]/g, ''))} disabled={savingVenue} /></div>
+              <div><label style={labelStyle}>Meal break (minutes)</label><input style={{ ...inputStyle, width: 110, fontFamily: 'var(--font-mono)' }} inputMode="numeric" value={usMealMins} onChange={e => setUsMealMins(e.target.value.replace(/[^\d]/g, ''))} disabled={savingVenue} /></div>
+            </>}
+            <div style={{ flexBasis: '100%', fontSize: 11.5, color: 'var(--t3)' }}>
+              The common adult rule for the state, simplified: minors, some industries and agreed waivers differ. Check the current law for your state.
+            </div>
+          </div>
+        )}
         <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 14, cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>
           <input type="checkbox" checked={paidBreaks} onChange={e => setPaidBreaks(e.target.checked)} disabled={savingVenue} style={{ marginTop: 3 }} />
           <span>
             <b>Breaks are paid</b>
             <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>
-              When on, break minutes are paid on top of worked hours on new timesheets (changeable per timesheet). UK law requires a 20-minute rest break when working over 6 hours (30 minutes for under-18s over 4.5 hours) but does not require it to be paid — timesheets flag missing statutory breaks either way.
+              When on, break minutes are paid on top of worked hours on new timesheets (changeable per timesheet). {pack.country === 'US' ? usBreakWords(usBreakRule({ usBreaks: { state: usBreakState, mealAfter: usMealAfter, mealMins: usMealMins } })) + ' Timesheets flag a missing meal break either way.' : 'UK law requires a 20-minute rest break when working over 6 hours (30 minutes for under-18s over 4.5 hours) but does not require it to be paid. Timesheets flag missing statutory breaks either way.'}
             </span>
           </span>
         </label>

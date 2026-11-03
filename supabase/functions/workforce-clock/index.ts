@@ -34,6 +34,7 @@ import { regionPack } from '../_shared/regionPack.js';
 import { namedSheetId, openSheetFor } from '../_shared/clockSheet.js';
 // 5.12.49: declared cash tips at clock out (US venues, Workforce settings, Ask for cash tips at clock out).
 import { asksCashTips, parseCashTips } from '../_shared/cashTips.js';
+import { usBreakRule, usMealBreakMins } from '../_shared/usBreaks.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -286,11 +287,19 @@ Deno.serve(async (req) => {
         const defMins = Math.max(0, Number(vs.defaultBreakMins ?? 30));
         const threshold = Math.max(1, Number(vs.autoBreakHours ?? 6));
         if (grossHrs > threshold && defMins > 0) {
-          let statutory = grossHrs > 6 ? 20 : 0;
-          const dob = staff?.dob ? new Date(staff.dob) : null;
-          if (dob && !isNaN(dob.getTime())) {
-            const age = (now.getTime() - dob.getTime()) / (365.25 * 86400000);
-            if (age < 18 && grossHrs > 4.5) statutory = Math.max(statutory, 30);
+          let statutory = 0;
+          // 5.12.52: a US venue's floor is its state's meal break rule (Workforce settings, State break
+          // rules; none for Utah), never the UK Working Time Regulations. UK venues are as before.
+          const usVenue = regionPack({ currency: await currencyOf(location_id) }).country === 'US';
+          if (usVenue) {
+            statutory = usMealBreakMins(grossHrs, usBreakRule(vs));
+          } else {
+            statutory = grossHrs > 6 ? 20 : 0;
+            const dob = staff?.dob ? new Date(staff.dob) : null;
+            if (dob && !isNaN(dob.getTime())) {
+              const age = (now.getTime() - dob.getTime()) / (365.25 * 86400000);
+              if (age < 18 && grossHrs > 4.5) statutory = Math.max(statutory, 30);
+            }
           }
           autoApplied = Math.max(defMins, statutory);
           breakTaken = autoApplied;

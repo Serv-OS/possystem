@@ -96,7 +96,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 
   const staffMap = useMemo(() => Object.fromEntries((staff || []).map(s => [s.id, s])), [staff]);
   // The venue's break policy, resolved once for every row on the screen.
-  const breakPolicy = useMemo(() => venueBreakPolicy(settings?.settings), [settings?.settings]);
+  const breakPolicy = useMemo(() => venueBreakPolicy(settings?.settings, activeCountry()), [settings?.settings]);
 
   async function reload() {
     setLoading(true);

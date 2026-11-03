@@ -8,6 +8,8 @@
 #            cash is reported and never added to the total; a UK venue reads exactly as before.
 #   pto:     1 h per 30 h for hourly staff when switched on, never twice, never salaried, the yearly cap,
 #            off writes nothing, a UK venue still accrues 12.07%.
+#   breaks:  the clock out auto deduct floor is the state's meal rule (California 30), none for Utah
+#            (the venue default 10), and the UK Working Time Regulations (20) for a UK venue.
 set -e
 HERE="${0:A:h}"; TOP="${HERE:h:h:h}"; B="$(mktemp -d)"; trap 'rm -rf "$B"' EXIT
 cp "$HERE/mockdb.mjs" "$B/"
@@ -32,4 +34,7 @@ want pto-us  "$(p us)"  '{"sc":"us","first":{"accrued":2,"hours":2,"off":null},"
 want pto-cap "$(p cap)" '{"sc":"cap","first":{"accrued":2,"hours":1.5,"off":null},"again":0,"rows":"s1:0.5,s1:1"}'
 want pto-off "$(p off)" '{"sc":"off","first":{"accrued":0,"hours":0,"off":"Paid time off is switched off (Workforce settings, Paid time off)."},"again":0,"rows":""}'
 want pto-uk  "$(p uk)"  '{"sc":"uk","first":{"accrued":2,"hours":7.24,"off":null},"again":0,"rows":"s1:3.62,s1:3.62"}'
-echo "us_workforce: 12 checks pass"
+want break-ca "$(c caAuto)" '{"sc":"caAuto","breakMins":30,"autoBreak":30}'
+want break-ut "$(c utAuto)" '{"sc":"utAuto","breakMins":10,"autoBreak":10}'
+want break-uk "$(c ukAuto)" '{"sc":"ukAuto","breakMins":20,"autoBreak":20}'
+echo "us_workforce: 15 checks pass"

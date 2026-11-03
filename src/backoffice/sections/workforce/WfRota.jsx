@@ -476,7 +476,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   }, [onbCases, staffById]);
   // Same resolved venue break policy the Timesheets screen uses, so a new rota
   // shift and a new manual timesheet can no longer disagree about the default.
-  const breakPolicy = useMemo(() => venueBreakPolicy(settings?.settings), [settings?.settings]);
+  const breakPolicy = useMemo(() => venueBreakPolicy(settings?.settings, activeCountry()), [settings?.settings]);
 
   // Time-off / availability warnings for a given person on a given day. Passed
   // to ShiftModal as a callback so it re-runs when the modal's own person picker

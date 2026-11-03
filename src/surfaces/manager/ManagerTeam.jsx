@@ -72,7 +72,8 @@ export default function ManagerTeam({ ctx }) {
   const on = team ? onShiftNow(team.punches) : [];
   const noshow = team ? noShows(team.shifts, team.punches) : [];
   // Same venue policy the Back Office uses, shipped by manager-snapshot.
-  const breakOpts = { policy: team?.breakPolicy ? venueBreakPolicy(team.breakPolicy) : null };
+  // 5.12.52: a US venue checks its state's meal break rule (snapshot currency says the country).
+  const breakOpts = { policy: team?.breakPolicy ? venueBreakPolicy(team.breakPolicy, snap?.currency === 'USD' ? 'US' : null) : null };
   const breaks = team ? breaksDue(team.punches, breakOpts) : [];
   const labourMinor = team ? liveLabourMinor(team.punches, team.ratesMinor) : 0;
   const nameOf = {}; (team?.punches || []).forEach((p) => { nameOf[p.staffId] = p.name; }); (team?.shifts || []).forEach((s) => { nameOf[s.staffId] = s.name; });
