@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.44',
+    date: '3 Nov 2026',
+    items: [
+      'Review ask texts link to the venue\'s own ServOS address, for example habitum.serv-os.app/review, instead of the old temporary address. Both the automatic asks and Send a test use it. Needs review-request deployed.',
+    ],
+  },
+  {
     v: '5.12.43',
     date: '3 Nov 2026',
     items: [
