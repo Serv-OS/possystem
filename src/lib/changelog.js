@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.58',
+    date: '4 Nov 2026',
+    items: [
+      'Positions (Peter, 4 Nov 2026): saving a position with Contracted week 0 failed with a database error, so a zero hours position could not be added. The week on a position only turns a salary into an hourly rate, so the box now shows for Salaried positions only (Hours a week the salary covers, must be above 0, refused in words). Hourly positions keep no week; hours are on the person: Add staff member, Contract (Zero hours, Part time, Full time). Nothing to deploy.',
+    ],
+  },
+  {
     v: '5.12.57',
     date: '3 Nov 2026',
     items: [

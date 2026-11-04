@@ -25,6 +25,11 @@ const payTypesFor = (pack, current) => PAY_TYPES.filter(p => p.v !== 'ageBanded'
 // 5.12.57: BANDS ARE NOT BUILT YET. An age banded position used to disable the rate, and nothing read
 // its bands, so it paid nothing (UK too). Until bands exist its base rate is everyone's rate.
 export const AGE_BANDS_WORDS = 'Bands are not built yet: everyone in this position is paid this rate.';
+// 5.12.58 (Peter, 4 Nov 2026): "cant add a zero hour staff member". Saving a position with Contracted
+// week 0 was refused by the database (wf_roles_contracted_week_check). The week on a position only
+// divides a salary into an hourly rate; hours are the person's (Contract: Zero hours, Part time ...).
+export const ZERO_HOURS_WORDS = 'Hours are set per person: Add staff member, Contract (Zero hours, Part time, Full time).';
+export const SALARY_WEEK_WORDS = 'Enter the hours a week the salary covers (above 0).';
 
 const blankRole = () => ({
   key: '', lbl: '', grp: 'floor', payType: 'hourly',
@@ -272,6 +277,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
 // ─────────────────────────────────────────────────────────────────────────────
 function RoleEditor({ role, busy, pack = activeRegionPack(), poolOut = () => null, onClose, onSave, onDelete }) {
   const [draft, setDraft] = useState(role);
+  const [weekRefused, setWeekRefused] = useState(false);  // 5.12.58: a salaried position with no week
   const isNew = !role.id;
   const set = patch => setDraft(d => ({ ...d, ...patch }));
   const us = pack.country === 'US';
@@ -292,9 +298,13 @@ function RoleEditor({ role, busy, pack = activeRegionPack(), poolOut = () => nul
       // 5.12.57: an age banded position keeps its rate (it is everyone's rate until bands exist).
       rate: draft.payType === 'hourly' || draft.payType === 'ageBanded' ? num(draft.rate) : draft.rate,
       salary: draft.payType === 'salaried' ? num(draft.salary) : draft.salary,
-      contractedWeek: num(draft.contractedWeek) ?? 40,
+      // 5.12.58: the position's week is only the hours a salary covers (salary / 52 / week). An hourly
+      // position keeps 40 whatever the box held, so a 0 (zero hours is on the person, Add staff member,
+      // Contract) can never trip the database's week > 0 check. A salaried position must say its week.
+      contractedWeek: draft.payType === 'salaried' ? num(draft.contractedWeek) : 40,
       troncWeight: num(draft.troncWeight) ?? 1,
     };
+    if (next.contractedWeek == null || next.contractedWeek <= 0) { setWeekRefused(true); return; }
     onSave(next);
   }
 
@@ -342,10 +352,15 @@ function RoleEditor({ role, busy, pack = activeRegionPack(), poolOut = () => nul
                 {draft.payType === 'ageBanded' && <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5, lineHeight: 1.4 }}>{AGE_BANDS_WORDS}</div>}
               </div>
             )}
-            <div style={{ flex: 1 }}>
-              <label style={labelStyle}>Contracted week (h)</label>
-              <input style={inputStyle} type="number" step="1" value={draft.contractedWeek ?? ''} placeholder="40" onChange={e => set({ contractedWeek: e.target.value })} />
-            </div>
+            {draft.payType === 'salaried' ? (
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Hours a week the salary covers</label>
+                <input style={inputStyle} type="number" step="1" min="1" value={draft.contractedWeek ?? ''} placeholder="40" onChange={e => { setWeekRefused(false); set({ contractedWeek: e.target.value }); }} />
+                {weekRefused && <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 5 }}>{SALARY_WEEK_WORDS}</div>}
+              </div>
+            ) : (
+              <div style={{ flex: 1, fontSize: 11, color: 'var(--t4)', alignSelf: 'flex-end', paddingBottom: 8 }}>{ZERO_HOURS_WORDS}</div>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
