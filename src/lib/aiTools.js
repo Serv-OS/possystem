@@ -5,14 +5,20 @@
  */
 
 import { supabase, getLocationId } from './supabase';
-import { money } from './currency.js';
+import { money, getActiveCurrencyCode } from './currency.js';
 import { localeDateString, localeTimeString, localeString, zoneOr } from './venueDates';
+import { venueDayStart, venueHour, hourLabel } from './aiClock.js';
 
 // 5.12.57 (batch 8): the assistant reads times on the VENUE's clock and in its words ('2:05 PM' at a
 // US venue), never the till's own clock; with no zone yet it says it does not know rather than guess.
 const onVenue = (opts) => (zoneOr() ? { ...opts, timeZone: zoneOr() } : null);
 const venueTimeOf = (t) => { const o = onVenue({ hour: '2-digit', minute: '2-digit' }); return o ? localeTimeString(new Date(t), o) : null; };
 const venueWhenOf = (t) => { const o = onVenue({ hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }); return o ? localeString(new Date(t), o) : null; };
+// 5.12.60 (batch 8 tail): "today" starts at the VENUE's midnight and hour buckets are the venue's
+// hours (lib/aiClock.js); with no zone known both read the laptop's clock exactly as before.
+const dayStart = () => venueDayStart(zoneOr());
+const hourOf = (ts) => venueHour(ts, zoneOr());
+const hourText = (h) => hourLabel(h, getActiveCurrencyCode());
 
 // Tools that require user confirmation before executing
 export const WRITE_TOOLS = new Set(['add_menu_item', 'update_item_price', 'eighty_six_item', 'add_to_order', 'remove_from_order', 'apply_order_discount']);
@@ -29,7 +35,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
 
     case 'get_sales_summary': {
       // Always fetch live from Supabase so data is consistent across all devices
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       let checks = [];
       if (locationId && supabase) {
         const { data } = await supabase.from('closed_checks')
@@ -64,7 +70,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
 
     case 'get_top_items': {
       const limit = Math.min(toolInput.limit || 5, 10);
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       let checks = [];
       if (locationId && supabase) {
         const { data } = await supabase.from('closed_checks')
@@ -291,7 +297,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
     }
 
     case 'search_item_sales': {
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       const query = (toolInput.query || '').toLowerCase();
       let checks = [];
       if (locationId && supabase) {
@@ -321,7 +327,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
     }
 
     case 'get_hourly_breakdown': {
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       let checks = [];
       if (locationId && supabase) {
         const { data } = await supabase.from('closed_checks')
@@ -335,22 +341,22 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       checks.forEach(c => {
         const ts = c.closed_at || (c.closedAt ? new Date(c.closedAt).toISOString() : null);
         if (!ts) return;
-        const h = new Date(ts).getHours();
-        const label = `${h.toString().padStart(2,'0')}:00`;
-        hourMap[label] = hourMap[label] || { checks: 0, revenue: 0, covers: 0 };
-        hourMap[label].checks++;
-        hourMap[label].revenue += c.total || 0;
-        hourMap[label].covers  += c.covers || 1;
+        const h = hourOf(ts);
+        hourMap[h] = hourMap[h] || { checks: 0, revenue: 0, covers: 0 };
+        hourMap[h].checks++;
+        hourMap[h].revenue += c.total || 0;
+        hourMap[h].covers  += c.covers || 1;
       });
-      const hours = Object.entries(hourMap)
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([hour, d]) => ({ hour, checks: d.checks, covers: d.covers, revenue: `${money(d.revenue)}` }));
+      // keyed by the venue hour (0 to 23) and sorted as numbers, then labelled the venue's way
+      const hours = Object.keys(hourMap).map(Number)
+        .sort((a, b) => a - b)
+        .map((h) => { const d = hourMap[h]; return { hour: hourText(h), checks: d.checks, covers: d.covers, revenue: `${money(d.revenue)}` }; });
       const peak = hours.length ? hours.reduce((a, b) => parseFloat(b.revenue.slice(1)) > parseFloat(a.revenue.slice(1)) ? b : a) : null;
       return { result: { hours, peak_hour: peak?.hour || 'n/a', peak_revenue: peak?.revenue || money(0) } };
     }
 
     case 'get_payment_breakdown': {
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       let checks = [];
       if (locationId && supabase) {
         const { data } = await supabase.from('closed_checks')
@@ -379,7 +385,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
     }
 
     case 'get_server_performance': {
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       let checks = [];
       if (locationId && supabase) {
         const { data } = await supabase.from('closed_checks')
@@ -408,7 +414,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
     }
 
     case 'get_covers_report': {
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       let checks = [];
       if (locationId && supabase) {
         const { data } = await supabase.from('closed_checks')
@@ -426,7 +432,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         byServer[name] = (byServer[name] || 0) + (c.covers || 1);
         const ts = c.closed_at || (c.closedAt ? new Date(c.closedAt).toISOString() : null);
         if (ts) {
-          const h = `${new Date(ts).getHours().toString().padStart(2,'0')}:00`;
+          const h = hourOf(ts);
           byHour[h] = (byHour[h] || 0) + (c.covers || 1);
         }
       });
@@ -434,14 +440,14 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         result: {
           total_covers: totalCovers,
           by_server: Object.entries(byServer).sort((a,b)=>b[1]-a[1]).map(([s,c])=>({ server:s, covers:c })),
-          by_hour: Object.entries(byHour).sort((a,b)=>a[0].localeCompare(b[0])).map(([h,c])=>({ hour:h, covers:c })),
+          by_hour: Object.keys(byHour).map(Number).sort((a,b)=>a-b).map((h)=>({ hour:hourText(h), covers:byHour[h] })),
         },
       };
     }
 
     case 'get_shift_summary': {
       const { tables = [] } = storeState;
-      const sod = new Date(); sod.setHours(0, 0, 0, 0);
+      const sod = dayStart();
       let checks = [];
       if (locationId && supabase) {
         const { data } = await supabase.from('closed_checks')

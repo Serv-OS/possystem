@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.60',
+    date: '4 Nov 2026',
+    items: [
+      'The last of the US basics list (Peter, 4 Nov 2026): the AI assistant\'s "today" and hour buckets and the Back Office greeting run on the venue\'s clock, not the laptop\'s; Open shifts preset chips read 5:00 PM to 11:00 PM at US venues; report descriptions and menu pricing hints say "your delivery apps" at US venues instead of Deliveroo, Uber Eats and Just Eat,. UK venues unchanged. Nothing to deploy.',
+    ],
+  },
+  {
     v: '5.12.59',
     date: '4 Nov 2026',
     items: [

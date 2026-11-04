@@ -15,6 +15,10 @@ import { Card, Badge, inputStyle, labelStyle } from '../../../staff/wfUi';
 import { hoursOf } from '../../../staff/labour';
 import { shiftWords } from '../../../../supabase/functions/_shared/openShiftRules.js';
 import { activeCountry } from '../../../lib/regionPack';
+// 4 Nov 2026: a preset chip reads its times the venue's way (lib/venueDates venueSpan): "17:00 to 23:00"
+// at a UK venue, byte for byte as before, "5:00 PM to 11:00 PM" at a US one. The <input type="time">
+// boxes keep their own 'HH:MM' values; the request words come through shiftWords with the country.
+import { venueSpan } from '../../../lib/venueDates';
 
 /** Editor for an open shift: the day, the position, the times. */
 export function OpenShiftModal({ days, day, shift, roles, sections, templates, saving, defaultBreakMins = 30, onSave, onDelete, onClose }) {
@@ -59,7 +63,7 @@ export function OpenShiftModal({ days, day, shift, roles, sections, templates, s
             {templates.map(t => (
               <button key={t.id} className="btn btn-ghost btn-xs" onClick={() => applyTpl(t)} style={{ borderRadius: 999, border: '1px solid var(--inset-border)', background: 'var(--inset)' }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: t.color || 'var(--t3)', flexShrink: 0 }} />
-                {t.name} <span className="mono" style={{ color: 'var(--t4)', fontSize: 10 }}>{t.start} to {t.finish}</span>
+                {t.name} <span className="mono" style={{ color: 'var(--t4)', fontSize: 10 }}>{venueSpan(t.start, t.finish, undefined, ' to ')}</span>
               </button>
             ))}
           </div>
