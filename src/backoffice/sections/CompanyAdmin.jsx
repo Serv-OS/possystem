@@ -43,6 +43,10 @@ export default function CompanyAdmin() {
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [locations, setLocations] = useState([]);
   const [form, setForm] = useState({});
+  // Batch 9 (Peter, 4 Nov 2026): a new site's currency box starts blank and must be picked before the
+  // site can be saved, like the time zone since 5.12.57. Until it is picked the time zone box stays
+  // blank too; once picked the time zone default follows the currency as before.
+  const locTzDefault = form.locCurrency ? defaultTimezoneFor(form.locCurrency) : '';
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -100,14 +104,15 @@ export default function CompanyAdmin() {
 
   const createLocation = async () => {
     if (!form.locName?.trim()) return setError('Location name is required');
-    if (!(form.locTz || defaultTimezoneFor(form.locCurrency))) return setError('Pick the time zone. US sites span several zones.');
+    if (!form.locCurrency) return setError('Pick the currency for this site.');
+    if (!(form.locTz || locTzDefault)) return setError('Pick the time zone. US sites span several zones.');
     setWorking(true); setError('');
     const { data: loc, error: err } = await supabase.from('locations').insert({
       org_id: selectedOrg.id,
       name: form.locName.trim(),
       address: form.locAddress?.trim() || '',
-      timezone: form.locTz || defaultTimezoneFor(form.locCurrency),
-      currency: form.locCurrency || 'GBP',
+      timezone: form.locTz || locTzDefault,
+      currency: form.locCurrency,
       status: 'active',
     }).select().single();
     if (err) { setWorking(false); return setError(err.message); }
@@ -162,7 +167,7 @@ export default function CompanyAdmin() {
     // same rows as that button, in ONE insert. US venues keep the tax profile flow. BEFORE the
     // shared products are pulled below, so every copy can map its tax rate by name as it arrives.
     const taxSeed = await seedVenueTaxRates({
-      locationId: loc.id, currency: loc.currency || form.locCurrency || 'GBP',
+      locationId: loc.id, currency: loc.currency || form.locCurrency,
       readExisting: (id) => supabase.from('tax_rates').select('id').eq('location_id', id),
       insertRows: (rows) => supabase.from('tax_rates').insert(rows).select('id'),
     });
@@ -354,14 +359,15 @@ export default function CompanyAdmin() {
           <div style={S.row}>
             <div>
               <label style={S.label}>Timezone</label>
-              <select style={S.input} value={form.locTz || defaultTimezoneFor(form.locCurrency)} onChange={e => f('locTz', e.target.value)}>
-                {!(form.locTz || defaultTimezoneFor(form.locCurrency)) && <option value="">Pick the time zone</option>}
-                <TimezoneOptions value={form.locTz || defaultTimezoneFor(form.locCurrency)} />
+              <select style={S.input} value={form.locTz || locTzDefault} onChange={e => f('locTz', e.target.value)}>
+                {!(form.locTz || locTzDefault) && <option value="">Pick the time zone</option>}
+                <TimezoneOptions value={form.locTz || locTzDefault} />
               </select>
             </div>
             <div>
               <label style={S.label}>Currency</label>
-              <select style={S.input} value={form.locCurrency || 'GBP'} onChange={e => f('locCurrency', e.target.value)}>
+              <select style={S.input} value={form.locCurrency || ''} onChange={e => f('locCurrency', e.target.value)}>
+                {!form.locCurrency && <option value="">Pick a currency</option>}
                 {Object.values(CURRENCIES).map(c => <option key={c.code} value={c.code}>{c.code} — {c.label}</option>)}
               </select>
             </div>

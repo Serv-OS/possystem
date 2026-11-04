@@ -19,6 +19,7 @@ import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSectio
 import { buildWeek } from '../../staff/wfWeek';
 import { otherSites, linkCandidates, sitesToAdd, linkErrorWords } from '../../staff/peopleAcrossSites';
 import WfRota from './workforce/WfRota';
+import WfDashboard from './workforce/WfDashboard';
 import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml, normalizeCase } from './workforce/WfOnboarding';
 import WfTimesheets from './workforce/WfTimesheets';
 import WfPayroll from './workforce/WfPayroll';
@@ -37,7 +38,7 @@ import { localeDateString, dateNumeric } from '../../lib/venueDates';
 import { rotaStaffOf, headOfficeSwitchOn } from '../../lib/headOffice';
 import { adoptVenueRegion } from '../../lib/locationTime';
 import { getActiveCurrencyCode } from '../../lib/currency';
-import { loadPrivateDetails, HIDDEN_WORDS } from '../../staff/privateDetails';
+import { loadPrivateDetails, loadSiteRates, HIDDEN_WORDS } from '../../staff/privateDetails';
 // 5.12.57: the words that follow the venue's law (Holiday or PTO, Tronc or Tip pool, the leaver balance).
 import { holidayWord, tipPoolName, ukHoliday, leaverBalanceWords } from '../../staff/payLaw';
 
@@ -269,7 +270,7 @@ export default function Workforce({ section, orgCtx }) {
 
       {locationId && regionFor !== locationId && <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading {locName}…</Card>}
       {(!locationId || regionFor === locationId) && <>
-      {key === 'dashboard' && <WfDashboard staff={staff} positionCount={(roles.list || []).length} />}
+      {key === 'dashboard' && <WfDashboard {...sectionProps} />}
       {/* 5.12.56: head office staff are salaried and never clock in, so they never go on the rota (no rota cost at the site). */}
       {key === 'rota' && <WfRota {...sectionProps} staff={rotaStaffOf(staff, settings)} />}
       {key === 'staff' && (loading
@@ -316,33 +317,6 @@ function EmptyState({ icon = 'sparkle', title, body, cta, onCta }) {
       <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 8, lineHeight: 1.6 }}>{body}</div>
       {cta && <button className="btn btn-acc" style={{ marginTop: 16 }} onClick={onCta}>{cta}</button>}
     </Card>
-  );
-}
-
-// ── Dashboard ──
-// 5.12.57: only figures that are real. The labour %, wage cost and needs action tiles were built
-// from the seed forecast and the seed rates, so they always read 0 and All clear: they are gone
-// and the dashboard says where labour lives instead.
-function WfDashboard({ staff = [], positionCount = 0 }) {
-  const active = staff.filter(s => s.status !== 'leaver').length;
-  const stats = [
-    { k: 'Staff', v: String(active), sub: active === 0 ? 'Add your team' : 'on the books', col: 'var(--t1)' },
-    { k: 'Positions', v: String(positionCount), sub: positionCount === 0 ? 'Add them in Positions and rates' : 'with their pay', col: 'var(--acc)' },
-  ];
-  return (
-    <div style={{ display: 'grid', gap: 14 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
-        {stats.map(s => (
-          <Card key={s.k} style={{ position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: s.col }} />
-            <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)' }}>{s.k}</div>
-            <div className="mono" style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-.02em', marginTop: 10, color: s.col }}>{s.v}</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>{s.sub}</div>
-          </Card>
-        ))}
-      </div>
-      <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>See Rota and Reports for labour: the rota shows the planned wage cost against sales, and Reports shows what was paid.</div>
-    </div>
   );
 }
 
@@ -695,7 +669,7 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
 // linked. Linked: their week counts across every site for US overtime, their PIN, card and own details
 // are shared. Every change goes through a database door that checks access to every site.
 function SitesPanel({ s, ctx, roles = {}, showToast, onChanged }) {
-  const [state, setState] = useState({ loading: true, sites: [], records: [] });
+  const [state, setState] = useState({ loading: true, sites: [], records: [], rates: {} });
   const [tick, setTick] = useState(0);
   // 5.12.39 (Peter: "people might work across all sites"): tick any number of sites, each with its
   // own position and pay rate there.
@@ -708,7 +682,12 @@ function SitesPanel({ s, ctx, roles = {}, showToast, onChanged }) {
     let live = true;
     (async () => {
       const [sites, records] = await Promise.all([loadCompanySites(ctx.orgId), loadCompanyStaffRecords(ctx.orgId)]);
-      if (live) setState({ loading: false, sites, records });
+      // 5.12.59 (Peter's decision 2.5): the other sites' rates come through the door, one ask per site;
+      // a site this login may not see reads Hidden.
+      const otherLocs = [...new Set((records || []).filter((r) => r && s.personId && r.person_id === s.personId && r.id !== s.id).map((r) => r.location_id).filter(Boolean))];
+      const answers = await Promise.all(otherLocs.map((loc) => loadSiteRates(loc)));
+      const rates = Object.fromEntries(otherLocs.map((loc, i) => [loc, answers[i]]));
+      if (live) setState({ loading: false, sites, records, rates });
     })();
     return () => { live = false; };
   }, [ctx.orgId, s.id, tick]);
@@ -736,7 +715,7 @@ function SitesPanel({ s, ctx, roles = {}, showToast, onChanged }) {
     const row = state.records.find(r => r.id === s.id);
     return { id: s.id, name: s.name, email: s.email, mobile: s.mobile, personId: row?.person_id ?? s.personId ?? null, locationId: ctx.locationId };
   }, [state.records, s, ctx.locationId]);
-  const linked = otherSites(me, state.records, names);
+  const linked = otherSites(me, state.records, names, state.rates);
   const candidates = linkCandidates(me, state.records, names);
   const canAdd = sitesToAdd(me, state.records, state.sites);
   const roleName = (key, loc) => roles[key]?.lbl || (siteRoles[loc] || []).find(r => r.key === key)?.lbl || key || 'No position';
@@ -763,7 +742,7 @@ function SitesPanel({ s, ctx, roles = {}, showToast, onChanged }) {
           </div>
           {linked.map(l => (
             <div key={l.staffId} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '3px 0' }}>
-              <b>{l.site}</b><span style={{ color: 'var(--t3)' }}>{roleName(l.role, l.locationId)}{l.rate != null ? ` · ${rateText(l.rate)}` : ''}</span>
+              <b>{l.site}</b><span style={{ color: 'var(--t3)' }}>{roleName(l.role, l.locationId)}{l.rateHidden ? ' · rate hidden' : l.rate != null ? ` · ${rateText(l.rate)}` : ''}</span>
               {l.leaver && <Badge tone="grey">Leaver</Badge>}
             </div>
           ))}

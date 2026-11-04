@@ -22,6 +22,7 @@ import { localeDateString, zoneOr } from '../lib/venueDates';
 import { reportSave } from '../lib/saveHealth';
 import { ROLES as SEED_ROLES } from './seed';
 import { templatesForVenue } from './docTemplates';
+import { loadSiteRates } from './privateDetails';
 
 const orgCache = {};
 
@@ -220,7 +221,8 @@ function mapStaff(r) {
   };
 }
 // 5.12.57: every staff column the Back Office reads, except the private ID numbers and bank details.
-const STAFF_COLS = 'id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_account_masked,portal_user_id,portal_invite_expires,created_at';
+// 5.12.59: rate_override is read through the wf_staff_rates door (20261121a), never here.
+const STAFF_COLS = 'id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_account_masked,portal_user_id,portal_invite_expires,created_at';
 export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
@@ -239,7 +241,9 @@ export async function loadStaff(locationId) {
   if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id'));
   if (error && /payroll_employee_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
-  return (data || []).map(mapStaff);
+  // 5.12.59: the site's rate overrides come through the door (a login assigned to the site reads them).
+  const rates = await loadSiteRates(locationId);
+  return (data || []).map((r) => mapStaff({ ...r, rate_override: rates.byId[String(r.id)] ?? null }));
 }
 export async function saveStaff(member, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('staff', { ...member, status: member.status || 'active' });
@@ -294,6 +298,8 @@ export async function saveStaff(member, locationId, orgId) {
   const { data, error } = await q.select(`${STAFF_COLS},location_id,payroll_employee_id,person_id,head_office,salary_annual`).single();
   if (error) { console.warn('[wf] saveStaff:', error.message); throw new Error(error.message); }
   const out = mapStaff(data);
+  if (row.rate_override !== undefined) out.rateOverride = row.rate_override;   // 5.12.59: not in the read back
+  else if (member.rateOverride !== undefined) out.rateOverride = member.rateOverride === '' ? null : member.rateOverride;
   if (member.niNumber !== undefined) out.niNumber = row.ni_number ?? null;
   if (member.ssnLast4 !== undefined) out.ssnLast4 = row.ssn_last4 ?? null;
   return out;
@@ -341,9 +347,10 @@ export async function loadCompanySites(orgId) {
 export async function loadCompanyStaffRecords(orgId) {
   if (isMock || !supabase || !orgId) return [];
   const read = (cols) => supabase.from('wf_staff').select(cols).eq('org_id', orgId).limit(2000);
-  let { data, error } = await read('id, name, email, mobile, location_id, person_id, role_key, rate_override, status');
+  // 5.12.59: no rate_override here; the Sites panel asks the door for each site (loadSiteRates).
+  let { data, error } = await read('id, name, email, mobile, location_id, person_id, role_key, status');
   // Before 20261111a there is no person_id: nobody is linked yet, the suggestions still show.
-  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read('id, name, email, mobile, location_id, role_key, rate_override, status'));
+  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read('id, name, email, mobile, location_id, role_key, status'));
   if (error) { console.warn('[wf] loadCompanyStaffRecords:', error.message); return []; }
   return data || [];
 }
@@ -975,8 +982,8 @@ export function templateVars(staff, role, businessName) {
 }
 
 /** Load templates (merges built-in defaults with saved ones; saved override built-ins by kind+name).
- *  5.12.57: the built ins follow the venue's country and a non UK venue's own come first
- *  (docTemplates.js templatesForVenue); a UK venue's list is exactly as before. */
+ *  5.12.57: the built ins follow the venue's country (docTemplates.js templatesForVenue).
+ *  5.12.58: the venue's own come first at every venue, the built ins last. */
 export async function loadTemplates(locationId, kind) {
   let saved = [];
   if (isMock || !supabase) saved = lsGet('templates');

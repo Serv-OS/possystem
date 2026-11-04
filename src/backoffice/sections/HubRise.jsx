@@ -17,6 +17,7 @@ import EzcaterItemMatching from './EzcaterItemMatching';
 import { ezcaterStatus } from '../../lib/ezcater';
 import { ezcaterVisible } from '../../lib/ezcaterVisibility';
 import { Icon } from '../../components/ServOSIcons';
+import { activeRegionPack } from '../../lib/regionPack';
 
 const S = {
   wrap: { maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -151,15 +152,18 @@ export default function HubRise() {
   if (!locId) return <div style={S.empty}>Pick a location to set up HubRise.</div>;
 
   const connected = !!status?.connected;
+  // Decision 9.5 (4 Nov 2026): a US venue is not on Deliveroo, Uber Eats or Just Eat, so the
+  // copy says "your delivery apps" there. A UK venue reads exactly as before.
+  const usVenue = activeRegionPack().country === 'US';
 
   return (
     <div style={S.wrap}>
       <div>
         <h1 style={{ ...S.h1, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="link" size={20} />3rd Party orders — HubRise</h1>
         <div style={S.sub}>
-          Connect this venue to HubRise to receive Deliveroo / Uber Eats / Just Eat and HubRise
-          online orders straight into the Orders Hub + kitchen, publish your menu to those channels,
-          and keep stock in sync. Orders flow back their status automatically as you advance them.
+          {usVenue
+            ? 'Connect this venue to HubRise to receive orders from your delivery apps and HubRise online orders straight into the Orders Hub + kitchen, publish your menu to those channels, and keep stock in sync. Orders flow back their status automatically as you advance them.'
+            : 'Connect this venue to HubRise to receive Deliveroo / Uber Eats / Just Eat and HubRise online orders straight into the Orders Hub + kitchen, publish your menu to those channels, and keep stock in sync. Orders flow back their status automatically as you advance them.'}
         </div>
       </div>
 
@@ -211,7 +215,7 @@ export default function HubRise() {
           <div style={S.h2}>Menu to publish</div>
           <div style={{ ...S.sub, marginTop: 0, marginBottom: 10 }}>
             Choose which menu(s) go to the delivery channels. Prices use each item's <b>Delivery</b> price
-            (set per item, or a per-menu “Deliveroo +0.50” tier in Menu → item → Per-menu pricing tiers).
+            (set per item, or {usVenue ? 'a per-menu tier for one delivery app' : 'a per-menu “Deliveroo +0.50” tier'} in Menu → item → Per-menu pricing tiers).
             Leave all unticked to publish every online-visible item at its delivery price.
           </div>
           {menus.length === 0 ? (

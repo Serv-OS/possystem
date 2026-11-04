@@ -12,13 +12,22 @@ const digits = (s) => String(s || '').replace(/\D/g, '').slice(-10);
  * The person's other sites: their linked records anywhere but this one, leavers last.
  * records: wf_staff rows ({ id, location_id, person_id, role_key, rate_override, status, name }).
  */
-export function otherSites(me, records, locationNames = {}) {
+export function otherSites(me, records, locationNames = {}, rates = {}) {
   if (!me?.personId) return [];
+  // 5.12.59: rates come per site from the door ({ [locationId]: { byId, hidden } }); a record whose
+  // site is hidden reads rateHidden, never a number. A row's own rate_override is still honoured for
+  // callers that read it before 20261121a.
+  const rateOf = (r) => {
+    const site = rates[r.location_id];
+    if (site && site.hidden) return { rate: null, rateHidden: true };
+    if (site && site.byId && site.byId[String(r.id)] != null) return { rate: Number(site.byId[String(r.id)]), rateHidden: false };
+    return { rate: r.rate_override != null ? Number(r.rate_override) : null, rateHidden: false };
+  };
   return (records || [])
     .filter((r) => r && r.person_id === me.personId && r.id !== me.id)
     .map((r) => ({
       staffId: r.id, locationId: r.location_id, site: locationNames[r.location_id] || 'Another site',
-      role: r.role_key || null, rate: r.rate_override != null ? Number(r.rate_override) : null,
+      role: r.role_key || null, ...rateOf(r),
       leaver: r.status === 'leaver',
     }))
     .sort((a, b) => Number(a.leaver) - Number(b.leaver) || a.site.localeCompare(b.site));

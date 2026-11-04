@@ -48,9 +48,9 @@ test('a US venue is never offered the UK contract, and its own templates come fi
   assert.ok(!templatesForVenue(own, { country: 'US' }).some((t) => t.id === 'builtin-contract'));
 });
 
-test('a UK venue is offered exactly what it was before: the built ins first, then its own', () => {
+test('a UK venue is offered its own first, then the built ins last (5.12.58)', () => {
   const own = [{ id: 'c1', kind: 'contract', name: 'Our contract' }];
-  assert.deepEqual(templatesForVenue(own, { kind: 'contract', country: 'UK' }).map((t) => t.id), ['builtin-contract', 'c1']);
+  assert.deepEqual(templatesForVenue(own, { kind: 'contract', country: 'UK' }).map((t) => t.id), ['c1', 'builtin-contract']);
   assert.deepEqual(templatesForVenue([], { country: 'UK' }).map((t) => t.id), ['builtin-offer', 'builtin-contract']);
 });
 

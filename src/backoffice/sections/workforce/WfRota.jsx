@@ -10,7 +10,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, cellTint, GRP_SECTION, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { buildWeek, addWeeks, alignWeek, weekRangeLabel, ymd } from '../../../staff/wfWeek';
-import { zoneOr, workweekStartDow } from '../../../lib/venueDates';
+import { zoneOr, workweekStartDow, venueSpan, venueHhmm, active12h } from '../../../lib/venueDates';
 import { bucketShiftsBySection, UNASSIGNED } from '../../../staff/rotaSections.js';
 import { caseDone, missingSteps, normalizeCase } from './WfOnboarding';
 import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
@@ -29,6 +29,16 @@ import { activeCountry, activeRegionPack } from '../../../lib/regionPack';
 import { mapLinkedShifts, otherSiteClash, otherSiteClashWords, weekHoursLine, asRuleShifts } from '../../../staff/crossSiteRota';
 
 const GRP_ORDER = ['mgmt', 'bar', 'floor', 'kitchen', 'door'];
+
+// 5.12.57 batch 8 (Peter 8.2, 4 Nov 2026): every place the rota shows a shift's times reads them the
+// venue's way: "17:00\u201323:00" at a UK venue, exactly the bytes it showed before, and
+// "5:00 PM to 11:00 PM" at a US one (lib/venueDates venueSpan). The <input type="time"> boxes keep
+// their 24 hour value; the browser shows those its own way.
+const span = (start, finish, sep) => venueSpan(start, finish, undefined, sep);
+// A grid cell is too narrow for a US span on one line: each time keeps its AM or PM beside it and the
+// cell may break at " to " (two lines). A UK cell keeps its one line and its bytes.
+const cellSpan = (start, finish, sep) => (active12h() ? span(start, finish).replace(/ (AM|PM)/g, '\u00a0$1') : span(start, finish, sep));
+const cellWrap = (style) => (active12h() ? { ...style, whiteSpace: 'normal', lineHeight: 1.25 } : style);
 const TPL_COLOURS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#64748b'];
 
 // ── small shared bits ───────────────────────────────────────────────────────
@@ -93,10 +103,10 @@ function ShiftModal({ staff, staffOptions, presetSectionId, day, shift, sections
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
             {templates.map(t => (
               <button key={t.id} className="btn btn-ghost btn-xs" onClick={() => applyTpl(t)}
-                title={`${t.start}–${t.finish}`}
+                title={span(t.start, t.finish)}
                 style={{ borderRadius: 999, border: '1px solid var(--inset-border)', background: 'var(--inset)' }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: t.color || 'var(--t3)', flexShrink: 0 }} />
-                {t.name} <span className="mono" style={{ color: 'var(--t4)', fontSize: 10 }}>{t.start}–{t.finish}</span>
+                {t.name} <span className="mono" style={{ color: 'var(--t4)', fontSize: 10 }}>{span(t.start, t.finish)}</span>
               </button>
             ))}
           </div>
@@ -171,7 +181,7 @@ function TemplatesModal({ templates, sections, onSave, onClose, saving, defaultB
 
         {list.length === 0 && !form && (
           <div style={{ margin: '14px 0', padding: '14px 16px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 12, fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.6 }}>
-            No standard shifts yet. Create presets like <b>Morning 09:00–17:00</b> or <b>Evening 17:00–23:00</b> — they appear as one-tap chips when you add a shift.
+            No standard shifts yet. Create presets like <b>Morning {span('09:00', '17:00')}</b> or <b>Evening {span('17:00', '23:00')}</b> {'\u2014'} they appear as one-tap chips when you add a shift.
           </div>
         )}
 
@@ -181,7 +191,7 @@ function TemplatesModal({ templates, sections, onSave, onClose, saving, defaultB
               <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10 }}>
                 <span style={{ width: 9, height: 9, borderRadius: '50%', background: t.color || 'var(--t3)', flexShrink: 0 }} />
                 <span style={{ fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
-                <span className="mono" style={{ fontSize: 11.5, color: 'var(--t3)' }}>{t.start}–{t.finish}</span>
+                <span className="mono" style={{ fontSize: 11.5, color: 'var(--t3)' }}>{span(t.start, t.finish)}</span>
                 {t.sectionId && <span style={{ fontSize: 11, color: 'var(--t4)' }}>{sections.find(s => s.id === t.sectionId)?.name || ''}</span>}
                 <button className="btn btn-ghost btn-xs" onClick={() => setForm({ ...blank, ...t })}><Icon name="edit" size={12} /></button>
                 <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} onClick={() => setList(prev => prev.filter(x => x.id !== t.id))}><Icon name="close" size={12} /></button>
@@ -249,7 +259,7 @@ function CopyShiftModal({ source, staff, wk, shifts, otherShifts = [], timeOff, 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700 }}>Copy shift</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }} className="mono">{source.start}–{source.finish}{source.section ? ` · ${source.section}` : ''}</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }} className="mono">{span(source.start, source.finish)}{source.section ? ` · ${source.section}` : ''}</div>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="close" size={14} /></button>
         </div>
@@ -267,7 +277,7 @@ function CopyShiftModal({ source, staff, wk, shifts, otherShifts = [], timeOff, 
         </div>
         {clash && (
           <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--red-d)', border: '1px solid var(--red-b)', borderRadius: 10, fontSize: 12.5, color: 'var(--red)' }}>
-            Clashes with their {clash.start}–{clash.finish} shift that day — pick another day or person.
+            Clashes with their {span(clash.start, clash.finish)} shift that day {'\u2014'} pick another day or person.
           </div>
         )}
         <WarnBox warnings={warnings} />
@@ -636,12 +646,12 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     // not overlap an existing shift that day (editing a shift ignores itself).
     const clash = findClash(shifts, s.id, day.iso, payload.start, payload.finish, shift?.id);
     if (clash) {
-      showToast(`Clashes with their ${clash.start}–${clash.finish} shift on ${day.label} — change the times, or edit that shift instead`, 'error');
+      showToast(`Clashes with their ${span(clash.start, clash.finish)} shift on ${day.label} \u2014 change the times, or edit that shift instead`, 'error');
       return;
     }
     // 5.12.38: nor a shift at one of their other sites.
     const away = otherSiteClash(otherShifts, s.id, day.iso, payload.start, payload.finish);
-    if (away) { showToast(otherSiteClashWords(away, day.label), 'error'); return; }
+    if (away) { showToast(otherSiteClashWords(away, day.label, activeCountry()), 'error'); return; }
     const role = roles.map[s.role];
     const { rate, source } = resolveRateOn(s, role, day.iso, rateChanges);
     const hours = Math.max(0, hoursOf(payload.start, payload.finish) - payload.breakMins / 60);
@@ -712,7 +722,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     const gate = onboardingBlock(target.id);
     if (gate) { showToast(gate, 'error'); return; }
     const away = otherSiteClash(otherShifts, target.id, dateIso, copying.start, copying.finish);
-    if (away) { showToast(otherSiteClashWords(away), 'error'); return; }
+    if (away) { showToast(otherSiteClashWords(away, undefined, activeCountry()), 'error'); return; }
     const src = copying;
     const role = roles.map[target.role];
     const { rate, source } = resolveRateOn(target, role, dateIso, rateChanges);
@@ -861,7 +871,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         const mine = published.filter(x => x.staffId === sid).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
         if (!mine.length) return;
         const first = (member.name || 'there').split(' ')[0];
-        const lines = mine.map(x => `${us ? shiftWords(x, country) : `${dayLabel(x.date)} ${x.start}–${x.finish}`}${x.section ? ` (${x.section})` : ''}`);
+        const lines = mine.map(x => `${us ? shiftWords(x, country) : `${dayLabel(x.date)} ${span(x.start, x.finish)}`}${x.section ? ` (${x.section})` : ''}`);
         const smsMsg = `Hi ${first}, your rota for ${weekWords}:\n${lines.join('\n')}`;
         const emailHtml = `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Hi ${first},</p><p>Your shifts for the ${us ? 'week of' : 'week commencing'} <strong>${weekRangeLabel(wk, country)}</strong>${ctx.locName ? ` at ${ctx.locName}` : ''}:</p><ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul><p>See you then!</p></div>`;
         const [smsRes, emailRes] = await Promise.allSettled([
@@ -1095,7 +1105,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   );
 
   const dayCols = wk.days.map(d => (
-    <th key={d.iso} style={{ ...th, textAlign: 'center', color: d.isToday ? 'var(--acc)' : 'var(--t3)' }}>
+    <th key={d.iso} style={{ ...th, textAlign: 'center', color: d.isToday ? 'var(--acc)' : 'var(--t3)', ...(active12h() ? { minWidth: 96 } : {}) }}>
       {d.label}<br /><span className="mono" style={{ fontSize: 11 }}>{d.dom}</span>
     </th>
   ));
@@ -1190,7 +1200,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                                   <button
                                     key={s.id}
                                     onClick={() => (p ? setEditing({ staff: p, day: d, shift: s }) : !s.staffId && setOpenEditing({ shift: s, day: null }))}
-                                    title={`${p?.name || (s.staffId ? 'Unknown' : 'Open shift')} · ${s.start}–${s.finish}${draft ? ' · draft' : ''}${sec.ghost ? ' · no section assigned' : ''}`}
+                                    title={`${p?.name || (s.staffId ? 'Unknown' : 'Open shift')} · ${span(s.start, s.finish)}${draft ? ' · draft' : ''}${sec.ghost ? ' · no section assigned' : ''}`}
                                     style={{
                                       display: 'flex', alignItems: 'center', gap: 5, width: '100%', textAlign: 'left',
                                       padding: '3px 5px', borderRadius: 7, cursor: p || !s.staffId ? 'pointer' : 'default',
@@ -1206,7 +1216,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
                                       {(p?.name || (s.staffId ? 'Unknown' : 'Open')).split(' ')[0]}
                                     </span>
-                                    <span className="mono" style={{ fontSize: 9.5, color: 'var(--t3)', flexShrink: 0 }}>{s.start}</span>
+                                    <span className="mono" style={{ fontSize: 9.5, color: 'var(--t3)', flexShrink: 0 }}>{venueHhmm(s.start)}</span>
                                   </button>
                                 );
                               })}
@@ -1397,7 +1407,7 @@ function RotaGroup({ g, wk, roles, shiftsFor, otherFor, weekLineFor, warnFor, on
                   {(otherFor?.(s.id, d.iso) || []).map(o => (
                     <div key={o.id} title={`At ${o.site}. Change it on that site's rota.`}
                       style={{ borderRadius: 9, padding: '4px 4px', border: '1px dashed var(--bdr2)', color: 'var(--t3)', fontSize: 10, lineHeight: 1.25 }}>
-                      <div className="mono" style={{ fontWeight: 700 }}>{o.start}-{o.finish}</div>
+                      <div className="mono" style={{ fontWeight: 700 }}>{cellSpan(o.start, o.finish, '-')}</div>
                       <div>at {o.site}</div>
                     </div>
                   ))}
@@ -1405,10 +1415,10 @@ function RotaGroup({ g, wk, roles, shiftsFor, otherFor, weekLineFor, warnFor, on
                     <button
                       key={sh.id}
                       onClick={() => onCell(s, d, sh)}
-                      title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}${warns.length ? `\n• ${warns.join('\n• ')}` : ''}`}
+                      title={`${span(sh.start, sh.finish)} · ${money(sh.computedCost)}${warns.length ? `\n• ${warns.join('\n• ')}` : ''}`}
                       style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', opacity: sh.status === 'no_show' ? 0.75 : 1, background: sh.status === 'published' ? cellTint(col, 16) : sh.status === 'no_show' ? 'rgba(255,90,74,.10)' : 'var(--inset)', border: `1px solid ${sh.status === 'no_show' ? 'rgba(255,90,74,.45)' : warns.length ? 'rgba(245,166,35,.45)' : sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
                     >
-                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)', textDecoration: sh.status === 'no_show' ? 'line-through' : 'none' }}>{warns.length ? <Icon name="warn" size={11} style={{ display: 'inline-block', verticalAlign: '-1px', marginRight: 3, color: 'var(--amber)' }}/> : ''}{sh.start}–{sh.finish}</div>
+                      <div className="mono" style={cellWrap({ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)', textDecoration: sh.status === 'no_show' ? 'line-through' : 'none' })}>{warns.length ? <Icon name="warn" size={11} style={{ display: 'inline-block', verticalAlign: '-1px', marginRight: 3, color: 'var(--amber)' }}/> : ''}{cellSpan(sh.start, sh.finish)}</div>
                       <div style={{ fontSize: 10, color: sh.status === 'no_show' ? 'var(--red)' : 'var(--t3)', marginTop: 1, fontWeight: sh.status === 'no_show' ? 700 : 400 }}>{sh.status === 'no_show' ? 'NO SHOW' : `${Number(sh.computedHours || 0).toFixed(1)}h${sh.status !== 'published' ? ' · draft' : ''}`}</div>
                     </button>
                   ))}

@@ -12,6 +12,7 @@ import { CUSTOMER_ROOT, customerUrl, groupCaterUrl } from '../../lib/env';
 import { parsePctList } from '../../lib/tipping';
 import { Icon } from '../../components/ServOSIcons';
 import { currencySymbol, getActiveCurrencyCode } from '../../lib/currency';
+import { activeRegionPack } from '../../lib/regionPack';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -77,6 +78,8 @@ function toRow(s) {
 }
 
 export default function CateringSettings() {
+  // Decision 9.5 (4 Nov 2026): a US venue has no courier; its delivery words do not name one.
+  const usVenue = activeRegionPack().country === 'US';
   const [locId, setLocId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [menus, setMenus] = useState([]);
@@ -255,7 +258,9 @@ export default function CateringSettings() {
         <label style={{ ...S.toggle, margin: '12px 0 10px' }}><input type="checkbox" checked={s.delivery_enabled} onChange={(e) => set({ delivery_enabled: e.target.checked })} /> Delivery</label>
         {s.delivery_enabled && (
           <div style={{ paddingLeft: 24 }}>
-            <div style={S.hint}>The delivery <b>charge, range and fulfilment</b> (self-delivery, or a courier) are set once in <b>Channels → Delivery</b> and apply to catering automatically — so there's no separate catering delivery fee to keep in sync. Catering events are charged your configured fee, and a courier (if you use one) is dispatched on the event day.</div>
+            {usVenue
+              ? <div style={S.hint}>The delivery <b>charge and range</b> are set once in <b>Channels → Delivery</b> and apply to catering automatically, so there is no separate catering delivery fee to keep in sync. Catering events are charged your configured fee and delivered by your own staff.</div>
+              : <div style={S.hint}>The delivery <b>charge, range and fulfilment</b> (self-delivery, or a courier) are set once in <b>Channels → Delivery</b> and apply to catering automatically — so there's no separate catering delivery fee to keep in sync. Catering events are charged your configured fee, and a courier (if you use one) is dispatched on the event day.</div>}
           </div>
         )}
       </div>

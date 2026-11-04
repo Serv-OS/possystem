@@ -97,7 +97,7 @@ export default function LocationSettings() {
 
   const [timezone, setTimezone]     = useState('Europe/London');
   const [tzFilter, setTzFilter]     = useState('');
-  const [currency, setCurrency]     = useState('GBP');   // v5.5.326: per-location currency
+  const [currency, setCurrency]     = useState('');      // v5.5.326: per-location currency; batch 9: blank until the row loads, never a GBP guess
   const [bizDayStart, setBizDayStart] = useState('06:00');
   const [collectionLeadMin, setCollectionLeadMin] = useState(30);
   const [shifts, setShifts]         = useState([]);
@@ -152,7 +152,7 @@ export default function LocationSettings() {
         if (row) {
           setLocation(row);
           setTimezone(row.timezone || 'Europe/London'); // batch 8 ok: the picker's starting value for a venue that never saved a zone; the owner picks theirs here
-          setCurrency(row.currency || 'GBP');
+          setCurrency(row.currency || ''); // batch 9: a row with no currency shows blank and the save asks for one
           setBizDayStart(row.business_day_start || '06:00');
           setShifts(Array.isArray(row.shifts) ? row.shifts : []);
           setCollectionLeadMin(typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30);
@@ -208,6 +208,12 @@ export default function LocationSettings() {
     }
     if (!location) {
       setError('No location loaded — nothing to save against. Check the platform DB locations table or run the load again.');
+      return;
+    }
+    // Batch 9 (Peter, 4 Nov 2026): a site with no currency saved yet must have one picked here;
+    // the save never writes GBP on its own.
+    if (!currency) {
+      setError('Pick the currency for this site.');
       return;
     }
     // Slug validation up-front so the user gets a clear message instead of
@@ -387,11 +393,12 @@ export default function LocationSettings() {
         </div>
         <label style={S.label}>Location currency</label>
         <select style={{ ...S.select, maxWidth:280 }} value={currency} onChange={e => setCurrency(e.target.value)}>
+          {!currency && <option value="">Pick a currency</option>}
           {Object.values(CURRENCIES).map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
         </select>
-        <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
+        {currency && <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
           Example: <strong style={{ color:'var(--t2)' }}>{money(12.5, currency)}</strong> · {money(1234.56, currency)}
-        </div>
+        </div>}
       </div>
 
       {/* Business day start */}

@@ -7,8 +7,10 @@
 // and start date only), so every venue gets it. The contract is the UK statement of main terms (5.6
 // weeks holiday, statutory notice) and is offered only at UK venues. A venue outside the UK is
 // offered its own saved templates first, so the first of its own is the one preselected; a US venue
-// with no contract of its own is told to add one (Workforce settings, Contracts and letters). A UK
-// venue's list is exactly as before: the built ins, then its own.
+// with no contract of its own is told to add one (Workforce settings, Contracts and letters).
+//
+// 5.12.58 (Peter, 4 Nov 2026): a UK venue's own saved templates come first too, the first one
+// preselected, and the built ins are last, still there to pick.
 
 // Built-in starting templates so there's always something to send. Editable copies
 // are created in wf_doc_templates the first time the operator saves a change.
@@ -50,13 +52,14 @@ Signed: {{full_name}}     Date: {{today}}` },
 ];
 
 /**
- * The templates a venue is offered, built ins and its own saved ones, of one kind (or all).
- *   UK      every built in for the UK, then its own (as before)
- *   other   its own first, then the built ins for every country (the offer letter); never the UK contract
+ * The templates a venue is offered, its own saved ones and then the built ins, of one kind (or all).
+ * Own first at every venue, so the first own one is preselected; the built ins come last.
+ *   UK      its own, then every built in (offer letter and UK contract)
+ *   other   its own, then the built ins for every country (the offer letter); never the UK contract
  */
 export function templatesForVenue(saved = [], { kind = null, country = 'UK' } = {}) {
   const builtins = DEFAULT_TEMPLATES.filter((t) => !t.country || t.country === country);
-  const all = country === 'UK' ? [...builtins, ...(saved || [])] : [...(saved || []), ...builtins];
+  const all = [...(saved || []), ...builtins];
   return kind ? all.filter((t) => t.kind === kind) : all;
 }
 
