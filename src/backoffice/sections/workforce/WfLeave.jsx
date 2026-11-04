@@ -14,7 +14,11 @@ import { isHourly, avgHoursPerDay, FIXED_HOLIDAY_DAYS } from '../../../staff/lab
 import { proposeLeaveDays } from '../../../staff/leaveDays';
 // 5.12.51: US venues call it PTO (Workforce settings, Paid time off).
 import { activeRegionPack } from '../../../lib/regionPack';
-import { localeDateString } from '../../../lib/venueDates';
+import { localeDateString, venueToday, dayText } from '../../../lib/venueDates';
+// 5.12.61: blocked periods (no holiday or PTO requests in a period) and versioned availability (a
+// staff app change applies from the next rota period). Same rules as the staff portal.
+import { leaveBlocks, blockFor, blockWords } from '../../../../supabase/functions/_shared/leaveBlocks.js';
+import { availabilityInEffect, pendingAvailability } from '../../../../supabase/functions/_shared/availabilityWhen.js';
 // 5.12.57: one word for paid time off (Holiday or PTO), and the UK statutory texts only under UK rules.
 import { holidayWord, holidayWordLower, ukHoliday } from '../../../staff/payLaw';
 import { ptoRules } from '../../../../supabase/functions/_shared/usPto.js';
@@ -43,8 +47,10 @@ const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const fmtDate = iso => { if (!iso) return '—'; const d = new Date(iso + 'T00:00:00'); return isNaN(d) ? iso : localeDateString(d, { day: 'numeric', month: 'short' }); };   // 5.12.57: the venue's way
 const daysBetween = (a, b) => { if (!a || !b) return 1; const d1 = new Date(a + 'T00:00:00'); const d2 = new Date(b + 'T00:00:00'); if (isNaN(d1) || isNaN(d2)) return 1; return Math.max(1, Math.round((d2 - d1) / 86400000) + 1); };
 
-export default function WfLeave({ ctx, staff = [], roles, sections, settings, week, showToast }) {
+export default function WfLeave({ ctx, staff = [], roles, sections, settings, showToast, onSettingsSaved }) {
   const pack = activeRegionPack();
+  const todayIso = venueToday();
+  const leaveWord = ukHoliday(pack) ? 'holiday' : 'PTO';
   // 5.12.57: a US venue with PTO switched off pays no PTO: approvals are unpaid (workforce-compute).
   const ptoOff = !ukHoliday(pack) && !ptoRules(settings?.settings || null).on;
   const [tab, setTab] = useState('leave');
@@ -161,16 +167,30 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
     }
   }
 
+  // 5.12.61: a manager edits the pattern in effect today (its own row and week_start are kept). A
+  // change the person filed for the next rota period is another row and is left alone.
   async function saveAvailRow(staffId, perDay) {
-    const existing = avail.find(a => a.staffId === staffId);
-    const row = { ...(existing || {}), id: existing?.id || ('tmp-' + Date.now()), staffId, recurring: true, weekStart: week?.startIso || null, perDay };
-    setAvail(prev => existing ? prev.map(a => a.staffId === staffId ? row : a) : [...prev, row]);
+    const existing = availabilityInEffect(avail.filter(a => a.staffId === staffId), todayIso);
+    const row = { ...(existing || {}), id: existing?.id || ('tmp-' + Date.now()), staffId, recurring: true, weekStart: existing?.weekStart || null, perDay };
+    setAvail(prev => existing ? prev.map(a => a.id === row.id ? row : a) : [...prev, row]);
     try {
       const saved = await wf.saveAvailability(row, ctx?.locationId, ctx?.orgId);
-      setAvail(prev => prev.map(a => a.staffId === staffId ? saved : a));
+      setAvail(prev => prev.map(a => a.id === row.id ? saved : a));
     } catch (e) {
       showToast?.(e.message || 'Could not save availability', 'error');
       setAvail(await wf.loadAvailability(ctx?.locationId));
+    }
+  }
+
+  // 5.12.61: blocked periods live in the site's Workforce settings (settings.leaveBlocks).
+  async function saveBlocks(list) {
+    const next = { ...(settings || {}), settings: { ...(settings?.settings || {}), leaveBlocks: list } };
+    try {
+      const saved = await wf.saveSettings(next, ctx?.locationId, ctx?.orgId);
+      onSettingsSaved?.(saved || next);
+      showToast?.('Blocked periods saved', 'success');
+    } catch (e) {
+      showToast?.(e.message || 'Could not save blocked periods', 'error');
     }
   }
 
@@ -187,17 +207,20 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       </div>
 
       {tab === 'leave' && (
-        <LeaveSection pack={pack} ptoOff={ptoOff} leave={leave} staffById={staffById} roles={roles} balances={balances} timesheets={timesheets} onRequest={() => setReqOpen(true)} onDecide={decide} splitFor={splitFor} setDayPicks={setDayPicks} />
+        <>
+          <LeaveSection pack={pack} ptoOff={ptoOff} leave={leave} staffById={staffById} roles={roles} balances={balances} timesheets={timesheets} onRequest={() => setReqOpen(true)} onDecide={decide} splitFor={splitFor} setDayPicks={setDayPicks} />
+          <BlockedPeriods word={leaveWord} blocks={leaveBlocks(settings?.settings)} todayIso={todayIso} onSave={saveBlocks} />
+        </>
       )}
       {tab === 'balances' && (
         <BalancesSection pack={pack} settings={settings} staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
       )}
       {tab === 'avail' && (
-        <AvailSection staff={staff} roles={roles} avail={avail} onSave={saveAvailRow} />
+        <AvailSection staff={staff} roles={roles} avail={avail} todayIso={todayIso} onSave={saveAvailRow} />
       )}
 
       {reqOpen && (
-        <RequestModal pack={pack} staff={staff} roles={roles} onClose={() => setReqOpen(false)} onSubmit={submitRequest} />
+        <RequestModal pack={pack} staff={staff} roles={roles} settings={settings} word={leaveWord} onClose={() => setReqOpen(false)} onSubmit={submitRequest} />
       )}
     </div>
   );
@@ -399,8 +422,16 @@ function BalancesSection({ pack, settings, staff, roles, balances, accrual, leav
 }
 
 // ── Section: Availability ────────────────────────────────────────────────────
-function AvailSection({ staff, roles, avail, onSave }) {
-  const byStaff = useMemo(() => Object.fromEntries(avail.map(a => [a.staffId, a])), [avail]);
+function AvailSection({ staff, roles, avail, todayIso, onSave }) {
+  // 5.12.61: the pattern in effect today per person; a change they filed for the next rota period
+  // is shown under their name ("From Mon, 23 Nov 2026: Tue off").
+  const byStaff = useMemo(() => Object.fromEntries(staff.map(s => [s.id, availabilityInEffect(avail.filter(a => a.staffId === s.id), todayIso)])), [avail, staff, todayIso]);
+  const pendingBy = useMemo(() => Object.fromEntries(staff.map(s => [s.id, pendingAvailability(avail.filter(a => a.staffId === s.id), todayIso)[0] || null])), [avail, staff, todayIso]);
+  const pendingWords = (row) => {
+    if (!row) return '';
+    const changes = DAYS.map((d, i) => { const st = row.perDay?.find(x => x.day === i)?.state || 'available'; return st === 'available' ? null : `${d} ${(AV_STATES.find(x => x.key === st) || AV_STATES[0]).lbl.toLowerCase()}`; }).filter(Boolean);
+    return `From ${dayText(row.weekStart, { weekday: true })}: ${changes.length ? changes.join(', ') : 'available every day'}`;
+  };
   if (!staff.length) {
     return <EmptyState icon="status" title="No staff to set availability for" body="Add team members in Workforce › Staff, then mark which days each person can work. The rota uses this to flag clashes." />;
   }
@@ -432,7 +463,10 @@ function AvailSection({ staff, roles, avail, onSave }) {
                   <td style={td}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <Avatar name={s.name} role={s.role} roles={roles} />
-                      <span style={{ fontWeight: 600 }}>{s.name}</span>
+                      <div>
+                        <span style={{ fontWeight: 600 }}>{s.name}</span>
+                        {pendingBy[s.id] && <div style={{ fontSize: 11, color: 'var(--amber, #b7791f)', marginTop: 2 }}>{pendingWords(pendingBy[s.id])}</div>}
+                      </div>
                     </div>
                   </td>
                   {DAYS.map((d, i) => {
@@ -457,8 +491,62 @@ function AvailSection({ staff, roles, avail, onSave }) {
   );
 }
 
+// ── Blocked periods (5.12.61) ─────────────────────────────────────────────────
+// "Be able to say no holiday requests in this period" (Peter, 4 Nov 2026). The staff app refuses
+// holiday or PTO and unpaid leave on any day inside a block, in words; sick and parental always go
+// through. Saved in the site's Workforce settings (settings.leaveBlocks). Empty list = as before.
+function BlockedPeriods({ word, blocks, todayIso, onSave }) {
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const valid = /^\d{4}-\d{2}-\d{2}$/.test(from) && (!to || to >= from);
+  const add = async () => {
+    if (!valid) return;
+    setBusy(true);
+    try { await onSave([...blocks, { from, to: to || from, note: note.trim() }]); setFrom(''); setTo(''); setNote(''); }
+    finally { setBusy(false); }
+  };
+  const remove = async (i) => { setBusy(true); try { await onSave(blocks.filter((_, j) => j !== i)); } finally { setBusy(false); } };
+  const past = (b) => todayIso && b.to < todayIso;
+  return (
+    <Card>
+      <Toolbar title="Blocked periods" sub={`No ${word} requests from the staff app on these days. Sick and parental leave always go through.`} />
+      {blocks.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+          {blocks.map((b, i) => (
+            <div key={`${b.from}-${b.to}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--bdr)', fontSize: 13, opacity: past(b) ? 0.55 : 1 }}>
+              <span style={{ flex: 1 }}>
+                <b>{b.from === b.to ? dayText(b.from) : `${dayText(b.from)} to ${dayText(b.to)}`}</b>
+                {b.note ? <span style={{ color: 'var(--t3)' }}> · {b.note}</span> : null}
+                {past(b) ? <span style={{ color: 'var(--t4)' }}> · past</span> : null}
+              </span>
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => remove(i)} title="Remove"><Icon name="close" size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ minWidth: 150 }}>
+          <label style={labelStyle}>First day</label>
+          <input type="date" style={inputStyle} value={from} onChange={e => setFrom(e.target.value)} />
+        </div>
+        <div style={{ minWidth: 150 }}>
+          <label style={labelStyle}>Last day</label>
+          <input type="date" style={inputStyle} value={to} min={from || undefined} onChange={e => setTo(e.target.value)} />
+        </div>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <label style={labelStyle}>Reason (shown to staff)</label>
+          <input style={inputStyle} value={note} maxLength={120} placeholder="Christmas trading" onChange={e => setNote(e.target.value)} />
+        </div>
+        <button className="btn btn-acc btn-sm" disabled={!valid || busy} onClick={add}><Icon name="plus" size={14} /> Block period</button>
+      </div>
+    </Card>
+  );
+}
+
 // ── Request leave modal ──────────────────────────────────────────────────────
-function RequestModal({ pack, staff, roles, onClose, onSubmit }) {
+function RequestModal({ pack, staff, roles, settings, word = 'holiday', onClose, onSubmit }) {
   const LEAVE_TYPES = leaveTypesFor(pack);
   const [staffId, setStaffId] = useState(staff[0]?.id || '');
   const [type, setType] = useState('holiday');
@@ -467,6 +555,8 @@ function RequestModal({ pack, staff, roles, onClose, onSubmit }) {
   const [note, setNote] = useState('');
   const valid = staffId && startDate && endDate && endDate >= startDate;
   const days = valid ? daysBetween(startDate, endDate) : 0;
+  // 5.12.61: a blocked period is shown in red; a manager may still file the request (their call).
+  const block = valid ? blockFor(settings?.settings, startDate, endDate, type) : null;
 
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -504,6 +594,7 @@ function RequestModal({ pack, staff, roles, onClose, onSubmit }) {
             <input style={inputStyle} value={note} placeholder="Reason or cover notes" onChange={e => setNote(e.target.value)} />
           </div>
           {days > 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>{days} day{days === 1 ? '' : 's'} requested.</div>}
+          {block && <div style={{ fontSize: 12.5, color: 'var(--red, #c0392b)', fontWeight: 700 }}>{blockWords(block, word).replace(' Talk to your manager.', '')} The staff app refuses this. You can still file it.</div>}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>

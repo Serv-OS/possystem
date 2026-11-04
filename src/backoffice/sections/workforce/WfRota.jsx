@@ -24,6 +24,7 @@ import { findClash, clashWarnings } from '../../../staff/wfClash';
 // premiums in the planned cost (one rule with payroll).
 import { OpenShiftModal, OpenShiftsCard } from './WfOpenShifts';
 import { claimProblem, eligibleStaff, swapMode, textOpenShift, shiftWords } from '../../../../supabase/functions/_shared/openShiftRules.js';
+import { availabilityInEffect, availabilityRowsOf } from '../../../../supabase/functions/_shared/availabilityWhen.js';
 import { plannedPremium } from '../../../../supabase/functions/_shared/payPremiums.js';
 import { activeCountry, activeRegionPack } from '../../../lib/regionPack';
 import { mapLinkedShifts, otherSiteClash, otherSiteClashWords, weekHoursLine, asRuleShifts } from '../../../staff/crossSiteRota';
@@ -623,7 +624,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       const msg = textOpenShift(ctx.locName || '', shift, country);
       const can = eligibleStaff(shift, people).filter(p => !claimProblem({
         shift, claimer: p, request: null, theirShifts: shifts.filter(x => x.staffId === p.id), leave: timeOff.filter(l => l.staffId === p.id),
-        availability: (avail || []).find(a => a.staffId === p.id) || null, settings: settings?.settings || {}, todayIso, nowMin, country,
+        availability: availabilityInEffect(availabilityRowsOf(avail, p.id), shift.date), settings: settings?.settings || {}, todayIso, nowMin, country,
         // The rota's own onboarding gate: someone it will not schedule is not texted an open shift.
         onboardingOpen: onboardingBlock(p.id) ? 1 : 0,
       }));
@@ -913,7 +914,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         const role = roles.map[s.role] || {};
         // AI generation plans the VISIBLE week, so cost with that week's rates
         const { rate } = resolveRateOn(s, role, wk?.days?.[0]?.iso, rateChanges);
-        const av = (avail || []).find(a => a.staffId === s.id);
+        // 5.12.61: the pattern in effect for the week being built.
+        const av = availabilityInEffect(availabilityRowsOf(avail, s.id), wk?.days?.[0]?.iso);
         return {
           staffId: s.id, name: s.name, position: role.lbl || s.role, section: GRP_SECTION[role.grp] || role.grp || 'Floor',
           rate: Math.round((rate || 0) * 100) / 100, maxWeeklyHours: s.weeklyHoursTarget || s.contractedWeek || null,

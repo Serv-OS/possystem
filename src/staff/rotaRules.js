@@ -15,6 +15,10 @@
 //   no overlap with another shift · minimum rest between working days · max days in a row ·
 //   contracted or target weekly hours not exceeded.
 // Standard shifts: when the venue has any, a proposed shift is snapped to the closest one.
+//
+// 5.12.61: availability rows are versioned (a change filed from the staff app starts at the next
+// rota period), so the row in effect on the date comes from availabilityWhen.js (shared).
+import { availabilityInEffect, availabilityRowsOf } from '../../supabase/functions/_shared/availabilityWhen.js';
 
 // 5.12.57: 11 hours of rest is the UK Working Time Regulations daily rest. US federal law has no
 // rest rule (some states and cities set one), so 11 stays the default there too, as the more
@@ -64,7 +68,8 @@ export function snapToTemplate(p, templates) {
 }
 
 const approvedLeaveOn = (timeOff, staffId, iso) => (timeOff || []).find(l => l.staffId === staffId && l.status === 'approved' && l.startDate && l.endDate && l.startDate <= iso && iso <= l.endDate) || null;
-const availabilityOn = (availability, staffId, iso) => { const row = (availability || []).find(a => a.staffId === staffId); return row?.perDay?.find(x => x.day === dayIdx(iso))?.state || 'available'; };
+// 5.12.61: the row in effect on that date (a change filed for the next rota period starts then).
+const availabilityOn = (availability, staffId, iso) => { const row = availabilityInEffect(availabilityRowsOf(availability, staffId), iso); return row?.perDay?.find(x => x.day === dayIdx(iso))?.state || 'available'; };
 
 /** Why this shift cannot be placed, or null when it can. `placed` = existing + already accepted. */
 export function whyNot(p, placed, ctx) {

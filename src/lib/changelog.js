@@ -1,5 +1,13 @@
 export const CHANGELOG = [
   {
+    v: '5.12.61',
+    date: '4 Nov 2026',
+    items: [
+      'Blocked periods for time off (Peter, 4 Nov 2026: "be able to say no holiday requests in this period"): Workforce, Time off, Leave tab has a Blocked periods card (first day, last day, reason shown to staff). The staff app shows the upcoming blocks above the request form and refuses a holiday, PTO or unpaid leave request on any blocked day, in words ("No PTO requests from Dec 20, 2026 to Jan 3, 2027 (Christmas). Talk to your manager."); the server refuses too. Sick and parental leave always go through. A manager filing a request in Back Office sees the block in red and can still file it. No blocks = as before, UK and US.',
+      'Availability changes apply from the next rota period (Peter: "you cannot change availability for that week"): a change in the staff app never touches a week already on the rota. It is filed for the week after the later of this week and the last published week at any of the person\'s sites, the app says so ("Changes apply from Mon, 23 Nov 2026, the next rota period. Weeks already on the rota keep your current availability.") and shows the pending change under the current one; one pending change at a time. The rota, clash warnings, open shift claims and the AI builder read the pattern in effect for the date they look at. Back Office Availability shows the pattern in effect today with the pending change under the name; a manager edit changes the pattern in effect now. Deploy staff-portal. No SQL.',
+    ],
+  },
+  {
     v: '5.12.60',
     date: '4 Nov 2026',
     items: [

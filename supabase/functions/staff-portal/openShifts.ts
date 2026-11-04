@@ -16,6 +16,9 @@ import { notifyStaff } from '../_shared/staffNotify.ts';
 import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 import { countHidden } from '../_shared/openShiftsHidden.js';
 import { isHeadOffice, HEAD_OFFICE_SHIFT_WORDS } from '../_shared/headOffice.js';
+// 5.12.61: availability is versioned by week_start; a staff app change applies from the next rota period.
+import { availabilityChangesFrom, changesFromWords, availabilityInEffect, pendingAvailability } from '../_shared/availabilityWhen.js';
+import { workweekStartDow } from '../_shared/venueDates.js';
 
 type Admin = any;
 type Venue = { id: string; name: string; currency: string; timezone: string; country: string; todayIso: string; nowMin: number };
@@ -71,7 +74,7 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
     admin.from('wf_staff').select('id, name, role_key, status, location_id').eq('location_id', loc).eq('status', 'active').limit(1000),
     admin.from('wf_roles').select('key, label').eq('location_id', loc),
     admin.from('wf_venue_settings').select('settings').eq('location_id', loc).maybeSingle(),
-    admin.from('wf_availability').select('per_day, updated_at, created_at').eq('staff_id', staff.id).order('updated_at', { ascending: false }).order('created_at', { ascending: false }).limit(1),
+    admin.from('wf_availability').select('per_day, week_start, updated_at, created_at').eq('staff_id', staff.id).limit(50),
     admin.from('wf_time_off').select('status, start_date, end_date').eq('staff_id', staff.id).eq('status', 'approved'),
     admin.from('wf_onboarding').select('meta, steps').eq('staff_id', staff.id).order('created_at', { ascending: false }).limit(1),
   ]);
@@ -98,10 +101,13 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
   // 5.12.38: their shifts at every site they work at, so the list says what the claim will say
   // (_wf_claim_problem counts every linked site since 20261112a).
   const theirShifts = [...(myShifts ?? []).map(mapShift), ...(await linkedShiftsFor(admin, staff, addDays(v.todayIso, -7), addDays(horizon, 7)))];
-  const availability = av?.[0] ? { perDay: Array.isArray(av[0].per_day) ? av[0].per_day : [] } : null;
+  // 5.12.61: the pattern in effect on the shift's date (a change filed for the next rota period
+  // does not touch the weeks already on the rota).
+  const avRows = av ?? [];
+  const availability = availabilityInEffect(avRows, v.todayIso);
   const leaveRows = (leave ?? []).map((l: any) => ({ status: l.status, startDate: l.start_date, endDate: l.end_date }));
 
-  const judge = (sh: any, rq: any) => claimProblem({ shift: sh, claimer: me, request: rq || null, theirShifts, leave: leaveRows, availability,
+  const judge = (sh: any, rq: any) => claimProblem({ shift: sh, claimer: me, request: rq || null, theirShifts, leave: leaveRows, availability: availabilityInEffect(avRows, sh.date),
     settings, todayIso: v.todayIso, nowMin: v.nowMin, roleLabel: roleLabel[sh.roleKey], country: v.country, onboardingOpen });
   const card = (sh: any, rq: any, why: any) => ({
     shiftId: sh.id, requestId: rq?.id || null, kind: rq?.kind === 'offer' ? 'offer' : sh.staffId ? 'drop' : 'open',
@@ -151,7 +157,34 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
       colleagues: (team ?? []).filter((t: any) => t.id !== staff.id).map((t: any) => ({ id: t.id, name: t.name, roleKey: t.role_key })),
       upShiftIds: liveReqs.filter((r: any) => r.fromStaffId === staff.id && r.shiftId).map((r: any) => r.shiftId),
     },
-    availability: availability || { perDay: [] },
+    availability: await availabilityForApp(admin, staff, v, settings, avRows),
+  };
+}
+
+/**
+ * 5.12.61: what the staff app shows and may change. perDay = the pattern in effect today; changesFrom =
+ * the first week a change may touch (the week after the later of this week and the last published week
+ * at any site they work at); pending = a change already filed for then.
+ */
+async function availabilityChangeDate(admin: Admin, staff: any, v: Venue, settings: any): Promise<string> {
+  let locIds = [staff.location_id];
+  if (staff.person_id) {
+    const { data: lr } = await admin.from('wf_staff').select('location_id').eq('org_id', staff.org_id).eq('person_id', staff.person_id);
+    locIds = [...new Set([staff.location_id, ...(lr ?? []).map((r: any) => r.location_id)])];
+  }
+  const { data: pub } = await admin.from('wf_shifts').select('shift_date').in('location_id', locIds).eq('status', 'published')
+    .gte('shift_date', v.todayIso).order('shift_date', { ascending: false }).limit(1);
+  return availabilityChangesFrom({ todayYmd: v.todayIso, lastPublishedYmd: pub?.[0]?.shift_date ?? null, workweekStart: workweekStartDow(settings) });
+}
+async function availabilityForApp(admin: Admin, staff: any, v: Venue, settings: any, rows: any[]) {
+  const now = availabilityInEffect(rows, v.todayIso);
+  const changesFrom = await availabilityChangeDate(admin, staff, v, settings);
+  const next = pendingAvailability(rows, v.todayIso)[0] ?? null;
+  return {
+    perDay: now?.perDay ?? [],
+    changesFrom,
+    words: changesFromWords(changesFrom, v.currency),
+    pending: next ? { from: String(next.week_start ?? next.weekStart), perDay: next.perDay } : null,
   };
 }
 
@@ -174,7 +207,7 @@ async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, re
   const [{ data: sh }, { data: lv }, { data: av }, { data: vs }, { data: onb }] = await Promise.all([
     admin.from('wf_shifts').select(SHIFT_COLS).in('staff_id', ids).in('status', ['draft', 'published']).gte('shift_date', mon).lte('shift_date', sun).limit(5000),
     admin.from('wf_time_off').select('staff_id, status, start_date, end_date').in('staff_id', ids).eq('status', 'approved').lte('start_date', shift.date).gte('end_date', shift.date),
-    admin.from('wf_availability').select('staff_id, per_day, updated_at, created_at').in('staff_id', ids).order('updated_at', { ascending: false }),
+    admin.from('wf_availability').select('staff_id, per_day, week_start, updated_at, created_at').in('staff_id', ids).limit(5000),
     admin.from('wf_venue_settings').select('settings').eq('location_id', shift.locationId).maybeSingle(),
     admin.from('wf_onboarding').select('staff_id, meta, steps, created_at').in('staff_id', ids).order('created_at', { ascending: false }),
   ]);
@@ -190,12 +223,13 @@ async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, re
     const away = await linkedShiftsFor(admin, rawOf[p.id], mon, sun);
     if (away.length) (shiftsOf[p.id] ||= []).push(...away);
   }));
-  const availOf: Record<string, any> = {};
-  for (const a of av ?? []) if (!availOf[a.staff_id]) availOf[a.staff_id] = { perDay: Array.isArray(a.per_day) ? a.per_day : [] };
+  // 5.12.61: every row per person; the one in effect on the shift's date decides.
+  const availOf: Record<string, any[]> = {};
+  for (const a of av ?? []) (availOf[a.staff_id] ||= []).push(a);
   return people.filter((p: any) => !claimProblem({
     shift, claimer: p, request, theirShifts: shiftsOf[p.id] || [],
     leave: (lv ?? []).filter((l: any) => l.staff_id === p.id).map((l: any) => ({ status: l.status, startDate: l.start_date, endDate: l.end_date })),
-    availability: availOf[p.id] || null, settings: vs?.settings ?? {}, todayIso: v.todayIso, nowMin: v.nowMin, country: v.country,
+    availability: availabilityInEffect(availOf[p.id] || [], shift.date), settings: vs?.settings ?? {}, todayIso: v.todayIso, nowMin: v.nowMin, country: v.country,
     onboardingOpen: openOnboardingSteps(onbOf[p.id] ?? null, p, bankDetails),
   }));
 }
@@ -213,16 +247,26 @@ export async function handleSwapAction(admin: Admin, staff: any, action: string,
       .filter((d: any) => Number.isInteger(d.day) && d.day >= 0 && d.day <= 6 && DAY_STATES.has(d.state));
     if (perDay.length !== raw.length || new Set(perDay.map((d: any) => d.day)).size !== perDay.length) return err(400, 'Pick a choice for each day');
     perDay.sort((a: any, b: any) => a.day - b.day);
-    const { data: rows } = await admin.from('wf_availability').select('id').eq('staff_id', staff.id).order('updated_at', { ascending: false }).limit(1);
-    const w = rows?.[0]
-      ? await admin.from('wf_availability').update({ per_day: perDay, recurring: true, week_start: null, updated_at: new Date().toISOString() }).eq('id', rows[0].id).eq('staff_id', staff.id)
-      : await admin.from('wf_availability').insert({ location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, recurring: true, week_start: null, per_day: perDay });
+    // 5.12.61: the change never lands on a week already on the rota. It is filed with week_start =
+    // the next rota period; the pattern in effect until then stays as it is. One pending change at a
+    // time: an earlier one for another week is replaced.
+    const v0 = await venueFacts(admin, staff.location_id);
+    const { data: vs0 } = await admin.from('wf_venue_settings').select('settings').eq('location_id', staff.location_id).maybeSingle();
+    const changesFrom = await availabilityChangeDate(admin, staff, v0, (vs0 as any)?.settings ?? {});
+    if (!changesFrom) return err(500, 'Could not work out the next rota period');
+    const { data: rows } = await admin.from('wf_availability').select('id, week_start').eq('staff_id', staff.id).limit(50);
+    const stale = (rows ?? []).filter((r: any) => r.week_start && r.week_start > v0.todayIso && r.week_start !== changesFrom).map((r: any) => r.id);
+    if (stale.length) await admin.from('wf_availability').delete().in('id', stale).eq('staff_id', staff.id);
+    const same = (rows ?? []).find((r: any) => r.week_start === changesFrom);
+    const w = same
+      ? await admin.from('wf_availability').update({ per_day: perDay, recurring: true, updated_at: new Date().toISOString() }).eq('id', same.id).eq('staff_id', staff.id)
+      : await admin.from('wf_availability').insert({ location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, recurring: true, week_start: changesFrom, per_day: perDay });
     if (w.error) return err(500, w.error.message);
     const { error } = await writeWfAudit(admin, staff.location_id, staff.org_id, 'availability.set', {
-      actorId: null, actorName: `${staff.name} (staff app)`, entity: 'wf_availability', entityId: String(staff.id), after: { per_day: perDay },
+      actorId: null, actorName: `${staff.name} (staff app)`, entity: 'wf_availability', entityId: String(staff.id), after: { per_day: perDay, week_start: changesFrom },
     });
     if (error) console.error(`[staff-portal] audit availability.set: ${error}`);
-    return { status: 200, body: { ok: true, perDay } };
+    return { status: 200, body: { ok: true, perDay, changesFrom, words: changesFromWords(changesFrom, v0.currency) } };
   }
 
   const v = await venueFacts(admin, staff.location_id);
