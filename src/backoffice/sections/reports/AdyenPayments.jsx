@@ -21,7 +21,8 @@ import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
 import { StatTile, EmptyState, ExportBtn } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
-import { money } from '../../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../../lib/currency';
+import { zoneOr } from '../../../lib/venueDates';
 import { formatVenueWhen, formatVenueCsvWhen, venueZoneLabel } from '../../../lib/payments/venueTime';
 
 const PAGE_SIZE = 50;
@@ -127,8 +128,10 @@ export default function AdyenPayments() {
   };
   useEffect(() => { load(0); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const cur = data?.summary?.currency || 'GBP';
-  const tz = data?.timezone || (cur === 'USD' ? 'America/New_York' : 'Europe/London');
+  // 5.12.57 (batch 8): no answer yet = the active venue's currency and zone, never a fixed other city
+  // (a US venue was read on New York's clock); a US venue with no zone shows no times (venueTime).
+  const cur = data?.summary?.currency || getActiveCurrencyCode();
+  const tz = data?.timezone || zoneOr();
   const m = (minor) => money((Number(minor) || 0) / 100, cur);
   const isLiveVenue = data?.environment === 'live';
   const testCount = Number(data?.test_count) || 0;
@@ -264,7 +267,7 @@ export default function AdyenPayments() {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 11, color: 'var(--t4)' }}>
-          {total} payment{total === 1 ? '' : 's'}{s.capped ? ` (summary counts the most recent ${(Number(s.cap) || 20000).toLocaleString('en-GB')})` : ''} · {`Times are ${venueZoneLabel(tz)} time`} ·{' '}
+          {total} payment{total === 1 ? '' : 's'}{s.capped ? ` (summary counts the most recent ${(Number(s.cap) || 20000).toLocaleString(cur === 'USD' ? 'en-US' : 'en-GB')})` : ''} · {`Times are ${venueZoneLabel(tz)} time`} ·{' '}
           <button onClick={() => load(page)} style={{ background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: 0 }}>↻ Refresh</button>
         </div>
         {pages > 1 && (

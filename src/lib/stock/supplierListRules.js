@@ -40,19 +40,19 @@ export function spendText(spend, fallbackCurrency = null) {
   return list.map((s) => `${symbolOf(s.currency || fallbackCurrency)}${Math.round(num(s.amount)).toLocaleString('en-GB')}`).join(' + ');
 }
 
-/** A day as '3 Nov' (from 'YYYY-MM-DD', read as the calendar day it names, never shifted by a clock). */
-export function dayMonth(iso) {
+/** A day as '3 Nov' (from 'YYYY-MM-DD', read as the calendar day it names, never shifted by a clock); 'Nov 3' at a US venue (5.12.57). */
+export function dayMonth(iso, currency = null) {
   const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return '';
   const month = Number(m[2]);
   if (month < 1 || month > 12) return '';
-  return `${Number(m[3])} ${MONTHS[month - 1]}`;
+  return String(currency || getActiveCurrencyCode()).toUpperCase() === 'USD' ? `${MONTHS[month - 1]} ${Number(m[3])}` : `${Number(m[3])} ${MONTHS[month - 1]}`;
 }
 
 /** Next price: '£8.61 from 1 Nov'; none: 'None'. */
 export function nextPriceText(next, currency = null) {
   if (!next || num(next.price) === null) return 'None';
-  const day = dayMonth(next.from_day);
+  const day = dayMonth(next.from_day, currency);
   return day ? `${moneyText(next.price, currency)} from ${day}` : moneyText(next.price, currency);
 }
 

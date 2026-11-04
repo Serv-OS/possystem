@@ -19,7 +19,8 @@ import { usBreakWords } from '../../../../supabase/functions/_shared/usBreaks.js
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { hoursOf, resolveRate, breakShortfall, venueBreakPolicy, grossFromNet } from '../../../staff/labour';
-import { buildWeek, addWeeks, payPeriod, payCfgFrom, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
+import { buildWeek, addWeeks, alignWeek, payPeriod, payCfgFrom, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
+import { localeDateString, timeText, venueHhmm, zoneOr, workweekStartDow } from '../../../lib/venueDates';
 import { getLocationConfig } from '../../../lib/locationTime';
 // v5.11.101: the one timesheet pay rule (base, plus the venue's pay premiums when it sets any), the
 // same as the clock, the Manager app and payroll, so reports (which read pay_amount) agree.
@@ -51,12 +52,16 @@ function localParts(stampStr, tz) {
   if (!stampStr) return { date: null, hm: '' };
   const str = String(stampStr);
   if (isNaiveLocal(str)) return { date: str.slice(0, 10), hm: str.slice(11, 16) };
-  const d = new Date(str); const z = tz || 'Europe/London';
+  // 5.12.57: the venue's zone, never London for a venue elsewhere; no zone yet (a US venue still
+  // loading) reads nothing rather than a wrong time
+  const z = zoneOr(tz);
+  if (!z) return { date: null, hm: '' };
+  const d = new Date(str);
   const dp = new Intl.DateTimeFormat('en-CA', { timeZone: z, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
   const g = t => dp.find(p => p.type === t)?.value;
-  return { date: `${g('year')}-${g('month')}-${g('day')}`, hm: new Intl.DateTimeFormat('en-GB', { timeZone: z, hour: '2-digit', minute: '2-digit', hour12: false }).format(d) };
+  return { date: `${g('year')}-${g('month')}-${g('day')}`, hm: new Intl.DateTimeFormat('en-GB', { timeZone: z, hour: '2-digit', minute: '2-digit', hour12: false }).format(d) }; // batch 8 ok: the 24 hour value the time inputs edit; shown through venueHhmm
 }
-const clockHM = (stampStr, tz) => localParts(stampStr, tz).hm;
+const clockHM = (stampStr, tz) => venueHhmm(localParts(stampStr, tz).hm);   // 5.12.57: 2:05 PM at a US venue
 
 export default function WfTimesheets({ ctx, staff, roles, sections, settings, week, showToast }) {
   const [shifts, setShifts] = useState([]);
@@ -66,7 +71,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   const [editId, setEditId] = useState(null);          // timesheet id open in the inline editor
   const [eform, setEform] = useState({ start: '', end: '', breakMins: '0', paid: false, date: null });
   // Venue timezone — clock punches are stored UTC, so display/edit must convert to venue-local.
-  const [tz, setTz] = useState('Europe/London');
+  const [tz, setTz] = useState(() => zoneOr(null));   // 5.12.57: the active venue's zone until this site's loads
   useEffect(() => { let alive = true; getLocationConfig(ctx?.locationId).then(c => { if (alive && c?.timezone) setTz(c.timezone); }).catch(() => {}); return () => { alive = false; }; }, [ctx?.locationId]);
 
   // ── range filter: by week or by pay period ────────────────────────────────
@@ -89,12 +94,15 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   const isUS = activeCountry() === 'US';
   const [mode, setMode] = useState('week'); // week | period
   const [statusFilter, setStatusFilter] = useState('all'); // all | pending | approved | paid
-  const [wk, setWk] = useState(() => buildWeek());
+  // 5.12.57: the week starts on the venue's work week day (Workforce settings), Monday when unset
+  const startDow = workweekStartDow(settings?.settings);
+  const [wk, setWk] = useState(() => buildWeek(null, startDow));
+  useEffect(() => { setWk(w => alignWeek(w, startDow)); }, [startDow]);
   const [pp, setPp] = useState(() => payPeriod(payCfg));
   useEffect(() => { setPp(payPeriod(payCfg)); }, [payCfg]);
-  const range = mode === 'week' ? { from: wk.startIso, to: wk.endIso, label: weekRangeLabel(wk) } : { from: pp.startIso, to: pp.endIso, label: pp.label };
+  const range = mode === 'week' ? { from: wk.startIso, to: wk.endIso, label: weekRangeLabel(wk, activeCountry()) } : { from: pp.startIso, to: pp.endIso, label: pp.label };
   const goto = n => mode === 'week' ? setWk(addWeeks(wk.startIso, n)) : setPp(shiftPayPeriod(payCfg, pp.startIso, n));
-  const gotoNow = () => mode === 'week' ? setWk(buildWeek()) : setPp(payPeriod(payCfg));
+  const gotoNow = () => mode === 'week' ? setWk(buildWeek(null, startDow)) : setPp(payPeriod(payCfg));
 
   const staffMap = useMemo(() => Object.fromEntries((staff || []).map(s => [s.id, s])), [staff]);
   // The venue's break policy, resolved once for every row on the screen.
@@ -380,7 +388,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                 <div style={{ fontWeight: 600, fontSize: 13, minWidth: 140 }}>{person?.name || 'Former staff'}</div>
                 <div className="mono" style={{ fontSize: 12, color: 'var(--red)', fontWeight: 700 }}>{rows.length}×</div>
                 <div style={{ fontSize: 11.5, color: 'var(--t3)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {rows.slice(0, 6).map(r => new Date(r.date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })).join(' · ')}
+                  {rows.slice(0, 6).map(r => localeDateString(new Date(r.date + 'T00:00:00'), { day: 'numeric', month: 'short' })).join(' · ')}
                   {rows.length > 6 ? ` · +${rows.length - 6} more` : ''}
                 </div>
                 <div className="mono" style={{ fontSize: 11.5, color: 'var(--t3)' }}>{hours.toFixed(1)}h rota'd</div>
@@ -491,7 +499,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                     <tr style={locked ? { opacity: 0.85 } : null}>
                       <td style={td}>
                         <div style={{ fontWeight: 600 }}>{s?.name || 'Unknown'}</div>
-                        <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.date ? new Date(r.date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : 'No date'}</div>
+                        <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.date ? localeDateString(new Date(r.date + 'T00:00:00'), { weekday: 'short', day: 'numeric', month: 'short' }) : 'No date'}</div>
                       </td>
                       <td style={td}><RoleChip role={r.roleKey || s?.role} roles={roles.map} /></td>
                       <td style={td}>
@@ -503,7 +511,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                       </td>
                       <td style={td}>
                         {r.shift ? (<>
-                          <span className="mono">{r.shift.start}–{r.shift.finish}</span>
+                          <span className="mono">{isUS ? `${venueHhmm(r.shift.start)} to ${venueHhmm(r.shift.finish)}` : <>{r.shift.start}–{r.shift.finish}</>}</span>
                           <div style={{ fontSize: 11, color: 'var(--t3)' }}>{hm(r.scheduled)}</div>
                         </>) : r.scheduled != null ? <span className="mono">{hm(r.scheduled)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>
@@ -661,8 +669,10 @@ function BreakCell({ r, staffMap, tz, policy }) {
     );
   }
   const segs = (r.breaks || []).map(b => {
-    const t = x => new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(x));
-    return b.start && b.end ? `${t(b.start)}–${t(b.end)}` : null;
+    // 5.12.57: on the venue's clock and its way (2:05 PM at a US venue); no zone yet, no times
+    const t = x => timeText(x, tz);
+    if (!b.start || !b.end || !t(b.start)) return null;
+    return activeCountry() === 'US' ? `${t(b.start)} to ${t(b.end)}` : `${t(b.start)}–${t(b.end)}`;
   }).filter(Boolean);
   const auto = (r.breaks || []).some(b => b && b.auto);
   return (

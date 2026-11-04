@@ -448,7 +448,10 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
             <div>
               <span style={lbl}>Type</span>
               <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['pizza','Pizza']].map(([v,l])=>{
+                {/* 5.12.57 (US basics 9.2): the Pizza type comes with the demo venue's sample sizes, crusts and
+                    toppings (priced in the demo's numbers) and no way to change them, so it is only offered on an
+                    item that already is one, as Menu Manager does. */}
+                {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],...(isPizza?[['pizza','Pizza']]:[])].map(([v,l])=>{
                   const act=(item.type||'simple')===v||(v==='variants'&&isParent);
                   return <button key={v} onClick={()=>f('type',v)} style={{ padding:'3px 8px',borderRadius:7,cursor:'pointer',fontFamily:'inherit',fontSize:10,fontWeight:act?700:400,border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`,background:act?'var(--acc-d)':'var(--bg3)',color:act?'var(--acc)':'var(--t4)' }}>{l}</button>;
                 })}

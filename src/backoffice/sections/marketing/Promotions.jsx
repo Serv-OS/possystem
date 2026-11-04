@@ -7,6 +7,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { money, currencySymbol } from '../../../lib/currency';
+import { dateNumeric, venueStamp } from '../../../lib/venueDates';
+// 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
+// US venue's zone is not known yet); days as 11/03/2026 at a US venue (dateNumeric). A UK venue reads as before.
+const atVenue = (ts) => venueStamp(ts);
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -199,10 +203,10 @@ export default function Promotions() {
           <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.8 }}>
             <div><span style={S.code}>{lookup.code.code}</span> <span style={{ ...S.pill, marginLeft: 6, color: lookup.code.status === 'redeemed' ? 'var(--grn)' : lookup.code.status === 'voided' ? 'var(--red)' : 'var(--t2)' }}>{lookup.code.status}</span></div>
             <div>Offer: <b>{lookup.offer?.name || '—'}</b> ({rewardSummary(lookup.offer || {})})</div>
-            <div>Uses: {lookup.code.uses_count}/{lookup.code.uses_allowed}{lookup.code.expires_at ? ` · expires ${new Date(lookup.code.expires_at).toLocaleDateString('en-GB')}` : ''}</div>
+            <div>Uses: {lookup.code.uses_count}/{lookup.code.uses_allowed}{lookup.code.expires_at ? ` · expires ${dateNumeric(lookup.code.expires_at)}` : ''}</div>
             {(lookup.redemptions || []).length > 0 && (
               <div style={{ marginTop: 6 }}>Redemptions:
-                {lookup.redemptions.map((r, i) => <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {new Date(r.redeemed_at).toLocaleString('en-GB')} — {money(r.discount_value || 0)} (order {r.order_id || '—'})</div>)}
+                {lookup.redemptions.map((r, i) => <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {atVenue(r.redeemed_at)} — {money(r.discount_value || 0)} (order {r.order_id || '—'})</div>)}
               </div>
             )}
             {lookup.code.status !== 'voided' && <button style={{ ...S.ghost, color: 'var(--red)', marginTop: 10 }} onClick={() => voidCode(lookup.code.code)}>Void code</button>}

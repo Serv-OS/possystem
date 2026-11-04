@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Icon } from '../components/ServOSIcons';
 import CashTipsStep from '../components/CashTipsStep';
+import { timeText } from '../../supabase/functions/_shared/venueDates.js';
 
 const glass = {
   background: 'var(--glass-bg)', border: '1px solid var(--glass-border)',
@@ -43,10 +44,13 @@ async function readLocation() {
   }
 }
 
-const SINCE = (iso) => {
+// 5.12.57: on the VENUE's clock and its way (2:05 PM at a US venue), from staff-portal's clock_status
+// (venue_clock); the phone may be anywhere. A server from before that reads as it did.
+const SINCE = (iso, vc) => {
   if (!iso) return '';
+  if (vc?.timezone) return timeText(iso, vc.timezone, vc.currency || 'GBP');
   const d = new Date(iso);
-  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); // batch 8 ok: only before staff-portal sends venue_clock
 };
 
 export default function ClockCard({ call, venueFallbackName }) {
@@ -155,7 +159,7 @@ export default function ClockCard({ call, venueFallbackName }) {
         </div>
         {onShift && (
           <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--t3)' }}>
-            since {SINCE(onBreak ? state.break_since : state.since)}
+            since {SINCE(onBreak ? state.break_since : state.since, state?.venue_clock)}
           </div>
         )}
       </div>

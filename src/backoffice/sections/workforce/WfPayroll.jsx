@@ -14,6 +14,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { activeCountry, activeRegionPack, venueMoney } from '../../../lib/regionPack';
+import { localeDateString } from '../../../lib/venueDates';
 import { Card, EmptyState, Badge, th, td, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { payPeriod, payCfgFrom, shiftPayPeriod } from '../../../staff/wfWeek';
@@ -23,7 +24,8 @@ import { holidayWord, holidayWordLower, tipPoolName, wagesOf } from '../../../st
 
 // v5.11.101: the venue's money (a UK venue reads exactly as before).
 const money = (n, dp = 2) => venueMoney(n, dp);
-const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+// 5.12.57: the venue's way ("Tue 3 Nov" at a UK venue as before, "Tue, Nov 3" at a US one)
+const fmtDay = iso => localeDateString(new Date(iso + 'T00:00:00'), { weekday: 'short', day: 'numeric', month: 'short' });
 
 export default function WfPayroll({ ctx, staff = [], privateHidden = false, roles, sections, settings, week, showToast }) {
   const payCfg = useMemo(() => payCfgFrom(settings, activeCountry()), [settings]);
@@ -34,6 +36,7 @@ export default function WfPayroll({ ctx, staff = [], privateHidden = false, role
   const hw = holidayWord(pack);           // 'Holiday' (UK, as before) or 'PTO' (US)
   const poolName = tipPoolName(pack);     // 'Tronc / tips' (UK, as before) or 'Tip pool' (US)
   const runWord = pack.country === 'US' ? 'tip pool run' : 'tronc run';
+  const weekOf = (iso) => `${pack.country === 'US' ? 'week of' : 'w/c'} ${fmtDay(iso)}`;   // 5.12.57: a US reader says week of
 
   const [period, setPeriod] = useState(() => payPeriod(payCfg));
   const [run, setRun] = useState(null);     // { staff, totals, tronc } | null
@@ -214,7 +217,7 @@ export default function WfPayroll({ ctx, staff = [], privateHidden = false, role
               <Icon name="status" size={14} /> {computing ? 'Running…' : 'Run payroll'}
             </button>
             {closedRecord ? (
-              <Badge tone="blue"><Icon name="check" size={11} /> Closed {new Date(closedRecord.createdAt).toLocaleDateString('en-GB')}</Badge>
+              <Badge tone="blue"><Icon name="check" size={11} /> Closed {localeDateString(new Date(closedRecord.createdAt))}</Badge>
             ) : run && run.staff.length > 0 ? (
               <button className="btn btn-acc btn-sm" onClick={closePayroll} disabled={closing || computing || run.pendingTimesheets > 0}
                 title={run.pendingTimesheets > 0 ? `Blocked: ${run.pendingTimesheets} pending timesheet(s) — approve them first` : 'Record this run permanently and mark the period’s timesheets as paid'}>
@@ -237,14 +240,14 @@ export default function WfPayroll({ ctx, staff = [], privateHidden = false, role
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'rgba(245,166,35,.10)', border: '1px solid var(--amber)', marginBottom: 14 }}>
             <span style={{ color: 'var(--amber)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
             <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
-              <b>Tips missing for {missing.length} week{missing.length === 1 ? '' : 's'}</b> — no {runWord} yet for {missing.map(w => `w/c ${fmtDay(w)}`).join(', ')}.
+              <b>Tips missing for {missing.length} week{missing.length === 1 ? '' : 's'}</b> — no {runWord} yet for {missing.map(w => weekOf(w)).join(', ')}.
               Run them under <b>{poolName}</b>, then run payroll again so tips land in this period.
             </div>
           </div>
         )}
         {run && troncRuns.length > 0 && missing.length === 0 && (
           <div style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 12 }}>
-            Pooled tips from {troncRuns.length} {runWord}{troncRuns.length === 1 ? '' : 's'} ({troncRuns.map(r => `w/c ${fmtDay(r.week_start)}`).join(', ')}) — all weeks in this period covered.
+            Pooled tips from {troncRuns.length} {runWord}{troncRuns.length === 1 ? '' : 's'} ({troncRuns.map(r => weekOf(r.week_start)).join(', ')}) — all weeks in this period covered.
           </div>
         )}
         {run && Number(run.unattributedTips) > 0 && (
@@ -393,7 +396,7 @@ export default function WfPayroll({ ctx, staff = [], privateHidden = false, role
               <tbody>
                 {history.map(h => (
                   <tr key={h.id}>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12 }}>{fmtDay(h.periodStart)} – {fmtDay(h.periodEnd)}</td>
+                    <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12 }}>{fmtDay(h.periodStart)}{pack.country === 'US' ? ' to ' : ' – '}{fmtDay(h.periodEnd)}</td>
                     <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t3)' }}>{h.payDate ? fmtDay(h.payDate) : '—'}</td>
                     <td style={{ ...td, textAlign: 'right' }} className="mono">{h.lines.length}</td>
                     {/* 5.12.57: wages are Total minus tips (overtime premium, tip top up, meal premium, holiday,
@@ -401,7 +404,7 @@ export default function WfPayroll({ ctx, staff = [], privateHidden = false, role
                     <td style={{ ...td, textAlign: 'right' }} className="mono">{money(wagesOf(h.totals))}</td>
                     <td style={{ ...td, textAlign: 'right' }} className="mono">{money(h.totals.tips ?? ((h.totals.tips_direct || 0) + (h.totals.tips_tronc || 0)))}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="mono">{money(h.totals.total)}</td>
-                    <td style={{ ...td, fontSize: 12, color: 'var(--t3)' }}>{new Date(h.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                    <td style={{ ...td, fontSize: 12, color: 'var(--t3)' }}>{localeDateString(new Date(h.createdAt), { day: 'numeric', month: 'short', year: 'numeric' })}</td>
                     <td style={{ ...td, textAlign: 'right' }}>
                       <button className="btn btn-ghost btn-xs" title="View this run in the period selector" onClick={() => { setPeriod(payPeriod(payCfg, new Date(h.periodStart + 'T00:00:00'))); setRun(null); }}>View</button>
                     </td>

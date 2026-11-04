@@ -20,6 +20,7 @@ import { quoteAccuracy } from '../../lib/waitlist/learning';
 import { toCsv, downloadCsv } from './reports/_csv';
 import { PERIODS, getPeriodRange, periodLabel } from './reports/_filters';
 import { getLocationConfig } from '../../lib/locationTime';
+import { clockParts, dateNumeric, localeString, venueHhmm, zoneOr } from '../../lib/venueDates';
 import { readAllPagesResult, faultText } from '../../lib/pagedRead';
 
 const FD = 'var(--font-display)';
@@ -182,7 +183,10 @@ export default function WaitlistInsights() {
     const buckets = {};
     for (const e of entries) {
       if (!e.addedAt) continue;
-      const h = new Date(e.addedAt).getHours();
+      // 5.12.57: the hour on the venue's clock, not the laptop's (no zone yet at a US venue: not bucketed)
+      const p = clockParts(e.addedAt, zoneOr(venueTz));
+      if (!p) continue;
+      const h = p.hh;
       const b = (buckets[h] = buckets[h] || { parties: 0, covers: 0, waitSum: 0, waitN: 0 });
       b.parties += 1;
       b.covers += Number(e.size) || 0;
@@ -201,7 +205,7 @@ export default function WaitlistInsights() {
       rows.push({ h, val, parties: b.parties, covers: b.covers });
     }
     return { rows, max: Math.max(1, ...rows.map((r) => r.val)) };
-  }, [entries, metric]);
+  }, [entries, metric, venueTz]);
 
   // ── learned turn-time model (per party band) ────────────────────────────────
   const learnedRows = useMemo(() => (turns || [])
@@ -210,7 +214,8 @@ export default function WaitlistInsights() {
 
   const exportCsv = () => {
     const headers = [
-      { label: 'Added', key: (e) => (e.addedAt ? new Date(e.addedAt).toLocaleString('en-GB') : '') },
+      // 5.12.57: the venue's words on the venue's clock ('' while a US venue's zone is not known)
+      { label: 'Added', key: (e) => (e.addedAt && zoneOr(venueTz) ? localeString(e.addedAt, { timeZone: zoneOr(venueTz) }) : '') },
       { label: 'Party', key: 'name' },
       { label: 'Size', key: 'size' },
       { label: 'Status', key: 'status' },
@@ -225,7 +230,7 @@ export default function WaitlistInsights() {
     downloadCsv(`tables-ready-${tag}.csv`, csv);
   };
 
-  const hourLabel = (h) => `${String(h).padStart(2, '0')}:00`;
+  const hourLabel = (h) => venueHhmm(`${String(h).padStart(2, '0')}:00`); // 5.12.57: 2:00 PM at a US venue
   const rangeText = periodLabel(periodId, custom, range);
 
   if (loading) return <div style={S.empty}>Loading…</div>;
@@ -330,7 +335,7 @@ export default function WaitlistInsights() {
                   <td style={{ ...S.td, fontFamily: FM, fontWeight: 800, color: 'var(--grn)' }}>{Math.round(Number(t.avg_turn_min))} min</td>
                   <td style={{ ...S.td, fontFamily: FM }}>{t.sample_count ?? 0}</td>
                   <td style={{ ...S.td, ...S.tdL, color: 'var(--t3)' }}>{t.section_id || 'all zones'}</td>
-                  <td style={{ ...S.td, color: 'var(--t4)', fontSize: 12, fontFamily: FM }}>{t.updated_at ? new Date(t.updated_at).toLocaleDateString('en-GB') : '—'}</td>
+                  <td style={{ ...S.td, color: 'var(--t4)', fontSize: 12, fontFamily: FM }}>{t.updated_at ? dateNumeric(t.updated_at, undefined, venueTz) : '—'}</td>
                 </tr>
               ))}
             </tbody>

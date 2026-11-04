@@ -9,6 +9,7 @@ import { seedVenueTaxRates, seedWords } from '../../lib/venueTaxRates';
 import { Icon } from '../../components/ServOSIcons';
 import TimezoneOptions from '../../components/TimezoneOptions';
 import { defaultTimezoneFor } from '../../lib/timezones';
+import { dateNumeric } from '../../lib/venueDates';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -258,7 +259,7 @@ export default function CompanyAdmin() {
                         {org.status}
                       </span>
                     </td>
-                    <td style={{ ...S.td, color: 'var(--t3)' }}>{new Date(org.created_at).toLocaleDateString('en-GB')}</td>
+                    <td style={{ ...S.td, color: 'var(--t3)' }}>{/* 5.12.57: 11/03/2026 at a US venue */}{dateNumeric(org.created_at)}</td>
                     <td style={S.td}>
                       <button onClick={() => selectOrg(org)} style={{ ...S.btn, ...S.btnGhost, padding: '5px 12px' }}>Manage →</button>
                     </td>

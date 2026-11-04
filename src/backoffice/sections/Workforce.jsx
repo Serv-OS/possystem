@@ -33,6 +33,7 @@ import WfSettings from './workforce/WfSettings';
 // 5.11.102: Team chat (groups, reports to check, settings, word lists, log, export, open a DM).
 import WfChat from './workforce/WfChat';
 import { activeRegionPack, venueMoney } from '../../lib/regionPack';
+import { localeDateString, dateNumeric } from '../../lib/venueDates';
 import { rotaStaffOf, headOfficeSwitchOn } from '../../lib/headOffice';
 import { adoptVenueRegion } from '../../lib/locationTime';
 import { getActiveCurrencyCode } from '../../lib/currency';
@@ -570,7 +571,8 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
     ['Position', role?.lbl || s.role || '—'], ['Pay rate', payRate],
     ['Contract', CONTRACT_LABEL[s.contractType] || s.contractType || '—'], ['Status', s.status || 'active'],
     ['Mobile', s.mobile || '—'], ['Email', s.email || '—'],
-    ['Date of birth', s.dob || '—'], ['Start date', s.startDate || '—'],
+    // 5.12.57: a US site reads its dates month first (11/03/2026); a UK one reads them as before
+    ['Date of birth', (pack.country === 'US' ? dateNumeric(s.dob) : s.dob) || '—'], ['Start date', (pack.country === 'US' ? dateNumeric(s.startDate) : s.startDate) || '—'],
     ['Address', s.address || '—'],
     ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
     // v5.11.101: the payroll fields follow the venue (UK: NI number; US: SSN last 4 and the payroll id).
@@ -653,7 +655,7 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
                 <tr>
                   <td style={{ ...td, padding: '7px 8px' }}>{DOC_LABEL[d.type] || d.type}</td>
                   <td style={{ ...td, padding: '7px 8px' }}><Badge tone={tone}>{lbl}</Badge></td>
-                  <td style={{ ...td, padding: '7px 8px', fontFamily: 'var(--font-mono)', color: 'var(--t3)', fontSize: 12 }}>{d.expiry || '—'}</td>
+                  <td style={{ ...td, padding: '7px 8px', fontFamily: 'var(--font-mono)', color: 'var(--t3)', fontSize: 12 }}>{(activeRegionPack().country === 'US' ? dateNumeric(d.expiry) : d.expiry) || '—'}</td>
                   <td style={{ ...td, padding: '7px 8px', textAlign: 'right' }}><DetailDocView path={d.fileUrl} /></td>
                 </tr>
                 </Fragment>
@@ -669,7 +671,7 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
             <tbody>
               {data.timesheets.map(t => (
                 <tr key={t.id}>
-                  <td style={{ ...td, padding: '7px 8px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{t.clockIn ? new Date(t.clockIn).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'}</td>
+                  <td style={{ ...td, padding: '7px 8px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{t.clockIn ? localeDateString(new Date(t.clockIn), { day: '2-digit', month: 'short' }) : '—'}</td>
                   <td style={{ ...td, padding: '7px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{Number(t.actualHours || 0).toFixed(2)}</td>
                   <td style={{ ...td, padding: '7px 8px' }}><Badge tone={t.status === 'approved' ? 'green' : 'grey'}>{t.status}</Badge></td>
                   <td style={{ ...td, padding: '7px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{t.payAmount != null ? money(t.payAmount, 2) : '—'}</td>
@@ -969,11 +971,11 @@ function ContractPanel({ s, role, onb, loading, ctx, showToast, onCase }) {
         {loading ? <span style={{ fontSize: 13, color: 'var(--t3)' }}>Loading…</span>
           : meta.signature ? (<>
             <Badge tone="green">Signed</Badge>
-            <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>By {meta.signature.name} · {new Date(meta.signature.signedAt).toLocaleDateString('en-GB')}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>By {meta.signature.name} · {localeDateString(new Date(meta.signature.signedAt))}</div>
           </>)
             : hasContract ? (<>
               <Badge tone="amber">Awaiting signature</Badge>
-              {meta.contractSentAt && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>Link emailed {new Date(meta.contractSentAt).toLocaleDateString('en-GB')}</div>}
+              {meta.contractSentAt && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>Link emailed {localeDateString(new Date(meta.contractSentAt))}</div>}
             </>)
               : <span style={{ fontSize: 13, color: 'var(--t4)' }}>No contract issued yet.</span>}
       </div>

@@ -78,16 +78,16 @@ export function allergenWords(ids, country = 'UK') {
   return list.length ? `Allergens: ${list.join(', ')}` : 'Allergens: none';
 }
 
-/** 'Made 21 Oct 2026 14:05' on the venue's clock; '' when there is no time. */
-export function madeWords(madeAt, venueTz) {
-  const words = fmtVenueDateTime(madeAt, venueTz);
+/** 'Made 21 Oct 2026 14:05' on the venue's clock ('Made Oct 21, 2026 2:05 PM' at a US venue); '' when there is no time. */
+export function madeWords(madeAt, venueTz, venue) {
+  const words = fmtVenueDateTime(madeAt, venueTz, { venue }); // 5.12.57: the venue's words (lib/venueDate.js: the active venue when none is given)
   return words ? `Made ${words}` : '';
 }
 
-/** 'Use by 23 Oct 2026' from a plain day or an instant; '' when there is none. */
-export function expiryLine(useBy, venueTz) {
+/** 'Use by 23 Oct 2026' ('Use by Oct 23, 2026' at a US venue) from a plain day or an instant; '' when there is none. */
+export function expiryLine(useBy, venueTz, venue) {
   if (useBy == null || useBy === '') return '';
-  const words = YMD.test(String(useBy)) ? fmtYmd(String(useBy)) : fmtVenueDate(useBy, venueTz);
+  const words = YMD.test(String(useBy)) ? fmtYmd(String(useBy), { venue }) : fmtVenueDate(useBy, venueTz, { venue });
   return words ? `Use by ${words}` : '';
 }
 

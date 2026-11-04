@@ -28,6 +28,7 @@ import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, se
 import { normalisePlaylist, itemHoldMs, addPlaylistItem, movePlaylistItem, removePlaylistItem, setPlaylistItem, clampItemSeconds, DEFAULT_ITEM_SECONDS, MIN_ITEM_SECONDS, MAX_ITEM_SECONDS, MAX_ITEMS, TRANSITIONS } from '../../lib/menuBoardPlaylist';
 import { fetchScreenNotes } from '../../lib/menuBoardNotes';
 import { screenNoteView } from '../../lib/menuBoardPairing';
+import { dateNumeric, localeTimeString } from '../../lib/venueDates';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
@@ -244,7 +245,7 @@ export default function MenuBoards() {
                 : `${(b.layout?.blocks?.length || 0)} categories · ${b.orientation}`}
             </div>
             <div style={{ fontSize: 11, color: b.published_at ? 'var(--grn)' : 'var(--t4)', marginTop: 6 }}>
-              {b.published_at ? `Published ${new Date(b.published_at).toLocaleDateString('en-GB')}` : 'Not published'}
+              {b.published_at ? `Published ${dateNumeric(b.published_at)}` : 'Not published'}{/* 5.12.57: the venue's day, 11/03/2026 at a US venue */}
             </div>
             <button style={{ ...S.btn, width: '100%', marginTop: 12 }} onClick={() => copyLink(b.id)}>{copied === b.id ? '✓ Link copied' : 'Copy screen link'}</button>
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -342,7 +343,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
   ).map(s => s.id));
   const hiddenNow = (catId) => followMenus && !!activeMenuId && !shownNow.has(catId);
   let venueClock = '';
-  try { venueClock = tz ? new Date().toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }) : ''; } catch { venueClock = ''; }
+  try { venueClock = tz ? localeTimeString(new Date(), { timeZone: tz, hour: '2-digit', minute: '2-digit' }) : ''; } catch { venueClock = ''; } // 5.12.57: 2:05 PM at a US venue
   const followStatus = !followMenus ? null
     : !menusOk ? 'Menus could not be loaded, so this preview shows every category. The TV applies the schedule.'
     : menus.length === 0 ? 'No menus are set up at this venue yet, so the board shows every category.'

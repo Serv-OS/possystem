@@ -33,6 +33,7 @@ import { venueZoneLabel } from '../../../lib/payments/venueTime';
 import { computeSalesStats } from './SalesSummary';
 import { vatMissingLine } from '../../../lib/salesStats';
 import { getActiveCurrencyCode } from '../../../lib/currency';
+import { localeDateString, localeTimeString } from '../../../lib/venueDates';
 import { breakdownLines, rewardsVatLine } from '../../../lib/salesBreakdown';
 import { summariseShift } from '../../../lib/shiftReport';
 import { applyFilters } from './_filters';
@@ -46,11 +47,12 @@ const DIV = { borderTop:'1px dashed currentColor', margin:'8px 0' };
 const BOLD = { fontWeight:700 };
 const NONE = Object.freeze([]);
 
+// 5.12.57 (batch 8): the venue's words (a US venue 'Nov 03, 2026' and '2:05 PM'; a UK one as before)
 function formatDate(ts, timeZone) {
-  return new Date(ts).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', timeZone });
+  return localeDateString(new Date(ts), { day:'2-digit', month:'short', year:'numeric', timeZone });
 }
 function formatTime(ts, timeZone) {
-  return new Date(ts).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', timeZone });
+  return localeTimeString(new Date(ts), { hour:'2-digit', minute:'2-digit', timeZone });
 }
 
 // timeZone = range.timeZone (the venue's; none = London, never the browser's).

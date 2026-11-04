@@ -12,6 +12,10 @@ import { activeCountry } from '../../../lib/regionPack';
 import EmailBuilder from './EmailBuilder';
 import { Icon } from '../../../components/ServOSIcons';
 import { compileEmail, SAMPLE_MERGE, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
+import { dateNumeric, venueStamp } from '../../../lib/venueDates';
+// 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
+// US venue's zone is not known yet); days as 11/03/2026 at a US venue (dateNumeric). A UK venue reads as before.
+const atVenue = (ts) => venueStamp(ts);
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -194,7 +198,7 @@ export default function Campaigns() {
           <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
             {c.type === 'automation'
               ? `Automation · ${c.trigger?.type || '—'}${c.trigger?.type === 'birthday' ? ` (${c.trigger.days_before ?? 7}d before)` : c.trigger?.type === 'lapsed' ? ` (${c.trigger.days ?? 30}d)` : c.trigger?.type === 'recurring' ? ` (${c.trigger.recurrence || 'weekly'})` : ''}`
-              : c.schedule?.send_at ? `Scheduled · ${new Date(c.schedule.send_at).toLocaleString('en-GB')}` : 'One-off'} · {c.channel}{c.offer_id ? ' · offer ✓' : ''}{c.exclusion_segment_id ? ' · excl ✓' : ''}{c.last_run_at ? ` · last run ${new Date(c.last_run_at).toLocaleDateString('en-GB')}` : ''}
+              : c.schedule?.send_at ? `Scheduled · ${atVenue(c.schedule.send_at)}` : 'One-off'} · {c.channel}{c.offer_id ? ' · offer ✓' : ''}{c.exclusion_segment_id ? ' · excl ✓' : ''}{c.last_run_at ? ` · last run ${dateNumeric(c.last_run_at)}` : ''}
           </div>
           {rm.summary && rm.summary.candidates > 0 && <div style={{ ...S.ok, marginTop: 6 }}>Ran: {rm.summary.candidates} matched · {rm.summary.sent} sent · {rm.summary.skipped} skipped{rm.summary.failed ? ` · ${rm.summary.failed} failed` : ''}</div>}
           {/* v5.5.946: a zero-recipient run is a LOUD outcome, not a quiet "done". */}
@@ -408,7 +412,7 @@ export default function Campaigns() {
           {(runsView.runs || []).length === 0 && <div style={S.hint}>No runs yet. Use “Run now” or activate the campaign.</div>}
           {(runsView.runs || []).map((r) => (
             <div key={r.id} style={{ ...S.row, paddingTop: 8, paddingBottom: 8 }}>
-              <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>{new Date(r.run_at).toLocaleString('en-GB')} <span style={{ ...S.pill, marginLeft: 6 }}>{r.status}</span></div>
+              <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>{atVenue(r.run_at)} <span style={{ ...S.pill, marginLeft: 6 }}>{r.status}</span></div>
               <div style={{ fontSize: 12, color: 'var(--t3)' }}>{r.candidates} matched · {r.sent} sent · {r.skipped} skipped{r.failed ? ` · ${r.failed} failed` : ''}</div>
             </div>
           ))}
@@ -444,7 +448,7 @@ export default function Campaigns() {
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 4 }}>Recent sends</div>
               {runsView.sends.slice(0, 20).map((s, i) => (
-                <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {new Date(s.created_at).toLocaleDateString('en-GB')} — {s.channel} — {s.status}{s.promo_code ? ` — ${s.promo_code}` : ''}</div>
+                <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {dateNumeric(s.created_at)} — {s.channel} — {s.status}{s.promo_code ? ` — ${s.promo_code}` : ''}</div>
               ))}
             </div>
           )}

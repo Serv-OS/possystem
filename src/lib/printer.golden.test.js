@@ -50,6 +50,20 @@ function withFrozenClock(fn) {
 
 function encode(doc) { return hex(encodeEscPos(doc, ESCPOS_80)); }
 
+// 5.12.57 (US basics batch 8): a US venue's receipt prints its date the US way ('Sep 16, 2026 7:05 AM');
+// v5.8.83 printed the UK words at every venue. The golden bytes stay as captured: for the two USD inputs
+// the one Date line is swapped for the US words at the same 42 columns, and every other byte must match.
+// The UK receipts and every kitchen docket are compared untouched.
+const UK_DATE_LINE = 'Date                    16 Sept 2026 07:05';
+const US_DATE_LINE = 'Date                  Sep 16, 2026 7:05 AM';
+const latinHex = (str) => Array.from(str, (c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+function usDated(goldenHex) {
+  const was = latinHex(UK_DATE_LINE);
+  assert.equal(goldenHex.split(was).length - 1, 1, 'the golden US receipt has its one Date line');
+  assert.equal(US_DATE_LINE.length, UK_DATE_LINE.length);
+  return goldenHex.replace(was, latinHex(US_DATE_LINE));
+}
+
 test('escpos spec for an 80mm Sunmi is 42 columns, exactly what the old builders used', () => {
   assert.equal(ESCPOS_80.dialect, 'escpos');
   assert.equal(ESCPOS_80.cols, 42);
@@ -60,14 +74,14 @@ test('escpos spec for an 80mm Sunmi is 42 columns, exactly what the old builders
 test('customer receipts are byte identical (UK VAT, US exclusive tax, delivery channel)', () => {
   withFrozenClock(() => {
     assert.equal(encode(buildCustomerReceiptDoc(INPUTS.receipt_uk, { cols: 42 })), GOLDEN.receipt_uk);
-    assert.equal(encode(buildCustomerReceiptDoc(INPUTS.receipt_us, { cols: 42 })), GOLDEN.receipt_us);
+    assert.equal(encode(buildCustomerReceiptDoc(INPUTS.receipt_us, { cols: 42 })), usDated(GOLDEN.receipt_us));
     assert.equal(encode(buildCustomerReceiptDoc(INPUTS.receipt_delivery, { cols: 42 })), GOLDEN.receipt_delivery);
   });
 });
 
 test('merchant tip slip is byte identical', () => {
   withFrozenClock(() => {
-    assert.equal(encode(buildMerchantTipSlipDoc(INPUTS.tip_slip, { cols: 42 })), GOLDEN.tip_slip);
+    assert.equal(encode(buildMerchantTipSlipDoc(INPUTS.tip_slip, { cols: 42 })), usDated(GOLDEN.tip_slip));
   });
 });
 

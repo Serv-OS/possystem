@@ -141,7 +141,7 @@ export const ITEM_COLUMNS = {
 // applied in Back Office (lib/venueMenuRead.js withItemExtras). Checked against the live
 // menu_items columns on 27 Sep 2026 and what the till surfaces read:
 //   variantLabel                    the size picker's heading (POS, MPOS, bar, kiosk modal)
-//   pizzaSizes, pizzaBases,         the pizza builder (ProductModal, PizzaBuilder); null means
+//   pizzaSizes, pizzaBases,         the pizza builder (ProductModal, Menu Manager); null means
 //   pizzaCrusts, defaultToppings    the global defaults
 //   subGroup                        the Back Office's own sort of sub items
 //   variants, modifierGroups        legacy inline sizes and option groups (ProductModal,

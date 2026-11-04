@@ -21,6 +21,7 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.101: the venue's region (currency, US overtime) and the pay premiums, applied at last.
 import { regionPack } from '../_shared/regionPack.js';
+import { workweekStartDow } from '../_shared/venueDates.js';
 import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, venueDay } from '../_shared/payPremiums.js';
 import { tipCreditTopUps } from '../_shared/tipCredit.js';
 import { ptoRules, ptoAccruals, timeOffPay } from '../_shared/usPto.js';
@@ -796,11 +797,14 @@ Deno.serve(async (req) => {
 
       // Mondays inside [from, to] with no tronc run = pooled tips not yet
       // distributed (only matters when something is pooled).
+      // 5.12.57: the week starts on the venue's work week day (Workforce settings, Work week starts), as
+      // the tip pool screen runs it; Monday when unset, so a UK venue is checked exactly as before.
       const missingWeeks: string[] = [];
       if (tipMode !== 'direct') {
         const covered = new Set((runs ?? []).map((r: any) => r.week_start));
+        const poolDow = workweekStartDow(policy);
         for (const d = new Date(from + 'T00:00:00'); d <= new Date(to + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
-          if (d.getDay() === 1) {
+          if (d.getDay() === poolDow) {
             const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
             if (!covered.has(iso)) missingWeeks.push(iso);
           }

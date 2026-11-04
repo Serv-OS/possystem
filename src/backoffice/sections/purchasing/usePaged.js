@@ -37,8 +37,9 @@ export function usePaged(fetchPage, key) {
 
 const zoneCache = new Map();
 export function useSiteZones(siteIds) {
-  // The zones are read from the cache; the state only says which list of sites has finished reading,
-  // so every site of that list then has a zone (London when its read failed or it was past the 50th).
+  // The zones are read from the cache; the state only says which list of sites has finished reading.
+  // 5.12.57 (batch 8): a site whose read failed (or past the 50th) has no zone (null), never London:
+  // atWords then reads the active venue's clock, and a US venue with no zone yet shows no time.
   const [doneKey, setDoneKey] = useState(null);
   const k = (siteIds || []).filter(Boolean).join(',');
   useEffect(() => {
@@ -46,7 +47,7 @@ export function useSiteZones(siteIds) {
     const todo = ids.filter((id) => !zoneCache.has(id)).slice(0, 50);
     if (!todo.length) return undefined;
     let on = true;
-    Promise.all(todo.map((id) => getLocationConfig(id).then((c) => [id, c?.timezone || 'Europe/London']).catch(() => [id, 'Europe/London']))).then((pairs) => {
+    Promise.all(todo.map((id) => getLocationConfig(id).then((c) => [id, c?.timezone || null]).catch(() => [id, null]))).then((pairs) => {
       pairs.forEach(([id, tz]) => zoneCache.set(id, tz));
       if (on) setDoneKey(k);
     });
@@ -54,7 +55,7 @@ export function useSiteZones(siteIds) {
   }, [k]);
   return useMemo(() => {
     const ids = k ? k.split(',') : [];
-    if (doneKey === k) return Object.fromEntries(ids.map((id) => [id, zoneCache.get(id) || 'Europe/London']));
+    if (doneKey === k) return Object.fromEntries(ids.map((id) => [id, zoneCache.get(id) || null]));
     return Object.fromEntries(ids.filter((id) => zoneCache.has(id)).map((id) => [id, zoneCache.get(id)]));
   }, [k, doneKey]);
 }

@@ -13,6 +13,7 @@ import SiteKindCard from './stock/SiteKindCard';
 import CaloriesCard from './stock/CaloriesCard';
 import { Icon } from '../../components/ServOSIcons';
 import { TIMEZONE_GROUPS, TIMEZONES } from '../../lib/timezones';
+import { localeTimeString, venueHhmm } from '../../lib/venueDates';
 
 // v5.7.29: the venue timezone drives EVERY business-time decision in the
 // system (menu schedules, dayparts, booking slots, report days, auto-capture
@@ -150,7 +151,7 @@ export default function LocationSettings() {
         }
         if (row) {
           setLocation(row);
-          setTimezone(row.timezone || 'Europe/London');
+          setTimezone(row.timezone || 'Europe/London'); // batch 8 ok: the picker's starting value for a venue that never saved a zone; the owner picks theirs here
           setCurrency(row.currency || 'GBP');
           setBizDayStart(row.business_day_start || '06:00');
           setShifts(Array.isArray(row.shifts) ? row.shifts : []);
@@ -371,7 +372,8 @@ export default function LocationSettings() {
         </select>
         <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
           Current time in {timezone}: <strong style={{ color:'var(--t2)' }}>
-            {new Date().toLocaleTimeString('en-GB', { timeZone: timezone, hour:'2-digit', minute:'2-digit' })}
+            {/* 5.12.57: in the venue's words (2:05 PM at a US venue) */}
+            {localeTimeString(new Date(), { timeZone: timezone, hour:'2-digit', minute:'2-digit' }, currency)}
           </strong>
         </div>
       </div>
@@ -430,7 +432,8 @@ export default function LocationSettings() {
           ))}
         </select>
         <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
-          Example: customer collects at <strong style={{ color:'var(--t2)' }}>19:00</strong>, lead time <strong style={{ color:'var(--t2)' }}>{collectionLeadMin} min</strong> → kitchen fires at <strong style={{ color:'var(--t2)' }}>{collectionLeadMin === 0 ? '19:00 (immediately)' : (() => { const d = new Date(); d.setHours(19, 0, 0, 0); d.setMinutes(d.getMinutes() - collectionLeadMin); return d.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' }); })()}</strong>.
+          {/* 5.12.57: the example reads the venue's clock words (7:00 PM at a US venue) */}
+          Example: customer collects at <strong style={{ color:'var(--t2)' }}>{venueHhmm('19:00', currency)}</strong>, lead time <strong style={{ color:'var(--t2)' }}>{collectionLeadMin} min</strong> → kitchen fires at <strong style={{ color:'var(--t2)' }}>{collectionLeadMin === 0 ? `${venueHhmm('19:00', currency)} (immediately)` : (() => { const m = ((19 * 60 - collectionLeadMin) % 1440 + 1440) % 1440; return venueHhmm(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`, currency); })()}</strong>.
         </div>
       </div>
       </div>

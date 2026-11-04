@@ -96,11 +96,26 @@ Deno.serve(async (req) => {
       sb.from('wf_venue_settings').select('currency, labour_target_pct').eq('location_id', loc).maybeSingle(),
       sb.from('locations').select('timezone, name, is_demo, currency').eq('id', loc).maybeSingle(),
     ]);
-    const tz = locRow?.timezone || 'Europe/London';
     // 5.12.57: the venue's own currency (locations.currency, USD at Mozz). It was the Workforce settings
     // column, which defaults to GBP, so a US venue's Manager app showed pounds, the UK date and number
     // style and no US meal break rule. That column is only a fallback now.
     const currency = String(locRow?.currency || vs?.currency || 'GBP').toUpperCase();
+    // 5.12.57 (batch 8): the venue's clock is the Platform venue clock (the zone the Owner app, the
+    // reports and Xero use) when it is found, for every scope; then the Ops row's zone; then the zone of
+    // the venue's country when it has only one (London, Dublin). A US venue with no zone anywhere is
+    // read on UTC and says so (tzKnown false), never on London.
+    let platformClock: { timezone: string; dayStart: string; found: boolean } | null = null;
+    let clockFailed = false;
+    try {
+      const c = await venueClock(platform, loc);
+      platformClock = { timezone: c.timezone, dayStart: c.dayStart, found: !!c.found };
+    } catch (e) {
+      clockFailed = true;
+      console.warn('[manager-snapshot] venue clock unreadable, calendar day used:', (e as Error)?.message);
+    }
+    const ONE_ZONE: Record<string, string> = { GBP: 'Europe/London', EUR: 'Europe/Dublin' };
+    const tz = (platformClock?.found ? platformClock.timezone : null) || locRow?.timezone || ONE_ZONE[currency] || 'UTC'; // batch 8 ok: the country's only zone, never another city
+    const tzKnown = !!((platformClock?.found && platformClock.timezone) || locRow?.timezone || ONE_ZONE[currency]);
     const now = new Date();
     // The calendar date, for the kitchen blocks only (prep schedules and the close down list are
     // kept by calendar date).
@@ -113,14 +128,9 @@ Deno.serve(async (req) => {
     // read of the clock falls back to the calendar day on that zone (the pre 5.11.99 day), so the
     // floor and kitchen tabs never go down with it.
     let clock: { timezone: string; dayStart: string } | null = null;
-    if (full) {
-      try {
-        const c = await venueClock(platform, loc);
-        clock = { timezone: c.found ? c.timezone : tz, dayStart: c.found ? c.dayStart : '00:00' };
-      } catch (e) {
-        console.warn('[manager-snapshot] venue clock unreadable, calendar day used:', (e as Error)?.message);
-        clock = null;
-      }
+    if (full && !clockFailed && platformClock) {
+      const c = platformClock;
+      clock = { timezone: c.found ? c.timezone : tz, dayStart: c.found ? c.dayStart : '00:00' };
     }
     const dayOf = (msv: number) => (clock ? businessDayOf(msv, clock.timezone, clock.dayStart) : ymd(new Date(msv), tz));
     const bizDay = clock ? dayOf(now.getTime()) : today;
@@ -588,7 +598,7 @@ Deno.serve(async (req) => {
       } else {
         let { data: sups, error: supErr } = await sb.from('suppliers').select('id, name, delivery_days, cutoff_time').eq('location_id', loc).order('name').limit(200);
         if (supErr) ({ data: sups } = await sb.from('suppliers').select('id, name, delivery_days').eq('location_id', loc).order('name').limit(200));
-        const hm = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+        const hm = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now); // batch 8 ok: a machine HH:MM for nextDelivery, on the venue clock
         kitchenOrderBy = (sups ?? []).map((su: any) => {
           const n = nextDelivery({ rules: rulesFromDeliveryDays(su.delivery_days, su.cutoff_time ?? null), exceptions: [], nowVenue: { ymd: today, hm } });
           return { supplierId: su.id, name: su.name || '', internal: false, deliveryDay: n?.deliveryYmd || null, orderByAt: n?.orderByAt || null,
@@ -681,7 +691,7 @@ Deno.serve(async (req) => {
     const internalSup = new Set(kitchenOrderBy.filter((x: any) => x.internal).map((x: any) => String(x.supplierId)));
 
     return json({
-      ok: true, location_id: loc, venueName: locRow?.name || '', tz, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
+      ok: true, location_id: loc, venueName: locRow?.name || '', tz, tzKnown, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
       // v5.11.84: 'stock' for a login that reaches the venue only through Stock control 'all': the
       // money, floor, team and ops blocks are null (the Manager app shows nothing for a null block)
       scope: full ? 'all' : 'stock', currency,

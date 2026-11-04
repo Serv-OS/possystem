@@ -12,10 +12,14 @@ import { useStore } from '../../../store';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { planRow, planTotals, bySiteWords, fillWords, qtyUnit, tickQty, tickWords } from '../../../lib/stock/kitchenRules';
 import { Btn, TableWrap, Th, Td, ErrorLine, EmptyLine, Popover, ui } from '../stock/stockUi';
+import { timeText } from '../../../lib/venueDates';
 
-const timeOf = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''; };
+// 5.12.57 (batch 8): a tick's time on the kitchen's clock in the venue's words ('14:05', '2:05 PM'),
+// never the laptop's; '' while a US kitchen's zone is not known.
+const timeOfIn = (tz) => (iso) => timeText(iso, tz);
 
-export default function KitchenPlan({ kitchenId, day }) {
+export default function KitchenPlan({ kitchenId, day, tz = null }) {
+  const timeOf = timeOfIn(tz);
   const showToast = useStore((s) => s.showToast);
   const [rows, setRows] = useState(null);
   const [error, setError] = useState(null);

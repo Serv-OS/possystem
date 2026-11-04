@@ -10,6 +10,7 @@ import { onShiftNow, noShows, breaksDue } from '../../lib/manager/team';
 import { venueBreakPolicy } from '../../staff/breaks.js';
 import { belowPar, stockNeedNow } from '../../lib/manager/kitchen';
 import { money } from '../../lib/currency';
+import { localeDateString, localeTimeString, clockParts } from '../../../supabase/functions/_shared/venueDates.js';
 import { taxText } from '../../lib/taxWords';   // 5.12.57: the snapshot venue's own tax words
 import { syne, mono } from './ui';
 import { useLayout } from './useLayout';
@@ -47,7 +48,7 @@ function StatusTile({ icon, label, value, sub, state = 'good', accent = 'var(--a
 export default function ManagerHome({ ctx }) {
   const L = useLayout();
   const { operator, flags, setTab, snap } = ctx;
-  const h = new Date().getHours();
+  const h = clockParts(new Date(), snap?.tz)?.hh ?? new Date().getHours();   // 5.12.57: the venue's hour for the greeting
   const greeting = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   const first = operator?.name ? operator.name.split(' ')[0] : '';
 
@@ -85,7 +86,8 @@ export default function ManagerHome({ ctx }) {
       <div style={{ padding: '6px 2px 2px', ...L.s.span }}>
         <div style={{ fontSize: 22, fontWeight: 800, ...syne, ...L.s.title }}>{greeting}{first ? `, ${first}` : ''}</div>
         <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>
-          {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' }).toUpperCase()} · {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}{ctx.venueName ? ` · ${ctx.venueName}` : ''}
+          {/* 5.12.57 (batch 8): the venue's day and time (snap.tz) in its words, never the phone's clock */}
+          {localeDateString(new Date(), { weekday: 'long', day: '2-digit', month: 'short', ...(snap?.tz ? { timeZone: snap.tz } : {}) }, snap?.currency).toUpperCase()}{snap?.tz ? ` · ${localeTimeString(new Date(), { hour: '2-digit', minute: '2-digit', timeZone: snap.tz }, snap?.currency)}` : ''}{ctx.venueName ? ` · ${ctx.venueName}` : ''}
         </div>
       </div>
 

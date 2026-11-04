@@ -4,6 +4,7 @@ import { printService } from '../lib/printer';
 import { useStore } from '../store';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { money } from '../lib/currency';
+import { localeString } from '../lib/venueDates';
 import { Icon } from './ServOSIcons';
 // v5.7.34 rate-null guards: per-unit entries book rate: null in the breakdown —
 // breakdownLabel prints name + amount with no percent, breakdownIsExclusive
@@ -18,6 +19,8 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
   const orderTypeLabel = orderType === 'drive-thru' ? 'Drive thru' : orderType;
   const { location, showToast } = useStore();
   const now = new Date();
+  // 5.12.57: the date and time in the venue's words (11/3/2026, 2:05:09 PM at a US venue; UK as before)
+  const nowText = localeString(now, undefined, location?.currency);
   const nonVoided = items.filter(i => !i.voided);
   const [printing, setPrinting] = useState(false);
 
@@ -80,7 +83,7 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
       <div class="center muted" style="margin:4px 0 8px">
         ${tableLabel ? tableLabel : customer?.name ? customer.name : orderTypeLabel}<br>
         ${server ? `Server: ${server}` : ''}${covers>1 ? ` · ${covers} covers` : ''}<br>
-        ${now.toLocaleString('en-GB')}
+        ${nowText}
       </div>
       <div class="line"></div>
       ${nonVoided.map(item => {
@@ -139,7 +142,7 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
             <div style={{fontSize:11,color:'var(--t3)',marginTop:3}}>
               {tableLabel || orderTypeLabel}{server?` · ${server}`:''}{covers>1?` · ${covers} covers`:''}
             </div>
-            <div style={{fontSize:11,color:'var(--t3)'}}>{now.toLocaleString('en-GB')}</div>
+            <div style={{fontSize:11,color:'var(--t3)'}}>{nowText}</div>
           </div>
 
           <div style={{borderTop:'1px dashed var(--bdr2)',margin:'10px 0'}}/>

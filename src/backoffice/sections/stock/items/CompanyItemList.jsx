@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../../../store';
 import { money } from '../../../../lib/currency';
 import { getVenueClock, ymdInTz } from '../../../../lib/locationTime';
+import { zoneOr } from '../../../../lib/venueDates';
 import { stockApi } from '../../../../lib/stock/stockApi';
 import { pauseWords } from '../../../../lib/stock/pauseRules';
 import { packPrice, countPackOf } from '../../../../lib/stock/packPrice';
@@ -111,7 +112,7 @@ export default function CompanyItemList({ orgCtx, onOpen }) {
   useEffect(() => {
     if (!clockSite) return undefined;
     let live = true;
-    getVenueClock(clockSite).then((c) => { if (live) setTz(c?.timezone || null); }).catch(() => { /* London below */ });
+    getVenueClock(clockSite).then((c) => { if (live) setTz(c?.timezone || null); }).catch(() => { /* the active venue's zone below */ });
     return () => { live = false; };
   }, [clockSite]);
 
@@ -285,7 +286,8 @@ export default function CompanyItemList({ orgCtx, onOpen }) {
       if (after || list.length > MAX_ROWS) toast(`Exported the first ${MAX_ROWS.toLocaleString('en-GB')} items. Narrow the list to export the rest.`, 'info');
     }
     const { headers, rows: out } = exportRows(list, scope);
-    downloadCsv(exportFileName(ymdInTz(new Date(), tz || 'Europe/London')), toCsv(out, headers));
+    // 5.12.57 (batch 8): the site's day, else the active venue's; a file name with no venue zone yet takes the device's day, never London's
+    downloadCsv(exportFileName(ymdInTz(new Date(), zoneOr(tz) || Intl.DateTimeFormat().resolvedOptions().timeZone)), toCsv(out, headers));
   };
 
   // ── bulk bar ──
@@ -395,7 +397,7 @@ export default function CompanyItemList({ orgCtx, onOpen }) {
         {!oneId && <Segmented value={mode} onChange={setMode} options={[{ value: 'list', label: 'List' }, { value: 'grid', label: 'Sites grid' }]} />}
         {/* v5.11.92 (Drop 4a, contract 2.4): the one site view links to Reports > Stock and GP > Stock value at that site, as of today there. */}
         {oneId && sc.canOpenReports && (
-          <Btn kind="link" onClick={() => sc.openReport({ report: 'stock_value', sites: { kind: 'sites', ids: [oneId] }, period: 'last-week', at: ymdInTz(new Date(), tz || 'Europe/London') })}>See the report</Btn>
+          <Btn kind="link" onClick={() => sc.openReport({ report: 'stock_value', sites: { kind: 'sites', ids: [oneId] }, period: 'last-week', at: ymdInTz(new Date(), zoneOr(tz) || Intl.DateTimeFormat().resolvedOptions().timeZone) })}>See the report</Btn>
         )}
         {sc.canOpen('stock-counts') && <Btn onClick={startCount}>Start a count</Btn>}
         {editor && <Btn onClick={() => setModal({ kind: 'categories' })}>Categories</Btn>}

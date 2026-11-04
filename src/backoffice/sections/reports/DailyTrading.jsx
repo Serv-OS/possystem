@@ -22,8 +22,9 @@ import { money as venueMoneyText } from '../../../lib/currency';
 // 5.12.57 (US basics, batch 6): the venue's own tax words (VAT and HMRC at a UK venue, as before).
 import { activeTaxWords } from '../../../lib/taxWords';
 import { fmtSymbol } from './_fmtSymbol';
+import { localeDateString } from '../../../lib/venueDates';
 
-const dow = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short' });
+const dow = (d) => localeDateString(new Date(d + 'T00:00:00'), { weekday: 'short' }); // 5.12.57: the venue's words
 
 const S = {
   wrap:  { padding: 0 },

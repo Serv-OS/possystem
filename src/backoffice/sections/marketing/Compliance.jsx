@@ -8,6 +8,8 @@
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { activeCountry } from '../../../lib/regionPack';
+import { dateNumeric } from '../../../lib/venueDates';
+// 5.12.57 (US basics batch 8): days in the venue's order on its clock (11/03/2026 at a US venue; UK as before).
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -86,7 +88,7 @@ export default function Compliance() {
               <span style={{ fontSize: 13.5, color: 'var(--t1)', fontFamily: 'var(--font-mono,monospace)' }}>{s.address}</span>
               <span style={{ ...S.pill, marginLeft: 8 }}>{s.channel}</span>
               <span style={{ ...S.pill, marginLeft: 6 }}>{s.reason}</span>
-              <span style={{ fontSize: 11.5, color: 'var(--t4)', marginLeft: 8 }}>{new Date(s.created_at).toLocaleDateString('en-GB')}{s.source ? ` · ${s.source}` : ''}</span>
+              <span style={{ fontSize: 11.5, color: 'var(--t4)', marginLeft: 8 }}>{dateNumeric(s.created_at)}{s.source ? ` · ${s.source}` : ''}</span>
             </div>
             <button style={S.ghost} onClick={() => remove(s)}>Remove</button>
           </div>

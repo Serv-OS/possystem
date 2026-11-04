@@ -70,6 +70,16 @@ async function currencyOf(loc: string): Promise<string> {
   } catch { return 'GBP'; }
 }
 
+/** 5.12.57 (batch 8): the venue's clock and currency for the clock tablet, which signs in anonymously
+ *  and often cannot read the Platform row, so it showed London times at a US venue. Null when unknown. */
+async function venueClockOf(loc: string): Promise<{ timezone: string | null; currency: string }> {
+  try {
+    const { data } = await admin.from('locations').select('timezone, currency').eq('id', loc).maybeSingle();
+    const c = String(data?.currency || '').toUpperCase();
+    return { timezone: data?.timezone ? String(data.timezone) : null, currency: /^[A-Z]{3}$/.test(c) ? c : 'GBP' };
+  } catch { return { timezone: null, currency: 'GBP' }; }
+}
+
 /** Effective hourly rate for a wf_staff member: override → role base → salaried equiv. */
 async function resolveRate(staff: any, loc: string): Promise<{ rate: number; source: string }> {
   if (staff.rate_override != null) return { rate: Number(staff.rate_override), source: 'override' };
@@ -224,7 +234,8 @@ Deno.serve(async (req) => {
         // 5.12.49: a US venue asks for cash tips at clock out unless switched off; never a UK venue.
         askCashTips = asksCashTips({ country: regionPack({ currency: await currencyOf(location_id) }).country, settings: (gs as any)?.settings ?? null });
       } catch { /* policy is optional; never block a status read */ }
-      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding, posLoginClockIn, askCashTips, headOffice, ...(headOffice ? { headOfficeWords: HEAD_OFFICE_CLOCK_WORDS } : {}) });
+      const venueClock = await venueClockOf(location_id);   // 5.12.57: the tablet shows times on the venue's clock
+      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding, posLoginClockIn, askCashTips, headOffice, venueClock, ...(headOffice ? { headOfficeWords: HEAD_OFFICE_CLOCK_WORDS } : {}) });
     }
 
     if (action === 'in') {

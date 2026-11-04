@@ -14,6 +14,7 @@ import { supabase, getActiveLocationSync, getLocationId } from '../../../lib/sup
 import { getLocationConfig } from '../../../lib/locationTime';
 import { useSiteMoney } from '../stock/useSiteCurrency';
 import { fmtYmd, fmtVenueDate } from '../../../lib/venueDate';
+import { dateNumeric } from '../../../lib/venueDates';
 import NumberField from '../../../components/NumberField';
 import { Icon } from '../../../components/ServOSIcons';
 import { formatRateLabel, purchaseNet } from '../../../lib/tax';
@@ -178,7 +179,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
       const overlap = receivedOrdersOverlapping(pos || [], { supplierId: review.header.supplierId, itemIds: matched.map(l => l.matchedItemId) });
       if (overlap.length) {
         const o = overlap[0];
-        const when = o.receivedAt ? new Date(o.receivedAt).toLocaleDateString() : 'recently';
+        const when = (o.receivedAt && dateNumeric(o.receivedAt, cur, venueTz)) || 'recently'; // 5.12.57: the site's day and words, not the laptop's
         if (window.confirm(`Order ${o.reference || ''} from this supplier was received on ${when} with ${o.overlap} of these items.\n\nOK: keep this invoice as the paperwork for that order (its stock is in already, nothing is counted twice).\nCancel: post it as a separate delivery.`)) poId = o.id;
       }
     }

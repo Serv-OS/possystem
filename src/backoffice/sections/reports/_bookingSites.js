@@ -5,6 +5,8 @@
 // PURE: tested in bookingReportsUi.test.js.
 
 import { reportClock, dayOfCheck } from './_filters.js';
+import { localeString } from '../../../../supabase/functions/_shared/venueDates.js';
+import { getActiveCurrencyCode } from '../../../lib/currency.js';
 
 /**
  * [{ id, name, currency, timezone, businessDayStart, isHome, range: { from, to, fromDay, toDay } }]
@@ -25,13 +27,16 @@ export const siteDayOf = (site) => {
   return (iso) => (iso ? dayOfCheck(iso, clock) : '');
 };
 
-/** "19:42" on one site's clock. */
+/** "19:42" on one site's clock ("7:42 PM" at a US site). */
+// 5.12.57 (batch 8): in the site's words (its currency, else the active venue's) and only on its own
+// clock: a site with no zone reads '' (it read London's time before).
 export const siteTimeOf = (site) => {
-  const tz = site?.timezone || site?.range?.timeZone || 'Europe/London';
+  const tz = site?.timezone || site?.range?.timeZone || null;
+  const venue = site?.currency || getActiveCurrencyCode();
   return (iso) => {
-    if (!iso) return '';
+    if (!iso || !tz) return '';
     try {
-      return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
+      return localeString(new Date(iso), { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }, venue); // batch 8 ok: localeString drops hour12 at a US site
     } catch { return ''; }
   };
 };

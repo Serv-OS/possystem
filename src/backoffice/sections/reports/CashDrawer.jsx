@@ -9,6 +9,7 @@ import { StatTile, EmptyState, ExportBtn } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { money } from '../../../lib/currency';  // v5.5.326: multi-currency
 import { readAllPagesResult, isTooManyRows, faultText } from '../../../lib/pagedRead';
+import { localeString, localeTimeString, zoneOr } from '../../../lib/venueDates';
 
 const TYPE_META = {
   float_in:           { label: 'Opening float',    sign: +1, color: 'var(--acc)' },
@@ -24,9 +25,10 @@ const TYPE_META = {
 
 const fmt = (n) => money(n);
 const fmtS = (n) => (n >= 0 ? '+' : '−') + money(Math.abs(n || 0));
-const fmtTime = (ts) => new Date(ts).toLocaleString('en-GB', {
-  day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit',
-});
+// 5.12.57 (batch 8): on the venue's clock (never the laptop's) and in its words; no zone yet, no time
+const fmtTime = (ts) => (zoneOr() ? localeString(new Date(ts), {
+  day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', timeZone: zoneOr(),
+}) : '');
 const fmtDur = (from, to) => {
   if (!to) return 'still open';
   const ms = new Date(to).getTime() - new Date(from).getTime();
@@ -299,7 +301,7 @@ function SessionCard({ row }) {
                 const meta = TYPE_META[m.type] || { label: m.type, sign: 0, color: 'var(--t3)' };
                 return (
                   <div key={m.id} style={{ display:'grid', gridTemplateColumns:'90px 1fr auto', gap:10, padding:'3px 0', fontSize:12, alignItems:'baseline' }}>
-                    <span style={{ color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{new Date(m.timestamp).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}</span>
+                    <span style={{ color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{zoneOr() ? localeTimeString(new Date(m.timestamp), { hour:'2-digit', minute:'2-digit', timeZone: zoneOr() }) : ''}</span>
                     <span style={{ color: meta.color, fontWeight:600 }}>
                       {meta.label}
                       {m.reason && <span style={{ color:'var(--t4)', fontWeight:400, marginLeft:6 }}>· {m.reason}</span>}

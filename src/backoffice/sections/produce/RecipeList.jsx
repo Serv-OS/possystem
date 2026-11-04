@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../../store';
 import { money } from '../../../lib/currency';
 import { getVenueClock, ymdInTz } from '../../../lib/locationTime';
+import { zoneOr } from '../../../lib/venueDates';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { siteList, sortSites, pageSites, MAX_ROWS } from '../../../lib/stock/itemListRules';
 import {
@@ -63,7 +64,7 @@ export default function RecipeList({ orgCtx, onOpen }) {
   useEffect(() => {
     if (!clockSite) return undefined;
     let live = true;
-    getVenueClock(clockSite).then((c) => { if (live) setTz(c?.timezone || null); }).catch(() => { /* London below */ });
+    getVenueClock(clockSite).then((c) => { if (live) setTz(c?.timezone || null); }).catch(() => { /* the active venue's zone below */ });
     return () => { live = false; };
   }, [clockSite]);
 
@@ -124,7 +125,8 @@ export default function RecipeList({ orgCtx, onOpen }) {
     }
     if (after || list.length > MAX_ROWS) toast(`Exported the first ${MAX_ROWS.toLocaleString('en-GB')} recipes. Narrow the list to export the rest.`, 'info');
     const { headers, rows: out } = exportRows(list.slice(0, MAX_ROWS), scope);
-    downloadCsv(exportFileName(ymdInTz(new Date(), tz || 'Europe/London')), toCsv(out, headers));
+    // 5.12.57 (batch 8): the site's day, else the active venue's; a file name with no venue zone yet takes the device's day, never London's
+    downloadCsv(exportFileName(ymdInTz(new Date(), zoneOr(tz) || Intl.DateTimeFormat().resolvedOptions().timeZone)), toCsv(out, headers));
   };
 
   const setF = (k, v) => setFilt((f) => ({ ...f, [k]: v }));

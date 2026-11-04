@@ -29,6 +29,12 @@ import { useTeamChat } from '../../../staff/useTeamChat';
 import { ChatTab } from '../../../staff/StaffChat';
 import { Card, Badge, inputStyle, labelStyle, LoadingCard, EmptyState } from '../../../staff/wfUi';
 import { useChatOpenRequest } from '../../components/chatBellData';
+import { localeString, venueLocale, zoneOr } from '../../../lib/venueDates';
+import { getActiveCurrencyCode } from '../../../lib/currency';
+
+// 5.12.57: a moment on the venue's clock, the venue's way ("3 Nov, 14:05" UK as before, "Nov 3, 2:05 PM"
+// US); no zone yet (a US venue still loading) reads nothing rather than the laptop's time.
+const whenText = (at) => { const z = zoneOr(null); return z ? localeString(new Date(at), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: z }) : ''; };
 
 const KIND = { group: 'Group', venue: 'Venue group', position: 'Position group', announce: 'Announcements' };
 const isUuid = (v) => typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v);
@@ -83,10 +89,10 @@ export default function WfChat({ ctx, showToast }) {
   return (
     <div>
       <Tabs tabs={tabs} active={tab} onTab={setTab} />
-      {tab === 'chats' && <ChatTab chat={chat} locale="en-GB" pushApp="none" embed emptyNote="Your chats. Groups you are in, and direct messages."
+      {tab === 'chats' && <ChatTab chat={chat} locale={venueLocale(getActiveCurrencyCode())} pushApp="none" embed emptyNote="Your chats. Groups you are in, and direct messages."
         openRequest={openReq?.id || null} onOpenHandled={clearOpenReq} />}
       {tab === 'groups' && <Groups call={call} who={who} toast={toast} />}
-      {tab === 'reports' && <Card><ChatReports call={call} onCount={setOpenCount} /></Card>}
+      {tab === 'reports' && <Card><ChatReports call={call} locale={venueLocale(getActiveCurrencyCode())} onCount={setOpenCount} /></Card>}
       {tab === 'settings' && owner && <Settings call={call} who={who} setWho={setWho} toast={toast} />}
       {tab === 'words' && owner && <Words call={call} toast={toast} />}
       {tab === 'log' && owner && <Log call={call} />}
@@ -372,7 +378,7 @@ function Notifications({ call }) {
             <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'hidden' }}>
               {d.pushes.map((p, i) => (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: '92px 1fr auto', gap: 10, alignItems: 'center', padding: '7px 10px', borderBottom: i < d.pushes.length - 1 ? '1px solid var(--bdr)' : 'none', fontSize: 12.5 }}>
-                  <span style={{ color: 'var(--t3)' }}>{new Date(p.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                  <span style={{ color: 'var(--t3)' }}>{whenText(p.at)}</span>
                   <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name} · {PUSH_KIND[p.kind] || p.kind}</span>
                   <span title={pushWhy(p)} style={{ fontWeight: 700, color: p.ok ? 'var(--grn)' : 'var(--red)' }}>{p.ok ? 'Sent' : 'Failed'}</span>
                 </div>
@@ -424,7 +430,7 @@ function Log({ call }) {
       {rows.length === 0 && <div style={{ color: 'var(--t3)', fontSize: 13 }}>Nothing logged yet.</div>}
       {rows.map((l) => (
         <div key={l.id} style={{ display: 'flex', gap: 10, padding: '8px 2px', borderBottom: '1px solid var(--bdr)', fontSize: 13 }}>
-          <span style={{ width: 150, color: 'var(--t3)', flexShrink: 0 }}>{new Date(l.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+          <span style={{ width: 150, color: 'var(--t3)', flexShrink: 0 }}>{whenText(l.at)}</span>
           <span style={{ flex: 1 }}><b>{l.actor || 'Automatic check'}</b> {l.action}{l.target ? ` · ${l.target}` : ''}{l.reason ? ` · "${l.reason}"` : ''}</span>
         </div>
       ))}
@@ -499,7 +505,7 @@ function OpenDm({ call }) {
           {msgs.length === 0 && <div style={{ color: 'var(--t3)', fontSize: 13 }}>No messages.</div>}
           {msgs.map((m) => (
             <div key={m.id} style={{ fontSize: 13, padding: '5px 0' }}>
-              <span style={{ color: 'var(--t3)' }}>{new Date(m.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} </span>
+              <span style={{ color: 'var(--t3)' }}>{whenText(m.created_at)} </span>
               <b>{m.sender_name}: </b>{m.body || m.removed_text || ''}{m.deleted_at ? ' (deleted)' : ''}{m.status === 'hidden' ? ' (hidden)' : ''}
             </div>
           ))}

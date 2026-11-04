@@ -9,7 +9,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, cellTint, GRP_SECTION, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
-import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
+import { buildWeek, addWeeks, alignWeek, weekRangeLabel, ymd } from '../../../staff/wfWeek';
+import { zoneOr, workweekStartDow } from '../../../lib/venueDates';
 import { bucketShiftsBySection, UNASSIGNED } from '../../../staff/rotaSections.js';
 import { caseDone, missingSteps, normalizeCase } from './WfOnboarding';
 import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
@@ -22,7 +23,7 @@ import { findClash, clashWarnings } from '../../../staff/wfClash';
 // v5.11.101: open shifts and swaps (the card, the editor, the rules and the texts) and the pay
 // premiums in the planned cost (one rule with payroll).
 import { OpenShiftModal, OpenShiftsCard } from './WfOpenShifts';
-import { claimProblem, eligibleStaff, swapMode, textOpenShift } from '../../../../supabase/functions/_shared/openShiftRules.js';
+import { claimProblem, eligibleStaff, swapMode, textOpenShift, shiftWords } from '../../../../supabase/functions/_shared/openShiftRules.js';
 import { plannedPremium } from '../../../../supabase/functions/_shared/payPremiums.js';
 import { activeCountry, activeRegionPack } from '../../../lib/regionPack';
 import { mapLinkedShifts, otherSiteClash, otherSiteClashWords, weekHoursLine, asRuleShifts } from '../../../staff/crossSiteRota';
@@ -291,13 +292,13 @@ function CopyWeekModal({ wk, shiftCount, onCopy, onClose, saving }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700 }}>Copy week</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Copy all of <b>{weekRangeLabel(wk)}</b> to another week.</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Copy all of <b>{weekRangeLabel(wk, activeCountry())}</b> to another week.</div>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="close" size={14} /></button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16 }}>
           <button className="btn btn-ghost btn-sm" onClick={() => setTarget(addWeeks(target.startIso, -1))}><Icon name="chevron" size={14} style={{ transform: 'rotate(180deg)' }} /></button>
-          <div style={{ minWidth: 150, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>{weekRangeLabel(target)}</div>
+          <div style={{ minWidth: 150, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>{weekRangeLabel(target, activeCountry())}</div>
           <button className="btn btn-ghost btn-sm" onClick={() => setTarget(addWeeks(target.startIso, 1))}><Icon name="chevron" size={14} /></button>
         </div>
         <div style={{ marginTop: 14, padding: '10px 12px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, fontSize: 12, color: 'var(--t2)', lineHeight: 1.6 }}>
@@ -318,6 +319,10 @@ function CopyWeekModal({ wk, shiftCount, onCopy, onClose, saving }) {
 // ── Main section ─────────────────────────────────────────────────────────────
 export default function WfRota({ ctx, staff, roles, sections, settings, week, showToast, onSettingsSaved }) {
   const [wk, setWk] = useState(week);
+  // 5.12.57: the rota week starts on the venue's work week day (Workforce settings, Work week starts),
+  // Monday when it is not set, so a US venue whose week runs Sunday to Saturday sees that week.
+  const startDow = workweekStartDow(settings?.settings);
+  useEffect(() => { setWk(w => alignWeek(w, startDow)); }, [startDow]);
   const [shifts, setShifts] = useState([]);
   const [forecast, setForecast] = useState({});   // { iso: amount }
   const [forecastReasons, setForecastReasons] = useState({}); // v5.11.96 (Drop 3): { iso: { reason, editedByName } } from the Forecast screen
@@ -329,7 +334,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [aiBusy, setAiBusy] = useState(false);     // AI rota generation in progress
   const [aiReport, setAiReport] = useState(null);   // what the last build did: accepted, filled, rejected reasons, gaps
   const [openingHours, setOpeningHours] = useState(null);   // locations.opening_hours (rota rules)
-  const [venueTz, setVenueTz] = useState('Europe/London'); // v5.11.101: the venue clock (has an open shift started yet)
+  const [venueTz, setVenueTz] = useState(() => zoneOr(null)); // v5.11.101: the venue clock (has an open shift started yet); 5.12.57: never London for a venue elsewhere
   const [history, setHistory] = useState({});       // { iso: sales } for the 8 weeks before this week (learned forecast)
   const [view, setView] = useState('staff');       // 'staff' | 'section'
   const [secs, setSecs] = useState(sections || []); // sections loaded fresh (Settings may have changed them)
@@ -354,7 +359,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // Opening hours feed the rota rules (a shift outside them is rejected).
   useEffect(() => {
     let alive = true;
-    getLocationConfig(ctx.locationId).then(c => { if (alive) { setOpeningHours(c?.opening_hours || null); setVenueTz(c?.timezone || 'Europe/London'); } }).catch(() => {});
+    getLocationConfig(ctx.locationId).then(c => { if (alive) { setOpeningHours(c?.opening_hours || null); setVenueTz(c?.timezone || zoneOr(null)); } }).catch(() => {});
     return () => { alive = false; };
   }, [ctx.locationId]);
   // Learned forecast: the 8 weeks of sales before the visible week.
@@ -593,7 +598,10 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     const fresh = shifts.filter(s => ids.includes(s.id) && !s.staffId);
     if (!fresh.length) return 0;
     // The VENUE's clock, never the browser's: a manager in California publishing a Leeds rota.
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: venueTz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    // 5.12.57: the zone read now if it had not loaded yet; with none at all, nobody is texted a wrong start.
+    const venueTzNow = venueTz || (await getLocationConfig(ctx.locationId).catch(() => null))?.timezone;
+    if (!venueTzNow) return 0;
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: venueTzNow, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
       .formatToParts(new Date()).map(x => [x.type, x.value]));
     const todayIso = `${parts.year}-${parts.month}-${parts.day}`, nowMin = Number(parts.hour) * 60 + Number(parts.minute);
     const country = activeCountry();
@@ -839,7 +847,11 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       // Open shifts (nobody on them) are texted to who could take them, below.
       const affected = new Set(shifts.filter(s => draftIds.includes(s.id) && s.staffId).map(s => s.staffId));
       const published = shifts.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s).filter(s => s.status === 'published');
-      const dayLabel = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      const dayLabel = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); // batch 8 ok: the UK words; a US venue reads shiftWords(x, 'US') below
+      // 5.12.57: a US venue's rota reads its own way: "Tue Nov 3, 5:00pm to 11:00pm" and "the week of Nov 3 to 9"
+      const country = activeCountry();
+      const us = country === 'US';
+      const weekWords = us ? `the week of ${weekRangeLabel(wk, country)}` : `w/c ${weekRangeLabel(wk)}`;
       const nameOf = id => (staff.find(s => s.id === id) || {});
       // Notify everyone IN PARALLEL — this used to await one SMS/email at a
       // time, so a 20-person publish took 20× a single send's latency.
@@ -849,12 +861,12 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         const mine = published.filter(x => x.staffId === sid).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
         if (!mine.length) return;
         const first = (member.name || 'there').split(' ')[0];
-        const lines = mine.map(x => `${dayLabel(x.date)} ${x.start}–${x.finish}${x.section ? ` (${x.section})` : ''}`);
-        const smsMsg = `Hi ${first}, your rota for w/c ${weekRangeLabel(wk)}:\n${lines.join('\n')}`;
-        const emailHtml = `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Hi ${first},</p><p>Your shifts for the week commencing <strong>${weekRangeLabel(wk)}</strong>${ctx.locName ? ` at ${ctx.locName}` : ''}:</p><ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul><p>See you then!</p></div>`;
+        const lines = mine.map(x => `${us ? shiftWords(x, country) : `${dayLabel(x.date)} ${x.start}–${x.finish}`}${x.section ? ` (${x.section})` : ''}`);
+        const smsMsg = `Hi ${first}, your rota for ${weekWords}:\n${lines.join('\n')}`;
+        const emailHtml = `<div style="font-family:system-ui,sans-serif;max-width:560px"><p>Hi ${first},</p><p>Your shifts for the ${us ? 'week of' : 'week commencing'} <strong>${weekRangeLabel(wk, country)}</strong>${ctx.locName ? ` at ${ctx.locName}` : ''}:</p><ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul><p>See you then!</p></div>`;
         const [smsRes, emailRes] = await Promise.allSettled([
           member.mobile ? wf.sendStaffSms(member.mobile, smsMsg, ctx.locationId, 'rota_notification', wk.startIso) : Promise.resolve(null),
-          member.email ? wf.sendEmail(member.email, `Your rota — w/c ${weekRangeLabel(wk)}`, emailHtml, ctx.locationId) : Promise.resolve(null),
+          member.email ? wf.sendEmail(member.email, us ? `Your rota for ${weekWords}` : `Your rota — w/c ${weekRangeLabel(wk)}`, emailHtml, ctx.locationId) : Promise.resolve(null),
         ]);
         const any = (smsRes.status === 'fulfilled' && smsRes.value?.ok) || (member.email && emailRes.status === 'fulfilled');
         if (any) notified++;
@@ -1049,8 +1061,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <button className="btn btn-ghost btn-sm" onClick={() => setWk(addWeeks(wk.startIso, -1))}><Icon name="chevron" size={14} style={{ transform: 'rotate(180deg)' }} /></button>
         <div style={{ minWidth: 150, textAlign: 'center' }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>{weekRangeLabel(wk)}</div>
-          <button className="btn btn-ghost btn-xs" style={{ marginTop: 2 }} onClick={() => setWk(buildWeek())}>This week</button>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{weekRangeLabel(wk, activeCountry())}</div>
+          <button className="btn btn-ghost btn-xs" style={{ marginTop: 2 }} onClick={() => setWk(buildWeek(null, startDow))}>This week</button>
         </div>
         <button className="btn btn-ghost btn-sm" onClick={() => setWk(addWeeks(wk.startIso, 1))}><Icon name="chevron" size={14} /></button>
       </div>

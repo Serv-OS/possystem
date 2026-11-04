@@ -18,12 +18,14 @@ import { money, getActiveCurrencyCode } from '../../lib/currency';  // v5.5.326:
 import { taxWord } from '../../lib/taxWords';   // 5.12.57: the venue's own tax word
 import { denominationLabel, countedValues, countTotal } from '../../lib/cashDenominations';
 import { Icon } from '../../components/ServOSIcons';
+import { localeString, zoneOr } from '../../lib/venueDates';
 
 // 5.12.46: labels come from the venue's own notes and coins (lib/cashDenominations.js).
 
 const fmt  = (n) => money(n);
 const fmtS = (n) => (n >= 0 ? '+' : '−') + money(Math.abs(Number(n) || 0));
-const fmtTime = (ts) => ts ? new Date(ts).toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) : '—';
+// 5.12.57 (batch 8): on the venue's clock and in its words (it was the laptop's clock, UK words)
+const fmtTime = (ts) => (ts && zoneOr() ? localeString(new Date(ts), { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', timeZone: zoneOr() }) : '—');
 const fmtDur = (a, b) => {
   if (!a) return '—';
   const end = b ? new Date(b).getTime() : Date.now();

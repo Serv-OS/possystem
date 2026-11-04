@@ -12,8 +12,8 @@ import { useSiteCurrency } from './useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { lockProblem, periodWords, snapshotRows, dayMonWords } from '../../../lib/stock/countPlanRules';
 import { Modal, Btn, Field, Notice, Pill, ui, ErrorLine, EmptyLine } from './stockUi';
-
-const localYmd = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+import { getVenueClock } from '../../../lib/locationTime';
+import { venueToday } from '../../../lib/venueDates';
 
 // 5.12.57: cur is the locked site's currency, not the signed in venue's.
 function Figures({ metrics, cur = null }) {
@@ -41,6 +41,15 @@ export default function LockPeriodModal({ siteId, onClose }) {
   const [periods, setPeriods] = useState(null);
   const [error, setError] = useState(null);
   const [unlocking, setUnlocking] = useState(null); // { id, reason }
+  // 5.12.57 (US basics batch 8): "today" is the site's own day on its clock, not the laptop's: a laptop
+  // in California is still on yesterday when a UK site's day has begun. Until the site's zone is read,
+  // the active venue's (no zone at a US venue: no early check, the database still refuses an open period).
+  const [siteTz, setSiteTz] = useState(null);
+  useEffect(() => {
+    let live = true;
+    if (siteId) getVenueClock(siteId).then((c) => { if (live) setSiteTz(c?.timezone || null); }).catch(() => { /* the active venue's zone below */ });
+    return () => { live = false; };
+  }, [siteId]);
 
   const load = useCallback(async () => {
     const r = await stockApi.periods(siteId);
@@ -49,7 +58,7 @@ export default function LockPeriodModal({ siteId, onClose }) {
   }, [siteId]);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
 
-  const problem = lockProblem(from, to, localYmd());
+  const problem = lockProblem(from, to, venueToday(siteTz));
   const lock = async () => {
     if (problem) { showToast?.(problem, 'error'); return; }
     setBusy(true);

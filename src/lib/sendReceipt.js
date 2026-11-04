@@ -16,6 +16,20 @@ import { cardReceiptLines } from './cardReceipt';  // v5.5.719: card-scheme bloc
 // any exclusive component is on the check; breakdownLabel renders per-unit
 // entries (rate: null) as name + amount with no percent and no crash.
 import { taxTermFor, breakdownLabel } from './receiptTax';
+import { localeDateString, localeTimeString, zoneOr } from './venueDates';
+
+// 5.12.57 (US basics batch 8): a receipt's date and time in the venue's words ('Nov 03, 2026' and
+// '2:05 PM' at a US venue) and on the venue's clock, not the device's: the online checkout can be
+// opened anywhere and a Back Office resend is often on a laptop far away. A UK venue reads exactly
+// as before. A US venue whose zone is not known yet prints no time rather than a wrong one.
+function receiptWhen(dt) {
+  const tz = zoneOr();
+  const z = tz ? { timeZone: tz } : {};
+  return {
+    dateStr: localeDateString(dt, { day:'2-digit', month:'short', year:'numeric', ...z }),
+    timeStr: tz ? localeTimeString(dt, { hour:'2-digit', minute:'2-digit', timeZone: tz }) : '',
+  };
+}
 const FUNC_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/message-templates`;
 
 /**
@@ -78,8 +92,7 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
 
   // Date/time for merge data
   const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
-  const dateStr = dt.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
-  const timeStr = dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+  const { dateStr, timeStr } = receiptWhen(dt);
   const items = (check.items || []).filter(i => !i.voided);
 
   // Build full item breakdown for {{order_items}} merge tag
@@ -184,8 +197,7 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
 
   // Date / time
   const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
-  const dateStr = dt.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
-  const timeStr = dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+  const { dateStr, timeStr } = receiptWhen(dt);
 
   // Items
   const items = (check.items || []).filter(i => !i.voided);
@@ -359,8 +371,7 @@ function buildReceiptText({ check, locationLabel, branding }) {
   const footerMsg = f.message || '';
 
   const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
-  const dateStr = dt.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
-  const timeStr = dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+  const { dateStr, timeStr } = receiptWhen(dt);
 
   const items = (check.items || []).filter(i => !i.voided);
   const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);

@@ -39,6 +39,7 @@ import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 // v5.11.101: open shifts, swaps, availability and the venue's region pack (openShifts.ts).
 import { venueFacts, regionForApp, swapsSnapshot, handleSwapAction } from './openShifts.ts';
 import { regionPack } from '../_shared/regionPack.js';
+import { dayText } from '../_shared/venueDates.js';
 import { linkedShiftsFor } from '../_shared/linkedShifts.js';
 import { asksCashTips } from '../_shared/cashTips.js';
 import { pickClockTarget } from '../_shared/shiftClockTarget.js';
@@ -182,7 +183,7 @@ async function clockContext(staff: any) {
   const locOf = Object.fromEntries((locs ?? []).map((l: any) => [l.id, l]));
   const vsOf = Object.fromEntries((vss ?? []).map((v: any) => [v.location_id, v]));
   const records = recs.map((r) => ({ id: r.id, location_id: r.location_id, site: locOf[r.location_id]?.name || 'your site',
-    tz: locOf[r.location_id]?.timezone || 'Europe/London', noShift: vsOf[r.location_id]?.settings?.clockInNoShift === 'refuse' ? 'refuse' : 'ask',
+    tz: locOf[r.location_id]?.timezone || 'Europe/London', /* batch 8 ok: which shift a clock in lands on, for a venue row with no zone; no time is shown from it */ noShift: vsOf[r.location_id]?.settings?.clockInNoShift === 'refuse' ? 'refuse' : 'ask',
     // 5.12.56: a head office record (ticked, and Head office staff on at that site) never clocks in.
     headOffice: isHeadOffice(r, vsOf[r.location_id]?.settings ?? null) }));
   // Clock in only ever lands on a record that is not head office; all head office = no clock in at all.
@@ -325,7 +326,9 @@ Deno.serve(async (req) => {
       if (!caller.ok) return json({ error: 'not allowed' }, 403);
       if (!staffRow.email) return json({ ok: true, skipped: 'no-email' });
       const first = String(staffRow.name || 'there').split(' ')[0];
-      const due = body.due ? new Date(String(body.due) + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long' }) : null;
+      // 5.12.57: the due date the venue's way ("3 November" UK as before, "November 3" US)
+      const { data: dueLoc } = body.due ? await admin.from('locations').select('currency').eq('id', staffRow.location_id).maybeSingle() : { data: null };
+      const due = body.due ? (dayText(String(body.due).slice(0, 10), { venue: dueLoc?.currency || 'GBP', month: 'long', year: false }) || null) : null;
       const url = `${APP_BASE}/?mode=staff`;
       const html = `<div style="font-family:system-ui,sans-serif;max-width:560px">
         <p>Hi ${first},</p>
@@ -534,11 +537,13 @@ Deno.serve(async (req) => {
         .select('clock_geofence, settings').eq('location_id', hereLoc).maybeSingle();
       const g = (vs?.clock_geofence ?? {}) as Record<string, unknown>;
       // 5.12.49: a US venue asks for cash tips at clock out (Workforce settings); never a UK venue.
-      const { data: curRow } = await admin.from('locations').select('currency').eq('id', hereLoc).maybeSingle();
+      const { data: curRow } = await admin.from('locations').select('currency, timezone').eq('id', hereLoc).maybeSingle();
       const askCashTips = asksCashTips({ country: regionPack({ currency: curRow?.currency || 'GBP' }).country, settings: (vs as any)?.settings ?? null });
       return json({
         ok: true,
         ask_cash_tips: askCashTips,
+        // 5.12.57 (batch 8): the clock times read on the venue's clock and its way, not the phone's
+        venue_clock: { timezone: curRow?.timezone || null, currency: String(curRow?.currency || 'GBP').toUpperCase() },
         on_shift: !!open,
         on_break: !!open?.break_open_at,
         since: open?.clock_in ?? null,

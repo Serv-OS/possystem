@@ -14,6 +14,7 @@ import { isHourly, avgHoursPerDay, FIXED_HOLIDAY_DAYS } from '../../../staff/lab
 import { proposeLeaveDays } from '../../../staff/leaveDays';
 // 5.12.51: US venues call it PTO (Workforce settings, Paid time off).
 import { activeRegionPack } from '../../../lib/regionPack';
+import { localeDateString } from '../../../lib/venueDates';
 // 5.12.57: one word for paid time off (Holiday or PTO), and the UK statutory texts only under UK rules.
 import { holidayWord, holidayWordLower, ukHoliday } from '../../../staff/payLaw';
 import { ptoRules } from '../../../../supabase/functions/_shared/usPto.js';
@@ -39,7 +40,7 @@ const AV_STATES = [
 ];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-const fmtDate = iso => { if (!iso) return '—'; const d = new Date(iso + 'T00:00:00'); return isNaN(d) ? iso : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); };
+const fmtDate = iso => { if (!iso) return '—'; const d = new Date(iso + 'T00:00:00'); return isNaN(d) ? iso : localeDateString(d, { day: 'numeric', month: 'short' }); };   // 5.12.57: the venue's way
 const daysBetween = (a, b) => { if (!a || !b) return 1; const d1 = new Date(a + 'T00:00:00'); const d2 = new Date(b + 'T00:00:00'); if (isNaN(d1) || isNaN(d2)) return 1; return Math.max(1, Math.round((d2 - d1) / 86400000) + 1); };
 
 export default function WfLeave({ ctx, staff = [], roles, sections, settings, week, showToast }) {
@@ -270,7 +271,7 @@ function LeaveSection({ pack, ptoOff = false, leave, staffById, roles, balances,
                                   <button
                                     key={d.date}
                                     onClick={() => setDayPicks(p => ({ ...p, [l.id]: { ...(p[l.id] || {}), [d.date]: !d.leave } }))}
-                                    title={`${day.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })} — ${d.leave ? (ukHoliday(pack) ? 'annual leave (deducts)' : 'PTO (deducts)') : 'normal day off (no deduction)'} · suggested from ${({ rota: 'the rota', availability: 'their availability', history: 'their usual days', contract: 'their contract', default: 'a weekday guess' })[d.reason]} · click to switch`}
+                                    title={`${localeDateString(day, { weekday: 'long', day: 'numeric', month: 'short' })} — ${d.leave ? (ukHoliday(pack) ? 'annual leave (deducts)' : 'PTO (deducts)') : 'normal day off (no deduction)'} · suggested from ${({ rota: 'the rota', availability: 'their availability', history: 'their usual days', contract: 'their contract', default: 'a weekday guess' })[d.reason]} · click to switch`}
                                     style={{
                                       display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 26,
                                       padding: '3px 4px', borderRadius: 7, cursor: 'pointer', font: 'inherit', lineHeight: 1.2,

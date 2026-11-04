@@ -10,6 +10,12 @@
 //   * the ingredients basket for "Order these" (createOrdersFromBasket's line shape).
 // Nothing here moves a stock number: the database does that when a person presses Send.
 
+import { activeVenueCurrency } from './venueZone.js';
+
+// 5.12.57 (US basics batch 8): a US venue reads month first ('Tuesday, October 21', 'Oct 21'); left
+// out, the venue is the Back Office's active one, and node --test and the UK read as before.
+const usVenue = (venue) => String(venue ?? activeVenueCurrency()).toUpperCase().replace(/^(US|USA|EN-US)$/, 'USD') === 'USD';
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -28,18 +34,20 @@ function ymdParts(v) {
   return { y, mo, d };
 }
 
-/** 'Tuesday 21 October' for a venue day (the mockup's plan line). '' for a bad day. */
-export function dayWords(ymd) {
+/** 'Tuesday 21 October' for a venue day (the mockup's plan line); 'Tuesday, October 21' at a US venue. '' for a bad day. */
+export function dayWords(ymd, venue = null) {
   const p = ymdParts(ymd);
   if (!p) return '';
   const dow = new Date(Date.UTC(p.y, p.mo - 1, p.d)).getUTCDay();
+  if (usVenue(venue)) return `${DAYS_LONG[dow]}, ${MONTHS_LONG[p.mo - 1]} ${p.d}`;
   return `${DAYS_LONG[dow]} ${p.d} ${MONTHS_LONG[p.mo - 1]}`;
 }
 
 /** '21 Oct' for a day or a timestamp's date part. '' for nothing. */
-export function shortDay(v) {
+export function shortDay(v, venue = null) {
   const p = ymdParts(v);
-  return p ? `${p.d} ${MONTHS[p.mo - 1]}` : '';
+  if (!p) return '';
+  return usVenue(venue) ? `${MONTHS[p.mo - 1]} ${p.d}` : `${p.d} ${MONTHS[p.mo - 1]}`;
 }
 
 /** The venue day plus or minus some days ('YYYY-MM-DD'), for the day select. */

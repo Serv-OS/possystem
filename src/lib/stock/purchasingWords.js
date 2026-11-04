@@ -7,7 +7,8 @@
  *
  * Pill tones are the stockUi Pill tones: good, neutral, warn, bad, blue.
  */
-import { dayWords, moneyWords } from './purchasingRules.js';
+import { dayWords, moneyWords, hmWords } from './purchasingRules.js';
+import { zoneOrActive } from './venueZone.js';
 import { currencySymbol } from '../currency.js';
 
 const pill = (text, tone) => Object.freeze({ text, tone });
@@ -121,17 +122,19 @@ export function budgetWords(budget, basketTotal = 0, symbol = currencySymbol()) 
 export const BUDGET_RULES = Object.freeze([['pct_of_forecast', '% of forecast'], ['fixed', 'Fixed']]);
 export const budgetRuleWords = (b) => (b?.rule === 'fixed' ? 'Fixed' : b?.rule === 'pct_of_forecast' ? `${Number(b.pct)}% of forecast` : 'No budget');
 
-/** A timestamp in the venue's time as 'Tue 14:00' (and 'Tue 22 Oct 14:00' with withDate). */
-export function atWords(iso, tz = null, { withDate = false } = {}) {
+/** A timestamp in the venue's time as 'Tue 14:00' (and 'Tue 22 Oct 14:00' with withDate); 'Tue 2:00 PM' at a US venue. */
+export function atWords(iso, tz = null, { withDate = false, venue = null } = {}) {
   if (!iso) return '';
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return '';
+  const zone = zoneOrActive(tz); // 5.12.57: the venue's zone, never London for a US venue ('' until it is known)
+  if (!zone) return '';
   try {
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(t);
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(t); // batch 8 ok: parts only
     const g = (k) => parts.find((p) => p.type === k)?.value;
     const ymd = `${g('year')}-${g('month')}-${g('day')}`;
-    const words = dayWords(ymd);
-    return `${withDate ? words : words.slice(0, 3)} ${g('hour')}:${g('minute')}`;
+    const words = dayWords(ymd, venue);
+    return `${withDate ? words : words.slice(0, 3)} ${hmWords(`${g('hour')}:${g('minute')}`, venue)}`;
   } catch { return ''; }
 }
 

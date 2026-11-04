@@ -18,10 +18,12 @@ import { getActiveLocationSync } from '../../../lib/supabase';
 import * as wf from '../../../staff/wfData';
 import { Icon } from '../../../components/ServOSIcons';
 import { activeRegionPack, venueMoney } from '../../../lib/regionPack';
+import { localeDateString } from '../../../lib/venueDates';
 import { payrollParts, payrollWageColumns, wagesOf } from '../../../staff/payLaw';
 
-const fmtDay = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return iso; } };
-const fmtShort = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); } catch { return iso; } };
+// 5.12.57: the site's way ("3 Nov 2026" UK as before, "Nov 3, 2026" US)
+const fmtDay = (iso) => { try { return localeDateString(new Date(iso + 'T00:00:00'), { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return iso; } };
+const fmtShort = (iso) => { try { return localeDateString(new Date(iso + 'T00:00:00'), { day: 'numeric', month: 'short' }); } catch { return iso; } };
 
 const S = {
   kpis:  { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px,1fr))', gap: 10, marginBottom: 16 },
@@ -151,7 +153,7 @@ export default function PayrollReport({ fmt, sites }) {
               return (
                 <Fragment key={h.id}>
                   <tr style={S.runRow} onClick={() => setOpen(o => ({ ...o, [h.id]: !o[h.id] }))}>
-                    <td style={{ ...S.td, ...S.tdL, fontWeight: 700 }}>{isOpen ? '▾' : '▸'} {fmtShort(h.periodStart)} – {fmtShort(h.periodEnd)}</td>
+                    <td style={{ ...S.td, ...S.tdL, fontWeight: 700 }}>{isOpen ? '▾' : '▸'} {fmtShort(h.periodStart)}{activeRegionPack().country === 'US' ? ' to ' : ' – '}{fmtShort(h.periodEnd)}</td>
                     <td style={{ ...S.td, color: 'var(--t3)' }}>{h.payDate ? fmtShort(h.payDate) : '—'}</td>
                     <td style={S.td}>{(h.lines || []).length}</td>
                     <td style={S.td}>{money(wagesOf(h.totals || {}))}</td>

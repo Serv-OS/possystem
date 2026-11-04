@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStockScope } from '../../StockScope';
 import { getVenueClock } from '../../../lib/locationTime';
+import { zoneOr } from '../../../lib/venueDates';
 import { buildScheduleCtx } from '../../../lib/scheduleCtx';
 import { dayWords, addDaysYmd } from '../../../lib/stock/kitchenRules';
 import { PageHead, TabBar, Notice, ui } from '../stock/stockUi';
@@ -46,7 +47,8 @@ export default function CentralKitchen({ orgCtx = null }) {
   useEffect(() => {
     if (!kitchenId) return undefined;
     let live = true;
-    getVenueClock(kitchenId).then((c) => { if (live) setTz(c?.timezone || 'Europe/London'); }).catch(() => { if (live) setTz('Europe/London'); });
+    // 5.12.57 (batch 8): no kitchen zone, the active venue's (never London for a US kitchen); none at all, no day is shown
+    getVenueClock(kitchenId).then((c) => { if (live) setTz(c?.timezone || zoneOr(null)); }).catch(() => { if (live) setTz(zoneOr(null)); });
     return () => { live = false; };
   }, [kitchenId]);
   const today = useMemo(() => (tz ? buildScheduleCtx(tz).ymd : null), [tz]);
@@ -78,7 +80,7 @@ export default function CentralKitchen({ orgCtx = null }) {
       {kitchenId && shownDay && (
         <>
           <TabBar tabs={tabs} value={tab} onChange={setTab} />
-          {tab === 'plan' && <KitchenPlan key={`${kitchenId}:${shownDay}`} kitchenId={kitchenId} day={shownDay} />}
+          {tab === 'plan' && <KitchenPlan key={`${kitchenId}:${shownDay}`} kitchenId={kitchenId} day={shownDay} tz={tz} />}
           {tab === 'orders' && <KitchenOrdersIn key={`${kitchenId}:${shownDay}`} kitchenId={kitchenId} day={shownDay} />}
           {tab === 'ingredients' && <KitchenIngredients key={`${kitchenId}:${shownDay}`} kitchenId={kitchenId} day={shownDay} />}
           {tab === 'pick' && <KitchenPickSend key={`${kitchenId}:${shownDay}`} kitchenId={kitchenId} day={shownDay} />}

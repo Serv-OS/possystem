@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import DrawerCashModal from '../../components/DrawerCashModal';
 import { money } from '../../lib/currency';
+import { localeDateString, localeString, zoneOr } from '../../lib/venueDates';
 import { Icon } from '../../components/ServOSIcons';
 
 /**
@@ -243,7 +244,8 @@ export default function CashDrawers() {
                 )}
                 {devices.map(d => {
                   const taken = takenDevices.has(d.id);
-                  const lastSeen = d.last_seen ? new Date(d.last_seen).toLocaleDateString('en-GB', { day:'2-digit', month:'short' }) : '—';
+                  // 5.12.57: the venue's day on the venue's clock (Nov 03 at a US venue), not the laptop's
+                  const lastSeen = d.last_seen && zoneOr() ? localeDateString(d.last_seen, { day:'2-digit', month:'short', timeZone: zoneOr() }) : '—';
                   return (
                     <option key={d.id} value={d.id} disabled={taken}>
                       {d.name || d.id.slice(0, 8)} (last seen {lastSeen}){taken ? ' · already assigned' : ''}
@@ -269,7 +271,7 @@ export default function CashDrawers() {
                   {sel.openedAt && (
                     <div style={{ gridColumn:'1 / -1' }}>
                       <div style={{ color:'var(--t4)' }}>Opened</div>
-                      <div style={{ color:'var(--t1)', marginTop:2 }}>{new Date(sel.openedAt).toLocaleString('en-GB')}</div>
+                      <div style={{ color:'var(--t1)', marginTop:2 }}>{zoneOr() ? localeString(sel.openedAt, { timeZone: zoneOr() }) : ''}</div>{/* 5.12.57: venue clock and words */}
                     </div>
                   )}
                 </div>

@@ -4,6 +4,7 @@ import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { invalidateBrandingCache } from '../../lib/receiptBranding';
 import { money } from '../../lib/currency';
 import { activeCountry, activeRegionPack } from '../../lib/regionPack';
+import { localeDateString, timeText } from '../../lib/venueDates';
 
 const ASSET_BUCKET = 'receipt-assets';
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB
@@ -486,8 +487,9 @@ function ReceiptPreview({ branding }) {
   const qr = f.qr || {};
   const addressLines = (h.address_lines || []).filter(Boolean);
   const now = new Date();
-  const dateStr = now.toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
-  const timeStr = now.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+  // 5.12.57: the preview reads as the venue's receipt: its words and its clock (Nov 3, 2026, 2:05 PM at a US venue)
+  const dateStr = localeDateString(now, { day:'numeric', month:'short', year:'numeric' });
+  const timeStr = timeText(now);
 
   // Sample data to make the preview feel real
   const sampleItems = [

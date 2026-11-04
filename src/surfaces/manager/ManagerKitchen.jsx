@@ -30,6 +30,7 @@ import { recordPrep } from '../../lib/prep';
 import { managerRaisePO, managerReceivePO } from '../../lib/manager/data';
 import { money } from '../../lib/currency';
 import { taxWords } from '../../lib/taxWords';   // 5.12.57: the snapshot venue's own tax words
+import { localeDateString, localeTimeString } from '../../../supabase/functions/_shared/venueDates.js';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
@@ -46,13 +47,24 @@ import ManagerKitchenCentral from './ManagerKitchenCentral';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'var(--red)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
 const ACCEPT_MAX_C = 8;   // the Ops Deliveries threshold; the server (manager-approve) holds the same figure
-const shortDate = (s) => { if (!s) return null; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00` : s); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }) : null; };
-const timeOf = (ms) => (ms ? new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
+// 5.12.57 (batch 8): dates and times in the snapshot venue's words (a US venue 'Tue, Nov 03' and
+// '2:05 PM') and on its clock (snap.tz), never the phone's; no zone yet reads '' for a time.
+const snapCur = (snap) => snap?.currency || snap?.money?.currency;
+const shortDate = (s, snap) => {
+  if (!s) return null;
+  const plainDay = /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const d = new Date(plainDay ? `${s}T00:00:00` : s);
+  if (!Number.isFinite(d.getTime())) return null;
+  const opts = { weekday: 'short', day: '2-digit', month: 'short' };
+  return localeDateString(d, plainDay || !snap?.tz ? opts : { ...opts, timeZone: snap.tz }, snapCur(snap));
+};
+const timeOf = (ms, snap) => (ms && snap?.tz ? localeTimeString(new Date(ms), { hour: '2-digit', minute: '2-digit', timeZone: snap.tz }, snapCur(snap)) : '');
 const qtyLbl = (b) => [b.plannedQty != null ? b.plannedQty : null, b.unit].filter((x) => x != null && x !== '').join(' ');   // '10 l', never '10l'
 const packText = (p) => (p ? `${p.packQty || 1} x ${p.innerQty} ${p.innerUnit || ''}`.trim() : '');
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 // The venue's calendar day: the snapshot says it (v5.11.64); an older snapshot gets the tz reading.
-const venueDay = (snap) => snap?.today || new Intl.DateTimeFormat('en-CA', { timeZone: snap?.tz || 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+// 5.12.57: with no venue zone either, no day (never London's).
+const venueDay = (snap) => snap?.today || (snap?.tz ? new Intl.DateTimeFormat('en-CA', { timeZone: snap.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) : '');
 const isPinErr = (msg) => /pin|not allowed|approve/i.test(msg || '');
 const fileToBase64 = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(new Error('Could not read the photo')); r.readAsDataURL(f); });
 
@@ -208,7 +220,7 @@ export default function ManagerKitchen({ ctx }) {
     const busy = recording === b.id;
     const tone = state === 'overdue' ? 'var(--red)' : state === 'done' ? 'var(--grn)' : 'var(--t3)';
     const sub = state === 'done'
-      ? `✓ logged ${timeOf(b.completedAtMs)}${b.assignee ? ` · ${b.assignee}` : ''}`
+      ? `✓ logged ${timeOf(b.completedAtMs, snap)}${b.assignee ? ` · ${b.assignee}` : ''}`
       : state === 'overdue'
       ? `overdue${b.dueTime ? ` · due ${b.dueTime}` : ''}`
       : (b.dueTime ? `due ${b.dueTime}` : 'today');
@@ -329,7 +341,8 @@ export default function ManagerKitchen({ ctx }) {
             // v5.11.96 (Drop 3): the server's next delivery for this supplier, else the order by rule over
             // its delivery days (an older snapshot): after the cut off it is the following delivery
             const ob = orderByOf(lines[0]?.supplierId);
-            const expected = ob?.deliveryDay || nextDelivery({ rules: rulesFromDeliveryDays(lines[0]?.deliveryDays, null), nowVenue: { ymd: today, hm: new Intl.DateTimeFormat('en-GB', { timeZone: snap?.tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()) } })?.deliveryYmd || null;
+            // 5.12.57: the venue's clock only (no zone, no guess)
+            const expected = ob?.deliveryDay || (snap?.tz ? nextDelivery({ rules: rulesFromDeliveryDays(lines[0]?.deliveryDays, null), nowVenue: { ymd: today, hm: new Intl.DateTimeFormat('en-GB', { timeZone: snap.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()) } })?.deliveryYmd : null) || null; // batch 8 ok: a machine HH:MM on the venue clock
             const obWords = orderByLine(ob, { generatedMs });
             const lineCount = lines.filter((i) => i.pack && (Number(poQty[i.itemId]) || 0) > 0).length;
             const canRaise = sup !== 'Unassigned' && lines.some((i) => i.pack);
@@ -357,7 +370,7 @@ export default function ManagerKitchen({ ctx }) {
                     <Icon name="check" size={15} style={{ color: 'var(--grn)', flexShrink: 0 }} />
                     <div style={{ fontSize: 12.5, color: 'var(--grn)', fontWeight: 700 }}>
                       {poDone[sup].words || `Order ${poDone[sup].reference} raised.`}
-                      <div style={{ fontWeight: 500, marginTop: 2 }}>{[poDone[sup].subtotal != null ? `${money(poDone[sup].subtotal)} ${exTax}` : '', poDone[sup].expectedDate ? `expected ${shortDate(poDone[sup].expectedDate)}` : '', poDone[sup].waiting ? '' : 'under On order · incoming'].filter(Boolean).join(' · ')}</div>
+                      <div style={{ fontWeight: 500, marginTop: 2 }}>{[poDone[sup].subtotal != null ? `${money(poDone[sup].subtotal)} ${exTax}` : '', poDone[sup].expectedDate ? `expected ${shortDate(poDone[sup].expectedDate, snap)}` : '', poDone[sup].waiting ? '' : 'under On order · incoming'].filter(Boolean).join(' · ')}</div>
                     </div>
                   </div>
                 ) : poFor === sup ? (
@@ -389,7 +402,7 @@ export default function ManagerKitchen({ ctx }) {
                       })}
                     </div>
                     <div style={{ marginTop: 12, fontSize: 12.5, fontWeight: 700, color: 'var(--t2)', ...mono }}>
-                      Order value {money(sheetValue)} {exTax}{expected ? ` · expected ${shortDate(expected)}` : ''}
+                      Order value {money(sheetValue)} {exTax}{expected ? ` · expected ${shortDate(expected, snap)}` : ''}
                     </div>
                     {pinBox(setPoErr)}
                     {poErr && <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{poErr}</div>}
@@ -431,7 +444,7 @@ export default function ManagerKitchen({ ctx }) {
                 {incoming.map((d) => {
                   const key = d.status === 'pending' && d.expectedDate && d.expectedDate < today ? 'overdue' : d.status;
                   const [pillLabel, pillCol] = DEL_PILL[key] || DEL_PILL.pending;
-                  const when = d.expectedDate ? (d.expectedDate === today ? 'due today' : (key === 'overdue' ? `was due ${shortDate(d.expectedDate)}` : shortDate(d.expectedDate))) : 'no date set';
+                  const when = d.expectedDate ? (d.expectedDate === today ? 'due today' : (key === 'overdue' ? `was due ${shortDate(d.expectedDate, snap)}` : shortDate(d.expectedDate, snap))) : 'no date set';
                   const open = delOpen?.id === d.id;
                   return (
                     <div key={d.id} style={{ display: 'contents' }}>
@@ -451,7 +464,7 @@ export default function ManagerKitchen({ ctx }) {
                       <div className="sv-glass" style={{ padding: 14, borderRadius: 14, border: '1px solid var(--acc-b, var(--bdr))', ...L.s.orderSheet }}>
                         <div style={{ fontSize: 13, fontWeight: 800 }}>Order {d.reference || ''} from {d.supplier || 'the supplier'}</div>
                         <div style={{ fontSize: 11, color: key === 'overdue' ? 'var(--red)' : 'var(--t3)', marginTop: 2, ...mono }}>
-                          {key === 'overdue' ? `Overdue since ${shortDate(d.expectedDate)}` : d.expectedDate ? `Expected ${shortDate(d.expectedDate)}` : 'No expected date set'}{d.value ? ` · ordered ${money(d.value)} ${exTax}` : ''}
+                          {key === 'overdue' ? `Overdue since ${shortDate(d.expectedDate, snap)}` : d.expectedDate ? `Expected ${shortDate(d.expectedDate, snap)}` : 'No expected date set'}{d.value ? ` · ordered ${money(d.value)} ${exTax}` : ''}
                         </div>
 
                         {(!d.orderLines || d.orderLines.length === 0) && (

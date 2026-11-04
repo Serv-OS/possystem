@@ -8,38 +8,40 @@ import { venueBreakPolicy } from '../../staff/breaks.js';
 import { timesheetWorkedMins, timesheetBreakShortfall } from '../../lib/manager/timesheets';
 import { managerApprove } from '../../lib/manager/data';
 import { money } from '../../lib/currency';
+import { localeString, hhmmText } from '../../../supabase/functions/_shared/venueDates.js';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
 import { cols } from './layout';
 
-const TZ_DEFAULT = 'Europe/London';
 const hm = (mins) => `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`;
 // All times render + rebuild in the VENUE timezone (snap.tz), not the viewer's browser tz — a manager
 // may be off-site in a different tz. Display via Intl; rebuild via the offset trick (wall time → UTC).
-const fmtTz = (ms, tz, opts) => (ms ? new Intl.DateTimeFormat('en-GB', { timeZone: tz || TZ_DEFAULT, ...opts }).format(new Date(ms)) : '');
-const toHM = (ms, tz) => fmtTz(ms, tz, { hour: '2-digit', minute: '2-digit', hour12: false });   // "17:00" for <input type=time>
-const timeLbl = (ms, tz) => (ms ? fmtTz(ms, tz, { hour: '2-digit', minute: '2-digit', hour12: false }) : '—');
-const dateLbl = (ms, tz) => fmtTz(ms, tz, { weekday: 'short', day: '2-digit', month: 'short' });
-const dayLbl = (s, tz) => {
+// 5.12.57 (batch 8): the words are the venue's (snap.currency: a US venue reads 'Tue, Nov 03' and
+// '2:05 PM'; a UK one exactly as before), and with no venue zone yet a time reads '', never London's.
+const fmtTz = (ms, tz, opts, cur) => (ms && tz ? localeString(new Date(ms), { timeZone: tz, ...opts }, cur) : '');
+const toHM = (ms, tz) => (ms && tz ? new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms)) : '');   // "17:00" for <input type=time>; batch 8 ok: a machine value
+const timeLbl = (ms, tz, cur) => (ms ? fmtTz(ms, tz, { hour: '2-digit', minute: '2-digit', hour12: false }, cur) || '—' : '—'); // batch 8 ok: localeString drops hour12 at a US venue
+const dateLbl = (ms, tz, cur) => fmtTz(ms, tz, { weekday: 'short', day: '2-digit', month: 'short' }, cur);
+const dayLbl = (s, tz, cur) => {
   if (!s) return '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short' }).format(new Date(s + 'T12:00:00Z')); // date-only: no tz shift
-  const d = new Date(s); return Number.isFinite(d.getTime()) ? fmtTz(d.getTime(), tz, { day: '2-digit', month: 'short' }) : s;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return localeString(new Date(s + 'T12:00:00Z'), { timeZone: 'UTC', day: '2-digit', month: 'short' }, cur); // date-only: no tz shift
+  const d = new Date(s); return Number.isFinite(d.getTime()) ? fmtTz(d.getTime(), tz, { day: '2-digit', month: 'short' }, cur) : s;
 };
 const ymdParts = (ms, tz) => {
-  const p = new Intl.DateTimeFormat('en-CA', { timeZone: tz || TZ_DEFAULT, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(ms));
+  const p = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(ms));
   const g = (t) => Number(p.find((x) => x.type === t)?.value);
   return { y: g('year'), mo: g('month'), d: g('day') };
 };
 const tzOffsetMs = (instant, tz) => {
-  const p = new Intl.DateTimeFormat('en-US', { timeZone: tz || TZ_DEFAULT, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(new Date(instant));
+  const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(new Date(instant)); // batch 8 ok: machine parts for the offset
   const g = (t) => p.find((x) => x.type === t)?.value;
   let hh = g('hour'); if (hh === '24') hh = '00';
   return Date.UTC(+g('year'), +g('month') - 1, +g('day'), +hh, +g('minute'), +g('second')) - instant;
 };
 // venue-local wall time (date of baseMs + HH:MM, in tz) → UTC milliseconds
 const wallToUtcMs = (baseMs, hmStr, tz) => {
-  if (!hmStr) return null;
+  if (!hmStr || !tz) return null;
   const { y, mo, d } = ymdParts(baseMs || Date.now(), tz);
   const [h, mi] = hmStr.split(':').map(Number);
   const guess = Date.UTC(y, mo - 1, d, h, mi, 0);
@@ -68,7 +70,8 @@ export default function ManagerTeam({ ctx }) {
   const [outErr, setOutErr] = useState({ id: null, msg: '' });
 
   const team = snap?.team;
-  const tz = snap?.tz || TZ_DEFAULT;   // render + rebuild timesheet times in the VENUE tz, not the viewer's
+  const tz = snap?.tz || null;   // render + rebuild timesheet times in the VENUE tz, not the viewer's (5.12.57: never London by default)
+  const cur = snap?.currency || snap?.money?.currency;   // 5.12.57: the venue's words
   const on = team ? onShiftNow(team.punches) : [];
   const noshow = team ? noShows(team.shifts, team.punches) : [];
   // Same venue policy the Back Office uses, shipped by manager-snapshot.
@@ -209,10 +212,10 @@ export default function ManagerTeam({ ctx }) {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                               <span style={{ fontSize: 14, fontWeight: 700 }}>{t.name}</span>
-                              <span style={{ fontSize: 10.5, color: 'var(--t3)', ...mono }}>{dateLbl(t.inMs, tz)}</span>
+                              <span style={{ fontSize: 10.5, color: 'var(--t3)', ...mono }}>{dateLbl(t.inMs, tz, cur)}</span>
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>
-                              {timeLbl(t.inMs, tz)} → {timeLbl(t.outMs, tz)} · {hm(worked)}{t.breakMins ? ` · ${t.breakMins}m break` : ''}
+                              {timeLbl(t.inMs, tz, cur)} → {timeLbl(t.outMs, tz, cur)} · {hm(worked)}{t.breakMins ? ` · ${t.breakMins}m break` : ''}
                             </div>
                             {bsf.level !== 'none' && !isEd && (
                               <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 3, ...mono, color: bsf.level === 'statutory' ? 'var(--red)' : 'var(--orn)' }}>
@@ -281,7 +284,7 @@ export default function ManagerTeam({ ctx }) {
                       <span style={{ fontSize: 11, color: 'var(--t3)' }}>{w.kind === 'claim' ? 'wants an open shift' : `takes over from ${w.fromName || 'a colleague'}`}</span>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, ...mono }}>
-                      {dayLbl(w.date, tz)} · {w.start} to {w.finish}{w.role ? ` · ${w.role}` : ''}
+                      {dayLbl(w.date, tz, cur)} · {hhmmText(w.start, cur)} to {hhmmText(w.finish, cur)}{w.role ? ` · ${w.role}` : ''}
                     </div>
                     {w.note && <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 4 }}>{w.note}</div>}
                     <div style={{ display: 'flex', gap: 8, marginTop: 10, ...L.s.decideRow }}>
@@ -307,7 +310,7 @@ export default function ManagerTeam({ ctx }) {
                       <span style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'capitalize' }}>{l.type || 'time off'}</span>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, ...mono }}>
-                      {dayLbl(l.startDate, tz)}{l.endDate && l.endDate !== l.startDate ? ` → ${dayLbl(l.endDate, tz)}` : ''}{l.days ? ` · ${l.days} day${l.days > 1 ? 's' : ''}` : ''}
+                      {dayLbl(l.startDate, tz, cur)}{l.endDate && l.endDate !== l.startDate ? ` → ${dayLbl(l.endDate, tz, cur)}` : ''}{l.days ? ` · ${l.days} day${l.days > 1 ? 's' : ''}` : ''}
                     </div>
                     {l.note && <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 4 }}>{l.note}</div>}
                     <div style={{ display: 'flex', gap: 8, marginTop: 10, ...L.s.decideRow }}>

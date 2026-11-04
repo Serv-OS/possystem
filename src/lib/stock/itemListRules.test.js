@@ -504,7 +504,8 @@ test('the company list: the contract words, the one site view filter, Start a co
   assert.match(src, /stockApi\.saveItemSite\(row\.id, siteId, \{ price_here: v \}, link\.row_version \?\? null\)/, 'the price carries the link version');
   assert.match(src, /toCsv\(out, headers\)/);
   assert.match(src, /getVenueClock\(clockSite\)/, 'the export file is named by the venue\'s day');
-  assert.match(src, /exportFileName\(ymdInTz\(new Date\(\), tz \|\| 'Europe\/London'\)\)/);
+  // 5.12.57 (batch 8): the site's day, else the active venue's, never London's for a US site
+  assert.match(src, /exportFileName\(ymdInTz\(new Date\(\), zoneOr\(tz\) \|\| Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone\)\)/);
   assert.doesNotMatch(code(src), /toLocaleDateString|new Date\(\)\.toISOString\(\)\.slice/, 'never the device\'s date');
   assert.match(src, /<NewSiteBanner \/>/);
 });

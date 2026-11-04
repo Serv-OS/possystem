@@ -13,6 +13,7 @@ import * as wf from '../../../staff/wfData';
 import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
 import WfGeofenceCard from './WfGeofenceCard';
 import { activeRegionPack } from '../../../lib/regionPack';
+import { localeDateString } from '../../../lib/venueDates';
 import { overtimeRules, FEDERAL_MINIMUM_WAGE } from '../../../../supabase/functions/_shared/multiSiteOvertime.js';
 import { CURRENCIES as ALL_CURRENCIES } from '../../../lib/currency';
 import { US_STATE_BREAKS, usBreakRule, usBreakWords } from '../../../../supabase/functions/_shared/usBreaks.js';
@@ -45,7 +46,7 @@ function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOf
   };
   let cur, next;
   try { cur = payPeriod(cfg); next = shiftPayPeriod(cfg, cur.startIso, 1); } catch { return null; }
-  const fmt = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  const fmt = iso => localeDateString(new Date(iso + 'T00:00:00'), { weekday: 'short', day: 'numeric', month: 'short' }, country);   // 5.12.57: the venue's way
   return (
     <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 10, lineHeight: 1.7 }}>
       <span style={{ fontWeight: 700, color: 'var(--t2)' }}>Current period:</span> {cur.label} · paid <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{fmt(cur.payDateIso)}</span>
@@ -894,7 +895,9 @@ function TemplateEditor({ tpl, onClose, onSave }) {
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const valid = f.name.trim() && f.body.trim();
   // 5.12.58: the sample rate in the venue's own money (it was always pounds).
-  const preview = wf.mergeTemplate(f.body, { ...SAMPLE_VARS, rate: `${activeRegionPack().currencySymbol}12.50 per hour` });
+  // 5.12.57: the sample dates read the venue's way too (July 1, 2026 at a US venue)
+  const us = activeRegionPack().country === 'US';
+  const preview = wf.mergeTemplate(f.body, { ...SAMPLE_VARS, rate: `${activeRegionPack().currencySymbol}12.50 per hour`, ...(us ? { start_date: 'July 1, 2026', today: 'June 9, 2026' } : {}) });
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box" style={{ maxWidth: 760, maxHeight: '88vh', overflowY: 'auto' }}>

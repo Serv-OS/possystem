@@ -10,6 +10,7 @@
 
 import { platformSupabase, getLocationId, getActiveLocationSync } from './supabase';
 import { setActiveCurrency } from './currency';
+import { setActiveTimezone } from './venueDates';
 import { resolveLocalDateTime } from './openingHours';
 
 // v5.5.11: per-location cache. The previous module-level cache returned the
@@ -35,7 +36,11 @@ function isActiveVenue(locationId, explicitLocationId) {
   return String(active) === String(locationId);
 }
 function adoptCurrency(cfg, locationId, explicitLocationId) {
-  if (cfg && cfg.currency && isActiveVenue(locationId, explicitLocationId)) setActiveCurrency(cfg.currency);
+  if (cfg && cfg.currency && isActiveVenue(locationId, explicitLocationId)) {
+    setActiveCurrency(cfg.currency);
+    // 5.12.57 (batch 8): the venue's clock rides with its currency, so times read on its own zone
+    if (cfg.timezone) setActiveTimezone(cfg.timezone);
+  }
   return cfg;
 }
 
@@ -131,7 +136,10 @@ export function clearLocationConfigCache() {
 // with the config; a failed read leaves the currency as it was.
 export async function adoptVenueRegion(locationId) {
   const cfg = await getLocationConfig(locationId);
-  if (cfg && cfg.currency) setActiveCurrency(cfg.currency);
+  if (cfg && cfg.currency) {
+    setActiveCurrency(cfg.currency);
+    if (cfg.timezone) setActiveTimezone(cfg.timezone);   // 5.12.57: and the site's clock
+  }
   return cfg;
 }
 

@@ -156,7 +156,7 @@ test('one site: Location settings is main\'s file plus one import and one card l
   once(now, CAL_CARD);
   once(now, KIND_IMPORT);
   once(now, KIND_CARD);
-  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), '6defb5cee9a8f545f8dd1b9f546e3eee4a8eab5f84caad5e307dc9453f7f1325');   // 29 Oct 2026 (Drop D): main's file now says Adyen, not Stripe, in one comment and one label. 3 Nov 2026 (5.12.43): heading emoji are line icons. 5.12.57: the venue address example follows the venue's currency (a US venue: a US address, not PR1 2AB)
+  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), 'a813dd6c3bf560c5a9b9bc2a11ef097549e37a8ce601f13e9010a6ec635fb023');   // 29 Oct 2026 (Drop D): main's file now says Adyen, not Stripe, in one comment and one label. 3 Nov 2026 (5.12.43): heading emoji are line icons. 5.12.57: the venue address example follows the venue's currency (a US venue: a US address, not PR1 2AB). 4 Nov 2026 (5.12.57, US basics batch 8): the venue clock preview and the kitchen start example read the venue's clock words (2:05 PM at a US venue; a UK venue reads as before); was 6defb5cee9a8
   const card = readSrc('backoffice/sections/stock/SiteGroupsCard.jsx');
   assert.ok(card.includes('export default function SiteGroupsCard() {\n  const sc = useStockScope();\n  if (!groupsCardShows(sc)) return null;\n'), 'nothing at all before the scope says multi and All sites');
 });

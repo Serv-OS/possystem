@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
 import { StatTile, EmptyState } from './_charts';
-import { money } from '../../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../../lib/currency';
 import { Icon } from '../../../components/ServOSIcons';
 
 const OPEN = (s) => ['open', 'info_requested'].includes(String(s || '').toLowerCase());
@@ -64,7 +64,7 @@ export default function AdyenDisputes() {
   const list = disputes || [];
   const open = list.filter((d) => OPEN(d.status));
   const atStake = open.reduce((s, d) => s + (Number(d.amount_minor) || 0), 0);
-  const cur = list[0]?.currency || 'GBP';
+  const cur = list[0]?.currency || getActiveCurrencyCode();   // 5.12.57: the active venue's, not a fixed GBP
 
   return (
     <div style={{ padding: '4px 0' }}>

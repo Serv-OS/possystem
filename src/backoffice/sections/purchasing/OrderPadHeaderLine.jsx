@@ -2,7 +2,7 @@
 // stock Drop 3, v5.11.96, contract 4.2): 'Next delivery <b>Wed 22 Oct</b> · order by <b>Tue 14:00</b>
 // (in 3 h 20 m)'. next is nextDelivery's answer (with supplierName), or { noRules, supplierName }.
 
-import { dayWords, timeLeftWords } from '../../../lib/stock/purchasingRules';
+import { dayWords, timeLeftWords, hmWords } from '../../../lib/stock/purchasingRules';
 import { noRulesWords } from '../../../lib/stock/purchasingWords';
 
 const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -15,7 +15,7 @@ export default function OrderPadHeaderLine({ next, nowMs = null }) {
   let left = next.minutesLeft;
   if (Number.isFinite(Number(next.orderByMs)) && Number.isFinite(Number(nowMs))) left = Math.floor((Number(next.orderByMs) - Number(nowMs)) / 60000);
   const t = timeLeftWords(left);
-  const by = next.orderByHm === '24:00' ? `the end of ${DAY[dowOf(next.orderByYmd)]}` : `${DAY[dowOf(next.orderByYmd)]} ${next.orderByHm}`;
+  const by = next.orderByHm === '24:00' ? `the end of ${DAY[dowOf(next.orderByYmd)]}` : `${DAY[dowOf(next.orderByYmd)]} ${hmWords(next.orderByHm)}`; // 5.12.57: '2:00 PM' at a US venue
   return (
     <div style={line}>
       {next.supplierName ? `${next.supplierName}: ` : ''}Next delivery <b>{dayWords(next.deliveryYmd)}</b> · order by <b>{by}</b> ({t ? `in ${t}` : 'passed'})

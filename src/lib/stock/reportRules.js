@@ -13,6 +13,7 @@
 import { signedMoney } from '../currency.js';
 import { toCsv } from '../../backoffice/sections/reports/_csv.js';
 import { compareChip } from '../reportCompare.js';
+import { activeVenueCurrency } from './venueZone.js';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -24,12 +25,13 @@ const finite = (v) => v != null && Number.isFinite(v);
 /** The rules line under the dashboard (the mockup's .design, word for word). */
 export const RULES_LINE = 'The rules behind every number. Product GP adds up to site GP. Loyalty, staff and comps sit on their own line. Each venue uses its own business day. A locked month never changes. Two currencies are never added together.';
 
-/** 'Mon 6 Oct' for a business day, whatever the browser's zone (no clock involved). */
-export function dayWords(ymd) {
+/** 'Mon 6 Oct' for a business day, whatever the browser's zone (no clock involved); 'Mon Oct 6' at a US venue (5.12.57). */
+export function dayWords(ymd, venue = null) {
   if (!isYmd(ymd)) return '';
   const [y, m, d] = ymd.split('-').map(Number);
   if (m < 1 || m > 12 || d < 1 || d > 31) return '';
   const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  if (String(venue ?? activeVenueCurrency()).toUpperCase() === 'USD') return `${DAYS[dow]} ${MONTHS[m - 1]} ${d}`;
   return `${DAYS[dow]} ${d} ${MONTHS[m - 1]}`;
 }
 

@@ -9,7 +9,8 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { activeRegionPack } from '../../../lib/regionPack';
-import { buildWeek, addWeeks, weekRangeLabel } from '../../../staff/wfWeek';
+import { buildWeek, addWeeks, alignWeek, weekRangeLabel } from '../../../staff/wfWeek';
+import { workweekStartDow } from '../../../lib/venueDates';
 // 5.12.57 (US, FLSA): a US venue's pool is card tips only (a service charge is wages, never tips) and
 // managers, supervisors and exempt positions share nothing (workforce-compute tronc.run). UK unchanged.
 import { suggestedTipPool } from '../../../../supabase/functions/_shared/usTipPool.js';
@@ -26,7 +27,11 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
   // Week being distributed — navigable, so past weeks' tips (the usual case:
   // you run tronc AFTER the week ends) pull through. Was locked to the
   // current week, which made the system look like it found no tips.
-  const [wk, setWk] = useState(() => buildWeek());
+  // 5.12.57: the tip pool week is the venue's work week (Workforce settings, Work week starts), Monday
+  // when unset, so a US venue's pool runs over the same week its overtime and tip credit are worked on.
+  const startDow = workweekStartDow(settings?.settings);
+  const [wk, setWk] = useState(() => buildWeek(null, startDow));
+  useEffect(() => { setWk(w => alignWeek(w, startDow)); }, [startDow]);
 
   // Venue tipping policy decides how much of the till's card tips are POOLED:
   // 'pool' → all of them; 'hybrid' → (100 − directPct)%; 'direct' → none
@@ -112,9 +117,9 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(addWeeks(wk.startIso, -1))} title="Previous week"><Icon name="chevron" size={13} style={{ transform: 'rotate(180deg)' }} /></button>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, minWidth: 86, textAlign: 'center' }}>{weekRangeLabel(wk)}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, minWidth: 86, textAlign: 'center' }}>{weekRangeLabel(wk, activeRegionPack().country)}</span>
                 <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(addWeeks(wk.startIso, 1))} title="Next week"><Icon name="chevron" size={13} /></button>
-                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(buildWeek())}>This week</button>
+                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(buildWeek(null, startDow))}>This week</button>
               </div>
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.6, maxWidth: 520 }}>
@@ -235,7 +240,7 @@ function RunCard({ run, nameOf, showToast }) {
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>{weekRangeLabel({ startIso: run.weekStart, endIso: weekEnd(run.weekStart) })}</div>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{weekRangeLabel({ startIso: run.weekStart, endIso: weekEnd(run.weekStart) }, activeRegionPack().country)}</div>
           <Badge tone={STATUS_TONE[run.status] || 'grey'}>{STATUS_LBL[run.status] || run.status || '—'}</Badge>
         </div>
         <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>

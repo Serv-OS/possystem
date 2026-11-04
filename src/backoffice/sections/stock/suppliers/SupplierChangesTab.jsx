@@ -10,6 +10,7 @@ import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
 import { getLocationConfig } from '../../../../lib/locationTime';
 import { fmtVenueDateTime } from '../../../../lib/venueDate';
+import { zoneOr } from '../../../../lib/venueDates';
 import { changeWhat, changeValueText } from '../../../../lib/stock/supplierListRules';
 import { ui, TableWrap, Th, Td, ShowMore, ErrorLine, EmptyLine } from '../stockUi';
 
@@ -51,7 +52,8 @@ export default function SupplierChangesTab({ supplierId }) {
       .then((pairs) => { if (on) setZones((z) => ({ ...z, ...Object.fromEntries(pairs) })); });
     return () => { on = false; };
   }, [need]);
-  const when = (r) => fmtVenueDateTime(r.at, zones[r.location_id || home] || zones[home] || 'Europe/London', { year: false });
+  // 5.12.57 (batch 8): no site clock read, the active venue's (never London for a US site); none yet, no time
+  const when = (r) => { const z = zones[r.location_id || home] || zones[home] || zoneOr(null); return z ? fmtVenueDateTime(r.at, z, { year: false }) : ''; };
 
   return (
     <div>

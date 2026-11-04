@@ -6,6 +6,13 @@
 
 import { supabase, getLocationId } from './supabase';
 import { money } from './currency.js';
+import { localeDateString, localeTimeString, localeString, zoneOr } from './venueDates';
+
+// 5.12.57 (batch 8): the assistant reads times on the VENUE's clock and in its words ('2:05 PM' at a
+// US venue), never the till's own clock; with no zone yet it says it does not know rather than guess.
+const onVenue = (opts) => (zoneOr() ? { ...opts, timeZone: zoneOr() } : null);
+const venueTimeOf = (t) => { const o = onVenue({ hour: '2-digit', minute: '2-digit' }); return o ? localeTimeString(new Date(t), o) : null; };
+const venueWhenOf = (t) => { const o = onVenue({ hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }); return o ? localeString(new Date(t), o) : null; };
 
 // Tools that require user confirmation before executing
 export const WRITE_TOOLS = new Set(['add_menu_item', 'update_item_price', 'eighty_six_item', 'add_to_order', 'remove_from_order', 'apply_order_discount']);
@@ -107,7 +114,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         if (m < 60 * 36) return `${Math.round(m / 60)} hours ago`;
         const d = Math.round(m / 1440);
         return d < 14 ? `${d} days ago`
-          : `${d} days ago (${new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })})`;
+          : `${d} days ago (${localeDateString(new Date(t), onVenue({ day: 'numeric', month: 'short', year: 'numeric' }) || { day: 'numeric', month: 'short', year: 'numeric' })})`;
       };
 
       // 15 Oct 2026, Peter: "this must be a false error, we dont use a print agent locally". No
@@ -536,7 +543,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         covers: o.covers,
         method: o.method,
         tip:    o.tip ? `${money(o.tip)}` : null,
-        time:   o.closed_at ? new Date(o.closed_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '?',
+        time:   (o.closed_at && venueTimeOf(o.closed_at)) || '?',
       }));
       return { result: { orders } };
     }
@@ -563,7 +570,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       // Build the FULL 86 list first — a genuinely-86'd id is never dropped, even if unnamed.
       const full = eightySixIds.map(id => ({
         item: nameOf(id) || `Item ${String(id).slice(0, 8)}`,
-        since: whenMap[id] ? new Date(whenMap[id]).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : null,
+        since: whenMap[id] ? venueWhenOf(whenMap[id]) : null,
         stock_remaining: dailyCounts[id] ? dailyCounts[id].remaining : null,
       }));
       const q = (toolInput.item_name || '').toLowerCase();
@@ -654,7 +661,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             ref: o.ref, source: o.source, status: o.status,
             total: o.total != null ? money(o.total) : null,
             customer: o.customer?.name || o.customer?.firstName || null,
-            time: o.created_at ? new Date(o.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null,
+            time: o.created_at ? venueTimeOf(o.created_at) : null,
           })),
         },
       };
@@ -680,7 +687,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             kind: r.kind, what: r.title,
             ...(r.body ? { detail: r.body } : {}),
             ...(r.actor_name ? { by: r.actor_name } : {}),
-            when: r.created_at ? new Date(r.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : null,
+            when: r.created_at ? venueWhenOf(r.created_at) : null,
           })),
         },
       };
@@ -696,7 +703,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             name: w.name, size: w.size ?? w.partySize,
             quoted_min: w.quoted ?? w.quotedMinutes,
             status: w.status,
-            since: w.addedAt ? new Date(w.addedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : undefined,
+            since: w.addedAt ? (venueTimeOf(w.addedAt) || undefined) : undefined,
           })),
         },
       };

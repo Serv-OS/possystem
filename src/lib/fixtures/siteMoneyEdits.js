@@ -11,6 +11,7 @@
 // ASCII, and every '<', are written as \u escapes, so the table never reads as a JSX tag.
 
 import { US_STOCK_EDITS } from './usStockEdits.js';
+import { DATES_BATCH8_EDITS } from './datesBatch8Edits.js';
 
 export const SITE_MONEY_EDITS = Object.freeze({
   "backoffice/sections/purchasing/InvoicesSite.jsx": [
@@ -211,6 +212,24 @@ const usKeyOf = (file) => {
   return Object.keys(US_STOCK_EDITS).find((k) => f === k || f.endsWith(`/src/${k}`) || f.endsWith(`/${k}`)) || null;
 };
 
+const datesKeyOf = (file) => {
+  const f = String(file instanceof URL ? file.pathname : file).replace(/\\/g, '/');
+  return Object.keys(DATES_BATCH8_EDITS).find((k) => f === k || f.endsWith(`/src/${k}`) || f.endsWith(`/${k}`)) || null;
+};
+
+/** The file's text with its 5.12.57 batch 8 edits put back (fixtures/datesBatch8Edits.js; unchanged for a file not listed). */
+export function undoDatesBatch8(file, text) {
+  const key = datesKeyOf(file);
+  if (!key) return text;
+  let t = String(text);
+  for (const [now, was] of DATES_BATCH8_EDITS[key]) {
+    const n = t.split(now).length - 1;
+    if (n !== 1) throw new Error(`${key}: a 5.12.57 batch 8 edit is there ${n} times, not once: ${now.slice(0, 80)}`);
+    t = t.replace(now, () => was);
+  }
+  return t;
+}
+
 /** The file's text with its 5.12.57 batch 7 edits put back (fixtures/usStockEdits.js; unchanged for a file not listed). */
 export function undoUsStock(file, text) {
   const key = usKeyOf(file);
@@ -226,10 +245,11 @@ export function undoUsStock(file, text) {
 
 /**
  * The file's text with its 5.12.57 site money edits put back (unchanged for a file not listed).
- * The batch 7 edits (usStockEdits.js) go back first, so the batch 1 table finds its text.
+ * The batch 8 edits (datesBatch8Edits.js) go back first, then batch 7 (usStockEdits.js), so the batch 1
+ * table finds its text.
  */
 export function undoSiteMoney(file, text) {
-  text = undoUsStock(file, text);
+  text = undoUsStock(file, undoDatesBatch8(file, text));   // batch 8, then batch 7, then the batch 1 table
   const key = keyOf(file);
   if (!key) return text;
   let t = String(text);

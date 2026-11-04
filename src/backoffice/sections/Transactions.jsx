@@ -28,21 +28,25 @@ import { modsText } from '../../lib/reportText';
 import { isSplit, actionLock } from '../../lib/reportSplit.js';
 import { totalsByCurrency, totalsWords } from '../../lib/reportScope.js';
 import { Icon, hasIcon } from '../../components/ServOSIcons';
+import { localeDateString, localeTimeString, zoneOr } from '../../lib/venueDates';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 // timeZone: only passed when several sites are listed, so each row reads on its own site's
-// clock. Not passed (one site) = the browser's clock, as this list has always shown.
-const fmtDate = (ts, timeZone) => {
+// clock. 5.12.57 (batch 8): not passed (one site) = the venue's clock (it was the browser's), and
+// every row in its site's words (cur; the active venue's when not passed). No zone yet, no time.
+const fmtDate = (ts, timeZone, cur) => {
   if (!ts) return '—';
   const d = new Date(typeof ts === 'number' ? ts : ts);
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone });
+  const tz = zoneOr(timeZone);
+  return tz ? localeDateString(d, { day: '2-digit', month: 'short', year: 'numeric', timeZone: tz }, cur || undefined) : '—';
 };
-const fmtTime = (ts, timeZone) => {
+const fmtTime = (ts, timeZone, cur) => {
   if (!ts) return '';
   const d = new Date(typeof ts === 'number' ? ts : ts);
-  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone });
+  const tz = zoneOr(timeZone);
+  return tz ? localeTimeString(d, { hour: '2-digit', minute: '2-digit', timeZone: tz }, cur || undefined) : '';
 };
-const fmtDateTime = (ts, timeZone) => `${fmtDate(ts, timeZone)} ${fmtTime(ts, timeZone)}`.trim();
+const fmtDateTime = (ts, timeZone, cur) => `${fmtDate(ts, timeZone, cur)} ${fmtTime(ts, timeZone, cur)}`.trim();
 
 // ── Status badge ────────────────────────────────────────────────────
 const STATUS_STYLES = {
@@ -84,6 +88,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
     return cur ? (n => money(n || 0, cur)) : fmt;
   };
   const zoneOf = (c) => (multi ? scope?.clockOf?.(c.siteId)?.timeZone : undefined);
+  const curOf = (c) => (multi ? scope?.currencyOf?.(c.siteId) : undefined);
 
   // ── State ──
   const [search, setSearch] = useState('');
@@ -405,7 +410,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                   >
                     <td style={{ ...tdStyle, fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{c.ref || c.id?.slice(0, 8)}</td>
                     {multi && <td style={{ ...tdStyle, fontSize: 12, color: 'var(--t2, #374151)' }}>{c.siteName || '—'}</td>}
-                    <td style={tdStyle}>{fmtDateTime(c.closedAt, zoneOf(c))}</td>
+                    <td style={tdStyle}>{fmtDateTime(c.closedAt, zoneOf(c), curOf(c))}</td>
                     <td style={tdStyle}>{c.server || '—'}</td>
                     <td style={tdStyle}>{custName || '—'}</td>
                     <td style={tdStyle}>

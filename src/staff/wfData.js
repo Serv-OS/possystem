@@ -18,6 +18,7 @@ import { supabase, isMock } from '../lib/supabase';
 import { aiRequestInit } from '../lib/aiRequest';
 import { toE164 as regionToE164, venueMoney, activeCountry } from '../lib/regionPack';
 import { getActiveCurrencyCode } from '../lib/currency';
+import { localeDateString, zoneOr } from '../lib/venueDates';
 import { reportSave } from '../lib/saveHealth';
 import { ROLES as SEED_ROLES } from './seed';
 import { templatesForVenue } from './docTemplates';
@@ -956,16 +957,20 @@ export function templateVars(staff, role, businessName) {
   const rate = staff.rateOverride != null && staff.rateOverride !== '' ? `${venueMoney(staff.rateOverride, 2)} per hour`
     : (role?.rate != null ? `${venueMoney(role.rate, 2)} per hour` : (role?.salary ? `${venueMoney(role.salary, 0)} per year` : 'to be confirmed'));
   const ctMap = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
+  // 5.12.57: contract dates the venue's way ("1 July 2026" UK as before, "July 1, 2026" US), and today
+  // is the venue's day, not the laptop's
+  const longDay = { day: 'numeric', month: 'long', year: 'numeric' };
+  const zone = zoneOr(null);
   return {
     first_name: (staff.name || '').split(' ')[0] || 'there',
     full_name: staff.name || '',
     position: role?.lbl || staff.role || 'team member',
     rate,
     contract_type: ctMap[staff.contractType] || staff.contractType || '—',
-    start_date: staff.startDate ? new Date(staff.startDate + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'to be confirmed',
+    start_date: staff.startDate ? localeDateString(new Date(staff.startDate + 'T00:00:00'), longDay) : 'to be confirmed',
     weekly_hours: staff.weeklyHoursTarget || staff.contractedWeek || '—',
     business_name: businessName || 'our team',
-    today: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
+    today: localeDateString(new Date(), zone ? { ...longDay, timeZone: zone } : longDay),
   };
 }
 

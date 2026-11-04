@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { readAllPagesResult } from '../../lib/pagedRead';
 import { maskIdNumber } from '../../lib/foodLaw';
+import { localeString, zoneOr } from '../../lib/venueDates';
 
 function isoDateInput(d) {
   return new Date(d).toISOString().slice(0, 10);
@@ -173,7 +174,8 @@ export default function Challenge21Report({ locationId }) {
             borderBottom: '1px solid var(--bdr)', alignItems:'center',
           }}>
             <span style={{ fontFamily:'var(--font-mono)', fontSize: 11, color:'var(--t3)' }}>
-              {new Date(r.triggered_at).toLocaleString('en-GB', { dateStyle:'short', timeStyle:'short' })}
+              {/* 5.12.57: the venue's words on the venue's clock, not the laptop's */}
+              {zoneOr() ? localeString(r.triggered_at, { dateStyle:'short', timeStyle:'short', timeZone: zoneOr() }) : ''}
             </span>
             <span>{r.staff_name || '—'}</span>
             <span style={{ fontWeight: 600 }}>{r.customer_first_name || '—'} {r.customer_last_name_initial || ''}{r.customer_last_name_initial ? '.' : ''}</span>

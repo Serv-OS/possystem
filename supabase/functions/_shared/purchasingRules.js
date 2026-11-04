@@ -667,10 +667,28 @@ export function coverFromRules({ rules, exceptions = [], nowVenue } = {}) {
   return daysBetween(c.now.ymd, (after || c.found[0]).deliveryYmd);
 }
 
-/** 'Wed 22 Oct' from 'YYYY-MM-DD' (en-GB words, no locale lookup). */
-export function dayWords(ymd) {
+// 5.12.57 (US basics batch 8): the day and time words follow the venue. `venue` is a currency code
+// ('USD'), a country ('US') or a locale ('en-US'); left out, it is the Back Office's active venue
+// (the currency src/lib/currency.js keeps), and an edge function or node --test reads the UK words,
+// exactly as before.
+const US_VENUE = /^(USD|US|USA|EN-US)$/i;
+function isUsVenue(venue) {
+  if (venue != null) return US_VENUE.test(String(venue).trim());
+  try { return String(globalThis.localStorage?.getItem('rpos-active-currency') || '').toUpperCase() === 'USD'; } catch { return false; }
+}
+/** A wall clock 'HH:MM' the venue's way: '14:00' (UK, as given) or '2:00 PM' (US). */
+export function hmWords(hm, venue = null) {
+  const t = /^(\d{1,2}):(\d{2})$/.exec(String(hm || ''));
+  if (!t || !isUsVenue(venue)) return String(hm ?? '');
+  const h = Number(t[1]) % 24;
+  return `${((h + 11) % 12) + 1}:${t[2]} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+/** 'Wed 22 Oct' from 'YYYY-MM-DD' (en-GB words, no locale lookup); 'Wed Oct 22' at a US venue. */
+export function dayWords(ymd, venue = null) {
   if (!YMD.test(String(ymd || ''))) return '';
   const [, m, d] = String(ymd).split('-').map(Number);
+  if (isUsVenue(venue)) return `${SHORT_DAY[dowOfYmd(ymd)]} ${SHORT_MONTH[m - 1]} ${d}`;
   return `${SHORT_DAY[dowOfYmd(ymd)]} ${d} ${SHORT_MONTH[m - 1]}`;
 }
 
@@ -689,15 +707,15 @@ export function timeLeftWords(minutes) {
  * or '(passed)'. A supplier with no cut off: 'order by the end of Mon'. nowMs counts down live when
  * the answer has orderByMs (nextDelivery with tz); else the minutes worked out with it. '' for null.
  */
-export function orderByWords(next, nowMs = null) {
+export function orderByWords(next, nowMs = null, venue = null) {
   if (!next || !next.deliveryYmd) return '';
   let left = next.minutesLeft;
   if (Number.isFinite(Number(next.orderByMs)) && Number.isFinite(Number(nowMs))) left = Math.floor((Number(next.orderByMs) - Number(nowMs)) / 60000);
   const by = next.orderByHm === '24:00'
     ? `order by the end of ${SHORT_DAY[dowOfYmd(next.orderByYmd)]}`
-    : `order by ${SHORT_DAY[dowOfYmd(next.orderByYmd)]} ${next.orderByHm}`;
+    : `order by ${SHORT_DAY[dowOfYmd(next.orderByYmd)]} ${hmWords(next.orderByHm, venue)}`;
   const t = timeLeftWords(left);
-  return `Next delivery ${dayWords(next.deliveryYmd)} · ${by} (${t ? `in ${t}` : 'passed'})`;
+  return `Next delivery ${dayWords(next.deliveryYmd, venue)} · ${by} (${t ? `in ${t}` : 'passed'})`;
 }
 
 // 5.12.57: a missing symbol is the active venue's, never a typed pound sign. The Back Office keeps

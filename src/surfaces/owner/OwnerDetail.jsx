@@ -28,6 +28,7 @@ import { DETAIL_NEEDS_UPDATE, detailRequest, detailKey, readDetail, detailRange 
 import { detailBasis, detailTotals, basisCompare, salesLabel, salesHeading } from '../../lib/ownerBasis';
 import OwnerReports from './OwnerReports';
 import { money, toneColor, smallCaps, linkBtn } from './style';
+import { getActiveCurrencyCode } from '../../lib/currency';
 
 const DETAIL_TIMEOUT_MS = 20000;
 /** This month reads a month of items and a 400 day refund lookback: it is given longer. */
@@ -98,7 +99,7 @@ export default function OwnerDetail({ target, period, basis: basisAsked = 'net',
       <button onClick={onBack} style={backBtn} aria-label={backLabel}>‹ {backLabel}</button>
       <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: '-.01em', margin: '10px 0 2px' }}>{target.name}</div>
       <div style={{ ...smallCaps, marginBottom: 12 }}>
-        {[copy.heading, target.kind === 'group' && target.venues > 1 ? `${target.venues} venues` : '', detail ? rangeLabel(detailRange(detail)) : ''].filter(Boolean).join(' · ')}
+        {[copy.heading, target.kind === 'group' && target.venues > 1 ? `${target.venues} venues` : '', detail ? rangeLabel(detailRange(detail), detail.scope?.currency || target.currency || getActiveCurrencyCode()) : ''].filter(Boolean).join(' · ')}
       </div>
 
       {needsUpdate && (
@@ -119,7 +120,7 @@ export default function OwnerDetail({ target, period, basis: basisAsked = 'net',
       )}
 
       {detail && <Summary detail={detail} target={target} period={period} basis={basis} />}
-      {detail && <OwnerReports detail={detail} period={period} basis={basis} range={detailRange(detail)} currency={detail.scope.currency || target.currency || 'GBP'} />}
+      {detail && <OwnerReports detail={detail} period={period} basis={basis} range={detailRange(detail)} currency={detail.scope.currency || target.currency || getActiveCurrencyCode()} />}
     </>
   );
 }
@@ -127,7 +128,7 @@ export default function OwnerDetail({ target, period, basis: basisAsked = 'net',
 // The headline for the screen: the period's sales (net or gross) and the comparison line, from
 // the SAME answer as the reports under it (never from the card that was tapped, which may be older).
 function Summary({ detail, target, period, basis }) {
-  const cur = detail.scope.currency || target.currency || 'GBP';
+  const cur = detail.scope.currency || target.currency || getActiveCurrencyCode();   // 5.12.57: the active venue's, never a fixed GBP
   const t = detailTotals(detail.totals, basis);
   const range = detailRange(detail);
   const others = detail.scope.other_currencies || [];

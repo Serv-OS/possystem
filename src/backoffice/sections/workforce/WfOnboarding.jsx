@@ -15,6 +15,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, initials, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { activeRegionPack, docLabel } from '../../../lib/regionPack';
+import { localeDateString } from '../../../lib/venueDates';
 import { inviteState } from '../../../lib/staffInvite';
 // 5.12.57: what onboarding says when a venue has no contract of its own to offer.
 import { noTemplateWords } from '../../../staff/docTemplates';
@@ -269,8 +270,8 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
 
       <div style={{ display: 'grid', gap: 8 }}>
         <StepRow done={stepStatus('offer') === 'complete'} label="Offer letter" hint={
-          meta.offerAccepted ? `Accepted ${new Date(meta.offerAccepted.acceptedAt).toLocaleDateString('en-GB')}${meta.offerAccepted.via === 'manual' ? ' (marked by manager)' : ''}`
-            : meta.offerSentAt ? `Sent ${new Date(meta.offerSentAt).toLocaleDateString('en-GB')} — awaiting acceptance`
+          meta.offerAccepted ? `Accepted ${localeDateString(new Date(meta.offerAccepted.acceptedAt))}${meta.offerAccepted.via === 'manual' ? ' (marked by manager)' : ''}`
+            : meta.offerSentAt ? `Sent ${localeDateString(new Date(meta.offerSentAt))} — awaiting acceptance`
               : (member.email ? 'Email the offer to the candidate' : 'No email on file — add one in Staff')}>
           <OfferAction c={c} member={member} role={rolesMap[member.role]} ctx={ctx} showToast={showToast} markStep={markStep} done={stepStatus('offer') === 'complete'} />
         </StepRow>
@@ -280,7 +281,7 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
           <UploadAction type={activeRegionPack().requiredDocs[0]} c={c} member={member} ctx={ctx} showToast={showToast} markStep={markStep} metaKey="rtwPath" stepKey="rtw" done={stepStatus('rtw') === 'complete'} />
         </StepRow>
 
-        <StepRow done={stepStatus('contract') === 'complete'} label="Contract" hint={meta.signature ? `Signed by ${meta.signature.name} · ${new Date(meta.signature.signedAt).toLocaleDateString('en-GB')}` : (meta.contractHtml || meta.contractPath) ? (meta.contractSentAt ? 'Emailed — awaiting signature (or Sign now)' : 'Ready — Sign now on device, or email it') : 'Generate from a template or upload a PDF'}>
+        <StepRow done={stepStatus('contract') === 'complete'} label="Contract" hint={meta.signature ? `Signed by ${meta.signature.name} · ${localeDateString(new Date(meta.signature.signedAt))}` : (meta.contractHtml || meta.contractPath) ? (meta.contractSentAt ? 'Emailed — awaiting signature (or Sign now)' : 'Ready — Sign now on device, or email it') : 'Generate from a template or upload a PDF'}>
           <ContractAction c={c} member={member} role={rolesMap[member.role]} ctx={ctx} showToast={showToast} patchCase={patchCase} />
         </StepRow>
 

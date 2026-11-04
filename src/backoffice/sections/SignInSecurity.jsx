@@ -18,6 +18,7 @@ import {
 } from '../../lib/secondStep/client';
 import AuthenticatorSetup from '../../components/secondStep/AuthenticatorSetup';
 import { canRemovePasskey, suggestPasskeyName, explainPasskeyError } from '../../lib/secondStep/passkeyRules';
+import { dateNumeric } from '../../lib/venueDates';
 
 const ALLOW_LOCALHOST = !!import.meta.env?.DEV;
 
@@ -141,8 +142,9 @@ export default function SignInSecurity({ orgCtx }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{k.friendlyName || 'Passkey'}</div>
               <div style={{ fontSize: 12, color: 'var(--t3)' }}>
-                Added {k.createdAt ? new Date(k.createdAt).toLocaleDateString('en-GB') : 'recently'}
-                {k.lastUsedAt ? ` · last used ${new Date(k.lastUsedAt).toLocaleDateString('en-GB')}` : ''}
+                {/* 5.12.57: the venue's day order (11/03/2026 at a US venue) */}
+                Added {(k.createdAt && dateNumeric(k.createdAt)) || 'recently'}
+                {k.lastUsedAt && dateNumeric(k.lastUsedAt) ? ` · last used ${dateNumeric(k.lastUsedAt)}` : ''}
               </div>
             </div>
             <button

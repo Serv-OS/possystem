@@ -24,6 +24,7 @@ import { loadPaymentsForBookings, loadTableLabels } from '../../../lib/bookings/
 import { bookingsReport, moneyByBooking, serviceFor } from '../../../lib/bookings/bookingReports.js';
 import { withSiteColumn } from '../../../lib/reportSplit.js';
 import { moneyMinor } from '../../../lib/currency';
+import { localeDateString } from '../../../lib/venueDates';
 import { faultText } from '../../../lib/pagedRead';
 import { StatTile, ExportBtn, EmptyState, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
@@ -72,7 +73,7 @@ const sourceLabel = (src, fallback) => {
 
 const fmtDateShort = (iso) => {
   const d = new Date(`${iso}T12:00:00`);
-  return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' });
+  return localeDateString(d, { weekday:'short', day:'numeric', month:'short' }); // 5.12.57: the venue's words
 };
 
 // fromDay/toDay are the venue business days of the period (getPeriodRange), never the

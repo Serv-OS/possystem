@@ -11,6 +11,7 @@ import { voidedValue } from '../../../lib/voidRules';
 import { isSplit, sumFields, siteNameKey } from '../../../lib/reportSplit.js';
 import { useParts, exportSites, titleSt } from './_siteSplit';
 import { SplitHeader, Blocks, SiteRows, SiteCell } from './SiteSplit';
+import { localeString, localeTimeString, zoneOr } from '../../../lib/venueDates';
 
 // Flatten closed checks into a single event list sorted by time (newest first).
 // A single check can produce multiple events (one void + two discounts, for example).
@@ -157,7 +158,7 @@ function ExceptionsOne({ checks, fmt }) {
           return (
             <div key={i} style={{ ...dataRow }}>
               <span style={{ padding:'3px 7px', background:st.bg, border:`1px solid ${st.color}55`, borderRadius:5, fontSize:10, fontWeight:800, color:st.color, fontFamily:'var(--font-mono)', textAlign:'center', alignSelf:'center' }}>{st.label}</span>
-              <span style={{ color:'var(--t3)', fontFamily:'var(--font-mono)', fontSize:11 }}>{e.ts ? new Date(e.ts).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' }) : '—'}</span>
+              <span style={{ color:'var(--t3)', fontFamily:'var(--font-mono)', fontSize:11 }}>{/* 5.12.57 (batch 8): the venue's clock and words, never the laptop's */}{e.ts && zoneOr() ? localeTimeString(new Date(e.ts), { hour:'2-digit', minute:'2-digit', timeZone: zoneOr() }) : '—'}</span>
               <span style={{ color:'var(--t2)' }}>{e.ref} · <span style={{ color:'var(--t3)' }}>{e.tableLabel}</span></span>
               <span style={{ color:'var(--t2)' }}>{e.reason || '—'}</span>
               <span style={{ color:'var(--t3)', fontSize:11 }}>{e.server}{e.approvedBy ? ` · by ${e.approvedBy}` : ''}</span>
@@ -207,7 +208,8 @@ function ExceptionsOne({ checks, fmt }) {
 const EX_FIELDS = ['voids', 'discounts', 'refunds', 'voidCount', 'discCount', 'refundCount'];
 const exHead = { ...headerRow, gridTemplateColumns:'70px 110px 1fr 1fr 1.2fr 1.1fr 110px', minWidth:980 };
 const exRow  = { ...dataRow,   gridTemplateColumns:'70px 110px 1fr 1fr 1.2fr 1.1fr 110px', minWidth:980 };
-const whenAt = (ts, timeZone) => (ts ? new Date(ts).toLocaleString('en-GB', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', timeZone }) : '—');
+// 5.12.57: in the site's words (its currency) on its own clock
+const whenAt = (ts, timeZone, cur) => (ts ? localeString(new Date(ts), { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', timeZone }, cur || undefined) : '—');
 
 function ExceptionsSites(props) {
   const [filter, setFilter] = useState('all');
@@ -230,7 +232,7 @@ function ExceptionsSites(props) {
     exportSites('exceptions', displayed.map(e => ({ ...e, when: e.ts ? new Date(e.ts).toISOString() : '' })), [
       { label:'Currency',    key: e => e.part.currency || '' },
       { label:'Time',        key:'when' },
-      { label:'Site time',   key: e => whenAt(e.ts, e.part.clock.timeZone) },
+      { label:'Site time',   key: e => whenAt(e.ts, e.part.clock.timeZone, e.part.config?.currency) },
       { label:'Type',        key:'type' },
       { label:'Amount',      key: e => (e.amount || 0).toFixed(2) },
       { label:'Ref',         key:'ref' },
@@ -298,7 +300,7 @@ function ExceptionsSites(props) {
           return (
             <div key={i} style={exRow}>
               <span style={{ padding:'3px 7px', background:st.bg, border:`1px solid ${st.color}55`, borderRadius:5, fontSize:10, fontWeight:800, color:st.color, fontFamily:'var(--font-mono)', textAlign:'center', alignSelf:'center' }}>{st.label}</span>
-              <span style={{ color:'var(--t3)', fontFamily:'var(--font-mono)', fontSize:11 }}>{whenAt(e.ts, e.part.clock.timeZone)}</span>
+              <span style={{ color:'var(--t3)', fontFamily:'var(--font-mono)', fontSize:11 }}>{whenAt(e.ts, e.part.clock.timeZone, e.part.config?.currency)}</span>
               <SiteCell name={e.siteName}/>
               <span style={{ color:'var(--t2)' }}>{e.ref} · <span style={{ color:'var(--t3)' }}>{e.tableLabel}</span></span>
               <span style={{ color:'var(--t2)' }}>{e.reason || '—'}</span>

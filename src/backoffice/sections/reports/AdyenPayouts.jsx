@@ -22,7 +22,8 @@ import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
 import { EmptyState, ExportBtn, StatTile } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
-import { money } from '../../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../../lib/currency';
+import { zoneOr } from '../../../lib/venueDates';
 import { formatVenueWhen, formatVenueCsvWhen, formatCalendarDate, venueZoneLabel } from '../../../lib/payments/venueTime';
 
 // Payout status words. 'settled' comes from settlement batches; 'initiated',
@@ -79,7 +80,7 @@ const unratedNote = { fontSize: 12, color: 'var(--t3)', margin: '0 0 14px' };
 
 export default function AdyenPayouts() {
   const [payouts, setPayouts] = useState(null);
-  const [tz, setTz] = useState('Europe/London');
+  const [tz, setTz] = useState(() => zoneOr());   // 5.12.57: the active venue's zone until the answer says, never London
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [detail, setDetail] = useState(null);      // { payout, lines, timezone }
@@ -122,7 +123,7 @@ export default function AdyenPayouts() {
     finally { setDetailLoading(false); }
   };
 
-  const m = (minor, cur) => (hasValue(minor) ? money((Number(minor) || 0) / 100, cur || 'GBP') : '—');
+  const m = (minor, cur) => (hasValue(minor) ? money((Number(minor) || 0) / 100, cur || getActiveCurrencyCode()) : '—');
 
   if (loading && payouts == null) return <div style={{ padding: 24, color: 'var(--t3)' }}>Loading payouts…</div>;
   if (error && payouts == null) return <EmptyState icon="warn" message={error} />;
@@ -131,7 +132,7 @@ export default function AdyenPayouts() {
   if (detail) {
     const p = detail.payout || {};
     const lines = detail.lines || [];
-    const cur = p.currency || 'GBP';
+    const cur = p.currency || getActiveCurrencyCode();   // 5.12.57: the active venue's, not a fixed GBP
     const showFee = lines.some((l) => hasValue(l.fee_minor));
     const grid = showFee ? '1.1fr 1.2fr 1.1fr 0.8fr 0.7fr 0.9fr' : '1.1fr 1.2fr 1.1fr 0.9fr 0.9fr';
     const exportLines = () => {
@@ -226,7 +227,7 @@ export default function AdyenPayouts() {
       { label: 'Gross', key: (p) => csvMoney(p.gross_minor) },
       ...(showFees ? [{ label: 'Fees', key: (p) => csvMoney(p.fees_minor) }] : []),
       { label: 'You receive', key: (p) => csvMoney(p.receives_minor) },
-      { label: 'Currency', key: (p) => p.currency || 'GBP' },
+      { label: 'Currency', key: (p) => p.currency || getActiveCurrencyCode() },
       { label: 'Status', key: (p) => payoutStatusLabel(p.status) },
       { label: 'Shared batch', key: (p) => (p.shared ? 'yes' : 'no') },
     ];
