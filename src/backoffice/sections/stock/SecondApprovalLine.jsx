@@ -1,10 +1,11 @@
 // src/backoffice/sections/stock/SecondApprovalLine.jsx
 //
 // MULTI SITE STOCK (v5.11.96, Drop 3, contract 3.3 and 4.3, map I7): a count over the company's
-// limit waits for a second approval. Everyone sees 'Waiting for a second approval. Over £500.'; head
-// office or another login of this site (never the first approver) gets 'Give the second approval',
-// which posts the count with the stored costs (stock_second_approve_count). The database decides who
-// may; the button only hides where it would surely be refused.
+// limit waits for a second approval. Everyone sees 'Waiting for a second approval. Over $500.' (in the
+// count's site currency, 5.12.57); head office or another login of this site (never the first
+// approver) gets 'Give the second approval', which posts the count with the stored costs
+// (stock_second_approve_count). The database decides who may; the button only hides where it would
+// surely be refused.
 
 import { useState } from 'react';
 import { useStore } from '../../../store';
@@ -12,11 +13,14 @@ import { stockApi } from '../../../lib/stock/stockApi';
 import { secondApprovalState, secondApprovalWords } from '../../../lib/stock/countPlanRules';
 import { useStockScope } from '../../StockScope';
 import { Notice } from './stockUi';
+import { useSiteMoney } from './useSiteCurrency';
 
 export default function SecondApprovalLine({ count, onApproved, limit = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
   const [busy, setBusy] = useState(false);
+  // 5.12.57: the limit in the count's own site currency, never a typed pound sign.
+  const { symbol } = useSiteMoney(count?.locationId || null);
   const companyEditor = !!sc.canEditCompany?.('inventory');
   const linkedHere = !!count?.locationId && (sc.sites || []).some((s) => s.id === count.locationId);
   const st = secondApprovalState(count, { userId: sc.userId, companyEditor, linkedHere });
@@ -31,7 +35,7 @@ export default function SecondApprovalLine({ count, onApproved, limit = null }) 
   };
   return (
     <Notice tone="warn" actions={st.canGive ? [{ label: busy ? 'Posting...' : 'Give the second approval', kind: 'primary', onClick: give, disabled: busy }] : null}>
-      <b>{secondApprovalWords(limit)}</b>
+      <b>{secondApprovalWords(limit, symbol)}</b>
       {count.firstApprovedByName && <span> First approval by {count.firstApprovedByName}.</span>}
       {!st.canGive && st.why && <span> {st.why}</span>}
     </Notice>

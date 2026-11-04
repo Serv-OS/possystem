@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
+import { getActiveCurrencyCode } from '../../../../lib/currency';
 import { packPrice, countPackOf } from '../../../../lib/stock/packPrice';
 import {
   moneyText, nextPriceText, spreadText, vatText, unitPriceAt, siteRows, exportPriceRows, fileName,
@@ -107,7 +108,8 @@ export default function SupplierItemsTab({ detail, reload }) {
     : 'No items from this supplier yet. Add one from a stock item\'s Suppliers tab, or import a price list.';
 
   const done = () => { setModal(null); setTicked(new Set()); refresh(); reload?.(); };
-  const currencyOf = (row) => (site?.currency || row.currency || 'GBP');
+  // 5.12.57: no currency known is the active venue's currency, never GBP.
+  const currencyOf = (row) => (site?.currency || row.currency || getActiveCurrencyCode());
 
   return (
     <div>
@@ -185,7 +187,7 @@ export default function SupplierItemsTab({ detail, reload }) {
                     <Td>
                       <SupplierItemSitesPopover row={row} sites={orderSites} onChanged={refresh} />
                     </Td>
-                    <Td num>{spreadText(row.spread, row.currency || 'GBP')}</Td>
+                    <Td num>{spreadText(row.spread, row.currency || getActiveCurrencyCode())}</Td>
                   </tr>
                 );
               })}

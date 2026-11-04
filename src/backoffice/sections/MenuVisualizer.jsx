@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
 import { useStore } from '../../store';
-import { money } from '../../lib/currency';
+// 5.12.57: price boxes show the venue's own symbol, never a typed pound.
+import { money, currencySymbol } from '../../lib/currency';
 import { compareMenuItems } from '../../lib/menuItemOrder.js';
 import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 
@@ -474,7 +475,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
               <div key={k}>
                 <span style={lbl}>{label}</span>
                 <div style={{ position:'relative' }}>
-                  <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',fontSize:accent?15:13,color:accent?'var(--acc)':'var(--t4)',fontWeight:700 }}>£</span>
+                  <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',fontSize:accent?15:13,color:accent?'var(--acc)':'var(--t4)',fontWeight:700 }}>{currencySymbol()}</span>
                   <input type="number" step="0.01" min="0" style={{...inp,paddingLeft:26,fontSize:accent?15:13,fontWeight:accent?800:400,color:accent?'var(--acc)':'var(--t1)'}} value={k==='base'?(p.base||0):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k==='base'?'':(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
                 </div>
               </div>
@@ -540,7 +541,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
                   <span style={{ fontSize:10,color:'var(--t4)',cursor:'grab',textAlign:'center' }}>⠿</span>
                   <input style={inp} value={v.menuName||v.name||''} onChange={e=>updateMenuItem(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`Size ${vi+1}`}/>
                   <div style={{ position:'relative' }}>
-                    <span style={{ position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',fontSize:11,color:'var(--t4)' }}>£</span>
+                    <span style={{ position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',fontSize:11,color:'var(--t4)' }}>{currencySymbol()}</span>
                     <input type="number" step="0.01" min="0" style={{...inp,paddingLeft:18,color:'var(--acc)',fontWeight:700}} value={vp.base||''} placeholder="0.00" onChange={e=>updateMenuItem(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                   </div>
                   <button onClick={()=>{updateMenuItem(v.id,{archived:true,parentId:null});if(variants.filter(x=>x.id!==v.id).length===0)f('type','simple');}} style={{ width:32,height:34,borderRadius:7,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>

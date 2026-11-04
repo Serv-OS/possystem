@@ -8,11 +8,14 @@ import { stockApi } from '../../../lib/stock/stockApi';
 import { scanInvoice } from '../../../lib/stock/purchasing';
 import { moneyWords } from '../../../lib/stock/purchasingRules';
 import { Modal, Btn, Field, ErrorLine, ui } from '../stock/stockUi';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 
 const toB64 = (file) => new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1] || ''); r.onerror = reject; r.readAsDataURL(file); });
 
 export default function CreditNoteModal({ request, onDone, onClose }) {
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: the request's own site currency, not the signed in venue's.
+  const { symbol } = useSiteMoney(request?.location_id || null);
   const [number, setNumber] = useState('');
   const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
   const [amount, setAmount] = useState(request?.amount != null ? String(request.amount) : '');
@@ -43,7 +46,7 @@ export default function CreditNoteModal({ request, onDone, onClose }) {
     onDone?.();
   };
   return (
-    <Modal title="Add credit note" sub={`For the request of ${moneyWords(request?.amount)}`} onClose={onClose} width={520}
+    <Modal title="Add credit note" sub={`For the request of ${moneyWords(request?.amount, symbol)}`} onClose={onClose} width={520}
       footer={<><Btn onClick={onClose}>Cancel</Btn><span style={{ marginLeft: 'auto' }} /><Btn kind="primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</Btn></>}>
       <Field label="Scan the credit note" hint="Or type it below.">
         <input type="file" accept="image/*,application/pdf" onChange={(e) => scan(e.target.files?.[0])} aria-label="Scan the credit note" />

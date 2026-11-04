@@ -12,10 +12,11 @@
 // browser's, so a London lunch rush showed at 04:00 to Peter in California.
 
 import { useMemo } from 'react';
+// 5.12.57: fmtSymbol, so the hourly chart names the money of the site on screen.
 import { StatTile, ExportBtn, EmptyState, Heatmap, HourBar } from './_charts';
+import { fmtSymbol } from './_fmtSymbol';
 import { toCsv, downloadCsv } from './_csv';
 import { classifyShift, daypartGrid, reportClock, venueHour } from './_filters';
-import { currencySymbol } from '../../../lib/currency';
 import { isSplit } from '../../../lib/reportSplit.js';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, SiteMatrix } from './SiteSplit';
@@ -137,7 +138,7 @@ function DaypartOne({ checks, fmt, locationConfig }) {
 
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'16px' }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:16 }}>Revenue by hour (all days combined)</div>
-        <HourBar values={byHour} maxLabel={v => `${currencySymbol()}${Math.round(v)}`} nowHour={nowHour}/>
+        <HourBar values={byHour} maxLabel={v => `${fmtSymbol(fmt)}${Math.round(v)}`} nowHour={nowHour}/>
       </div>
     </div>
   );

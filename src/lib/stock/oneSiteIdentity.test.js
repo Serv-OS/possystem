@@ -17,6 +17,7 @@ import { createRequire, registerHooks } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const SRC = new URL('../../', import.meta.url);
 const at = (p) => new URL(p, SRC);
@@ -31,7 +32,10 @@ const EDIT_LOC = ['useState(siteId || getActiveLocationSync())', 'useState(getAc
 const count = (text, part) => text.split(part).length - 1;
 
 /** Today's StockItems.jsx from its first import line, rebuilt from the moved file. */
+// 5.12.57: the site money edits are put back first (fixtures/siteMoneyEdits.js): for a one site company
+// the site's currency is the signed in venue's, so they change nothing it sees.
 function mainText(moved) {
+  moved = undoSiteMoney(SPLIT, moved);
   const body = moved.slice(moved.search(/^import /m));
   return body.split(EDIT_PATH[0]).join(EDIT_PATH[1]).replace(EDIT_SIG[0], EDIT_SIG[1]).replace(EDIT_LOC[0], EDIT_LOC[1]);
 }

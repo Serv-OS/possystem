@@ -1,11 +1,14 @@
 /**
  * stock/purchasingWords.js: the words and pills of the multi site Purchasing screens (multi site
  * stock Drop 3, v5.11.96, contract 4.1 and 4.2). Pure: the only import is the shared purchasing
- * rules (dayWords, moneyWords), so node --test drives every word here. Plain words, never a dash.
+ * rules (dayWords, moneyWords) and lib/currency.js, so node --test drives every word here. Plain words,
+ * never a dash. 5.12.57: every money word takes the symbol of the site shown; a missing one is the
+ * active venue's (currencySymbol()), never a typed pound sign.
  *
  * Pill tones are the stockUi Pill tones: good, neutral, warn, bad, blue.
  */
 import { dayWords, moneyWords } from './purchasingRules.js';
+import { currencySymbol } from '../currency.js';
 
 const pill = (text, tone) => Object.freeze({ text, tone });
 
@@ -68,7 +71,7 @@ export const PILLS = Object.freeze({
   ourKitchen: pill('Our kitchen', 'blue'),
   partReceived: pill('Part received', 'warn'),
 });
-export const needsApprovalPill = (limit, symbol = '£') => pill(`Needs approval: over ${moneyWords(limit, symbol)}`, 'warn');
+export const needsApprovalPill = (limit, symbol = currencySymbol()) => pill(`Needs approval: over ${moneyWords(limit, symbol)}`, 'warn');
 
 /** 'Standing order 6 a day' (every day of the week) or 'Standing order 6'. */
 export function standingPillWords(qty, everyDay = false) {
@@ -99,9 +102,9 @@ export function standingRowWords({ siteName = '', lines = [], dows = [], held = 
 
 /**
  * The Order pad's budget card (4.2): null when there is no budget (the card is not drawn).
- * { title, rule, right, over }: '£2,140 spent + £320 basket of £2,600'.
+ * { title, rule, right, over }: '$2,140 spent + $320 basket of $2,600' (in the site's symbol).
  */
-export function budgetWords(budget, basketTotal = 0, symbol = '£') {
+export function budgetWords(budget, basketTotal = 0, symbol = currencySymbol()) {
   if (!budget || budget.budget === null || budget.budget === undefined) return null;
   const spent = Number(budget.spent) || 0;
   const basket = Number(basketTotal) || 0;
@@ -148,7 +151,7 @@ export function pctWords(pct) {
 export const priceRose = (pct) => Number(pct) > 5;
 
 /** The split total check (stock_invoice_split's words): ok within 1p. */
-export function splitCheck(splits, total, symbol = '£') {
+export function splitCheck(splits, total, symbol = currencySymbol()) {
   const sum = Math.round((splits || []).reduce((s, x) => s + (Number(x.amount) || 0), 0) * 100) / 100;
   const t = Math.round((Number(total) || 0) * 100) / 100;
   const ok = Math.round(Math.abs(sum - t) * 100) <= 1;
@@ -188,7 +191,8 @@ export const PAD_WORDS = Object.freeze({
   saveAsList: 'Save this basket as a list',
   repeatLast: 'Repeat last order',
 });
-export const HEADERS_MULTI_OF = (deliveryDow) => ['Item', 'On hand', 'Forecast use', `Par (${deliveryDow == null ? 'next' : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][deliveryDow]})`, 'Suggested', 'Order', 'Supplier', 'Line £ (ex VAT)'];
+// 5.12.57: the money heading is in the site's own symbol ('Line $ (ex VAT)' at a US site).
+export const HEADERS_MULTI_OF = (deliveryDow, symbol = currencySymbol()) => ['Item', 'On hand', 'Forecast use', `Par (${deliveryDow == null ? 'next' : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][deliveryDow]})`, 'Suggested', 'Order', 'Supplier', `Line ${symbol} (ex VAT)`];
 export const noRulesWords = (supplier) => `No delivery days set for ${supplier || 'this supplier'}.`;
 export const sendBackToast = (name) => `Sent back to ${name || 'the person who raised it'} to change.`;
 export const manyOrdersWords = (orders, suppliers) => `${orders} order${orders === 1 ? '' : 's'} to ${suppliers} supplier${suppliers === 1 ? '' : 's'}`;

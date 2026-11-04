@@ -62,8 +62,21 @@ export function dayShort(v) {
   return `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 }
 
-/** '£1,234.50' (or the venue's symbol from payload.currency_symbol); '' for no number. */
-export function moneyWords(v, symbol = '£') {
+// 5.12.57: the money in an alert is in the row's own currency (a league row's currency, else the
+// payload's currency or currency_symbol), never a typed pound sign. A row that names no currency at all
+// gets the house default, the database's own rule (coalesce(currency, 'GBP')).
+const SYMBOLS = Object.freeze({ GBP: '£', USD: '$', EUR: '€' });
+/** 'USD' -> '$'; an unknown code reads as itself ('CAD '); none -> the house default. */
+export function symbolOfCurrency(code) {
+  const c = String(code ?? '').trim().toUpperCase();
+  if (!c) return SYMBOLS.GBP;
+  return SYMBOLS[c] || `${c} `;
+}
+/** The symbol a payload (or a league row) carries: its currency code, else its currency_symbol. */
+const symbolOfRow = (r, fallback = null) => (r && r.currency ? symbolOfCurrency(r.currency) : (r && r.currency_symbol) || fallback || symbolOfCurrency(null));
+
+/** '$1,234.50' in the symbol given (the house default when none); '' for no number. */
+export function moneyWords(v, symbol = symbolOfCurrency(null)) {
   const n = Number(v);
   if (v == null || v === '' || !Number.isFinite(n)) return '';
   const whole = Math.abs(n % 1) < 0.005;
@@ -80,7 +93,7 @@ const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
 export function wordsOf(kind, payload = {}) {
   const p = payload || {};
   if (p.title) return { title: clean(p.title), body: clean(p.body || '') };
-  const sym = p.currency_symbol || '£';
+  const sym = symbolOfRow(p);
   const site = clean(p.site_name || p.site || 'A site');
   const sup = clean(p.supplier_name || p.supplier || 'the supplier');
   const amount = moneyWords(p.amount, sym);
@@ -359,8 +372,10 @@ const pctWords = (v) => { const n = num(v); return n == null ? '' : `${Math.roun
  */
 export function weeklyEmail({ payload = {}, league = null, origin = null } = {}) {
   const p = payload || {};
-  const sym = p.currency_symbol || '£';
-  const money = (v) => (num(v) == null ? '' : moneyWords(Math.round(num(v) * 100) / 100, sym));
+  // 5.12.57: each row in its own currency (a company email over a UK and a US site used the first
+  // site's symbol for every row); the payload's symbol only for a row with no currency.
+  const sym = symbolOfRow({ currency: p.currency, currency_symbol: p.currency_symbol });
+  const moneyIn = (r) => (v) => (num(v) == null ? '' : moneyWords(Math.round(num(v) * 100) / 100, symbolOfRow(r, sym)));
   const countIn = p.count_in && typeof p.count_in === 'object' ? p.count_in : {};
   const siteRow = p.location_id ? String(p.location_id) : null;
   const ws = dayShort(p.week_start);
@@ -375,13 +390,13 @@ export function weeklyEmail({ payload = {}, league = null, origin = null } = {})
     if (Object.prototype.hasOwnProperty.call(countIn, id) && countIn[id] === false) return 'Count not in';
     return clean(r.last_full_count_words || '') || 'Count in';
   };
-  const budgetWords = (r) => (num(r.budget) == null ? 'No budget' : `${money(r.budget_spent ?? r.purchases)} of ${money(r.budget)}`);
-  const line = (r, isCompany = false) => `<tr>${[
+  const budgetWords = (r) => { const money = moneyIn(r); return num(r.budget) == null ? 'No budget' : `${money(r.budget_spent ?? r.purchases)} of ${money(r.budget)}`; };
+  const line = (r, isCompany = false) => { const money = moneyIn(r); return `<tr>${[
     td(isCompany ? `Company${r.currency ? ` (${r.currency})` : ''}` : clean(r.site || ''), isCompany),
     td(money(r.sales_net)), td(pctWords(r.gp_pct_theo)), td(pctWords(r.gp_pct_actual)), td(pctWords(r.gap_pct)), td(pctWords(r.waste_pct)),
     td(money(r.purchases)), td(isCompany ? (num(r.budget) == null ? '' : budgetWords(r)) : budgetWords(r)), td(money(r.stock_value_now)),
     td(isCompany ? '' : countWords(r)),
-  ].join('')}</tr>`;
+  ].join('')}</tr>`; };
   const head = `<tr>${['Site', 'Sales', 'GP % theo', 'GP % actual', 'Gap %', 'Waste %', 'Purchases', 'Budget', 'Stock value', 'Count'].map(th).join('')}</tr>`;
   const body = rows.length
     ? `<table style="border-collapse:collapse;width:100%">${head}${rows.map((r) => line(r)).join('')}${company.map((r) => line(r, true)).join('')}</table>`

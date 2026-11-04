@@ -10,7 +10,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../../lib/supabase';
-import { money } from '../../../../lib/currency';
+import { money, currencySymbol } from '../../../../lib/currency';
 import { fetchSuppliers, upsertSupplier, setSupplierArchived } from '../../../../lib/stock/data';
 import { reportSave } from '../../../../lib/saveHealth';
 import { PageHeader, SearchField } from '../../reports/reportKit';
@@ -104,7 +104,8 @@ export default function SuppliersSplit({ siteId = null } = {}) {
               <div><label style={lbl}>Email</label><input value={draft.email || ''} onChange={e => upd('email', e.target.value)} style={field} placeholder="orders@supplier.co.uk" /></div>
               <div><label style={lbl}>Phone</label><input value={draft.phone || ''} onChange={e => upd('phone', e.target.value)} style={field} /></div>
               <div><label style={lbl}>Payment terms (days)</label><input type="number" min="0" value={draft.paymentTermsDays ?? ''} onChange={e => upd('paymentTermsDays', e.target.value)} style={field} /></div>
-              <div><label style={lbl}>Min order value</label><input type="number" min="0" step="any" value={draft.minOrderValue ?? ''} onChange={e => upd('minOrderValue', e.target.value)} style={field} placeholder="£" /></div>
+              {/* 5.12.57: the venue's own symbol, never a typed pound sign. */}
+              <div><label style={lbl}>Min order value</label><input type="number" min="0" step="any" value={draft.minOrderValue ?? ''} onChange={e => upd('minOrderValue', e.target.value)} style={field} placeholder={currencySymbol()} /></div>
               <div><label style={lbl}>Cut-off time</label><input value={draft.cutoffTime || ''} onChange={e => upd('cutoffTime', e.target.value)} style={field} placeholder="e.g. 16:00" /></div>
             </div>
             <div style={{ marginTop: 14 }}>

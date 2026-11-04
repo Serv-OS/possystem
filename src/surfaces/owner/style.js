@@ -1,8 +1,12 @@
 // src/surfaces/owner/style.js: the money format and the styles the Owner app's screens share.
 
+import { currencyConfig } from '../../lib/currency.js';
+
+// 5.12.57: formatted in the currency's own locale, so a US venue reads "$1,234" (en-GB printed
+// "US$1,234") and a UK one still reads "£1,234". The fallback is the currency's own symbol.
 export const money = (n, currency = 'GBP', dp = 0) => {
-  try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
-  catch { return `£${(Number(n) || 0).toFixed(dp)}`; }
+  try { return new Intl.NumberFormat(currencyConfig(currency).locale, { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
+  catch { return `${currencyConfig(currency).symbol}${(Number(n) || 0).toFixed(dp)}`; }
 };
 
 /** The colour of a comparison line: green up, red down, grey when there is no percent. */

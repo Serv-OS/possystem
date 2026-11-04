@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../../../store';
 import { supabase } from '../../../lib/supabase';
 import { useStockScope } from '../../StockScope';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { dayWords, moneyWords } from '../../../lib/stock/purchasingRules';
 import { orderStatusPill, approvalPill, sendBackToast, atWords, PILLS } from '../../../lib/stock/purchasingWords';
@@ -15,6 +16,8 @@ import { sendOrderEmail } from './orderActions';
 
 export default function OrderDetailPane({ order, onChanged, onClose = null, tz = null }) {
   const sc = useStockScope();
+  // 5.12.57: the order's own site currency, not the signed in venue's.
+  const { symbol } = useSiteMoney(order?.location_id || null);
   const showToast = useStore((s) => s.showToast);
   const [lines, setLines] = useState(null);
   const [error, setError] = useState(null);
@@ -89,15 +92,15 @@ export default function OrderDetailPane({ order, onChanged, onClose = null, tz =
                 <Td>{l.description}</Td>
                 <Td num>{Number(l.qty_packs)}</Td>
                 <Td num grey>{Number(l.qty_received) || ''}</Td>
-                <Td num>{moneyWords(l.unit_price)}</Td>
-                <Td num>{moneyWords((Number(l.qty_packs) || 0) * (Number(l.unit_price) || 0))}</Td>
+                <Td num>{moneyWords(l.unit_price, symbol)}</Td>
+                <Td num>{moneyWords((Number(l.qty_packs) || 0) * (Number(l.unit_price) || 0), symbol)}</Td>
               </tr>
             ))}
           </tbody>
         </TableWrap>
       )}
       <div style={{ marginTop: 10, fontSize: 13, textAlign: 'right' }}>
-        Goods {moneyWords(order.subtotal)}{Number(order.delivery_fee) > 0 ? ` + delivery ${moneyWords(order.delivery_fee)}` : ''} = <b>{moneyWords(total)}</b> ex VAT
+        Goods {moneyWords(order.subtotal, symbol)}{Number(order.delivery_fee) > 0 ? ` + delivery ${moneyWords(order.delivery_fee, symbol)}` : ''} = <b>{moneyWords(total, symbol)}</b> ex VAT
       </div>
     </Sheet>
   );

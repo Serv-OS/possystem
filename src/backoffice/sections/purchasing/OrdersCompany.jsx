@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { useSiteSymbolOf } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { listSites } from '../../../lib/stock/supplierListRules';
 import { dayWords, moneyWords } from '../../../lib/stock/purchasingRules';
@@ -20,6 +21,8 @@ const STATUSES = [{ value: 'all', label: 'All' }, { value: 'DRAFT', label: 'Draf
 export default function OrdersCompany({ orgCtx = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: each order in its own site's currency, not the signed in venue's.
+  const symbolOf = useSiteSymbolOf();
   void orgCtx; // the contract's prop; the list needs only the scope
   const [status, setStatus] = useState('all');
   const [search, setSearch] = useState('');
@@ -59,7 +62,7 @@ export default function OrdersCompany({ orgCtx = null }) {
         <Td grey>{r.reference || ''}</Td>
         <Td><Pill tone={st.tone}>{st.text}</Pill>{ap && <> <Pill tone={ap.tone}>{ap.text}</Pill></>}</Td>
         <Td grey>{wait && r.approval.order_by_at ? `Order by ${atWords(r.approval.order_by_at, zones[r.location_id])}` : r.expected_date ? dayWords(String(r.expected_date).slice(0, 10)) : ''}</Td>
-        <Td num>{moneyWords((Number(r.subtotal) || 0) + (Number(r.delivery_fee) || 0))}</Td>
+        <Td num>{moneyWords((Number(r.subtotal) || 0) + (Number(r.delivery_fee) || 0), symbolOf(r.location_id, r.currency))}</Td>
         <Td right>
           {wait && (
             <span style={{ display: 'inline-flex', gap: 6 }} onClick={(e) => e.stopPropagation()}>

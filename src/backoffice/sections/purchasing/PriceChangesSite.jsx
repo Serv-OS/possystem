@@ -18,7 +18,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { getActiveLocationSync, getLocationId, supabase, isMock } from '../../../lib/supabase';
 import { getLocationConfig } from '../../../lib/locationTime';
 import { fmtVenueDate } from '../../../lib/venueDate';
-import { money } from '../../../lib/currency';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { fetchInventoryItems } from '../../../lib/stock/data';
 import { readAllPagesResult, faultText } from '../../../lib/pagedRead';
 import { PageHeader, Tag } from '../reports/reportKit';
@@ -35,6 +35,8 @@ const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function PriceChangesSite({ siteId = null } = {}) {
   const { openReport, canOpenReports } = useStockScope();
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import.
+  const { money } = useSiteMoney(siteId);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [rows, setRows] = useState(null);
   const [items, setItems] = useState([]);

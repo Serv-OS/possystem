@@ -22,6 +22,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { giftReference } from '../_shared/giftAdyenRules.js';
+import { giftChargeCurrency } from '../_shared/giftCurrency.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -57,7 +58,7 @@ Deno.serve(async (req) => {
   if (!company_id) return json({ error: 'company_id required' }, 400);
   if (!location_id) return json({ error: 'location_id required' }, 400);
   if (!amount_minor || Number(amount_minor) < 500)
-    return json({ error: 'amount_minor must be at least 500 (£5.00)' }, 400);
+    return json({ error: 'amount_minor must be at least 500 (5.00 in the venue\'s money)' }, 400);
   if (!sender_name || !sender_email)
     return json({ error: 'sender_name and sender_email required' }, 400);
   if (!recipient_name || !recipient_email)
@@ -93,12 +94,15 @@ Deno.serve(async (req) => {
   if (!maa?.merchant_account || maa.receive_payments_ok === false) {
     return json({ error: 'Payments not configured for this venue' }, 400);
   }
+  // 5.12.57: charged in the selling venue's own currency (_shared/giftCurrency.js), never a GBP default.
+  const { data: venueRow } = await platformAdmin.from('locations').select('currency').eq('id', location_id).maybeSingle();
+  const chargeCurrency = giftChargeCurrency({ venueCurrency: venueRow?.currency, configCurrency: config.currency });
 
   const { data: aPurchase, error: aErr } = await platformAdmin
     .from('gift_card_purchases')
     .insert({
       company_id, location_id, amount_minor: amt,
-      currency: config.currency || 'gbp',
+      currency: chargeCurrency,
       sender_name, sender_email, sender_phone: sender_phone || null,
       recipient_name, recipient_email, message: message || null,
       delivery_type, status: 'pending', processor: 'adyen',
@@ -117,7 +121,7 @@ Deno.serve(async (req) => {
     purchase_id: aPurchase.id,
     reference: giftReference(aPurchase.id),
     location_id,
-    currency: config.currency || 'gbp',
+    currency: chargeCurrency,
     amount_minor: amt,
   });
 });

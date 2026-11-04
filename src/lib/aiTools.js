@@ -339,7 +339,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([hour, d]) => ({ hour, checks: d.checks, covers: d.covers, revenue: `${money(d.revenue)}` }));
       const peak = hours.length ? hours.reduce((a, b) => parseFloat(b.revenue.slice(1)) > parseFloat(a.revenue.slice(1)) ? b : a) : null;
-      return { result: { hours, peak_hour: peak?.hour || 'n/a', peak_revenue: peak?.revenue || '£0.00' } };
+      return { result: { hours, peak_hour: peak?.hour || 'n/a', peak_revenue: peak?.revenue || money(0) } };
     }
 
     case 'get_payment_breakdown': {
@@ -459,7 +459,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           closed_checks: checks.length,
           revenue: `${money(revenue)}`,
           covers_done: covers,
-          avg_check: checks.length ? `${money((revenue/checks.length))}` : '£0.00',
+          avg_check: checks.length ? `${money((revenue/checks.length))}` : money(0),
           open_tables: occupied,
           revenue_on_floor: `${money(onFloor)}`,
           top_item_today: topItem ? `${topItem[0]} (${topItem[1]} sold)` : 'none',

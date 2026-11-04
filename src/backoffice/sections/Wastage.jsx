@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
-import { money } from '../../lib/currency';
+import { useSiteMoney } from './stock/useSiteCurrency';
 import { fmtVenueDateTime, daysAgoYmd, venueRangeIso } from '../../lib/venueDate';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
 import { fetchInventoryItems } from '../../lib/stock/data';
@@ -32,6 +32,8 @@ const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function Wastage({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import.
+  const { money } = useSiteMoney(siteId);
   const { openReport, canOpenReports } = useStockScope();
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [items, setItems] = useState([]);

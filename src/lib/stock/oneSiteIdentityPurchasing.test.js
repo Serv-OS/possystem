@@ -23,6 +23,7 @@ import { createRequire, registerHooks } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const SRC = new URL('../../', import.meta.url);
 const at = (p) => new URL(p, SRC);
@@ -66,8 +67,10 @@ const RESTORE = [
   ["          title={multi ? `Order pad · ${siteName(locId)}` : 'Order pad'}", '          title="Order pad"'],
 ];
 
+// 5.12.57: the site money edits are put back first (fixtures/siteMoneyEdits.js): for a one site company
+// the site's currency is the signed in venue's, so they change nothing it sees.
 function padMainText(text) {
-  const lines = fromFirstImport(text).split('\n').filter((l) => !l.includes(MARK));
+  const lines = fromFirstImport(undoSiteMoney(PAD, text)).split('\n').filter((l) => !l.includes(MARK));
   let body = lines.join('\n');
   for (const [now, was] of RESTORE) {
     assert.equal(count(body, `${now}\n`), 1, `the changed line appears once: ${now.slice(0, 80)}`);
@@ -112,8 +115,8 @@ function undoPaths(text) {
     return m;
   });
 }
-function undo(text, edits) {
-  let body = fromFirstImport(text);
+function undo(text, edits, file = null) {
+  let body = fromFirstImport(file ? undoSiteMoney(file, text) : text);
   for (const e of edits) {
     assert.equal(count(body, e.moved), e.times ?? 1, `${e.moved.trim().slice(0, 80)} appears ${e.times ?? 1} time(s)`);
     body = body.split(e.moved).join(e.was);
@@ -141,10 +144,10 @@ const PC_EDITS = [
 ];
 
 test('PurchaseOrdersSite is main\'s PurchaseOrders.jsx moved whole: undo the five edits and the sha256 is main\'s', () => {
-  assert.equal(sha(undo(read(PO_SITE), PO_EDITS)), PIN.po);
+  assert.equal(sha(undo(read(PO_SITE), PO_EDITS, PO_SITE)), PIN.po);
 });
-test('InvoicesSite is main\'s Invoices.jsx moved whole', () => { assert.equal(sha(undo(read(INV_SITE), INV_EDITS)), PIN.inv); });
-test('PriceChangesSite is main\'s PriceChanges.jsx moved whole', () => { assert.equal(sha(undo(read(PC_SITE), PC_EDITS)), PIN.pc); });
+test('InvoicesSite is main\'s Invoices.jsx moved whole', () => { assert.equal(sha(undo(read(INV_SITE), INV_EDITS, INV_SITE)), PIN.inv); });
+test('PriceChangesSite is main\'s PriceChanges.jsx moved whole', () => { assert.equal(sha(undo(read(PC_SITE), PC_EDITS, PC_SITE)), PIN.pc); });
 
 test('the moved files change no other path, and their new top comments have no long dash', () => {
   for (const f of [PO_SITE, INV_SITE, PC_SITE]) {
@@ -260,9 +263,9 @@ const PAD_SNAPSHOT = '<div style="padding:26px;color:var(--t3)">Loading…</div>
 test('rendered: the Order pad, the moved screens and the routers give main\'s HTML for a one site company', { skip: transformSync ? false : 'rolldown is not installed here (the sha256 proofs above still hold)' }, async () => {
   globalThis.__h = createElement;
   VIRTUAL.set(MAIN_URLS.pad, padMainText(read(PAD)));
-  VIRTUAL.set(MAIN_URLS.po, undo(read(PO_SITE), PO_EDITS));
-  VIRTUAL.set(MAIN_URLS.inv, undo(read(INV_SITE), INV_EDITS));
-  VIRTUAL.set(MAIN_URLS.pc, undo(read(PC_SITE), PC_EDITS));
+  VIRTUAL.set(MAIN_URLS.po, undo(read(PO_SITE), PO_EDITS, PO_SITE));
+  VIRTUAL.set(MAIN_URLS.inv, undo(read(INV_SITE), INV_EDITS, INV_SITE));
+  VIRTUAL.set(MAIN_URLS.pc, undo(read(PC_SITE), PC_EDITS, PC_SITE));
   const MainPad = (await import(MAIN_URLS.pad)).default;
   const Pad = (await import(PAD.href)).default;
   const today = html(MainPad, {});

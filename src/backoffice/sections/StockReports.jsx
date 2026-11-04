@@ -18,7 +18,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
-import { money, currencySymbol, signedMoney } from '../../lib/currency';
+import { currencySymbol } from '../../lib/currency';
 import { daysAgoYmd, venueRangeIso, fmtVenueDateTime } from '../../lib/venueDate';
 import { lineValue, negativeStock } from '../../lib/stock/valuation';
 import { toCsv, downloadCsv } from './reports/_csv';
@@ -35,14 +35,18 @@ import { areasReady, fetchAreas, fetchAreaHoldings } from '../../lib/stock/areas
 import { stockByAreaRows } from '../../lib/stock/areaRules';
 import { resolveTaxRate, netOf } from '../../lib/tax';
 import { useSiteStockContext } from '../../lib/stock/siteContext';
+import { useSiteMoney, useSiteMoneyHere, SiteCurrencyContext } from './stock/useSiteCurrency';
+import { Money } from './stock/SiteMoney';
 import {
-  Money, Signed, Tag, BarCell, RankChip, GradedChip, gradeOf,
+  Signed, Tag, BarCell, RankChip, GradedChip, gradeOf,
   KpiBand, Callout, Chips, SegToggle, SearchField, PeriodControl, Tabs,
   ReportTable, SubToolbar, useSort, sortRows,
 } from './reports/reportKit';
 
 const TABS = ['Valuation', 'By area', 'Recipe GP', 'Production', 'Movements', 'The Gap', 'By supplier'];
-const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
+// 5.12.57: every figure is in the report's site currency (SiteCurrencyContext), not the signed in
+// venue's: a US site picked while signed in at a UK site read in pounds. cur is that currency.
+const fmtCost = (v, cur = null) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol(cur) + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
 // v5.11.65: The Gap's "Received" is deliveries only; what the kitchen MADE has its own column,
 // and an opening balance or a return is neither (they used to read as goods received).
@@ -66,6 +70,7 @@ function ExportBtn({ rows, headers, name }) {
 // company). Another site's menu and tax rates are that site's own (siteContext.js), never the store's.
 export default function StockReports({ siteId = null } = {}) {
   const { menuItems, taxRates } = useSiteStockContext(siteId);
+  const { code: cur } = useSiteMoney(siteId);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [tab, setTab] = useState('Valuation');
   const [items, setItems] = useState([]);
@@ -182,6 +187,7 @@ export default function StockReports({ siteId = null } = {}) {
   const rangeBad  = RANGED.has(tab) && !rangeLoad && !!rangeFault;
 
   return (
+    <SiteCurrencyContext.Provider value={cur}>
     <div style={{ height:'100%', overflowY:'auto', padding:'22px 26px' }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:16, flexWrap:'wrap', marginBottom:16 }}>
         <div style={{ flex:1, minWidth:240 }}>
@@ -215,11 +221,13 @@ export default function StockReports({ siteId = null } = {}) {
           menuItems={menuItems} taxRates={taxRates} checks={checks} periodLabel={periodLabel}/>
       )}
     </div>
+    </SiteCurrencyContext.Provider>
   );
 }
 
 /* ── 1. Valuation ───────────────────────────────────────────────────────────*/
 function Valuation({ items, supplierName }) {
+  const { money, signedMoney, code: cur } = useSiteMoneyHere();
   const [search, setSearch] = useState('');
   const [stock, setStock] = useState('all');
   const [view, setView] = useState('flat');
@@ -273,7 +281,7 @@ function Valuation({ items, supplierName }) {
         { _group:true, label:g.label, meta:`${g.rs.length} item${g.rs.length===1?'':'s'}`, value: money(g.subtotal) },
         ...g.rs,
       ]);
-  }, [sorted, view]);
+  }, [sorted, view, money]);
 
   const columns = [
     { key:'name', label:'Item', sortable:true, render:r => <span style={{ color:'var(--t1)', fontWeight:500 }}>{r.name}</span> },
@@ -282,7 +290,7 @@ function Valuation({ items, supplierName }) {
         : <span style={{ color:'var(--t4)' }}>—</span> },
     { key:'category', label:'Category', render:r => r.category ? <Tag label={r.category}/> : <span style={{ color:'var(--t4)' }}>—</span> },
     { key:'onHand', label:'On hand', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color: r.onHandRaw>0?'var(--t2)':'var(--t4)' }}>{r.onHand} {r.unit}</span> },
-    { key:'cost', label:'Unit cost', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color:'var(--t3)' }}>{fmtCost(r.cost)}</span> },
+    { key:'cost', label:'Unit cost', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color:'var(--t3)' }}>{fmtCost(r.cost, cur)}</span> },
     { key:'value', label:'Value', align:'right', sortable:true, width:150, render:r => r.onHandRaw < 0
         ? <span style={{ display:'inline-flex', alignItems:'center', gap:6, justifyContent:'flex-end' }} title="Stock below zero is valued at nothing. This is what it would have taken off the total.">
             <Tag label="negative stock" tone="bad"/><span style={{ fontVariantNumeric:'tabular-nums', color:'var(--red)' }}>{signedMoney(r.negValue)}</span>
@@ -326,6 +334,7 @@ const plateCostOf = (pc, r, ctx) => {
   return pc.data.get(String(r.menuItemId)) ?? null;
 };
 function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null }) {
+  const { symbol } = useSiteMoneyHere();
   const [filter, setFilter] = useState('all');
   const [sort, onSort] = useSort('gpPct');
   const byId = useMemo(() => { const m = {}; menuItems.forEach(mi => { m[String(mi.id)] = mi; }); return m; }, [menuItems]);
@@ -402,7 +411,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null })
     { key:'price', label:'Price (ex VAT)', align:'right', sortable:true, render:r => <Money v={r.price}/> },
     { key:'cost',  label:'Plate cost', align:'right', sortable:true, render:r => <Money v={r.cost}/> },
     { key:'foodPct', label:'Food %', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color:'var(--t3)' }}>{r.foodPct == null ? '—' : `${r.foodPct}%`}</span> },
-    { key:'gp', label:'GP £', align:'right', sortable:true, render:r => <Money v={r.gp}/> },
+    { key:'gp', label:`GP ${symbol}`, align:'right', sortable:true, render:r => <Money v={r.gp}/> },
     { key:'gpPct', label:'GP %', align:'right', sortable:true, width:140, render:r => r.gpPct == null
         ? <span style={{ color:'var(--t4)' }}>—</span>
         : <BarCell v={r.gpPct} max={100} text={`${r.gpPct}%`} grade={gradeOf(r.gpPct)}/> },
@@ -424,7 +433,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null })
         <span style={{ marginLeft:'auto' }}/>
         <ExportBtn rows={csv} name="recipe-gp" headers={[
           {label:'Dish',key:'dish'},{label:'Price (ex VAT)',key:'price'},{label:'Plate cost',key:'cost'},
-          {label:'Food %',key:'foodPct'},{label:'GP £',key:'gp'},{label:'GP %',key:'gpPct'},{label:'GP target %',key:'target'}]}/>
+          {label:'Food %',key:'foodPct'},{label:`GP ${symbol}`,key:'gp'},{label:'GP %',key:'gpPct'},{label:'GP target %',key:'target'}]}/>
       </SubToolbar>
       <ReportTable columns={columns} rows={sorted} sort={sort} onSort={onSort} empty="No dish recipes yet."/>
     </div>
@@ -506,6 +515,7 @@ function ProductionReport({ itemName, venueTz, locId = null }) {
  * with the unit in every quantity cell. Not ranged: it is the stock now.
  */
 function ByArea({ items, byArea, onRefresh }) {
+  const { money } = useSiteMoneyHere();
   const [search, setSearch] = useState('');
   const [areaId, setAreaId] = useState('any');
   const [belowOnly, setBelowOnly] = useState(false);
@@ -567,6 +577,7 @@ function ByArea({ items, byArea, onRefresh }) {
 }
 
 function Movements({ moves, itemName, itemById = {}, venueTz = null }) {
+  const { signedMoney } = useSiteMoneyHere();
   const [search, setSearch] = useState('');
   const [type, setType] = useState('all');
   const [sort, onSort] = useSort('date');
@@ -630,6 +641,7 @@ function Movements({ moves, itemName, itemById = {}, venueTz = null }) {
 
 /* ── 4. The Gap ─────────────────────────────────────────────────────────────*/
 function TheGap({ moves, itemName, itemUnit }) {
+  const { signedMoney, symbol } = useSiteMoneyHere();
   const [sort, onSort] = useSort('varValue', 'asc');
   const base = useMemo(() => {
     const by = {};
@@ -664,7 +676,7 @@ function TheGap({ moves, itemName, itemUnit }) {
     { key:'made', label:'Made', align:'right', sortable:true, render:r => muted(r.made, r.unit) },
     { key:'waste', label:'Waste', align:'right', sortable:true, render:r => muted(r.waste, r.unit) },
     { key:'countQty', label:'Count adj', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color:'var(--t2)' }}>{r.countQty} {r.unit}</span> },
-    { key:'varValue', label:'Variance £', align:'right', sortable:true, render:r => <Money v={r.varValue} bold/> },
+    { key:'varValue', label:`Variance ${symbol}`, align:'right', sortable:true, render:r => <Money v={r.varValue} bold/> },
   ];
 
   return (
@@ -683,7 +695,7 @@ function TheGap({ moves, itemName, itemUnit }) {
         <span style={{ marginLeft:'auto' }}/>
         <ExportBtn rows={base} name="the-gap" headers={[
           {label:'Item',key:'item'},{label:'Sold/used',key:'used'},{label:'Received',key:'received'},{label:'Made',key:'made'},{label:'Unit',key:'unit'},
-          {label:'Waste',key:'waste'},{label:'Count adj qty',key:'countQty'},{label:'Variance £',key:'varValue'}]}/>
+          {label:'Waste',key:'waste'},{label:'Count adj qty',key:'countQty'},{label:`Variance ${symbol}`,key:'varValue'}]}/>
       </SubToolbar>
       <ReportTable columns={columns} rows={sorted} sort={sort} onSort={onSort}
         empty="No counted items in this period yet. Run a stock count (Inventory > Stock counts) to start measuring the gap."/>
@@ -699,6 +711,7 @@ function TheGap({ moves, itemName, itemUnit }) {
    nothing double-counted. Suppliers whose goods aren't sold directly (dairy into
    a prep, packaging) still surface via the dishes their inputs end up in.        */
 function BySupplier({ items, suppliers, recipes, ctx, menuItems, taxRates, checks, periodLabel }) {
+  const { money } = useSiteMoneyHere();
   const [sort, onSort] = useSort('gp');
   const byMenuId = useMemo(() => { const m = {}; menuItems.forEach(mi => { m[String(mi.id)] = mi; }); return m; }, [menuItems]);
   const supOfItem = useMemo(() => { const m = {}; items.forEach(i => { m[i.id] = resolveItemSupplierId(i); }); return m; }, [items]);

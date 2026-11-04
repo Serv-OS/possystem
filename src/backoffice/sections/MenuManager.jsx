@@ -53,7 +53,8 @@ import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
 import CategoryPhotoField from '../components/CategoryPhotoField';
 import { CATEGORY_PHOTO_COPY, categoryPhotoUrl } from '../../lib/categoryPhoto';
-import { money, getActiveCurrencyCode } from '../../lib/currency';
+// 5.12.57: price boxes show the venue's own symbol ($ for a US venue), never a typed pound.
+import { money, getActiveCurrencyCode, currencySymbol } from '../../lib/currency';
 import { orderOptionFlow } from '../../lib/optionFlow';
 // v5.5.813: recipe-derived cost + GP% on the Items list. Same engine + same
 // ex-VAT net-price basis as Inventory → Reports → Recipe GP, so the two screens
@@ -1654,7 +1655,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       </div>
                       <span style={{ fontSize:10, color:'var(--t4)' }}>size</span>
                       <div style={{ display:'flex', alignItems:'center', gap:2 }}>
-                        <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+                        <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                         <input type="number" step="0.01" min="0" {...selectOnFocus}
                           style={{ fontSize:12, fontWeight:700, color:catColor, background:'transparent', border:'none', outline:'none', width:55, fontFamily:'inherit', cursor:'text' }}
                           value={vp.base!==undefined?vp.base:''}
@@ -2963,7 +2964,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   <span style={lbl}>Base price</span>
                   <MsmLocked on={lockOn('pricing')} label="Price">
                   <div style={{ position:'relative' }}>
-                    <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:16, color:'var(--acc)', fontWeight:700 }}>£</span>
+                    <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:16, color:'var(--acc)', fontWeight:700 }}>{currencySymbol()}</span>
                     {/* Shows EMPTY once cleared, same rule as the Pricing tab used to have:
                         forcing a 0 back in put the next digit beside it (05). */}
                     <input type="number" step="0.01" min="0" {...selectOnFocus} aria-label="Base price"
@@ -3233,7 +3234,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       <div key={v.id} style={{ display:'grid', gridTemplateColumns:'1fr 90px 32px', gap:6, marginBottom:6, alignItems:'center' }}>
                         <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={v.menuName||v.name||''} onChange={e=>updVariant(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`Size ${vi+1}`}/>
                         <div style={{ position:'relative' }}>
-                          <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>£</span>
+                          <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                           <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                         </div>
                         <button onClick={()=>removeVariant(v.id)} style={{ width:32,height:34,borderRadius:7,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:15,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
@@ -3411,7 +3412,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab', textAlign:'center' }}>⠿</span>
                     <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={v.menuName||v.name||''} onChange={e=>updVariant(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`${item.variantLabel||'Size'} ${vi+1}`}/>
                     <div style={{ position:'relative' }}>
-                      <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>£</span>
+                      <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                       <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                     </div>
                     <button onClick={()=>removeVariant(v.id)} style={{ width:32, height:34, borderRadius:7, border:'1px solid var(--red-b)', background:'var(--red-d)', color:'var(--red)', cursor:'pointer', fontSize:15, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
@@ -3604,7 +3605,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   {hint && <span style={{ fontSize:9, color:'var(--t4)', fontWeight:400 }}>{hint}</span>}
                 </div>
                 <div style={{ position:'relative' }}>
-                  <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:13, color:'var(--t4)', fontWeight:700 }}>£</span>
+                  <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:13, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                   <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:26, fontSize:13, fontWeight:400, color:'var(--t1)' }} value={p[k]!==null&&p[k]!==undefined?p[k]:''} placeholder={(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
                   {p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
                 </div>
@@ -3735,7 +3736,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
           <div key={s.id} style={{ display:'grid', gridTemplateColumns:'1fr 90px 32px', gap:6, marginBottom:6, alignItems:'center' }}>
             <input value={s.name} onChange={e=>updateSize(s.id,{name:e.target.value})} style={{ ...inp, fontSize:12, fontWeight:600 }} placeholder={`Size ${i+1}`}/>
             <div style={{ position:'relative' }}>
-              <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+              <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
               <input type="number" step="0.01" min="0" {...selectOnFocus} value={s.basePrice||''} onChange={e=>updateSize(s.id,{basePrice:parseFloat(e.target.value)||0})} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} placeholder="0.00"/>
             </div>
             <button onClick={()=>removeSize(s.id)} style={{ width:32, height:34, borderRadius:7, border:'1px solid var(--red-b)', background:'var(--red-d)', color:'var(--red)', cursor:'pointer', fontSize:15, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
@@ -3745,7 +3746,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
         <div style={{ display:'grid', gridTemplateColumns:'1fr 90px auto', gap:6, marginTop:4 }}>
           <input value={newSizeName} onChange={e=>setNewSizeName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSize()} style={{ ...inp, fontSize:12 }} placeholder={'Size name e.g. Medium 11"'}/>
           <div style={{ position:'relative' }}>
-            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
             <input type="number" step="0.01" min="0" {...selectOnFocus} value={newSizePrice} onChange={e=>setNewSizePrice(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSize()} style={{ ...inp, paddingLeft:20, fontSize:12 }} placeholder="0.00"/>
           </div>
           <button onClick={addSize} disabled={!newSizeName.trim()} style={{ padding:'7px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700, opacity:newSizeName.trim()?1:.4 }}>+ Add</button>
@@ -4138,7 +4139,7 @@ function ModifiersTab() {
                   </div>
                   <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={opt.name} onChange={e=>updOpt(opt.id,{name:e.target.value})} placeholder="Option name"/>
                   <div style={{ position:'relative' }}>
-                    <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+                    <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                     {/* Database fence stage 1 (fix round 3, 19 Sep): min="0" is only a hint to
                         the spinner, so a typed minus sign saved a minus priced option in
                         silence. A minus price is a real setting (a venue may price "No cheese"
@@ -4149,7 +4150,7 @@ function ModifiersTab() {
                       onBlur={e=>{
                         const v = parseFloat(e.target.value) || 0;
                         if (v >= 0) return;
-                        const ok = window.confirm(`"${opt.name || 'This option'}" is priced £${v.toFixed(2)}. A minus price takes money OFF the bill every time a customer picks it. Is that what you want?`);
+                        const ok = window.confirm(`"${opt.name || 'This option'}" is priced ${money(v)}. A minus price takes money OFF the bill every time a customer picks it. Is that what you want?`);
                         if (!ok) updOpt(opt.id,{price:0});
                       }}/>
                   </div>

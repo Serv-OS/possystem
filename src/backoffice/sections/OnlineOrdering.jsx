@@ -22,6 +22,8 @@ import { patchBranding } from '../../lib/locationAdmin';
 import { COUNTER_PATH, COUNTER_DEFAULT_LABEL, COUNTER_LABEL_MAX, counterCollect, counterCollectPatch } from '../../lib/counterOrder';
 import { callGiftPublic } from '../../surfaces/gift/giftHelpers';
 import { Icon } from '../../components/ServOSIcons';
+// 5.12.57: the tab money labels use the venue's own symbol, never a typed pound.
+import { currencySymbol } from '../../lib/currency';
 
 // Icon sitting inline before button or line text.
 const IC_INLINE = { display:'inline-block', verticalAlign:'-2px', marginRight:6 };
@@ -795,11 +797,11 @@ function QrSettingsBlock({
           </div>
 
           <Field
-            label="Pre-authorisation hold (£)"
+            label={`Pre-authorisation hold (${currencySymbol()})`}
             type="number" min="0"
             value={tabPreAuth}
             onChange={v => setTabPreAuth(parseFloat(v) || 0)}
-            help="Amount held on the card when the tab opens. Higher = covers more. Released or captured at close. Default £100."/>
+            help={`Amount held on the card when the tab opens. Higher = covers more. Released or captured at close. Default ${currencySymbol()}100.`}/>
 
           <div style={{ marginTop: 12 }}>
             <div style={S.label}>Customer warning message</div>
@@ -819,11 +821,11 @@ function QrSettingsBlock({
               onChange={v => setTabSurchargePct(parseFloat(v) || 0)}
               help="0 = none. Applied on top of the bill if force-closed."/>
             <Field
-              label="Left-open surcharge (£ flat)"
+              label={`Left-open surcharge (${currencySymbol()} flat)`}
               type="number" min="0"
               value={tabSurchargeFixed}
               onChange={v => setTabSurchargeFixed(parseFloat(v) || 0)}
-              help="Fixed-£ alternative or in addition to %."/>
+              help={`Fixed-${currencySymbol()} alternative or in addition to %.`}/>
           </div>
 
           <div style={{ marginTop: 12 }}>

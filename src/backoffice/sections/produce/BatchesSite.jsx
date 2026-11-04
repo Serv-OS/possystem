@@ -17,13 +17,14 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId , isMock, supabase } from '../../../lib/supabase';
 import { getLocationConfig, buildScheduleCtx } from '../../../lib/locationTime';
-import { money, currencySymbol } from '../../../lib/currency';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { fmtVenueDate, fmtVenueDateTime, fmtYmd } from '../../../lib/venueDate';
 import { buildCostingCtx } from '../../../lib/stock/recipes';
 import { fetchRecipes } from '../../../lib/stock/recipes';
 import { fetchInventoryItems, fetchUsageByWeekday } from '../../../lib/stock/data';
 import { planBatch, produceBatch, fetchBatches , ensureTodaysPlannedBatches, completePlannedBatch } from '../../../lib/stock/production';
-import { PageHeader, PrimaryBtn, ReportTable, Money, Tag } from '../reports/reportKit';
+import { PageHeader, PrimaryBtn, ReportTable, Tag } from '../reports/reportKit';
+import { Money } from '../stock/SiteMoney';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -32,6 +33,8 @@ const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)
 // site company). All three reads and every production call name it, so a batch completed with the
 // picker on another site is found and posted THERE (completePlannedBatch read the signed in venue).
 export default function BatchesSite({ siteId = null } = {}) {
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the imports.
+  const { money, currencySymbol, code: cur } = useSiteMoney(siteId);
   // v5.5.931 — "needed today" suggestion inputs
   const [needed, setNeeded] = useState([]);
   const [queueTab, setQueueTab] = useState('todo');   // todo | done | all
@@ -162,12 +165,12 @@ export default function BatchesSite({ siteId = null } = {}) {
         return <span style={{ color: variance ? 'var(--red)' : 'var(--t3)' }}>{b.plannedQty != null ? `${b.plannedQty} ${b.outputUnit}` : '—'}</span>;
       },
     },
-    { key: 'cost', label: 'Cost', align: 'right', render: b => <Money v={b.actualCost} /> },
+    { key: 'cost', label: 'Cost', align: 'right', render: b => <Money v={b.actualCost} code={cur} /> },
     { key: 'unitCost', label: 'Unit cost', align: 'right', render: b => <span style={{ color: 'var(--t3)' }}>{b.outputUnitCost == null ? '—' : currencySymbol() + Number(b.outputUnitCost).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}</span> },
     { key: 'lot', label: 'Lot', render: b => <span style={{ color: 'var(--t3)' }}>{b.lotCode || ''}</span> },
     { key: 'expiry', label: 'Use-by', render: b => <span style={{ color: 'var(--t3)' }}>{b.expiryAt ? fmtYmd(String(b.expiryAt).slice(0, 10)) : ''}</span> },
     { key: 'status', label: 'Status', render: b => (b.status ? <Tag label={b.status} tone={b.status === 'COMPLETED' ? 'good' : 'neutral'} /> : null) },
-  ], [itemName, venueTz]);
+  ], [itemName, venueTz, cur, currencySymbol]);
 
   const produce = async () => {
     if (!recipe) { showToast?.('Pick a recipe', 'error'); return; }

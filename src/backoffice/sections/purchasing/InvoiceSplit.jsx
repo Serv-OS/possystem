@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { moneyWords } from '../../../lib/stock/purchasingRules';
 import { splitCheck } from '../../../lib/stock/purchasingWords';
@@ -14,6 +15,8 @@ import { Modal, Btn, TableWrap, Th, Td, ErrorLine, ui } from '../stock/stockUi';
 export default function InvoiceSplit({ invoice, onDone, onClose }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: the invoice's own site currency, not the signed in venue's.
+  const { symbol } = useSiteMoney(invoice?.location_id || null);
   const [rows, setRows] = useState([]);   // [{ location_id, amount, tax, basis, note }]
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -28,7 +31,7 @@ export default function InvoiceSplit({ invoice, onDone, onClose }) {
     });
     return () => { on = false; };
   }, [invoice.id, invoice.location_id, invoice.total]);
-  const check = useMemo(() => splitCheck(rows, invoice.total), [rows, invoice.total]);
+  const check = useMemo(() => splitCheck(rows, invoice.total, symbol), [rows, invoice.total, symbol]);
   const setRow = (i, k, v) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
   const addSite = () => setRows((rs) => [...rs, { location_id: '', amount: '', tax: '0', basis: 'by_hand', po_id: null, note: '' }]);
   const evenly = () => {
@@ -47,9 +50,9 @@ export default function InvoiceSplit({ invoice, onDone, onClose }) {
     onDone?.();
   };
   return (
-    <Modal title="Split by site" sub={`Invoice ${invoice.invoice_number || ''} from ${invoice.supplier_name || 'the supplier'}: ${moneyWords(invoice.total)}`} onClose={onClose} width={680}
+    <Modal title="Split by site" sub={`Invoice ${invoice.invoice_number || ''} from ${invoice.supplier_name || 'the supplier'}: ${moneyWords(invoice.total, symbol)}`} onClose={onClose} width={680}
       footer={<>
-        <span style={{ fontSize: 13, color: check.ok ? 'var(--t2)' : 'var(--red)' }}>{check.ok ? `Adds up to ${moneyWords(check.sum)}` : check.words}</span>
+        <span style={{ fontSize: 13, color: check.ok ? 'var(--t2)' : 'var(--red)' }}>{check.ok ? `Adds up to ${moneyWords(check.sum, symbol)}` : check.words}</span>
         <span style={{ marginLeft: 'auto' }} />
         <Btn onClick={onClose}>Cancel</Btn>
         <Btn kind="primary" disabled={busy || !check.ok} onClick={save}>{busy ? 'Saving…' : 'Save split'}</Btn>

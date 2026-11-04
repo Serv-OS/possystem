@@ -373,7 +373,8 @@ test('pin: the Manager app is on the business day, the P&L labour rule and the d
   assert.match(src, /in\('shift_date', bizDay === today \? \[today\] : \[bizDay, today\]\)/);
   // 5.12.24: a venue flagged is_demo keeps its demo history (it exists to show it); a real venue
   // leaves demo checks out by the one rule, exactly as before.
-  assert.match(src, /select\('timezone, name, is_demo'\)/);
+  // 5.12.57: the same read also brings the venue's own currency.
+  assert.match(src, /select\('timezone, name, is_demo, currency'\)/);
   assert.match(src, /const demoVenue = \(locRow as \{ is_demo\?: boolean \} \| null\)\?\.is_demo === true;/);
   assert.match(src, /const live = demoVenue \? \{ rows: checks, left: 0 \} : leaveOutDemo\(checks\);/);
   assert.match(src, /const older = demoVenue \? \{ rows: olderRefunds, left: 0 \} : leaveOutDemo\(olderRefunds\);/);

@@ -94,10 +94,13 @@ Deno.serve(async (req) => {
     // Venue metadata (timezone for "today", currency).
     const [{ data: vs }, { data: locRow }] = await Promise.all([
       sb.from('wf_venue_settings').select('currency, labour_target_pct').eq('location_id', loc).maybeSingle(),
-      sb.from('locations').select('timezone, name, is_demo').eq('id', loc).maybeSingle(),
+      sb.from('locations').select('timezone, name, is_demo, currency').eq('id', loc).maybeSingle(),
     ]);
     const tz = locRow?.timezone || 'Europe/London';
-    const currency = vs?.currency || 'GBP';
+    // 5.12.57: the venue's own currency (locations.currency, USD at Mozz). It was the Workforce settings
+    // column, which defaults to GBP, so a US venue's Manager app showed pounds, the UK date and number
+    // style and no US meal break rule. That column is only a fallback now.
+    const currency = String(locRow?.currency || vs?.currency || 'GBP').toUpperCase();
     const now = new Date();
     // The calendar date, for the kitchen blocks only (prep schedules and the close down list are
     // kept by calendar date).

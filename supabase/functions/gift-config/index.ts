@@ -17,6 +17,7 @@ import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation, generateHmacSecret,
 } from '../_shared/gift-card-utils.ts';
 import { requireStaff } from '../_shared/loyalty-utils.ts';
+import { companyGiftCurrency } from '../_shared/giftCurrency.js';
 
 // The per company HMAC secret gift codes are looked up with never leaves the server
 // (INVARIANTS: "Never log or expose these"). Back Office never read it.
@@ -82,9 +83,12 @@ Deno.serve(async (req) => {
       config.enabled = true;
     } else {
       const hmacSecret = generateHmacSecret();
+      // 5.12.57: start in the company's own currency (its venues'), not the column's 'gbp' default.
+      const { data: venueRows } = await platformAdmin.from('locations').select('currency').eq('company_id', companyId);
+      const startCurrency = companyGiftCurrency((venueRows ?? []).map((r: any) => r.currency));
       const { data: newConfig, error } = await platformAdmin
         .from('gift_brand_config')
-        .insert({ company_id: companyId, enabled: true, hmac_secret: hmacSecret })
+        .insert({ company_id: companyId, enabled: true, hmac_secret: hmacSecret, ...(startCurrency ? { currency: startCurrency } : {}) })
         .select('*')
         .single();
       if (error) return json({ error: error.message }, 500);

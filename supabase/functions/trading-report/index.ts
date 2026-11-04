@@ -136,7 +136,10 @@ Deno.serve(async (req) => {
   const cogsPct = Number(settings.cogs_pct ?? 0);
   const cogsBasis = String(settings.cogs_basis || 'estimate'); // 'estimate' (%) | 'recipe' (actual from stock ledger)
   const overhead = Number(settings.daily_overhead ?? 0);
-  const currency = vs?.currency || 'GBP';
+  // 5.12.57: the venue's own currency first (locations.currency); the Workforce settings column defaults
+  // to GBP, so a US venue's forecasts were saved as pounds. That column is only a fallback now.
+  const { data: curRow } = await opsAdmin.from('locations').select('currency').eq('id', ops).maybeSingle();
+  const currency = String(curRow?.currency || vs?.currency || 'GBP').toUpperCase();
 
   // org_id for FK-valid inserts: prefer the venue-settings row, else resolve from
   // the ops locations table (same source wfData uses). Needed when a venue has no

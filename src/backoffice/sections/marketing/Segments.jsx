@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { EmojiIcon } from '../../../components/ServOSIcons';
+import { currencySymbol } from '../../../lib/currency';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -32,7 +33,8 @@ const S = {
 };
 
 const FIELDS = [
-  { v: 'lifetime_revenue', l: 'Total spend (£)', t: 'num' },
+  // 5.12.57: read when shown, so it names the venue's own money ($ at a US venue).
+  { v: 'lifetime_revenue', get l() { return `Total spend (${currencySymbol()})`; }, t: 'num' },
   { v: 'visit_count', l: 'Number of visits', t: 'num' },
   { v: 'days_since_visit', l: 'Days since last visit', t: 'num' },
   { v: 'signed_up_days', l: 'Days since signup', t: 'num' },

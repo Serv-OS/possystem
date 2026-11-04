@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { money as venueMoneyText } from '../../../lib/currency';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -23,7 +24,8 @@ const S = {
   seg: { display: 'inline-flex', border: '1px solid var(--bdr2)', borderRadius: 8, overflow: 'hidden' },
   segBtn: (on) => ({ padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: 'none', background: on ? 'var(--acc)' : 'transparent', color: on ? '#0b0c10' : 'var(--t2)' }),
 };
-const money = (n) => `£${Number(n || 0).toFixed(2)}`;
+// 5.12.57: the venue's own money ($ at a US venue), never a typed pound. The CSV carries plain numbers.
+const money = (n) => venueMoneyText(n || 0);
 const pct = (n, d) => (d ? `${Math.round((n / d) * 100)}%` : '—');
 
 export default function MarketingReports() {

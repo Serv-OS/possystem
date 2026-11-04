@@ -30,7 +30,8 @@ const asCostingLine = (l) => ({ orderTypes: l?.order_types || null });
 
 const EMPTY = Object.freeze([]);
 
-export default function RecipeLinesEditor({ lines, onChange, disabled = false, recipeType = 'MENU', orderTypeView = 'all', onOrderTypeView, lineCosts = {}, itemPicker }) {
+// 5.12.57: currency is the costing site's (RecipeIngredientsTab works it out); none is the active venue's.
+export default function RecipeLinesEditor({ lines, onChange, disabled = false, recipeType = 'MENU', orderTypeView = 'all', onOrderTypeView, lineCosts = {}, itemPicker, currency = null }) {
   const list = useMemo(() => (Array.isArray(lines) ? lines : EMPTY), [lines]);
   const isDish = recipeType === 'MENU';
   const view = isDish ? (orderTypeView || 'all') : 'all';
@@ -66,7 +67,7 @@ export default function RecipeLinesEditor({ lines, onChange, disabled = false, r
               return (
                 <button key={ot} type="button" onClick={() => onOrderTypeView?.(ot)} style={otCard(view === ot)}>
                   <div style={otCardTop}>{ORDER_TYPE_LABELS[ot]}{extra ? ` · +${extra}` : ''}</div>
-                  <div style={otCardSub}>{c != null ? money(c) : (extra ? `${extra} of its own` : 'Shared lines only')}</div>
+                  <div style={otCardSub}>{c != null ? money(c, currency || undefined) : (extra ? `${extra} of its own` : 'Shared lines only')}</div>
                 </button>
               );
             })}
@@ -115,7 +116,7 @@ export default function RecipeLinesEditor({ lines, onChange, disabled = false, r
                 </label>
                 <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
                 <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: lc?.words ? 'var(--red)' : 'var(--t1)', fontVariantNumeric: 'tabular-nums' }}>
-                  {lc && lc.cost != null ? money(lc.cost) : (lc?.words ? 'none' : '')}
+                  {lc && lc.cost != null ? money(lc.cost, currency || undefined) : (lc?.words ? 'none' : '')}
                 </span>
                 <button type="button" onClick={() => remove(l.key)} disabled={disabled} aria-label={`Remove ${l.name || 'the line'}`}
                   style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: disabled ? 'default' : 'pointer', fontSize: 16, ...off(disabled) }}>x</button>

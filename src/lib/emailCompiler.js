@@ -6,6 +6,8 @@
 // Per-block styling: bgColor (section background), pad (padding px), align, textColor. Merge tags are
 // left intact for send-time rendering; a tiny client renderer powers the live preview.
 
+import { currencySymbol } from './currency';
+
 const esc = (s) => String(s == null ? '' : s);
 
 export const DEFAULT_SETTINGS = {
@@ -80,7 +82,9 @@ export function renderMergePreview(tpl, ctx) {
   });
 }
 
-export const SAMPLE_MERGE = { first_name: 'Sam', last_name: 'Patel', name: 'Sam Patel', email: 'sam@example.com', phone: '+447700900123', promo_code: 'BDAY-7F3K9', offer: '£5 off' };
+// 5.12.57: the sample offer is read when used, so the preview (and a test send) names the venue's
+// own money ($5 off at a US venue), never a typed pound. Real sends carry their own merge values.
+export const SAMPLE_MERGE = { first_name: 'Sam', last_name: 'Patel', name: 'Sam Patel', email: 'sam@example.com', phone: '+447700900123', promo_code: 'BDAY-7F3K9', get offer() { return `${currencySymbol()}5 off`; } };
 
 export const MERGE_TAGS = [
   ['{{first_name}}', 'First name'],

@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { money, currencySymbol } from '../../../lib/currency';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -28,15 +29,17 @@ const S = {
   offerRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 0', borderTop: '1px solid var(--bdr2)' },
 };
 
-const REWARD_TYPES = [
-  ['fixed', '£ off'], ['percent', '% off'], ['free_item', 'Free / discounted item'],
+// 5.12.57: read when shown, so the money options and summaries use the venue's own symbol ($ at a
+// US venue), never a typed pound.
+const rewardTypes = () => [
+  ['fixed', `${currencySymbol()} off`], ['percent', '% off'], ['free_item', 'Free / discounted item'],
   ['free_delivery', 'Free delivery'], ['points_bonus', 'Bonus points'],
 ];
 const rewardSummary = (o) => {
   if (o.reward_label) return o.reward_label;
   switch (o.reward_type) {
     case 'percent': return `${o.reward_value}% off`;
-    case 'fixed': return `£${Number(o.reward_value).toFixed(2)} off`;
+    case 'fixed': return `${money(o.reward_value)} off`;
     case 'free_item': return 'Free item';
     case 'free_delivery': return 'Free delivery';
     case 'points_bonus': return `${o.reward_value} bonus points`;
@@ -136,7 +139,7 @@ export default function Promotions() {
             <div key={o.id} style={S.offerRow}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{o.name} <span style={{ ...S.pill, marginLeft: 6, color: o.active ? 'var(--grn)' : 'var(--t4)' }}>{o.active ? 'Active' : 'Off'}</span></div>
-                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{rewardSummary(o)}{o.min_spend ? ` · min £${Number(o.min_spend).toFixed(2)}` : ''} · issued {o.issued_count || 0} · redeemed {o.redeemed_count || 0}</div>
+                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{rewardSummary(o)}{o.min_spend ? ` · min ${money(o.min_spend)}` : ''} · issued {o.issued_count || 0} · redeemed {o.redeemed_count || 0}</div>
                 {iss.code && <div style={{ marginTop: 6 }}><span style={S.code}>{iss.code}</span> <span style={S.ok}>✓ issued</span></div>}
                 {iss.err && <div style={S.err}>{iss.err}</div>}
               </div>
@@ -154,13 +157,13 @@ export default function Promotions() {
             <div style={S.row3}>
               <div style={S.field}><label style={S.label}>Reward</label>
                 <select style={S.input} value={editing.reward_type} onChange={(e) => setEditing({ ...editing, reward_type: e.target.value })}>
-                  {REWARD_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  {rewardTypes().map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </div>
-              <div style={S.field}><label style={S.label}>{editing.reward_type === 'percent' ? 'Percent' : editing.reward_type === 'points_bonus' ? 'Points' : 'Value (£)'}</label><input style={S.input} type="number" value={editing.reward_value} onChange={(e) => setEditing({ ...editing, reward_value: e.target.value })} /></div>
-              <div style={S.field}><label style={S.label}>Min spend (£) <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label><input style={S.input} type="number" value={editing.min_spend} onChange={(e) => setEditing({ ...editing, min_spend: e.target.value })} placeholder="none" /></div>
+              <div style={S.field}><label style={S.label}>{editing.reward_type === 'percent' ? 'Percent' : editing.reward_type === 'points_bonus' ? 'Points' : `Value (${currencySymbol()})`}</label><input style={S.input} type="number" value={editing.reward_value} onChange={(e) => setEditing({ ...editing, reward_value: e.target.value })} /></div>
+              <div style={S.field}><label style={S.label}>Min spend ({currencySymbol()}) <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label><input style={S.input} type="number" value={editing.min_spend} onChange={(e) => setEditing({ ...editing, min_spend: e.target.value })} placeholder="none" /></div>
             </div>
-            <div style={S.field}><label style={S.label}>Reward label <span style={{ color: 'var(--t4)', fontWeight: 500 }}>(shown on the code/receipt — optional)</span></label><input style={S.input} value={editing.reward_label} onChange={(e) => setEditing({ ...editing, reward_label: e.target.value })} placeholder={editing.reward_type === 'free_item' ? 'Free dessert' : 'e.g. £5 off your visit'} /></div>
+            <div style={S.field}><label style={S.label}>Reward label <span style={{ color: 'var(--t4)', fontWeight: 500 }}>(shown on the code/receipt — optional)</span></label><input style={S.input} value={editing.reward_label} onChange={(e) => setEditing({ ...editing, reward_label: e.target.value })} placeholder={editing.reward_type === 'free_item' ? 'Free dessert' : `e.g. ${currencySymbol()}5 off your visit`} /></div>
             <div style={S.row2}>
               <div style={S.field}><label style={S.label}>Valid from <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label><input style={S.input} type="date" value={editing.valid_from} onChange={(e) => setEditing({ ...editing, valid_from: e.target.value })} /></div>
               <div style={S.field}><label style={S.label}>Valid to <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label><input style={S.input} type="date" value={editing.valid_to} onChange={(e) => setEditing({ ...editing, valid_to: e.target.value })} /></div>
@@ -199,7 +202,7 @@ export default function Promotions() {
             <div>Uses: {lookup.code.uses_count}/{lookup.code.uses_allowed}{lookup.code.expires_at ? ` · expires ${new Date(lookup.code.expires_at).toLocaleDateString('en-GB')}` : ''}</div>
             {(lookup.redemptions || []).length > 0 && (
               <div style={{ marginTop: 6 }}>Redemptions:
-                {lookup.redemptions.map((r, i) => <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {new Date(r.redeemed_at).toLocaleString('en-GB')} — £{Number(r.discount_value || 0).toFixed(2)} (order {r.order_id || '—'})</div>)}
+                {lookup.redemptions.map((r, i) => <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {new Date(r.redeemed_at).toLocaleString('en-GB')} — {money(r.discount_value || 0)} (order {r.order_id || '—'})</div>)}
               </div>
             )}
             {lookup.code.status !== 'voided' && <button style={{ ...S.ghost, color: 'var(--red)', marginTop: 10 }} onClick={() => voidCode(lookup.code.code)}>Void code</button>}

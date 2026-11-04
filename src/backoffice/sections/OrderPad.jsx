@@ -37,7 +37,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId , supabase } from '../../lib/supabase';
 import { getLocationConfig, buildScheduleCtx } from '../../lib/locationTime';
-import { money } from '../../lib/currency';
+import { useSiteMoney } from './stock/useSiteCurrency';
 import { displayInUnits } from '../../lib/stock/uom';
 import { fetchInventoryItems, fetchSuppliers, fetchUsageRates, fetchUsageByWeekday } from '../../lib/stock/data';
 import { fetchParLevels } from '../../lib/stock/counts';
@@ -72,8 +72,8 @@ const ghostBtn = { padding: '9px 14px', borderRadius: 12, background: 'var(--bg1
 const numCell = { fontVariantNumeric: 'tabular-nums' };
 const th = { padding: '11px 14px', borderBottom: '1px solid var(--bdr)', fontWeight: 600, color: 'var(--t3)', textAlign: 'left', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '.05em', whiteSpace: 'nowrap' };
 const td = { padding: '11px 14px', borderBottom: '1px solid var(--bdr)', verticalAlign: 'middle' };
-const HEADERS = ['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'Supplier', 'Line £ (ex VAT)'];
-const HEADERS_ONE = HEADERS; // d3 multi: the screen swaps in the multi site columns (HEADERS_MULTI_OF) by name
+// 5.12.57: the money heading is in the site's own symbol ('Line $ (ex VAT)' at a US site).
+const headersOne = (symbol) => ['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'Supplier', `Line ${symbol} (ex VAT)`];
 // The forecast over the usual same weekday sales for the next 7 venue days (1 when unknown). // d3 multi
 async function padScale(loc, ctx, tz) { // d3 multi
   const days = daysAfter(ctx?.now?.ymd || buildScheduleCtx(tz).ymd, 7); // d3 multi
@@ -88,7 +88,7 @@ async function padScale(loc, ctx, tz) { // d3 multi
   return scaleOverDays(days, forecast, baseline); // d3 multi
 } // d3 multi
 // One supplier's basket at this site: its total, the basket rules and the standing lines due. // d3 multi
-function MultiBasket({ basket, ctx, supName, spNet, itemName }) { // d3 multi
+function MultiBasket({ basket, ctx, supName, spNet, itemName, symbol }) { // d3 multi
   const groups = Object.entries(basket); // d3 multi
   if (!groups.length) return null; // d3 multi
   return ( // d3 multi
@@ -96,11 +96,11 @@ function MultiBasket({ basket, ctx, supName, spNet, itemName }) { // d3 multi
       {groups.map(([sid, ls]) => { // d3 multi
         const s = padSupplierOf(ctx, sid); // d3 multi
         const goods = ls.reduce((t, { r, n }) => t + n * spNet(r.sp), 0); // d3 multi
-        const rules = basketRules({ goods, minOrder: s?.min_order_value, maxOrder: s?.max_order_value, fee: s?.delivery_fee, feeWaivedOverMin: s?.fee_waived_over_min === true, approvalLimit: s?.approval_limit }); // d3 multi
+        const rules = basketRules({ goods, minOrder: s?.min_order_value, maxOrder: s?.max_order_value, fee: s?.delivery_fee, feeWaivedOverMin: s?.fee_waived_over_min === true, approvalLimit: s?.approval_limit, symbol }); // d3 multi
         const standing = (s?.standing || []).filter((x) => x && x.status !== 'skipped'); // d3 multi
         return ( // d3 multi
           <div key={sid} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>{/* // d3 multi */}
-            <b>{supName(sid)}</b> <span style={{ fontVariantNumeric: 'tabular-nums' }}>{moneyWords(goods)}</span>{/* // d3 multi */}
+            <b>{supName(sid)}</b> <span style={{ fontVariantNumeric: 'tabular-nums' }}>{moneyWords(goods, symbol)}</span>{/* // d3 multi */}
             <BasketRulesLine rules={rules} />{/* // d3 multi */}
             {standing.flatMap((so) => (so.lines || []).map((l) => <Pill key={`${so.standing_order_id}:${l.inventory_item_id}`} tone="blue">{itemName(l.inventory_item_id)}: {standingPillWords(l.qty_packs)}</Pill>))}{/* // d3 multi */}
           </div> // d3 multi
@@ -131,6 +131,8 @@ export default function OrderPad({ siteId = null, orgCtx = null } = {}) { // d3 
 function OrderPadScreen({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
   const { multi, siteName } = useStockScope();
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import.
+  const { money, symbol } = useSiteMoney(siteId);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [paused, setPaused] = useState(NO_PAUSES);         // site item id -> { everywhere, until }
   const [pauseUnknown, setPauseUnknown] = useState(false); // the read failed: orders wait
@@ -276,7 +278,7 @@ function OrderPadScreen({ siteId = null } = {}) {
   const basketVat = useMemo(() => Object.values(basket).flat().reduce((s, { r, n }) => s + n * spNet(r.sp) * Number(r.sp.vatRate || 0), 0), [basket]);
   const basketCount = Object.values(basket).flat().length;
   const supplierCount = Object.keys(basket).length;
-  const HEADERS = multi ? HEADERS_MULTI_OF(supplierFilter !== 'all' ? nextOf(supplierFilter)?.deliveryDow ?? null : null) : HEADERS_ONE; // d3 multi
+  const HEADERS = multi ? HEADERS_MULTI_OF(supplierFilter !== 'all' ? nextOf(supplierFilter)?.deliveryDow ?? null : null, symbol) : headersOne(symbol); // d3 multi
   const headNext = useMemo(() => { if (!multi) return null; const ids = supplierFilter !== 'all' ? [supplierFilter] : (ctx?.suppliers || []).map((x) => x.supplier_id); const all = ids.map((sid) => ({ sid, nx: nextOf(sid) })); const withNext = all.filter((x) => x.nx).sort((a, b) => String(a.nx.orderByAt).localeCompare(String(b.nx.orderByAt))); if (withNext.length) return { ...withNext[0].nx, supplierName: supName(withNext[0].sid) }; return supplierFilter !== 'all' ? { noRules: true, supplierName: supName(supplierFilter) } : null; }, [multi, supplierFilter, ctx, nextOf, supName]); // d3 multi
   const hasLimit = (ctx?.suppliers || []).some((x) => x && x.approval_limit != null); // d3 multi
   const parOf = (r) => { const x = ctxItems.get(r.it.id); const nx = r.sp ? nextOf(r.sp.supplierId) : null; const dp = parForDay(x?.par_by_weekday, nx?.deliveryDow); if (dp != null) return dp; if (Number(x?.cover_days) > 0 && r.avgDaily > 0) return r.avgDaily * fScale * Number(x.cover_days); return r.par; }; // d3 multi
@@ -295,7 +297,7 @@ function OrderPadScreen({ siteId = null } = {}) {
   // Multi site Send: make the drafts, then the database decides (approval, kitchen or email). // d3 multi
   const sendMulti = async () => { // d3 multi
     const groups = Object.entries(basket); // d3 multi
-    for (const [sid, ls] of groups) { const sup = padSupplierOf(ctx, sid); const goods = ls.reduce((t, { r, n }) => t + n * spNet(r.sp), 0); if (basketRules({ goods, maxOrder: sup?.max_order_value }).overMax) { showToast?.(`Over the maximum ${moneyWords(sup.max_order_value)} for ${supName(sid)}. Split the order or ask head office.`, 'error'); return; } } // d3 multi
+    for (const [sid, ls] of groups) { const sup = padSupplierOf(ctx, sid); const goods = ls.reduce((t, { r, n }) => t + n * spNet(r.sp), 0); if (basketRules({ goods, maxOrder: sup?.max_order_value, symbol }).overMax) { showToast?.(`Over the maximum ${moneyWords(sup.max_order_value, symbol)} for ${supName(sid)}. Split the order or ask head office.`, 'error'); return; } } // d3 multi
     const kp = ctx?.kitchen_prices || {}; // d3 multi
     const lines = groups.flatMap(([, ls]) => ls).map(({ r, n }) => ({ supplierId: r.sp.supplierId, supplierProductId: r.sp.id, inventoryItemId: r.it.id, description: r.it.name, qtyPacks: n, packQty: Number(r.sp.packQty) || 1, innerQty: Number(r.sp.innerQty) || 1, innerUnit: r.sp.innerUnit || r.it.baseUnit, unitPrice: kp[r.sp.id] != null ? Number(kp[r.sp.id]) : spNet(r.sp), purchaseTaxRateId: r.sp.purchaseTaxRateId || r.it.purchaseTaxRateId || null })); // d3 multi
     if (!lines.length) { showToast?.('Add some quantities first', 'error'); return; } // d3 multi
@@ -422,7 +424,7 @@ function OrderPadScreen({ siteId = null } = {}) {
           </div>
         )}
         {multi && ctxError && <div role="alert" style={{ ...ui.err, marginTop: 10 }}>{ctxError.message || String(ctxError)}</div>}{/* // d3 multi */}
-        {multi && <BudgetBar budget={ctx?.budget} basketTotal={basketTotal} />}{/* // d3 multi */}
+        {multi && <BudgetBar budget={ctx?.budget} basketTotal={basketTotal} symbol={symbol} />}{/* // d3 multi */}
         {multi && hasLimit && <div style={{ marginTop: 10 }}><Notice tone="info"><b>{PAD_WORDS.approvalsNoticeBold}</b>{PAD_WORDS.approvalsNotice}<b>{PAD_WORDS.approvalsNoticeSend}</b>{PAD_WORDS.approvalsNoticeEnd}</Notice></div>}{/* // d3 multi */}
         {multi && (ctx?.pending_approvals || []).length > 0 && <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--t2)' }}><Pill tone="warn">Waiting approval</Pill> {ctx.pending_approvals.map((x) => x.reference || 'Order').join(', ')}</div>}{/* // d3 multi */}
       </div>
@@ -522,7 +524,7 @@ function OrderPadScreen({ siteId = null } = {}) {
           {basketCount === 0 ? 'Nothing in the basket yet' : <><b>{basketCount}</b> line{basketCount === 1 ? '' : 's'} · <b>{supplierCount}</b> supplier{supplierCount === 1 ? '' : 's'} · <b style={numCell}>{money(basketTotal)}</b> <span style={{ color: 'var(--t3)' }}>ex VAT{basketVat > 0.005 ? ` · VAT ${money(basketVat)} · pay ${money(basketTotal + basketVat)}` : ''}</span></>}
         </div>
         {supplierCount > 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>{Object.entries(basket).map(([sid, ls]) => `${supName(sid)} (${ls.length})`).join(' · ')}</div>}
-        {multi && <MultiBasket basket={basket} ctx={ctx} supName={supName} spNet={spNet} itemName={itemName} />}{/* // d3 multi */}
+        {multi && <MultiBasket basket={basket} ctx={ctx} supName={supName} spNet={spNet} itemName={itemName} symbol={symbol} />}{/* // d3 multi */}
         {/* --amber is only declared under [data-skin="servos"], so keep reportKit's fallback. */}
         {!multi && (<>{/* // d3 multi */}
         {minWarnings.length > 0 && <div style={{ fontSize: 12, color: 'var(--amber, #F5A623)', padding: '5px 10px', borderRadius: 9, background: 'color-mix(in srgb, var(--amber, #F5A623) 14%, transparent)' }}><Icon name="warn" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 6 }} />below min order: {minWarnings.map(w => `${w.name} ${money(w.val)}/${money(w.min)}`).join(' · ')}</div>}

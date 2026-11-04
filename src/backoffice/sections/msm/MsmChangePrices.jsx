@@ -31,6 +31,7 @@ import { normName } from '../../../../supabase/functions/_shared/msmModel.js';
 import { groupHints } from '../../../../supabase/functions/_shared/msmSites.js';
 import { Btn, Modal, Segmented, SiteChecklist, Field, Notice, Pill, WindowedList, SummaryBox, ConfirmTicks } from './msmUi';
 import { ui, money } from './msmStyle';
+import { currencySymbol } from '../../../lib/currency';
 import { draftCount } from '../../../lib/msm/msmStatus';
 
 const ROW_H = 36;
@@ -71,6 +72,10 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
   };
   const tree = useMemo(() => categoryTree(ix), [ix]);
   const siteName = useMemo(() => new Map(sites.map((s) => [s.id, s.name])), [sites]);
+  // 5.12.57: "By $" / "Set to $" name the money of the sites being priced. The sites list carries
+  // no currency today, so this is the venue's own symbol (as the preview's money() is) unless every
+  // site names one currency.
+  const sym = useMemo(() => { const cs = [...new Set(sites.map((s) => s.currency).filter(Boolean))]; return currencySymbol(cs.length === 1 ? cs[0] : undefined); }, [sites]);
 
   // The preview is worked out a moment after typing stops (a whole menu at 20 sites is thousands of
   // prices), so typing "10" never stutters on an iPad.
@@ -253,7 +258,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
           <div style={ui.h2}>2. The change</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0 10px' }}>
             {mode !== 'set' && <Segmented small value={direction} onChange={setDirection} options={[{ value: 'up', label: 'Up' }, { value: 'down', label: 'Down' }]} />}
-            <Segmented small value={mode} onChange={setMode} options={[{ value: 'percent', label: 'By %' }, { value: 'amount', label: 'By £' }, { value: 'set', label: 'Set to £' }]} />
+            <Segmented small value={mode} onChange={setMode} options={[{ value: 'percent', label: 'By %' }, { value: 'amount', label: `By ${sym}` }, { value: 'set', label: `Set to ${sym}` }]} />
           </div>
           <Field label={mode === 'percent' ? 'Percent' : mode === 'set' ? 'New price' : 'Amount'} style={{ marginBottom: 10 }}>
             <input aria-label="Change value" style={{ ...ui.input, width: 140 }} inputMode="decimal" placeholder={mode === 'percent' ? '5' : '0.20'} value={value} onChange={(e) => setValue(e.target.value)} />

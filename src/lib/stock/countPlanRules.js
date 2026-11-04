@@ -4,6 +4,18 @@
  * Pure: no database, no React. One site companies never reach any of it.
  */
 
+// 5.12.57: no symbol given is the active venue's, never a typed pound sign. The same read as
+// lib/currency.js's getActiveCurrencyCode (the code it keeps under this key), so this file stays
+// import free; no venue saved is the house default, as currencySymbol() says.
+const SYMBOLS = Object.freeze({ GBP: '£', USD: '$', EUR: '€' });
+function activeSymbol() {
+  try {
+    const c = String(globalThis.localStorage?.getItem('rpos-active-currency') || '').toUpperCase();
+    if (SYMBOLS[c]) return SYMBOLS[c];
+  } catch { /* no localStorage (node --test, a sandbox) */ }
+  return SYMBOLS.GBP;
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -202,8 +214,11 @@ export function secondApprovalState(count, { userId = null, companyEditor = fals
   return { waiting, canGive: false, why: 'Head office or another manager of this site gives the second approval.' };
 }
 
-/** The words on a waiting count: 'Waiting for a second approval. Over £500.' */
-export function secondApprovalWords(limit, symbol = '£') {
+/**
+ * The words on a waiting count: 'Waiting for a second approval. Over $500.' 5.12.57: in the symbol
+ * of the count's site; a missing one is the active venue's, never a typed pound sign.
+ */
+export function secondApprovalWords(limit, symbol = activeSymbol()) {
   const n = Number(limit);
   if (!Number.isFinite(n) || n <= 0) return 'Waiting for a second approval.';
   const whole = Math.round(n) === n;

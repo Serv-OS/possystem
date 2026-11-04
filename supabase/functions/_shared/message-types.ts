@@ -43,11 +43,14 @@ export interface MessageTypeDef {
 }
 
 // ── Merge tag libraries ─────────────────────────────────────────────────────
+// 5.12.57: money examples carry no currency symbol. This registry does not know the venue (a US
+// venue saw pound signs in its previews), so the sample reads 27.50, not a pound or dollar amount.
+// Real sends fill these tags with the venue's own money.
 
 const TAG_CUSTOMER_NAME: MergeTag = { tag: 'customer_name', label: 'Customer Name', example: 'Sarah' };
 const TAG_ORDER_NUMBER: MergeTag = { tag: 'order_number', label: 'Order Number', example: '1042' };
 const TAG_VENUE_NAME: MergeTag = { tag: 'venue_name', label: 'Venue Name', example: 'The Red Lion' };
-const TAG_ORDER_TOTAL: MergeTag = { tag: 'order_total', label: 'Order Total', example: '£27.50' };
+const TAG_ORDER_TOTAL: MergeTag = { tag: 'order_total', label: 'Order Total', example: '27.50' };
 // Two tags, two fixed units, because one tag carrying both was unusable: the
 // send path put "15-20" in it for ASAP orders and a clock time like "18:15" in
 // it for pre-orders, so every email read "Estimated time: 18:15 minutes" and no
@@ -61,11 +64,11 @@ const TAG_PARTY_SIZE: MergeTag = { tag: 'party_size', label: 'Party Size', examp
 const TAG_CONFIRMATION_NUMBER: MergeTag = { tag: 'confirmation_number', label: 'Confirmation #', example: 'RES-4821' };
 const TAG_PAYMENT_METHOD: MergeTag = { tag: 'payment_method', label: 'Payment Method', example: 'Visa ****6411' };
 const TAG_SERVER_NAME: MergeTag = { tag: 'server_name', label: 'Server Name', example: 'Alex' };
-const TAG_ORDER_ITEMS: MergeTag = { tag: 'order_items', label: 'Order Items', example: '2x Margherita Pizza  £24.00\n  £12.00 each\n  + Extra cheese\n1x Caesar Salad  £8.50\n1x House Lager  £5.50\n\nSubtotal: £38.00\nService charge: £4.75\n\nStandard VAT (20%): Net £31.67 — VAT £6.33' };
+const TAG_ORDER_ITEMS: MergeTag = { tag: 'order_items', label: 'Order Items', example: '2x Margherita Pizza  24.00\n  12.00 each\n  + Extra cheese\n1x Caesar Salad  8.50\n1x House Lager  5.50\n\nSubtotal: 38.00\nService charge: 4.75\n\nStandard VAT (20%): Net 31.67 — VAT 6.33' };
 const TAG_SENDER_NAME: MergeTag = { tag: 'sender_name', label: 'Sender Name', example: 'James' };
 const TAG_RECIPIENT_NAME: MergeTag = { tag: 'recipient_name', label: 'Recipient Name', example: 'Emma' };
 const TAG_RECIPIENT_EMAIL: MergeTag = { tag: 'recipient_email', label: 'Recipient Email', example: 'emma@example.com' };
-const TAG_AMOUNT: MergeTag = { tag: 'amount', label: 'Amount', example: '£25.00' };
+const TAG_AMOUNT: MergeTag = { tag: 'amount', label: 'Amount', example: '25.00' };
 const TAG_CODE: MergeTag = { tag: 'code', label: 'Gift Card Code', example: 'ABCD EFGH JKLM NPQR' };
 const TAG_CODE_LAST4: MergeTag = { tag: 'code_last4', label: 'Code Last 4', example: 'NPQR' };
 const TAG_EXPIRY_DATE: MergeTag = { tag: 'expiry_date', label: 'Expiry Date', example: 'May 2027' };
@@ -94,7 +97,7 @@ const TAG_VENUE_ADDRESS_LINE: MergeTag = { tag: 'venue_address_line', label: 'Fi
 const TAG_CALENDAR_LINK: MergeTag = { tag: 'calendar_link', label: 'Add to calendar link (Google)', example: 'https://calendar.google.com/calendar/render?action=TEMPLATE' };
 const TAG_CALENDAR_LINK_LINE: MergeTag = { tag: 'calendar_link_line', label: 'Add to calendar sentence (auto)', example: 'Add it to your calendar: https://calendar.google.com/calendar/render?action=TEMPLATE ' };
 const TAG_WHEN: MergeTag = { tag: 'when', label: 'When (tomorrow or today)', example: 'tomorrow' };
-const TAG_MONEY_LINE: MergeTag = { tag: 'money_line', label: 'Money sentence (auto, empty if nothing was paid)', example: 'The £120 you paid will be refunded by the venue. ' };
+const TAG_MONEY_LINE: MergeTag = { tag: 'money_line', label: 'Money sentence (auto, empty if nothing was paid)', example: 'The 120.00 you paid will be refunded by the venue. ' };
 const GUEST_TAGS: MergeTag[] = [TAG_MANAGE_LINK, TAG_MANAGE_LINK_LINE, TAG_VENUE_PHONE, TAG_VENUE_PHONE_LINE, TAG_VENUE_ADDRESS, TAG_VENUE_ADDRESS_LINE, TAG_CALENDAR_LINK, TAG_CALENDAR_LINK_LINE];
 
 // ── Message type definitions ────────────────────────────────────────────────

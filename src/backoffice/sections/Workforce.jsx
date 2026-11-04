@@ -34,6 +34,7 @@ import WfChat from './workforce/WfChat';
 import { activeRegionPack, venueMoney } from '../../lib/regionPack';
 import { rotaStaffOf, headOfficeSwitchOn } from '../../lib/headOffice';
 import { adoptVenueRegion } from '../../lib/locationTime';
+import { getActiveCurrencyCode } from '../../lib/currency';
 
 // v5.11.101: the venue's money and region (the region pack follows the venue's currency). A UK venue
 // reads byte for byte as before.
@@ -90,7 +91,7 @@ export default function Workforce({ section, orgCtx }) {
     adoptVenueRegion(locationId).catch(() => null).then(() => { if (alive) setRegionFor(locationId); });
     return () => { alive = false; };
   }, [locationId]);
-  const [settings, setSettings] = useState({ currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos' });
+  const [settings, setSettings] = useState({ currency: getActiveCurrencyCode(), labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos' });
 
   // Holiday accrued per staff (hours, from the accrual ledger) — shown on the
   // staff list rows; salaried staff show their fixed days instead.

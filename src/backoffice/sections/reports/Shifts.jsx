@@ -123,7 +123,8 @@ function DayBasedShifts({ checks, fmt, fmtN, locationConfig }) {
       tips: r.tips.toFixed(2),
       cash: r.cash.toFixed(2),
       discounts: r.discounts.toFixed(2),
-      voids: `${r.voidCount} (${money(r.voidValue)})`,
+      // 5.12.57: the void value in the site's own money (fmt), not the signed in site's.
+      voids: `${r.voidCount} (${(fmt || money)(r.voidValue)})`,
     }));
     const csv = toCsv(rows, [
       { label:'Date',      key:'date' },

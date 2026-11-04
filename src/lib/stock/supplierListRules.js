@@ -1,14 +1,18 @@
 /**
  * stock/supplierListRules.js: the words and small rules of the company Suppliers screens (multi
- * site stock Drop 1: SupplierList, SupplierPage and its tabs). Pure: no imports, node --test drives
- * every function (supplierListRules.test.js). The words are the mockup's (scrSuppliers,
- * scrSupplier) and the Drop 1 contract 4.3.
+ * site stock Drop 1: SupplierList, SupplierPage and its tabs). Pure (the only import is
+ * lib/currency.js), node --test drives every function (supplierListRules.test.js). The words are
+ * the mockup's (scrSuppliers, scrSupplier) and the Drop 1 contract 4.3.
  *
  * Nothing here decides who may save: the database does (stock_co__guard). These rules only grey
  * what the database would refuse, so no screen looks editable when the save would be refused.
  */
 
+import { getActiveCurrencyCode } from '../currency.js';
+
 // ── money and days ──────────────────────────────────────────────────────────────────────────────
+// 5.12.57: no currency named is the active venue's currency (getActiveCurrencyCode), not GBP. The
+// screens pass each site's own currency.
 const SYMBOLS = Object.freeze({ GBP: '£', USD: '$', EUR: '€' });
 const MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
 
@@ -18,19 +22,19 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 const symbolOf = (currency) => {
-  const c = String(currency || 'GBP').toUpperCase();
+  const c = String(currency || getActiveCurrencyCode()).toUpperCase();
   return SYMBOLS[c] || `${c} `;
 };
 
 /** '£1.38' (2 places); '' for no amount. */
-export function moneyText(amount, currency = 'GBP') {
+export function moneyText(amount, currency = null) {
   const n = num(amount);
   if (n === null) return '';
   return n < 0 ? `-${symbolOf(currency)}${(-n).toFixed(2)}` : `${symbolOf(currency)}${n.toFixed(2)}`;
 }
 
 /** Spend this month, whole pounds: '£4,210'; more than one currency: '£4,210 + €300'; none: '£0'. */
-export function spendText(spend, fallbackCurrency = 'GBP') {
+export function spendText(spend, fallbackCurrency = null) {
   const list = (Array.isArray(spend) ? spend : []).filter((s) => s && num(s.amount) !== null);
   if (!list.length) return `${symbolOf(fallbackCurrency)}0`;
   return list.map((s) => `${symbolOf(s.currency || fallbackCurrency)}${Math.round(num(s.amount)).toLocaleString('en-GB')}`).join(' + ');
@@ -46,14 +50,14 @@ export function dayMonth(iso) {
 }
 
 /** Next price: '£8.61 from 1 Nov'; none: 'None'. */
-export function nextPriceText(next, currency = 'GBP') {
+export function nextPriceText(next, currency = null) {
   if (!next || num(next.price) === null) return 'None';
   const day = dayMonth(next.from_day);
   return day ? `${moneyText(next.price, currency)} from ${day}` : moneyText(next.price, currency);
 }
 
 /** Price spread: '£8.28 to £8.70', one price when they are the same, '' when none is on. */
-export function spreadText(spread, currency = 'GBP') {
+export function spreadText(spread, currency = null) {
   const lo = num(spread?.low);
   const hi = num(spread?.high);
   if (lo === null && hi === null) return '';
@@ -221,7 +225,7 @@ export function followValue(siteValue, companyValue, kind = 'text') {
 }
 
 /** The read only words of a Sites tab value: '(company)', '(none)' for no approval limit, or the value. */
-export function siteValueText(field, siteValue, companyValue, currency = 'GBP') {
+export function siteValueText(field, siteValue, companyValue, currency = null) {
   if (field === 'approval_limit') return num(siteValue) === null ? '(none)' : moneyText(siteValue, currency);
   if (field === 'cc_emails') return ccText(siteValue);
   const kind = field === 'min_order_value' || field === 'delivery_fee' ? 'money' : 'text';
@@ -362,7 +366,7 @@ export function companyValues(s) {
 }
 
 /** Plain words of one Details value, for the Someone saved first table. */
-export function detailsValueText(field, value, currency = 'GBP') {
+export function detailsValueText(field, value, currency = null) {
   const f = DETAILS_FIELDS.find((x) => x.key === field);
   if (value === null || value === undefined || value === '') return f?.kind === 'bool' ? 'No' : '';
   if (f?.kind === 'bool') return value ? 'Yes' : 'No';
@@ -383,7 +387,7 @@ export function detailsValueText(field, value, currency = 'GBP') {
  * No rows: nothing of theirs clashes with this screen (they changed nothing here, or the same as
  * typed here), so the screen saves again on the new version with no question.
  */
-export function onTopPlan(loaded, mine, theirs, currency = 'GBP') {
+export function onTopPlan(loaded, mine, theirs, currency = null) {
   const L = companyValues(loaded);
   const T = companyValues(theirs);
   const M = { ...L, ...(mine || {}) };

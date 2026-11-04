@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
+import { getActiveCurrencyCode } from '../../../../lib/currency';
 import { canOrderText, pricesText, howOrdersText, spendText, listSites } from '../../../../lib/stock/supplierListRules';
 import { Btn, Pill, ui, PageHead, TableWrap, Th, Td, ShowMore, ErrorLine, EmptyLine } from '../stockUi';
 import AddSupplierModal from './AddSupplierModal';
@@ -31,7 +32,8 @@ export default function SupplierList({ onOpen }) {
   const scopeKey = scopeIds.join(',');
   const sites = useMemo(() => listSites({ isAll: sc.isAll, scopeSites: sc.scopeSites }), [sc.isAll, sc.scopeSites]);
   const editor = sc.canEditCompany('purchasing');
-  const currency = (sc.scopeSites || [])[0]?.currency || 'GBP';
+  // 5.12.57: a site with no currency is the active venue's currency, never GBP.
+  const currency = (sc.scopeSites || [])[0]?.currency || getActiveCurrencyCode();
   const pageKey = `${sc.isAll ? 'all' : scopeKey}|${query}|${archived ? 'archived' : 'live'}`;
   // the page on screen and the picker and search it answers; a newer key means it is loading
   const [page, setPage] = useState({ key: null, rows: [], next: null, error: null });

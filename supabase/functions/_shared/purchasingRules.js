@@ -700,8 +700,21 @@ export function orderByWords(next, nowMs = null) {
   return `Next delivery ${dayWords(next.deliveryYmd)} · ${by} (${t ? `in ${t}` : 'passed'})`;
 }
 
-/** '£150', '£12.50', '£2,140' (whole amounts without pence). */
-export function moneyWords(n, symbol = '£') {
+// 5.12.57: a missing symbol is the active venue's, never a typed pound sign. The Back Office keeps
+// the active venue's currency code under the key src/lib/currency.js writes; an edge function has
+// no active venue and gets the house default, as currencySymbol() does. Callers pass the symbol of
+// the site they show.
+const SYMBOLS = Object.freeze({ GBP: '£', USD: '$', EUR: '€' });
+export function activeSymbol() {
+  try {
+    const c = String(globalThis.localStorage?.getItem('rpos-active-currency') || '').toUpperCase();
+    if (SYMBOLS[c]) return SYMBOLS[c];
+  } catch { /* no localStorage (Deno, node --test, a sandbox) */ }
+  return SYMBOLS.GBP;
+}
+
+/** '$150', '$12.50', '$2,140' (whole amounts without pence), in the symbol given. */
+export function moneyWords(n, symbol = activeSymbol()) {
   const v = Math.round((Number(n) || 0) * 100) / 100;
   const whole = Math.abs(v - Math.round(v)) < 0.005;
   const s = Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: whole ? 0 : 2 });
@@ -718,7 +731,7 @@ export function moneyWords(n, symbol = '£') {
  *   words           [{ tone, text }] for under the supplier's total
  *   approval        { tone, text } for the basket row
  */
-export function basketRules({ goods = 0, minOrder = null, maxOrder = null, fee = null, feeWaivedOverMin = false, approvalLimit = null, symbol = '£' } = {}) {
+export function basketRules({ goods = 0, minOrder = null, maxOrder = null, fee = null, feeWaivedOverMin = false, approvalLimit = null, symbol = activeSymbol() } = {}) {
   const g = Math.round((Number(goods) || 0) * 100) / 100;
   const min = Number(minOrder) > 0 ? Number(minOrder) : null;
   const max = Number(maxOrder) > 0 ? Number(maxOrder) : null;

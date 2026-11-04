@@ -23,7 +23,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId, supabase } from '../../../lib/supabase';
 import { getLocationConfig, buildScheduleCtx } from '../../../lib/locationTime';
-import { money, currencySymbol } from '../../../lib/currency';
+import { money } from '../../../lib/currency';
 import { displayInUnits } from '../../../lib/stock/uom';
 import { fetchSuppliers, fetchInventoryItems, fetchUsageRates, fetchUsageByWeekday } from '../../../lib/stock/data';
 import { fetchParLevels } from '../../../lib/stock/counts';
@@ -38,6 +38,7 @@ import NumberField from '../../../components/NumberField';
 import { Icon } from '../../../components/ServOSIcons';
 import { PageHeader, PrimaryBtn, Tag, SearchField } from '../reports/reportKit';
 import { useSiteStockContext } from '../../../lib/stock/siteContext';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -51,6 +52,8 @@ const NO_LINES_TEXT = "No lines yet. Add quantities to the supplier's items belo
 export default function PurchaseOrdersSite({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
   const { taxRates } = useSiteStockContext(siteId);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the imports.
+  const { money, currencySymbol, code: cur } = useSiteMoney(siteId);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [pos, setPos] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -417,7 +420,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
                       </div>
                     )}
                     {rows.length > 0 && (
-                      <SupplierItemTable key={filterKey} rows={shown} onQty={setRowQty} onQtyBlur={blurRowQty} onPrice={setRowPrice} lineRateDec={lineRateDec} />
+                      <SupplierItemTable key={filterKey} rows={shown} onQty={setRowQty} onQtyBlur={blurRowQty} onPrice={setRowPrice} lineRateDec={lineRateDec} cur={cur} />
                     )}
                   </>
                 ) : (
@@ -593,7 +596,7 @@ const fmtQty = (v) => Number(v || 0).toLocaleString('en-GB', { maximumFractionDi
 
 // The parent keys this component by its search and filter state, so a new search starts the list
 // at the top again (a fresh mount) while typing a quantity leaves the scroll where it is.
-function SupplierItemTable({ rows, onQty, onQtyBlur, onPrice, lineRateDec }) {
+function SupplierItemTable({ rows, onQty, onQtyBlur, onPrice, lineRateDec, cur = null }) {
   const ref = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(TABLE_MAX_H);
@@ -622,7 +625,7 @@ function SupplierItemTable({ rows, onQty, onQtyBlur, onPrice, lineRateDec }) {
         <tbody>
           {rows.length === 0 && <tr><td colSpan={COLS.length} style={{ ...td, textAlign: 'center', color: 'var(--t4)', height: 88, borderBottom: 'none' }}>No items match.</td></tr>}
           {topPad > 0 && <tr aria-hidden="true"><td colSpan={COLS.length} style={{ height: topPad, padding: 0, border: 0 }} /></tr>}
-          {slice.map((r, i) => <ItemRow key={r.key} r={r} last={start + i === rows.length - 1} onQty={onQty} onQtyBlur={onQtyBlur} onPrice={onPrice} lineRateDec={lineRateDec} />)}
+          {slice.map((r, i) => <ItemRow key={r.key} r={r} last={start + i === rows.length - 1} onQty={onQty} onQtyBlur={onQtyBlur} onPrice={onPrice} lineRateDec={lineRateDec} cur={cur} />)}
           {bottomPad > 0 && <tr aria-hidden="true"><td colSpan={COLS.length} style={{ height: bottomPad, padding: 0, border: 0 }} /></tr>}
         </tbody>
       </table>
@@ -630,7 +633,7 @@ function SupplierItemTable({ rows, onQty, onQtyBlur, onPrice, lineRateDec }) {
   );
 }
 
-function ItemRow({ r, last, onQty, onQtyBlur, onPrice, lineRateDec }) {
+function ItemRow({ r, last, onQty, onQtyBlur, onPrice, lineRateDec, cur = null }) {
   const it = r.it;
   // The count unit (Keg, Case), as every other stock screen shows it.
   const uom = it ? { baseUnit: it.baseUnit, formats: it.packaging || [], itemConversions: it.conversions || [] } : null;
@@ -651,7 +654,7 @@ function ItemRow({ r, last, onQty, onQtyBlur, onPrice, lineRateDec }) {
       <td style={{ ...num, ...cell }}>
         {r.line
           ? <NumberField width={88} value={String(r.line.unitPrice ?? '')} onChange={v => onPrice(r, v)} title="price of one pack, ex VAT" inputStyle={{ fontSize: 13, padding: '5px 0' }} />
-          : <span title="net price of one pack, ex VAT">{money(r.netPrice)}</span>}
+          : <span title="net price of one pack, ex VAT">{money(r.netPrice, cur)}</span>}
         {rate > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)', marginLeft: 4 }} title="purchase VAT">+{Math.round(rate * 100)}%</span>}
       </td>
       <td style={{ ...num, ...cell, color: r.belowPar ? 'var(--red)' : 'var(--t1)' }}>{show(r.onHand)}</td>
@@ -665,7 +668,7 @@ function ItemRow({ r, last, onQty, onQtyBlur, onPrice, lineRateDec }) {
       <td style={{ ...num, ...cell }}>
         <NumberField width={100} unit="packs" value={qty} onChange={v => onQty(r, v)} onBlur={() => onQtyBlur(r)} title="packs to order; clear the box to take the item off the order" inputStyle={{ fontSize: 13, padding: '5px 0' }} />
       </td>
-      <td style={{ ...num, ...cell, fontWeight: 600 }}>{r.line && Number(r.line.qtyPacks) > 0 ? money(rowLineValue(r)) : ''}</td>
+      <td style={{ ...num, ...cell, fontWeight: 600 }}>{r.line && Number(r.line.qtyPacks) > 0 ? money(rowLineValue(r), cur) : ''}</td>
     </tr>
   );
 }

@@ -244,7 +244,7 @@ const TOOL_DEFINITIONS = {
       type: 'object',
       properties: {
         type:   { type: 'string', enum: ['percent', 'fixed'], description: 'percent or fixed amount' },
-        value:  { type: 'number', description: 'Percentage (0-100) or fixed GBP amount' },
+        value:  { type: 'number', description: 'Percentage (0-100) or a fixed amount in the venue currency' },
         reason: { type: 'string', description: 'Reason for the discount' },
       },
       required: ['type', 'value', 'reason'],
@@ -271,7 +271,7 @@ const TOOL_DEFINITIONS = {
       type: 'object',
       properties: {
         name:        { type: 'string',  description: 'Item name' },
-        price:       { type: 'number',  description: 'Price in GBP' },
+        price:       { type: 'number',  description: 'Price in the venue currency' },
         category_id: { type: 'string',  description: 'Category ID' },
         description: { type: 'string',  description: 'Brief description (optional)' },
       },
@@ -287,7 +287,7 @@ const TOOL_DEFINITIONS = {
       properties: {
         item_id:   { type: 'string', description: 'The menu item ID' },
         item_name: { type: 'string', description: 'The menu item name' },
-        new_price: { type: 'number', description: 'New price in GBP' },
+        new_price: { type: 'number', description: 'New price in the venue currency' },
       },
       required: ['item_id', 'new_price'],
     },
@@ -470,7 +470,7 @@ Return ONLY a JSON array — no prose, no explanation, no markdown code fences:
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { messages, mode = 'foh', location_id = null } = req.body || {};
+  const { messages, mode = 'foh', location_id = null, currency = null } = req.body || {};
   // v5.11.104: the sign in check comes before anything else is read or spent.
   const who = await requireUser(req, {
     locationId: location_id,
@@ -488,7 +488,10 @@ export default async function handler(req, res) {
   const isRota = mode === 'rota';
   const allowedTools = mode === 'boh' ? ALLOWED_TOOLS_BOH : ALLOWED_TOOLS_FOH;
   const tools = isRota ? [] : allowedTools.map(name => TOOL_DEFINITIONS[name]).filter(Boolean);
-  const systemPrompt = isRota ? SYSTEM_ROTA : (mode === 'boh' ? SYSTEM_BOH : SYSTEM_FOH);
+  // 5.12.57: the prompts' money symbol is the venue's (the caller sends its currency; only known codes are
+  // used, and an older caller that sends none reads pounds as before). They said "Always use £" everywhere.
+  const sym = { GBP: '\u00A3', USD: '$', EUR: '\u20AC' }[String(currency || '').toUpperCase()] || '\u00A3';
+  const systemPrompt = (isRota ? SYSTEM_ROTA : (mode === 'boh' ? SYSTEM_BOH : SYSTEM_FOH)).split('\u00A3').join(sym);
   const maxTokens = isRota ? 4000 : 1500;
 
   try {

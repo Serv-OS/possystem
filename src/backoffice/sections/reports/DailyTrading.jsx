@@ -18,6 +18,8 @@ import { useEffect, useState } from 'react';
 import { DEMO_NOTE } from '../../../../supabase/functions/_shared/demoHistory.js';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { loadSettings as loadWfSettings } from '../../../staff/wfData';
+import { money as venueMoneyText } from '../../../lib/currency';
+import { fmtSymbol } from './_fmtSymbol';
 
 const dow = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short' });
 
@@ -58,7 +60,8 @@ const S = {
 // California (midnight in London) it asked for a day behind London's, and a 06:30 day
 // start made "Yesterday" ask for yesterday AND today.
 export default function DailyTrading({ fromDay, toDay, fmt }) {
-  const money = fmt || ((n) => `£${(Number(n) || 0).toFixed(2)}`);
+  // 5.12.57: no fmt falls back to the venue's own money, never a typed pound.
+  const money = fmt || ((n) => venueMoneyText(n));
   const [locId, setLocId] = useState(null);
   const [data, setData] = useState(null);   // { rows, totals, settings }
   const [loading, setLoading] = useState(true);
@@ -130,7 +133,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
       <div style={S.bar}>
         <div style={S.fld}><span style={S.lab}>COGS %</span>
           <input style={S.inp} value={cogs} onChange={e => setCogs(e.target.value)} inputMode="decimal" placeholder="e.g. 28" /></div>
-        <div style={S.fld}><span style={S.lab}>Daily overhead (£)</span>
+        <div style={S.fld}><span style={S.lab}>Daily overhead ({fmtSymbol(money)})</span>
           <input style={S.inp} value={ovh} onChange={e => setOvh(e.target.value)} inputMode="decimal" placeholder="rent+utilities/day" /></div>
         <div style={S.fld}><span style={S.lab}>COGS basis</span>
           <select style={{ ...S.inp, width: 200 }} value={basis} onChange={e => setBasis(e.target.value)}>

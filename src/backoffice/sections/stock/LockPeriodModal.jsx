@@ -8,13 +8,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../../store';
 import { money } from '../../../lib/currency';
+import { useSiteCurrency } from './useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { lockProblem, periodWords, snapshotRows, dayMonWords } from '../../../lib/stock/countPlanRules';
 import { Modal, Btn, Field, Notice, Pill, ui, ErrorLine, EmptyLine } from './stockUi';
 
 const localYmd = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
-function Figures({ metrics }) {
+// 5.12.57: cur is the locked site's currency, not the signed in venue's.
+function Figures({ metrics, cur = null }) {
   const rows = snapshotRows(metrics);
   if (!rows.length) return null;
   return (
@@ -22,7 +24,7 @@ function Figures({ metrics }) {
       {rows.map((r) => (
         <div key={r.key} style={{ background: 'var(--bg2)', borderRadius: 8, padding: '8px 10px' }}>
           <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.label}</div>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>{r.pct ? `${r.value.toFixed(1)}%` : money(r.value)}</div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{r.pct ? `${r.value.toFixed(1)}%` : money(r.value, cur)}</div>
         </div>
       ))}
     </div>
@@ -31,6 +33,7 @@ function Figures({ metrics }) {
 
 export default function LockPeriodModal({ siteId, onClose }) {
   const showToast = useStore((s) => s.showToast);
+  const cur = useSiteCurrency(siteId);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -80,7 +83,7 @@ export default function LockPeriodModal({ siteId, onClose }) {
       {locked && (
         <div style={{ marginTop: 14 }}>
           <Notice tone="good"><b>Locked.</b> The closing figures are stored.</Notice>
-          <Figures metrics={locked.metrics} />
+          <Figures metrics={locked.metrics} cur={cur} />
         </div>
       )}
       <div style={{ ...ui.label, marginTop: 20 }}>Periods</div>
@@ -98,7 +101,7 @@ export default function LockPeriodModal({ siteId, onClose }) {
               <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>{periodWords(p)}</span>
               {isLocked && unlocking?.id !== p.id && <Btn small style={{ marginLeft: 'auto' }} onClick={() => setUnlocking({ id: p.id, reason: '' })}>Unlock</Btn>}
             </div>
-            {snap?.metrics && <Figures metrics={snap.metrics} />}
+            {snap?.metrics && <Figures metrics={snap.metrics} cur={cur} />}
             {unlocking?.id === p.id && (
               <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                 <Field label="Why are you unlocking it?" style={{ marginBottom: 0, flex: '1 1 260px' }}>

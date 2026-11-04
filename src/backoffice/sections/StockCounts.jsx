@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
-import { signedMoney } from '../../lib/currency';
+import { useSiteMoney } from './stock/useSiteCurrency';
 import { fetchInventoryItems, fetchSuppliers } from '../../lib/stock/data';
 import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount, deleteCount, removeCountLine, markAreaComplete } from '../../lib/stock/counts';
 import { openingCosts } from '../../lib/stock/phase0Rules';
@@ -61,6 +61,8 @@ const ghost = { padding: '6px 12px', borderRadius: 8, cursor: 'pointer', fontFam
 // one site company); "Start a count" on Stock items opens the new count panel once (takeOpenNew).
 export default function StockCounts({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import.
+  const { signedMoney } = useSiteMoney(siteId);
   // v5.11.92 (Drop 4a, contract 2.4): an approved count links to Reports > Stock and GP > Theoretical against actual.
   const { takeOpenNew, openReport, canOpenReports } = useStockScope();
   // v5.11.96 (multi site stock Drop 3): the due strip, plans and templates, second approval and locked // d3 multi

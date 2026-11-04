@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
+import { getActiveCurrencyCode } from '../../../../lib/currency';
 import { countText, moneyText, parseMoneyInput } from '../../../../lib/stock/supplierListRules';
 import { Btn, Popover, CellInput, ui, ErrorLine } from '../stockUi';
 
@@ -54,7 +55,8 @@ export default function SupplierItemSitesPopover({ row, sites, onChanged }) {
               const off = !here;
               const follow = here ? here.price_here === null || here.price_here === undefined : false;
               const shown = here ? (follow ? here.price ?? row.company_price : here.price_here) : null;
-              const cur = site.currency || row.currency || 'GBP';
+              // 5.12.57: none known is the active venue's currency, never GBP.
+              const cur = site.currency || row.currency || getActiveCurrencyCode();
               return [
                 <span key={`${site.id}:n`} style={{ fontWeight: 700, color: off ? 'var(--t4)' : 'var(--t1)' }}>{site.name}</span>,
                 <span key={`${site.id}:p`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

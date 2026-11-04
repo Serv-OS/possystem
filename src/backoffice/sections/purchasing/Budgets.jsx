@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { useSiteSymbolOf } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { listSites } from '../../../lib/stock/supplierListRules';
 import { moneyWords } from '../../../lib/stock/purchasingRules';
@@ -30,6 +31,8 @@ function RuleEditor({ row, onSave, disabled }) {
 
 export default function Budgets({ orgCtx = null }) {
   const sc = useStockScope();
+  // 5.12.57: each site's row in its own currency, not the signed in venue's.
+  const symbolOf = useSiteSymbolOf();
   const showToast = useStore((s) => s.showToast);
   void orgCtx; // the contract's prop; the board needs only the scope
   const [board, setBoard] = useState(null);
@@ -75,10 +78,10 @@ export default function Budgets({ orgCtx = null }) {
               <tr key={b.location_id}>
                 <Td strong>{sc.siteName(b.location_id) || b.site_name || ''}{b.over && <> <Pill tone={PILLS.overBudget.tone}>{PILLS.overBudget.text}</Pill></>}</Td>
                 <Td><RuleEditor key={`${b.location_id}:${b.rule}:${b.pct}:${b.amount}`} row={b.own ? { ...b.own, budget_row: true } : null} disabled={!editor} onSave={(x) => save(b.location_id, x, b.own?.row_version)} /></Td>
-                <Td num>{b.budget != null ? moneyWords(b.budget) : 'No budget'}</Td>
-                <Td num grey>{moneyWords(b.forecast)}</Td>
-                <Td num>{moneyWords(b.spent)}</Td>
-                <Td num>{b.budget != null ? moneyWords(b.left) : ''}</Td>
+                <Td num>{b.budget != null ? moneyWords(b.budget, symbolOf(b.location_id)) : 'No budget'}</Td>
+                <Td num grey>{moneyWords(b.forecast, symbolOf(b.location_id))}</Td>
+                <Td num>{moneyWords(b.spent, symbolOf(b.location_id))}</Td>
+                <Td num>{b.budget != null ? moneyWords(b.left, symbolOf(b.location_id)) : ''}</Td>
               </tr>
             ))}
           </tbody>

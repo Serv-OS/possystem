@@ -7,6 +7,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { supabase } from '../../../lib/supabase';
 import { useStockScope } from '../../StockScope';
+import { useSiteSymbolOf } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { listSites } from '../../../lib/stock/supplierListRules';
 import { fnErrorText } from '../../../lib/stock/purchasing';
@@ -20,6 +21,8 @@ import CreditNoteModal from './CreditNoteModal';
 export default function Credits({ orgCtx = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: each credit in its own site's currency, not the signed in venue's.
+  const symbolOf = useSiteSymbolOf();
   void orgCtx; // the contract's prop; the list needs only the scope
   const [tab, setTab] = useState('asked');
   const [editing, setEditing] = useState(null);   // a request or {} for new
@@ -39,7 +42,7 @@ export default function Credits({ orgCtx = null }) {
     showToast?.(await fnErrorText(data, error, 'the email could not be sent'), 'error');
   };
   const setStatus = async (r, status) => {
-    if (status === 'written_off' && !(await confirm({ title: 'Write off this credit?', words: `${moneyWords(r.amount)} from ${r.supplier_name || 'the supplier'} will not be chased any more.`, yes: 'Write off', danger: true }))) return;
+    if (status === 'written_off' && !(await confirm({ title: 'Write off this credit?', words: `${moneyWords(r.amount, symbolOf(r.location_id))} from ${r.supplier_name || 'the supplier'} will not be chased any more.`, yes: 'Write off', danger: true }))) return;
     setBusy(r.id);
     const res = await stockApi.setCreditStatus(r.id, status, r.row_version ?? null);
     setBusy(null);
@@ -67,8 +70,8 @@ export default function Credits({ orgCtx = null }) {
                   <Td strong>{r.site_name || sc.siteName(r.location_id)}</Td>
                   <Td>{r.supplier_name || ''}</Td>
                   <Td>{creditReasonWords(r.reason)}{(r.lines || []).length ? <div style={ui.sub}>{r.lines.length} line{r.lines.length === 1 ? '' : 's'}</div> : null}</Td>
-                  <Td num>{moneyWords(r.amount)}</Td>
-                  <Td num grey>{credited ? moneyWords(credited) : ''}</Td>
+                  <Td num>{moneyWords(r.amount, symbolOf(r.location_id))}</Td>
+                  <Td num grey>{credited ? moneyWords(credited, symbolOf(r.location_id)) : ''}</Td>
                   <Td grey>{r.emailed_at ? dayWords(String(r.emailed_at).slice(0, 10)) : 'Not yet'}</Td>
                   <Td><Pill tone={pl.tone}>{pl.text}</Pill></Td>
                   <Td right>

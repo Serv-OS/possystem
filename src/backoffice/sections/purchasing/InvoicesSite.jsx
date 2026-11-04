@@ -12,7 +12,7 @@ import { photoInputProps } from '../../../lib/cameraCapture';
 import { useStore } from '../../../store';
 import { supabase, getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { getLocationConfig } from '../../../lib/locationTime';
-import { money, currencySymbol } from '../../../lib/currency';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { fmtYmd, fmtVenueDate } from '../../../lib/venueDate';
 import NumberField from '../../../components/NumberField';
 import { Icon } from '../../../components/ServOSIcons';
@@ -26,7 +26,8 @@ import { pickSupplierProduct } from '../../../lib/stock/costing';
 import { matchScannedLine } from '../../../lib/stock/purchasingRules';
 import { newUuid } from '../../../lib/stock/phase0Rules';
 import { xeroStatus, xeroPushBill } from '../../../lib/xero';
-import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag, Money } from '../reports/reportKit';
+import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag } from '../reports/reportKit';
+import { Money } from '../stock/SiteMoney';
 import { useSiteStockContext } from '../../../lib/stock/siteContext';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -49,6 +50,8 @@ const guessMatch = (line, cands) => matchScannedLine(line, cands).match?.item ||
 export default function InvoicesSite({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
   const { taxRates } = useSiteStockContext(siteId);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the imports.
+  const { money, currencySymbol, code: cur } = useSiteMoney(siteId);
   const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
   const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
   const rawLineOf = (l) => (l.lineTotal != null ? Number(l.lineTotal) : Number(l.qty) * Number(l.unitPrice));
@@ -210,7 +213,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
     { key: 'date', label: 'Date', sortable: true, render: (inv) => <span style={{ color: 'var(--t3)', whiteSpace: 'nowrap' }}>{inv.invoiceDate ? fmtYmd(inv.invoiceDate) : fmtVenueDate(inv.createdAt, venueTz)}</span> },
     { key: 'supplier', label: 'Supplier', sortable: true, render: (inv) => <span style={{ color: 'var(--t1)' }}>{supplierNameOf(inv) || '—'}</span> },
     { key: 'number', label: 'Invoice #', sortable: true, render: (inv) => inv.invoiceNumber || '—' },
-    { key: 'total', label: 'Total', align: 'right', sortable: true, render: (inv) => <Money v={inv.total} /> },
+    { key: 'total', label: 'Total', align: 'right', sortable: true, render: (inv) => <Money v={inv.total} code={cur} /> },
     { key: 'status', label: 'Status', sortable: true, render: (inv) => <Tag label={inv.status} tone={(inv.status || '').toUpperCase() === 'POSTED' ? 'good' : 'neutral'} /> },
     ...(xeroOn ? [{
       key: 'xero', label: 'Xero', render: (inv) => {
@@ -226,7 +229,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
       },
     }] : []),
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  ], [supplierNameOf, xeroOn, xeroPush, venueTz]);
+  ], [supplierNameOf, xeroOn, xeroPush, venueTz, cur]);
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>

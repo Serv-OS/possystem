@@ -21,6 +21,7 @@ import { createRequire, registerHooks } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const SRC = new URL('../../', import.meta.url);
 const at = (p) => new URL(p, SRC);
@@ -47,8 +48,10 @@ const EDITS = [
 const fromFirstImport = (text) => { const i = text.search(/^import /m); assert.ok(i >= 0, 'the file has an import line'); return text.slice(i); };
 
 /** Main's Recipes.jsx from its first import line, rebuilt from the moved file. */
+// 5.12.57: the site money edits are put back first (fixtures/siteMoneyEdits.js): for a one site company
+// the site's currency is the signed in venue's, so they change nothing it sees.
 function mainText(moved) {
-  let body = fromFirstImport(moved);
+  let body = fromFirstImport(undoSiteMoney(SITE, moved));
   for (const e of EDITS) {
     assert.equal(count(body, e.moved), e.times, `${e.moved.trim().slice(0, 70)} appears ${e.times} time(s)`);
     body = body.split(e.moved).join(e.was);
@@ -65,7 +68,8 @@ test('RecipesSite is main\'s Recipes.jsx moved whole: take out the facts line, u
 });
 
 test('the moved file imports nothing new but RecipeFactsLine, and keeps every one site word and save', () => {
-  const moved = fs.readFileSync(SITE, 'utf8');
+  // 5.12.57: the site money edits put back first (its useSiteMoney and site Money cell imports).
+  const moved = undoSiteMoney(SITE, fs.readFileSync(SITE, 'utf8'));
   const head = moved.slice(0, moved.search(/^import /m));
   assert.doesNotMatch(head, /[\u2013\u2014]/, 'the rewritten top comment has no long dash');
   const imports = [...moved.matchAll(/^(?:import [^;]*?from|\} from) '([^']+)';$/gm)].map((m) => m[1]);

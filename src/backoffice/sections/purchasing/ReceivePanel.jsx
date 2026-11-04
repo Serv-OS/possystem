@@ -16,12 +16,15 @@ import { receivePurchaseOrder, savePartReceive, attachInvoiceToPO, KITCHEN_RECEI
 import { moneyWords } from '../../../lib/stock/purchasingRules';
 import { tempCheck, SUBSTITUTE_NOTICE, ACCEPT_MAX_C } from '../../../lib/stock/purchasingWords';
 import { Sheet, Btn, Field, TableWrap, Th, Td, Notice, ErrorLine, EmptyLine, ui } from '../stock/stockUi';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 
 const LINE_COLS = 'id, inventory_item_id, supplier_product_id, description, qty_packs, pack_qty, inner_qty, inner_unit, unit_price, qty_received, sort_order';
 
 export default function ReceivePanel({ po, onDone, onClose }) {
   const showToast = useStore((s) => s.showToast);
   const loc = po?.location_id;
+  // 5.12.57: the order's own site currency, not the signed in venue's.
+  const { symbol } = useSiteMoney(loc || null);
   const [lines, setLines] = useState(null);
   const [supplierId, setSupplierId] = useState(null);
   const [got, setGot] = useState({});          // line id -> { qty, price }
@@ -101,7 +104,7 @@ export default function ReceivePanel({ po, onDone, onClose }) {
   return (
     <Sheet title={`Receive ${po.reference || 'order'}`} sub={`${po.supplier_name || ''} at ${po.site_name || 'this site'}`} onClose={onClose} width={760}
       footer={<>
-        <span style={{ fontSize: 13 }}>Received value <b>{moneyWords(total)}</b> ex VAT</span>
+        <span style={{ fontSize: 13 }}>Received value <b>{moneyWords(total, symbol)}</b> ex VAT</span>
         <span style={{ marginLeft: 'auto' }} />
         <Btn disabled={busy} onClick={saveLater}>Save for later</Btn>
         <Btn kind="primary" disabled={busy || !lines?.length || t.tooWarm} onClick={finish}>{busy ? 'Saving…' : 'Finish'}</Btn>

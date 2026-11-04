@@ -16,7 +16,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
-import { money, currencySymbol, signedMoney } from '../../lib/currency';
+import { useSiteMoney } from './stock/useSiteCurrency';
 import { lineValue, negativeStock } from '../../lib/stock/valuation';
 import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel, fetchStockOutboxHealth, releaseStockOutbox, fetchCostRule, saveCostRule } from '../../lib/stock/data';
 import { COST_RULES, COST_RULE_WORDS, normCostRule } from '../../lib/stock/phase0Rules';
@@ -59,6 +59,8 @@ function useSiteMenu(siteId, multi) {
 
 function StockOverviewSite({ setSection, canOpen = () => true, siteId = null, multi = false }) {
   const menuItems = useSiteMenu(siteId, multi);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the imports.
+  const { money, signedMoney } = useSiteMoney(siteId);
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [d, setD] = useState(null);

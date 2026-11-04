@@ -28,6 +28,7 @@ import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import { venueRateRows } from '../../lib/payments/rateCard';
+import { currencyConfig } from '../../lib/currency';
 import AdyenPayments from './reports/AdyenPayments';
 import AdyenDisputes from './reports/AdyenDisputes';
 import AdyenPayouts from './reports/AdyenPayouts';
@@ -65,8 +66,9 @@ function TabBtn({ active, label, onClick }) {
   );
 }
 
+// 5.12.57: in the currency's own locale, so a USD balance reads "$1,234.00", not "US$1,234.00".
 const fmtMinor = (m, cur = 'GBP') =>
-  new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur }).format((Number(m) || 0) / 100);
+  new Intl.NumberFormat(currencyConfig(cur).locale, { style: 'currency', currency: cur }).format((Number(m) || 0) / 100);
 
 // ─── Overview: balances / payout-setup card (Phase 4, v5.7.1) ───────────────
 // Driven by the adyen-financial `balances` action, which returns one of four

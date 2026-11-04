@@ -75,7 +75,9 @@ Deno.serve(async (req) => {
       try {
         const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', row.location_id).maybeSingle();
         if (cfg?.enabled) {
-          const quote = { customerFeeMinor: Math.round(Number(row.customer.delivery_fee || 0) * 100), dropoff: row.customer.address || null, currency: 'GBP', quoteId: null };
+          // 5.12.57: the venue's own currency (it was always GBP).
+          const { data: curRow } = await sb.from('locations').select('currency').eq('id', row.location_id).maybeSingle();
+          const quote = { customerFeeMinor: Math.round(Number(row.customer.delivery_fee || 0) * 100), dropoff: row.customer.address || null, currency: String(curRow?.currency || 'GBP').toUpperCase(), quoteId: null };
           await dispatchCourier(sb, { loc: row.location_id, cfg, order: { ref: row.ref, items: row.items || [], total: row.total, customer: row.customer }, quote });
         }
       } catch (e) { console.warn('[catering-release] courier dispatch', row.ref, (e as Error)?.message); }

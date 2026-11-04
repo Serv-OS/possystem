@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (rel) => readFileSync(join(here, rel), 'utf8');
@@ -35,7 +36,7 @@ const EDITS = [
 ];
 
 test('SuppliersSplit is main\'s Suppliers.jsx byte for byte, apart from the allowed edits', () => {
-  let body = fromFirstImport(read(SPLIT));
+  let body = fromFirstImport(undoSiteMoney(SPLIT, read(SPLIT)));   // 5.12.57: the site money edits put back first
   for (const e of EDITS) {
     assert.equal(count(body, e.moved), e.times, `${e.moved} appears ${e.times} time(s)`);
     body = body.split(e.moved).join(e.was);

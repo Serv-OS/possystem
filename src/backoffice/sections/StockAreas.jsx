@@ -12,7 +12,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
-import { money } from '../../lib/currency';
+import { useSiteMoney } from './stock/useSiteCurrency';
 import { fetchInventoryItems, fetchSuppliers } from '../../lib/stock/data';
 import { areasReady, fetchAreas, saveArea, archiveArea, setReceivingArea, reorderAreas, addUsualSix, fetchAreaHoldings, bulkAssignItemArea } from '../../lib/stock/areas';
 import { AREA_KINDS, kindLabel, RECEIVING_HELP, archiveRefusal, bulkAssignText, areasBelowZero } from '../../lib/stock/areaRules';
@@ -31,6 +31,8 @@ export const NEEDS_UPDATE_TEXT = 'Stock areas need the 16 Oct database update. A
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function StockAreas({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import.
+  const { money } = useSiteMoney(siteId);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [ready, setReady] = useState(null);
   const [areas, setAreas] = useState([]);

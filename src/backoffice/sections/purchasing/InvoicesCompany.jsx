@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { useSiteSymbolOf } from '../stock/useSiteCurrency';
 import { normFocus } from '../../../lib/stock/stockAlertLinks';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { listSites } from '../../../lib/stock/supplierListRules';
@@ -25,6 +26,8 @@ const TABS = [{ id: 'invoices', label: 'Invoices' }, { id: 'missing', label: 'Mi
 export default function InvoicesCompany({ orgCtx = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: each invoice in its own site's currency, not the signed in venue's.
+  const symbolOf = useSiteSymbolOf();
   // arriving from an alert or another screen: { tab } or { focus: 'inbox' } (peeked here, taken once below)
   const [tab, setTab] = useState(() => { const o = normFocus('invoices', sc.peekOpen?.('invoices')); return o?.tab && TABS.some((t) => t.id === o.tab) ? o.tab : (o?.focus === 'inbox' ? 'inbox' : 'invoices'); });
   useEffect(() => { sc.takeOpen?.('invoices'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -101,7 +104,7 @@ export default function InvoicesCompany({ orgCtx = null }) {
                       <Td>{r.site_name || sc.siteName(r.location_id)}{Number(r.splits) > 0 ? <div style={ui.sub}>Split across {r.splits} sites</div> : null}</Td>
                       <Td>{r.supplier_name}</Td>
                       <Td grey>{dayWords(String(r.invoice_date || '').slice(0, 10))}</Td>
-                      <Td num>{moneyWords(r.total)}</Td>
+                      <Td num>{moneyWords(r.total, symbolOf(r.location_id, r.currency))}</Td>
                       <Td>{m && <Pill tone={m.tone}>{m.text}</Pill>}{locked && <> <Pill tone={LOCKED_PILL.tone}>{LOCKED_PILL.text}</Pill></>}</Td>
                       <Td right>{editor && !locked && <Btn small onClick={() => setSplitting(r)}>Split by site</Btn>}</Td>
                     </tr>
@@ -127,7 +130,7 @@ export default function InvoicesCompany({ orgCtx = null }) {
                     <Td>{r.site_name || sc.siteName(r.location_id)}</Td>
                     <Td>{r.supplier_name}</Td>
                     <Td grey>{dayWords(String(r.received_at || '').slice(0, 10))}</Td>
-                    <Td num>{r.subtotal != null ? moneyWords(r.subtotal) : ''}</Td>
+                    <Td num>{r.subtotal != null ? moneyWords(r.subtotal, symbolOf(r.location_id, r.currency)) : ''}</Td>
                   </tr>
                 ))}
               </tbody>

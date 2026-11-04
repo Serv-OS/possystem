@@ -48,7 +48,8 @@ export default function CateringOrders() {
     // v5.8.18: online advance orders alongside catering. An online row has no
     // event_date, so derive the day from customer.collection_at (venue tz).
     let tz = 'Europe/London';
-    try { tz = (await getLocationConfig(id))?.timezone || tz; } catch { /* default */ }
+    let venueCur = null;   // 5.12.57: the venue's own currency first (the catering setting defaulted to GBP)
+    try { const lc = await getLocationConfig(id); tz = lc?.timezone || tz; venueCur = lc?.currency || null; } catch { /* default */ }
     const rows = (data || []).map((o) => {
       // An ezCater order (a catering order, customer.channel 'ezcater') is paid through ezCater.
       if (o.event_date) return isPrepaidByChannel(o) ? { ...o, paid: true } : o;
@@ -59,7 +60,7 @@ export default function CateringOrders() {
       // paid flag is false (not null), so ?? never fired and they showed as Pay later.
       return { ...o, event_date, event_time, paid: !!(o.paid || o.customer?.paid || o.source === 'online' || o.source === 'kiosk') };
     }).filter((o) => o.event_date);
-    setOrders(rows); setCur(cfg?.currency || 'gbp');
+    setOrders(rows); setCur(String(venueCur || cfg?.currency || 'gbp').toLowerCase());
   };
   useEffect(() => {
     (async () => { try { const id = await getActiveLocationSync(); setLocId(id); if (supabase && id) await load(id); } catch {} finally { setLoading(false); } })();

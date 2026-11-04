@@ -20,6 +20,7 @@
 // PURE: node:test loads it (src/lib/ownerStock.test.js).
 
 import { hasFeature } from './ownerCompare.js';
+import { currencyConfig } from './currency.js';
 
 /** True when the snapshot's own function sends the stock block. */
 export const canStock = (snapshot) => hasFeature(snapshot, 'stock');
@@ -71,9 +72,12 @@ export function dayWords(ymd) {
   return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).replace(/,/g, '');
 }
 
-/** Whole pounds (or dollars) in the venue's currency, the Owner app's money format. */
+/**
+ * Whole pounds (or dollars) in the venue's currency, the Owner app's money format.
+ * 5.12.57: in the currency's own locale, so USD reads "$3,210" (en-GB printed "US$3,210").
+ */
 export function moneyWords(n, currency = 'GBP', dp = 0) {
-  try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: currency || 'GBP', minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
+  try { return new Intl.NumberFormat(currencyConfig(currency || 'GBP').locale, { style: 'currency', currency: currency || 'GBP', minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
   catch { return `${(Number(n) || 0).toFixed(dp)} ${currency || ''}`.trim(); }
 }
 

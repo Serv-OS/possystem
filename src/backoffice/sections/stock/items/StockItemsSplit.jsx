@@ -888,9 +888,10 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
 
   return (
     <div style={{ maxWidth: 760 }}>
+      {/* 5.12.57: the example prices are in the venue's own symbol, never a typed pound sign. */}
       <p style={{ fontSize: 13, color: 'var(--t2)', marginTop: 0 }}>
-        Enter what you buy it in (a unit from the <b>Units</b> tab) and what it costs — e.g. <b>1 Keg for £152</b> or
-        <b> 1 Case for £40</b>. The cost per {draft.baseUnit} is worked out for you and the <b>preferred</b> line sets this
+        Enter what you buy it in (a unit from the <b>Units</b> tab) and what it costs — e.g. <b>1 Keg for {currencySymbol()}152</b> or
+        <b> 1 Case for {currencySymbol()}40</b>. The cost per {draft.baseUnit} is worked out for you and the <b>preferred</b> line sets this
         item's cost. {(draft.packaging || []).length === 0 && <span style={{ color: 'var(--red, #ef4444)' }}>Tip: add your buy units on the Units tab first.</span>}
       </p>
 
@@ -938,7 +939,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
               <span style={{ fontSize: 13, color: 'var(--t2)' }}>{currencySymbol()}</span>
               <input type="number" min="0" step="any" value={row.packPrice} onChange={e => setRow(r => ({ ...r, packPrice: e.target.value }))} placeholder="152" style={{ ...fieldStyle, width: 100 }} />
             </div>
-            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>e.g. <b>1 Keg for £152</b>, or <b>1 Case for £40</b>. Add units on the <b>Units</b> tab.</div>
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>e.g. <b>1 Keg for {currencySymbol()}152</b>, or <b>1 Case for {currencySymbol()}40</b>. Add units on the <b>Units</b> tab.</div>
             {rateDecFor(row) > 0 ? (
               <label style={{ display: 'flex', gap: 7, alignItems: 'center', fontSize: 13, color: 'var(--t2)', cursor: 'pointer', marginTop: 8 }}>
                 <input type="checkbox" checked={row.priceIncludesTax === true} onChange={e => setRow(r => ({ ...r, priceIncludesTax: e.target.checked }))} />

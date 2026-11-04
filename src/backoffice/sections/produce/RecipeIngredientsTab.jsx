@@ -162,7 +162,7 @@ export default function RecipeIngredientsTab({ detail, editable = false, reload,
 
       <div style={ui.card}>
         <RecipeLinesEditor lines={lines} onChange={setLines} disabled={!editable || saving} recipeType={kindToType(recipe.kind)}
-          orderTypeView={view} onOrderTypeView={setView} lineCosts={lineCosts} itemPicker={itemPicker} />
+          orderTypeView={view} onOrderTypeView={setView} lineCosts={lineCosts} itemPicker={itemPicker} currency={cur} />
         {editable && (
           <div style={{ ...ui.row, marginTop: 14, flexWrap: 'wrap' }}>
             <Btn kind="primary" onClick={saveLines} disabled={saving || !dirty}>{saving ? 'Saving…' : 'Save lines'}</Btn>

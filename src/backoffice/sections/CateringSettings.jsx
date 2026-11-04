@@ -11,6 +11,7 @@ import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/sup
 import { CUSTOMER_ROOT, customerUrl, groupCaterUrl } from '../../lib/env';
 import { parsePctList } from '../../lib/tipping';
 import { Icon } from '../../components/ServOSIcons';
+import { currencySymbol, getActiveCurrencyCode } from '../../lib/currency';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -30,11 +31,12 @@ const S = {
   toggle: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--t2)', cursor: 'pointer' },
   warn: { background: 'var(--bg2)', border: '1px solid var(--amber, #d98a00)', borderRadius: 10, padding: '10px 12px', fontSize: 12.5, color: 'var(--t2)', marginBottom: 12 },
 };
-const CCY = { gbp: '£', usd: '$', eur: '€' };
+// 5.12.57: catering is sold in the venue's own currency (Location settings), never its own GBP default.
+const venueCur = () => getActiveCurrencyCode().toLowerCase();
 const DAYS = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['fri', 'Fri'], ['sat', 'Sat'], ['sun', 'Sun']];
 
 const BLANK = (locId) => ({
-  location_id: locId, enabled: false, currency: 'gbp', slug: '', banner_message: '',
+  location_id: locId, enabled: false, currency: venueCur(), slug: '', banner_message: '',
   hours: {}, closures: [], lead_time_min_days: '', lead_time_max_days: '', prep_time_minutes: '',
   order_minimum: '', tips_enabled: false, tip_default_pct: '', tip_percentages: '5, 10, 15, 20', tip_allow_custom: true,
   takeout_enabled: false, takeout_dining_option: 'collection',
@@ -46,7 +48,7 @@ const BLANK = (locId) => ({
 const major = (v) => (v == null ? '' : String(v / 100));
 function fromRow(r) {
   return {
-    location_id: r.location_id, enabled: r.enabled, currency: r.currency || 'gbp', slug: r.slug || '', banner_message: r.banner_message || '',
+    location_id: r.location_id, enabled: r.enabled, currency: venueCur(), slug: r.slug || '', banner_message: r.banner_message || '',
     hours: r.hours || {}, closures: r.closures || [],
     lead_time_min_days: r.lead_time_min_days ?? '', lead_time_max_days: r.lead_time_max_days ?? '', prep_time_minutes: r.prep_time_minutes ?? '',
     order_minimum: major(r.order_minimum_minor), tips_enabled: r.tips_enabled, tip_default_pct: r.tip_default_pct ?? '', tip_percentages: (Array.isArray(r.tip_percentages) ? r.tip_percentages : [5, 10, 15, 20]).join(', '), tip_allow_custom: r.tip_allow_custom !== false,
@@ -60,7 +62,7 @@ const num = (v) => (v === '' || v == null ? null : Number(v));
 const minor = (v) => (v === '' || v == null ? null : Math.round(Number(v) * 100));
 function toRow(s) {
   return {
-    location_id: s.location_id, enabled: !!s.enabled, currency: s.currency || 'gbp', slug: s.slug || null, banner_message: s.banner_message || null,
+    location_id: s.location_id, enabled: !!s.enabled, currency: venueCur(), slug: s.slug || null, banner_message: s.banner_message || null,
     hours: s.hours && Object.keys(s.hours).length ? s.hours : null, closures: s.closures && s.closures.length ? s.closures : null,
     lead_time_min_days: num(s.lead_time_min_days), lead_time_max_days: num(s.lead_time_max_days), prep_time_minutes: num(s.prep_time_minutes), kitchen_fire_time: null,
     order_minimum_minor: minor(s.order_minimum), tips_enabled: !!s.tips_enabled, tip_default_pct: num(s.tip_default_pct), tip_percentages: parsePctList(s.tip_percentages), tip_allow_custom: !!s.tip_allow_custom,
@@ -154,7 +156,7 @@ export default function CateringSettings() {
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!supabase || !locId || !s) return <div style={S.empty}>Pick a location to set up catering ordering.</div>;
 
-  const cur = CCY[s.currency] || '£';
+  const cur = currencySymbol(s.currency);
   const need = missing();
   const toggleMenu = (id) => set({ menu_ids: s.menu_ids.includes(id) ? s.menu_ids.filter((x) => x !== id) : [...s.menu_ids, id] });
   const setHour = (d, patch) => set({ hours: { ...s.hours, [d]: { ...(s.hours[d] || {}), ...patch } } });
@@ -177,9 +179,7 @@ export default function CateringSettings() {
       <div style={S.card}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <label style={S.toggle}><input type="checkbox" checked={s.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> Catering site is {s.enabled ? 'ON' : 'OFF'}</label>
-          <select style={{ ...S.input, width: 130 }} value={s.currency} onChange={(e) => set({ currency: e.target.value })}>
-            <option value="gbp">£ GBP</option><option value="usd">$ USD</option><option value="eur">€ EUR</option>
-          </select>
+          <span style={{ fontSize: 12.5, color: 'var(--t3)' }} title="Follows the venue (Location settings)">{cur} {String(s.currency).toUpperCase()}</span>
         </div>
         {s.enabled && need.length > 0 && <div style={{ ...S.warn, marginTop: 12 }}><Icon name="warn" size={14} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 6 }} />Setup incomplete — still needed: <b>{need.join(', ')}</b>. The site won’t save as ON until these are filled.</div>}
         <div style={{ ...S.field, marginTop: 12 }}>

@@ -239,7 +239,10 @@ const EDIT_CARD = ['{multi && <GoLivePlanCard siteId={locId} />}\n          {mul
 const times = (text, part) => text.split(part).length - 1;
 
 /** Today's StockOverview.jsx from its first import line, rebuilt from the new file. */
+// 5.12.57: the site money edits are put back first (fixtures/siteMoneyEdits.js): for a one site company
+// the site's currency is the signed in venue's, so they change nothing it sees.
 function overviewMainText(now) {
+  now = undoSiteMoney(OVERVIEW, now);
   let body = now.slice(now.search(/^import /m));
   for (const line of OVERVIEW_IMPORTS) body = body.replace(line, '');
   const a = body.indexOf(ROUTER_FROM);
@@ -488,6 +491,7 @@ import os from 'node:os';
 import nodePath from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const EDGE_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const EDGE_ENV = { SUPABASE_URL: 'https://ops.test', SUPABASE_SERVICE_ROLE_KEY: 'service-key', PLATFORM_SUPABASE_URL: 'https://platform.test', PLATFORM_SUPABASE_SERVICE_ROLE_KEY: 'platform-key' };
