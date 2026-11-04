@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store';
-import { money, getActiveCurrencyCode } from '../lib/currency';  // v5.5.326: multi-currency
+import { money, getActiveCurrencyCode, currencySymbol } from '../lib/currency';  // v5.5.326: multi-currency; 5.12.57: the cash box shows the venue's symbol
 import { denominationsFor, countTotal } from '../lib/cashDenominations';
 import { Icon } from './ServOSIcons';
 
@@ -139,7 +139,7 @@ export default function DrawerCashModal({
                 {mode === 'in' ? 'Opening float' : 'Counted cash'}
               </label>
               <div style={{ position:'relative' }}>
-                <span style={{ position:'absolute', left:14, top:'50%', transform:'translateY(-50%)', fontWeight:700, fontSize:20, color:'var(--t3)' }}>£</span>
+                <span style={{ position:'absolute', left:14, top:'50%', transform:'translateY(-50%)', fontWeight:700, fontSize:20, color:'var(--t3)' }}>{currencySymbol()}</span>
                 <input type="number" step="0.01" min="0" value={quickAmount}
                   onChange={e => setQuickAmount(e.target.value)}
                   placeholder="0.00" autoFocus

@@ -30,6 +30,10 @@ import {
 } from '../../supabase/functions/_shared/boSectionRules.js';
 // One reading of "that column is not there yet" for the whole app (PGRST204, 42703, the wording).
 import { isMissingColumnError } from './kds/kdsSettings.js';
+// 5.12.57: the Workforce menu names the tip pool for the venue's country (the region follows the
+// venue's currency, as everywhere).
+import { regionOf } from '../../supabase/functions/_shared/regionPack.js';
+import { getActiveCurrencyCode } from './currency.js';
 
 export {
   BO_SECTION_KEYS, EVERYTHING_ROLES, isEverythingRole, checkSections, storedSections,
@@ -47,7 +51,7 @@ export {
 // collapsible accordion of existing routes.
 export const NAV_IA = [
   { label:'Overview',   icon:'home',      single:'overview' },
-  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
+  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },   // uk only: a US venue reads TAX_LABEL_WHEN_US (Tax)
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-areas','Stock areas'],['stock-transfers','Transfers'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches'],['central-kitchen','Central kitchen']] },
@@ -233,12 +237,16 @@ function withMultiLabels(rows) {
   return changed ? out : rows;
 }
 
+// 5.12.57 (US basics, batch 6: tax): a US venue has no VAT, so its Menu row says "Tax".
+export const TAX_LABEL_WHEN_US = Object.freeze({ tax: 'Tax' });
 /**
  * The name a route shows in the top bar: its multi site label for a multi site company, else the
  * caller's own label (today's NAV title), unchanged.
  */
 export function routeLabel(routeId, fallback, profile) {
   if (stockMulti(profile) && typeof routeId === 'string' && Object.prototype.hasOwnProperty.call(LABEL_WHEN_MULTI, routeId)) return LABEL_WHEN_MULTI[routeId];
+  // 5.12.57 (batch 6, tax): the top bar title of the Tax page says Tax at a US venue (it has no VAT).
+  if (typeof routeId === 'string' && Object.prototype.hasOwnProperty.call(TAX_LABEL_WHEN_US, routeId) && regionOf(getActiveCurrencyCode()) === 'US') return TAX_LABEL_WHEN_US[routeId];
   return fallback;
 }
 
@@ -265,7 +273,18 @@ export function filterNav(nav, profile) {
   const allowed = allowedKeys(profile);
   const rows = allowed === null ? nav : nav.filter((row) => { const key = sectionKeyOfRow(row); return !!key && allowed.includes(key); });
   const shown = withoutGatedChildren(rows, profile);
-  return stockMulti(profile) ? withMultiLabels(shown) : shown;
+  return withCountryLabels(stockMulti(profile) ? withMultiLabels(shown) : shown);
+}
+
+// 5.12.57 (US basics, pay law): a US venue's Workforce menu says "Tip pool"; "Tronc" is a UK word.
+// A UK venue's rows are returned untouched (the same array).
+export const LABEL_WHEN_US = Object.freeze({ 'wf-tronc': 'Tip pool' });
+const US_LABELS = Object.freeze({ ...LABEL_WHEN_US, ...TAX_LABEL_WHEN_US });
+function withCountryLabels(rows, country = regionOf(getActiveCurrencyCode())) {
+  if (country !== 'US') return rows;
+  return rows.map((row) => (row.children && row.children.some((c) => Object.prototype.hasOwnProperty.call(US_LABELS, c[0]))
+    ? { ...row, children: row.children.map((c) => (Object.prototype.hasOwnProperty.call(US_LABELS, c[0]) ? [c[0], US_LABELS[c[0]]] : c)) }
+    : row));
 }
 
 /** Where a login lands: the first route of its first section in sidebar order, or null for none. */

@@ -57,3 +57,15 @@ export function buildTimezoneGroups() {
 }
 export const TIMEZONE_GROUPS = buildTimezoneGroups();
 export const TIMEZONES = TIMEZONE_GROUPS.flatMap(g => g.zones); // kept for any legacy reader
+
+/**
+ * 5.12.57: the time zone a new venue starts on, from its currency. GBP is London and EUR Dublin, as
+ * before; USD has no default ('') because US venues span six zones, so Add location asks for one.
+ * (Mozz Pizza's Utah sites were added on the London default, then set to New York by hand.)
+ */
+export function defaultTimezoneFor(currency) {
+  const c = String(currency || 'GBP').toUpperCase();
+  if (c === 'USD') return '';
+  if (c === 'EUR') return 'Europe/Dublin';
+  return 'Europe/London';
+}

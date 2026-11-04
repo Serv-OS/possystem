@@ -193,6 +193,38 @@ export function basketAllergens(cart, items, lineExtras = null) {
   return orderIds(Array.from(found.keys())).map(id => ({ id, names: found.get(id) }));
 }
 
+// 5.12.57: a US venue's allergen sheet offers the 9 major food allergens (FDA), wheat on the
+// 'gluten' id (the alias table reads wheat as gluten, see lib/foodLaw.js). Ids never change.
+export const US_SHEET_ALLERGENS = Object.freeze(['milk', 'eggs', 'fish', 'crustaceans', 'nuts', 'peanuts', 'gluten', 'soy', 'sesame']);
+
+/** The ids the allergen sheet offers at the venue: the 14 in the UK and Ireland, the 9 in the US. */
+export function sheetAllergenIds(country = 'UK') {
+  return country === 'US' ? US_SHEET_ALLERGENS : UK_ALLERGENS;
+}
+
+// 5.12.57: the US words. gluten has its own key in every language (Wheat/Gluten); the rest only
+// change the English spelling, so a translated name (Sulfitos, Crustáceos) is kept as it is.
+const US_KEYS = Object.freeze({ gluten: 'k2.allergen.wheatGluten' });
+const UK_ENGLISH = Object.freeze({ crustaceans: 'Crustaceans', soy: 'Soy', molluscs: 'Molluscs', sulphites: 'Sulphites' });
+const US_ENGLISH = Object.freeze({ crustaceans: 'Crustacean shellfish', soy: 'Soybeans', molluscs: 'Mollusks', sulphites: 'Sulfites' });
+
+/** The i18n key for an allergen id at the venue (country 'US': the US key where there is one). */
+export function allergenKeyFor(id, country = 'UK') {
+  if (country === 'US' && US_KEYS[id]) return US_KEYS[id];
+  return kioskAllergenKey(id);
+}
+
+/** One allergen's display name at the venue, through the i18n t function. */
+export function allergenNameFor(id, translate, country = 'UK') {
+  const tr = typeof translate === 'function' ? translate : (k) => k;
+  const key = allergenKeyFor(id, country);
+  if (!key) return '';
+  let name = tr(key);
+  if (name === key && key !== kioskAllergenKey(id)) name = tr(kioskAllergenKey(id));   // a t with no US key
+  if (country === 'US' && UK_ENGLISH[id] && name === UK_ENGLISH[id]) return US_ENGLISH[id];
+  return name;
+}
+
 /** The i18n key for a UK allergen id, or null for any other id. */
 export function kioskAllergenKey(id) {
   return UK_SET.has(id) ? `k2.allergen.${id}` : null;
@@ -202,11 +234,11 @@ export function kioskAllergenKey(id) {
  * Display labels for allergen ids. translate is the i18n t function. A UK allergen uses
  * its k2.allergen key; any other value shows as stored, with a capital first letter.
  */
-export function kioskAllergenLabels(ids, translate) {
+export function kioskAllergenLabels(ids, translate, country = 'UK') {
   const tr = typeof translate === 'function' ? translate : (k) => k;
   return (Array.isArray(ids) ? ids : []).map(id => {
     const key = kioskAllergenKey(id);
-    if (key) return tr(key);
+    if (key) return country === 'US' ? allergenNameFor(id, tr, country) : tr(key);   // 5.12.57: US words
     const s = String(id || '');
     return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
   }).filter(Boolean);

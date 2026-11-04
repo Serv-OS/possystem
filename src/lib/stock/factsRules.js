@@ -59,6 +59,13 @@ export function allergenWords(ids) {
 /** The 14 as { id, label } in the sheet's order (the chips). */
 export const ALLERGEN_CHIPS = Object.freeze(UK_ALLERGENS.map((id) => Object.freeze({ id, label: allergenLabel(id) })));
 
+// 5.12.57: a US venue reads the same 14 ids (the database rolls them up by id) in US words, wheat
+// on the gluten id (lib/foodLaw.js). The UK chips above are unchanged.
+const US_CHIP_LABELS = Object.freeze({ gluten: 'Wheat/Gluten', crustaceans: 'Crustacean shellfish', soy: 'Soybeans', molluscs: 'Mollusks', sulphites: 'Sulfites' });
+export const US_ALLERGEN_CHIPS = Object.freeze(ALLERGEN_CHIPS.map((c) => Object.freeze({ id: c.id, label: US_CHIP_LABELS[c.id] || c.label })));
+/** The allergen chips for the venue's country. */
+export const allergenChipsFor = (country) => (country === 'US' ? US_ALLERGEN_CHIPS : ALLERGEN_CHIPS);
+
 // ── diets ─────────────────────────────────────────────────────────────────────
 
 /** The diet ids the database knows (stock_co__diet_ids): the Menu Manager tags plus the three free ones. */
@@ -110,6 +117,15 @@ export const NUTRITION_FIELDS = Object.freeze([
 ]);
 
 const NUTRITION_KEYS = NUTRITION_FIELDS.map((f) => f.key);
+
+// 5.12.57: US words where only the word changes (Calories, Fiber). Salt stays: sodium is a
+// different figure in mg, so it needs its own field, not a new name.
+const US_NUTRITION_LABELS = Object.freeze({ kcal: 'Calories', fibre_g: 'Fiber' });
+export const US_NUTRITION_FIELDS = Object.freeze(NUTRITION_FIELDS.map((f) => Object.freeze({
+  ...f, label: US_NUTRITION_LABELS[f.key] || f.label, unit: f.key === 'kcal' ? 'Cal' : f.unit,
+})));
+/** The nutrition fields for the venue's country (same keys, US words at a US venue). */
+export const nutritionFieldsFor = (country) => (country === 'US' ? US_NUTRITION_FIELDS : NUTRITION_FIELDS);
 
 const numOrNull = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
 

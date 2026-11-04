@@ -8,6 +8,7 @@
  *
  * UK FSA / Safer Food Better Business defaults are built in and overridable per unit
  * in admin config — the floor app READS a unit's target band, it never defines it.
+ * 5.12.57: a US venue gets the FDA Food Code defaults instead (US_TYPE_DEFAULTS, typeDefaultsFor).
  */
 
 // ── unit-of-measure (display only) ───────────────────────────────────────────
@@ -45,7 +46,30 @@ export const TYPE_DEFAULTS = {
   // adjusted or taken out of use.
   probe:     { min: -1,   max: 1,   label: 'Probe calibration', guidance: 'Ice-water test: probe in melting ice must read 0°C (±1°C). Out of tolerance → recalibrate or replace the probe before use. (Boiling test: set this unit\'s range to 99–101°C.)' },
 };
-export const typeDefault = (type) => TYPE_DEFAULTS[type] || { min: null, max: null, label: type || 'Unit', guidance: '' };
+
+// 5.12.57: FDA Food Code defaults for a US venue. Still stored in °C (the database and the
+// submit RPC are °C only), but every limit is a round °F number: a max is rounded UP and a min
+// DOWN to the 2 decimals target_min_c / target_max_c keep (numeric(6,2)), so a reading of exactly
+// 41°F or 0°F is in range after the round trip. A US screen shows and takes °F.
+const fMax = (f) => Math.ceil(fToC(f) * 100) / 100;
+const fMin = (f) => Math.floor(fToC(f) * 100) / 100;
+export const US_TYPE_DEFAULTS = {
+  fridge:    { min: fMin(34),  max: fMax(41),  label: 'Fridge',     guidance: 'Cold holding: keep food at 41°F or below. Target 34°F to 38°F.' },
+  freezer:   { min: fMin(-10), max: fMax(0),   label: 'Freezer',    guidance: 'Frozen: keep at 0°F or below.' },
+  cold_hold: { min: fMin(32),  max: fMax(41),  label: 'Cold hold',  guidance: 'Cold holding must stay at 41°F or below.' },
+  hot_hold:  { min: fMin(135), max: fMax(194), label: 'Hot hold',   guidance: 'Hot holding must stay at 135°F or above.' },
+  cooking:   { min: fMin(165), max: fMax(392), label: 'Cooking',    guidance: 'Cook each food to its Food Code minimum internal temperature. Reheat food for hot holding to 165°F or above.' },
+  chill_down:{ min: fMin(32),  max: fMax(41),  label: 'Chill-down', guidance: 'Cool from 135°F to 70°F within 2 hours, then to 41°F or below within the next 4 hours.' },
+  delivery:  { min: fMin(32),  max: fMax(41),  label: 'Delivery',   guidance: 'Chilled deliveries: 41°F, reject above 45°F. Frozen deliveries must arrive frozen.' },
+  probe:     { min: fMin(30),  max: fMax(34),  label: 'Probe calibration', guidance: 'Ice-water test: probe in melting ice must read 32°F (plus or minus 2°F). Out of tolerance: recalibrate or replace the probe before use. (Boiling test: set this unit\'s range to 210°F to 214°F.)' },
+};
+
+/** 5.12.57: the defaults for the venue's country ('US' gets the FDA Food Code; the UK and Ireland as before). */
+export const typeDefaultsFor = (country) => (country === 'US' ? US_TYPE_DEFAULTS : TYPE_DEFAULTS);
+/** 5.12.57: the unit a venue reads and types temperatures in: °F at a US venue, °C everywhere else. */
+export const defaultTempUnit = (country) => (country === 'US' ? 'F' : 'C');
+
+export const typeDefault = (type, country) => typeDefaultsFor(country)[type] || { min: null, max: null, label: type || 'Unit', guidance: '' };
 
 // ── range / breach ───────────────────────────────────────────────────────────
 /** In range when min ≤ reading ≤ max. Null bounds are open-ended. */

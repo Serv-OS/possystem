@@ -13,6 +13,7 @@ import { BarRow } from './_charts';
 import { useExportFlow } from './ExportStatus';
 import { col, withSites, siteNameOf, toggleSort, sortLoaded, notesOf, dayWords, weekWords, whenAt, groupRows, maxAbs, initialPick, initialSite } from '../../../lib/stock/reportView.js';
 import { money } from '../../../lib/currency';
+import { stockTaxWords } from '../../../lib/stock/stockRegion';
 
 const TITLE = 'Purchases';
 const SUB = 'Ordered, received and invoiced side by side per site; spend by supplier and site; supplier reliability.';
@@ -34,6 +35,9 @@ const ORDER_COLS = [
 ];
 const TABS = [{ id: 'site', label: 'By site' }, { id: 'supplier', label: 'Supplier by site' }, { id: 'category', label: 'By category' }, { id: 'week', label: 'Weekly trend' }, { id: 'order', label: 'Orders' }];
 const VAT = [{ value: 'net', label: 'Net' }, { value: 'gross', label: 'With VAT' }];
+// 5.12.57 (US basics batch 7): when every site shown is a US site, 'Tax' and 'With tax'
+const siteCur = (siteById, id) => (siteById && typeof siteById.get === 'function' ? siteById.get(id) : siteById?.[id])?.currency || null;
+const wordsFor = (ids, siteById) => stockTaxWords((ids || []).length && ids.every((id) => stockTaxWords(siteCur(siteById, id)).keptInCost) ? 'USD' : 'GBP');
 const SORT_KEYS = { _week: 'week_start', _ordered_at: 'ordered_at', _expected: 'expected_date', _received_at: 'received_at', _invoiced: 'invoice_id', _unapproved: 'sent_unapproved' };
 
 /** Supplier rows (one per supplier and site) become one row per supplier with a received cell per site and the sum. */
@@ -87,14 +91,16 @@ export default function StockPurchases({ orgId, sites, siteById, range, compare,
   // The trend reads each site's weeks oldest first, whatever order the table is sorted in.
   const weekGroups = tab === 'week' ? groupRows(sortLoaded(shownRows, { key: 'week_start', dir: 'asc' }), 'location_id') : [];
   const notes = notesOf(meta);
-  const cols = tab === 'supplier' ? (grid ? grid.columns : SUPPLIER_COLS) : tab === 'category' ? CATEGORY_COLS : tab === 'week' ? WEEK_COLS : ORDER_COLS;
+  const tw = wordsFor(site ? [site] : sites, siteById);
+  const orderCols = tw.keptInCost ? ORDER_COLS.map((c) => (c.key === 'tax' ? { ...c, label: tw.Tax } : c)) : ORDER_COLS;
+  const cols = tab === 'supplier' ? (grid ? grid.columns : SUPPLIER_COLS) : tab === 'category' ? CATEGORY_COLS : tab === 'week' ? WEEK_COLS : orderCols;
   const drillRows = grid ? grid.rows : shownRows;
 
   return (
     <StockReportFrame title={TITLE} sub={SUB} meta={meta} extraLines={notes} onExport={ex.run} exportLabel={ex.atOnce ? 'Export CSV' : 'Export all rows as a file'} onShare={onShare ? share : undefined}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
         <TabBar tabs={TABS} value={tab} onChange={(t) => { setTab(t); setSort(null); }} />
-        <Segmented small value={vat} options={VAT} onChange={setVat} />
+        <Segmented small value={vat} options={tw.keptInCost ? [VAT[0], { value: 'gross', label: tw.withTax }] : VAT} onChange={setVat} />
       </div>
 
       {error && <StockError error={error} />}

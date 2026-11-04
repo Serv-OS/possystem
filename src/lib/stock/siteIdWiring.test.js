@@ -436,10 +436,12 @@ const D3 = {
 // changed in place for multi site companies by web-purchasing; proven against main 4f15e759 there
 const D3_ELSEWHERE = new Set(['backoffice/sections/OrderPad.jsx', 'backoffice/sections/PurchaseOrders.jsx']);
 /** A screen's text with its Drop 3 edits undone (main 4f15e759's text for a one site company). */
+// 5.12.57: the site money edits are put back first (fixtures/siteMoneyEdits.js): for a one site company
+// the site's currency is the signed in venue's, so they change nothing it sees.
 function drop3Undone(rel) {
   const d = D3[rel];
-  if (!d) return readAbs(path.join(SRC, rel));
-  let text = readAbs(path.join(SRC, d.from || rel));
+  if (!d) return undoSiteMoney(rel, readAbs(path.join(SRC, rel)));
+  let text = undoSiteMoney(d.from || rel, readAbs(path.join(SRC, d.from || rel)));
   if (d.strip) text = text.split('\n').filter((l) => !D3_MARK.test(l)).join('\n');
   if (d.undo) text = d.undo(text);
   for (const [now, was] of d.pairs) {
@@ -503,6 +505,7 @@ test('one site companies: every edited screen is main\'s text once its inert Dro
 import { createRequire, registerHooks } from 'node:module';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const nodeRequire = createRequire(import.meta.url);
 let transformSync = null;

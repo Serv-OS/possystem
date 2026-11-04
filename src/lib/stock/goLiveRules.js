@@ -13,6 +13,7 @@
 // today's screen. Unit tested in goLiveRules.test.js.
 
 import { normCostRule } from './phase0Rules.js';
+import { getActiveCurrencyCode } from '../currency.js';
 
 // -- the go live plan ----------------------------------------------------------------------------
 
@@ -40,12 +41,12 @@ export function isoDay(v) {
   return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? s : null;
 }
 
-/** '2026-11-03' as '3 Nov' (en-GB, no year), '' for no day. */
-export function dayWords(iso) {
+/** '2026-11-03' as '3 Nov' (en-GB, no year), 'Nov 3' at a US venue (5.12.57), '' for no day. */
+export function dayWords(iso, venue = getActiveCurrencyCode()) {
   const d = isoDay(iso);
   if (!d) return '';
   const [, , m, day] = ISO_DAY.exec(d);
-  return `${Number(day)} ${MONTHS[Number(m) - 1]}`;
+  return String(venue || '').toUpperCase() === 'USD' ? `${MONTHS[Number(m) - 1]} ${Number(day)}` : `${Number(day)} ${MONTHS[Number(m) - 1]}`;
 }
 
 /** A day plus n days, as 'YYYY-MM-DD' (null for no day). */

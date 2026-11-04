@@ -10,10 +10,12 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../../lib/supabase';
-import { money } from '../../../../lib/currency';
+import { money, currencySymbol } from '../../../../lib/currency';
 import { fetchSuppliers, upsertSupplier, setSupplierArchived } from '../../../../lib/stock/data';
 import { reportSave } from '../../../../lib/saveHealth';
 import { PageHeader, SearchField } from '../../reports/reportKit';
+import { stockPlaceholders } from '../../../../lib/stock/stockRegion';
+import { useSiteCurrency } from '../useSiteCurrency';
 
 const DAYS = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['fri', 'Fri'], ['sat', 'Sat'], ['sun', 'Sun']];
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -23,6 +25,7 @@ const blank = () => ({ name: '', contactName: '', email: '', phone: '', accountN
 export default function SuppliersSplit({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
+  const ph = stockPlaceholders(useSiteCurrency(siteId)); // 5.12.57: a .com example at a US site
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -101,10 +104,11 @@ export default function SuppliersSplit({ siteId = null } = {}) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <div><label style={lbl}>Contact name</label><input value={draft.contactName || ''} onChange={e => upd('contactName', e.target.value)} style={field} /></div>
               <div><label style={lbl}>Account number</label><input value={draft.accountNumber || ''} onChange={e => upd('accountNumber', e.target.value)} style={field} /></div>
-              <div><label style={lbl}>Email</label><input value={draft.email || ''} onChange={e => upd('email', e.target.value)} style={field} placeholder="orders@supplier.co.uk" /></div>
+              <div><label style={lbl}>Email</label><input value={draft.email || ''} onChange={e => upd('email', e.target.value)} style={field} placeholder={ph.supplierEmail} /></div>
               <div><label style={lbl}>Phone</label><input value={draft.phone || ''} onChange={e => upd('phone', e.target.value)} style={field} /></div>
               <div><label style={lbl}>Payment terms (days)</label><input type="number" min="0" value={draft.paymentTermsDays ?? ''} onChange={e => upd('paymentTermsDays', e.target.value)} style={field} /></div>
-              <div><label style={lbl}>Min order value</label><input type="number" min="0" step="any" value={draft.minOrderValue ?? ''} onChange={e => upd('minOrderValue', e.target.value)} style={field} placeholder="£" /></div>
+              {/* 5.12.57: the venue's own symbol, never a typed pound sign. */}
+              <div><label style={lbl}>Min order value</label><input type="number" min="0" step="any" value={draft.minOrderValue ?? ''} onChange={e => upd('minOrderValue', e.target.value)} style={field} placeholder={currencySymbol()} /></div>
               <div><label style={lbl}>Cut-off time</label><input value={draft.cutoffTime || ''} onChange={e => upd('cutoffTime', e.target.value)} style={field} placeholder="e.g. 16:00" /></div>
             </div>
             <div style={{ marginTop: 14 }}>

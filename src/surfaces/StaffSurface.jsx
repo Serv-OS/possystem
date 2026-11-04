@@ -23,7 +23,9 @@ import { MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
 // v5.11.101: open shifts, swaps and availability; money and dates the venue's way (region pack).
 import { CantDoPanel, SwapsSection, AvailabilityCard } from '../staff/StaffShiftSwaps';
 import { dayText, timeText } from '../staff/staffDates';
-import { wfMoneyText } from '../lib/regionPack';
+import { wfMoneyText, DOC_INFO } from '../lib/regionPack';
+// 5.12.57: paid time off is Holiday (UK) or PTO (US), from the venue's region in the snapshot.
+import { holidayWord } from '../staff/payLaw';
 // MARKER 5.11.102 staff app chat tab
 import { ChatTab } from '../staff/StaffChat';
 import { useTeamChat } from '../staff/useTeamChat';
@@ -448,14 +450,14 @@ function ShiftsTab({ snap, onChanged }) {
           <button onClick={() => { setRequesting(r => !r); setErr(''); }} style={{ background: 'none', border: '1px solid var(--bdr)', borderRadius: 999, padding: '5px 12px', color: requesting ? 'var(--t3)' : 'var(--acc)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>{requesting ? 'Cancel' : 'Request time off'}</button>
         </div>
         <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: requesting || leave.requests.length ? 10 : 0 }}>
-          Holiday accrued so far: <b className="mono" style={{ color: 'var(--t1)' }}>{hm(leave.accruedHours)}</b>
+          {holidayWord(snap?.region)} accrued so far: <b className="mono" style={{ color: 'var(--t1)' }}>{hm(leave.accruedHours)}</b>
         </div>
         {requesting && (
           <div>
             <label style={{ display: 'block', marginBottom: 12 }}>
               <span style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', marginBottom: 5, letterSpacing: '.04em', textTransform: 'uppercase' }}>Type</span>
               <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} style={{ width: '100%', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit' }}>
-                <option value="holiday">Holiday</option><option value="unpaid">Unpaid leave</option><option value="sick">Sick</option><option value="parental">Parental</option>
+                <option value="holiday">{holidayWord(snap?.region)}</option><option value="unpaid">Unpaid leave</option><option value="sick">Sick</option><option value="parental">Parental</option>
               </select>
             </label>
             <Field label="First day" type="date" value={form.from} onChange={e => setForm(f => ({ ...f, from: e.target.value }))} />
@@ -476,7 +478,7 @@ function ShiftsTab({ snap, onChanged }) {
         {leave.requests.map(r => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: '1px solid var(--bdr)', fontSize: 12.5 }}>
             <span style={{ flex: 1 }}>
-              <b style={{ textTransform: 'capitalize' }}>{r.type}</b> · {fmtDay(r.from)}{r.to !== r.from ? ` – ${fmtDay(r.to)}` : ''}{r.days != null ? ` (${r.days}d)` : ''}
+              <b style={{ textTransform: 'capitalize' }}>{r.type === 'holiday' ? holidayWord(snap?.region) : r.type}</b> · {fmtDay(r.from)}{r.to !== r.from ? ` – ${fmtDay(r.to)}` : ''}{r.days != null ? ` (${r.days}d)` : ''}
             </span>
             <b style={{ color: TONE[r.status] || 'var(--t3)', fontSize: 11.5, textTransform: 'capitalize' }}>{r.status}</b>
           </div>
@@ -551,7 +553,8 @@ function TasksTab({ snap, onChanged, goToMe }) {
             ))}
           </div>
           <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 10, lineHeight: 1.5 }}>
-            Your Right to Work upload is reviewed by a manager before it counts.
+            {/* 5.12.57: the venue's work document (Right to Work in the UK, Form I-9 in the US). */}
+            Your {snap?.region?.workDocLabel || DOC_INFO.RTW.label} upload is reviewed by a manager before it counts.
           </div>
         </div>
       )}
@@ -740,7 +743,7 @@ function MeTab({ snap, onSaved, chat }) {
             )}
             {snap?.leave && (
               <div>
-                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--t4)' }}>Holiday accrued</div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--t4)' }}>{holidayWord(snap?.region)} accrued</div>
                 <div className="mono" style={{ fontSize: 15, fontWeight: 800, marginTop: 2 }}>{hm(snap.leave.accruedHours)}</div>
               </div>
             )}

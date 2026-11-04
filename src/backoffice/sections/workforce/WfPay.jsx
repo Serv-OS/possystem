@@ -10,12 +10,21 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, GRP_SECTION, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { activeRegionPack } from '../../../lib/regionPack';
+// 5.12.57: at a US venue managers, supervisors and exempt positions cannot share the tip pool (FLSA).
+import { tipPoolExclusion, tipPoolExclusionWords } from '../../../../supabase/functions/_shared/usTipPool.js';
+import { tipWeightName } from '../../../staff/payLaw';
 
 const PAY_TYPES = [
   { v: 'hourly', lbl: 'Hourly' },
   { v: 'salaried', lbl: 'Salaried' },
   { v: 'ageBanded', lbl: 'Age-banded' },
 ];
+// 5.12.57: age bands are the UK minimum wage bands: a US venue is not offered the type (a position
+// that already has it keeps it in the list so its value still shows).
+const payTypesFor = (pack, current) => PAY_TYPES.filter(p => p.v !== 'ageBanded' || pack.country !== 'US' || current === 'ageBanded');
+// 5.12.57: BANDS ARE NOT BUILT YET. An age banded position used to disable the rate, and nothing read
+// its bands, so it paid nothing (UK too). Until bands exist its base rate is everyone's rate.
+export const AGE_BANDS_WORDS = 'Bands are not built yet: everyone in this position is paid this rate.';
 
 const blankRole = () => ({
   key: '', lbl: '', grp: 'floor', payType: 'hourly',
@@ -24,11 +33,15 @@ const blankRole = () => ({
 
 function rateLabel(r) {
   if (r.payType === 'salaried') return r.salary != null ? `${money(Math.round(r.salary / 1000))}k/yr` : '—';
-  if (r.payType === 'ageBanded') return 'banded';
+  if (r.payType === 'ageBanded') return r.rate != null ? `${money(r.rate, 2)}/h` : 'No rate set';
   return r.rate != null ? `${money(r.rate, 2)}/h` : '—';
 }
 
 export default function WfPay({ ctx, staff, roles, sections, settings, week, showToast, onRolesChanged }) {
+  const pack = activeRegionPack();
+  const us = pack.country === 'US';
+  // 5.12.57: why a position shares no tips at this venue ('manager' | 'exempt'), or null (always null in the UK).
+  const poolOut = (r) => tipPoolExclusion({ country: pack.country, grp: r.grp, roleKey: r.key || null, payType: r.payType, settings: settings?.settings || null });
   const [roleList, setRoleList] = useState(roles?.list || []);
   const [editing, setEditing] = useState(null);     // role object being edited (or new)
   const [busy, setBusy] = useState(false);
@@ -117,7 +130,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }}>Rate card</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Base pay, tronc weighting and SIA flags per role.</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{us ? 'Base pay and tip pool weighting per role. Managers, supervisors and exempt positions share no tips (FLSA).' : 'Base pay, tronc weighting and SIA flags per role.'}</div>
           </div>
           <button className="btn btn-acc btn-sm" onClick={() => setEditing(blankRole())}>
             <Icon name="plus" size={14} /> Add role
@@ -130,7 +143,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
           <EmptyState
             icon="tag"
             title="No roles yet"
-            body="Add your first role to build the rate card. Roles set base pay, tronc weighting and whether SIA cover is required."
+            body={us ? 'Add your first role to build the rate card. Roles set base pay and their tip pool weighting.' : 'Add your first role to build the rate card. Roles set base pay, tronc weighting and whether SIA cover is required.'}
             cta="Add role"
             onCta={() => setEditing(blankRole())}
           />
@@ -143,8 +156,8 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
                   <th style={th}>Group</th>
                   <th style={th}>Pay type</th>
                   <th style={{ ...th, textAlign: 'right' }}>Rate</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Tronc weight</th>
-                  <th style={th}>SIA</th>
+                  <th style={{ ...th, textAlign: 'right' }}>{tipWeightName(pack)}</th>
+                  {!us && <th style={th}>SIA</th>}
                   <th style={{ ...th, textAlign: 'right' }} />
                 </tr>
               </thead>
@@ -158,10 +171,10 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
                         {GRP_SECTION[r.grp] || r.grp}
                       </span>
                     </td>
-                    <td style={{ ...td, color: 'var(--t2)' }}>{(PAY_TYPES.find(p => p.v === r.payType) || {}).lbl || r.payType}</td>
+                    <td style={{ ...td, color: 'var(--t2)' }}>{(PAY_TYPES.find(p => p.v === r.payType) || {}).lbl || r.payType}{r.payType === 'ageBanded' && <div style={{ fontSize: 10.5, color: 'var(--t4)' }}>Bands not built yet</div>}</td>
                     <td style={{ ...td, textAlign: 'right' }} className="mono">{rateLabel(r)}</td>
-                    <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.troncWeight ?? 1).toFixed(2)}</td>
-                    <td style={td}>{r.requiresSIA ? <Badge tone="amber">SIA</Badge> : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
+                    <td style={{ ...td, textAlign: 'right' }} className="mono" title={poolOut(r) ? tipPoolExclusionWords(poolOut(r)) : undefined}>{poolOut(r) ? <span style={{ color: 'var(--t4)' }}>No tips</span> : Number(r.troncWeight ?? 1).toFixed(2)}</td>
+                    {!us && <td style={td}>{r.requiresSIA ? <Badge tone="amber">SIA</Badge> : <span style={{ color: 'var(--t4)' }}>—</span>}</td>}
                     <td style={{ ...td, textAlign: 'right' }}>
                       <button className="btn btn-ghost btn-xs" onClick={() => setEditing({ ...r })}>
                         <Icon name="edit" size={14} /> Edit
@@ -181,7 +194,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }}>Scheduled rate changes</div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-              Plan NMW or pay rises in advance — the new rate applies automatically on the date you set. Future rota weeks already use it.
+              {us ? 'Plan minimum wage or pay rises in advance: the new rate applies automatically on the date you set. Future rota weeks already use it.' : 'Plan NMW or pay rises in advance — the new rate applies automatically on the date you set. Future rota weeks already use it.'}
             </div>
           </div>
           <button className="btn btn-acc btn-sm" onClick={() => setScheduling(true)} disabled={!roleList.length}>
@@ -194,7 +207,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
             .filter(c => c.status !== 'cancelled')
             .sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? -1 : 1))
             .slice(-20);
-          if (!rows.length) return <div style={{ fontSize: 12.5, color: 'var(--t4)' }}>Nothing scheduled. Example: set the new NMW rate today with an effective date of 1 April — it applies itself.</div>;
+          if (!rows.length) return <div style={{ fontSize: 12.5, color: 'var(--t4)' }}>{us ? 'Nothing scheduled. Example: set your state’s new minimum wage today with an effective date of 1 January. It applies itself.' : 'Nothing scheduled. Example: set the new NMW rate today with an effective date of 1 April — it applies itself.'}</div>;
           return rows.map(c => {
             const role = roleMap[c.roleKey];
             const who = c.targetKind === 'role' ? (role?.lbl || c.roleKey) : staffName(c.staffId);
@@ -224,7 +237,7 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
 
       {scheduling && (
         <ScheduleRateModal
-          roles={roleList} staff={staff || []} busy={busy}
+          roles={roleList} staff={staff || []} busy={busy} us={us}
           onClose={() => setScheduling(false)}
           onSave={async (payload) => {
             setBusy(true);
@@ -245,6 +258,8 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
         <RoleEditor
           role={editing}
           busy={busy}
+          pack={pack}
+          poolOut={poolOut}
           onClose={() => setEditing(null)}
           onSave={saveRole}
           onDelete={removeRole}
@@ -255,19 +270,27 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
+function RoleEditor({ role, busy, pack = activeRegionPack(), poolOut = () => null, onClose, onSave, onDelete }) {
   const [draft, setDraft] = useState(role);
   const isNew = !role.id;
   const set = patch => setDraft(d => ({ ...d, ...patch }));
+  const us = pack.country === 'US';
 
   const num = v => (v === '' || v == null ? null : Number(v));
+  // 5.12.57: the key the position will be saved with (the exempt list is keyed by it).
+  const keyOf = (d) => (d.key || d.lbl || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  // 5.12.57 (US, FLSA): a manager, supervisor or exempt position may not have a tip pool weight above 0.
+  const outReason = poolOut({ ...draft, key: keyOf(draft) });
+  const weightRefused = !!outReason && (num(draft.troncWeight) ?? 1) > 0;
 
   function submit() {
+    if (weightRefused) return;
     const next = {
       ...draft,
       lbl: (draft.lbl || '').trim(),
-      key: (draft.key || draft.lbl || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-      rate: draft.payType === 'hourly' ? num(draft.rate) : draft.rate,
+      key: keyOf(draft),
+      // 5.12.57: an age banded position keeps its rate (it is everyone's rate until bands exist).
+      rate: draft.payType === 'hourly' || draft.payType === 'ageBanded' ? num(draft.rate) : draft.rate,
       salary: draft.payType === 'salaried' ? num(draft.salary) : draft.salary,
       contractedWeek: num(draft.contractedWeek) ?? 40,
       troncWeight: num(draft.troncWeight) ?? 1,
@@ -301,7 +324,7 @@ function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Pay type</label>
               <select style={inputStyle} value={draft.payType} onChange={e => set({ payType: e.target.value })}>
-                {PAY_TYPES.map(p => <option key={p.v} value={p.v}>{p.lbl}</option>)}
+                {payTypesFor(pack, role.payType).map(p => <option key={p.v} value={p.v}>{p.lbl}</option>)}
               </select>
             </div>
           </div>
@@ -315,7 +338,8 @@ function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
             ) : (
               <div style={{ flex: 1 }}>
                 <label style={labelStyle}>Base rate ({activeRegionPack().currencySymbol}/h)</label>
-                <input style={inputStyle} type="number" step="0.01" value={draft.rate ?? ''} placeholder="12.50" disabled={draft.payType === 'ageBanded'} onChange={e => set({ rate: e.target.value })} />
+                <input style={inputStyle} type="number" step="0.01" value={draft.rate ?? ''} placeholder="12.50" onChange={e => set({ rate: e.target.value })} />
+                {draft.payType === 'ageBanded' && <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5, lineHeight: 1.4 }}>{AGE_BANDS_WORDS}</div>}
               </div>
             )}
             <div style={{ flex: 1 }}>
@@ -326,14 +350,16 @@ function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
             <div style={{ flex: 1 }}>
-              <label style={labelStyle}>Tronc weight</label>
-              <input style={inputStyle} type="number" step="0.25" value={draft.troncWeight ?? ''} placeholder="1" onChange={e => set({ troncWeight: e.target.value })} />
+              <label style={labelStyle}>{tipWeightName(pack)}</label>
+              <input style={{ ...inputStyle, ...(weightRefused ? { borderColor: 'var(--red)' } : {}) }} type="number" step="0.25" value={draft.troncWeight ?? ''} placeholder={outReason ? '0' : '1'} onChange={e => set({ troncWeight: e.target.value })} />
             </div>
-            <label style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, height: 42, cursor: 'pointer', color: 'var(--t1)', fontSize: 13 }}>
+            {/* 5.12.57: the SIA licence is a UK door supervisor licence: a US venue is not asked. */}
+            {!us && <label style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, height: 42, cursor: 'pointer', color: 'var(--t1)', fontSize: 13 }}>
               <input type="checkbox" checked={!!draft.requiresSIA} onChange={e => set({ requiresSIA: e.target.checked })} />
               Requires SIA licence
-            </label>
+            </label>}
           </div>
+          {weightRefused && <div style={{ fontSize: 12, color: 'var(--red)', lineHeight: 1.5 }}>{tipPoolExclusionWords(outReason)}</div>}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 20 }}>
@@ -344,7 +370,7 @@ function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
           )}
           <div style={{ flex: 1 }} />
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" onClick={submit} disabled={busy || !valid}>
+          <button className="btn btn-acc" onClick={submit} disabled={busy || !valid || weightRefused}>
             <Icon name="check" size={14} /> {busy ? 'Saving…' : 'Save role'}
           </button>
         </div>
@@ -358,7 +384,7 @@ function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
 // apply automatically") or a single staff member's override. On the effective
 // date apply_due_wf_rate_changes() lands it on the live rate card; before then
 // the rota already stamps the new rate for shifts on/after the date.
-function ScheduleRateModal({ roles, staff, busy, onClose, onSave }) {
+function ScheduleRateModal({ roles, staff, busy, us = false, onClose, onSave }) {
   const todayIso = new Date().toISOString().slice(0, 10);
   const [kind, setKind] = useState('role');
   const [roleKey, setRoleKey] = useState(roles[0]?.key || '');
@@ -431,7 +457,7 @@ function ScheduleRateModal({ roles, staff, busy, onClose, onSave }) {
           <input style={inputStyle} type="date" min={todayIso} value={date} onChange={e => setDate(e.target.value)} />
         </label>
         <label style={labelStyle}>Note (optional)
-          <input style={inputStyle} value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. NMW April increase" />
+          <input style={inputStyle} value={note} onChange={e => setNote(e.target.value)} placeholder={us ? 'e.g. State minimum wage, January' : 'e.g. NMW April increase'} />
         </label>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>

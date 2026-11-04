@@ -28,13 +28,14 @@ import { useMenuText, itemName as tItemName, itemDescription as tItemDescription
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
 // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
-import { withFacts, showCalories as venueShowsCalories, kcalWords, KCAL_NOTE_EN } from '../../lib/menuStockFacts';
+import { withFacts, showCalories as venueShowsCalories, kcalWords, kcalNote } from '../../lib/menuStockFacts';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, FIXED, BODY_FONT, DISPLAY_FONT } from '../menu/menuTheme';
 import { Icon } from '../../components/ServOSIcons';
+import { currencySymbol } from '../../lib/currency';
 
 const FONT = '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif';
 // Customer surfaces must be their OWN scroll container — the operator app sets body{overflow:hidden},
@@ -42,7 +43,8 @@ const FONT = '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans
 const shell = (theme) => ({ position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', background: theme?.bg || '#f5f5f5', color: theme?.fg || '#0f172a', fontFamily: FONT });
 const fullCenter = { position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', textAlign: 'center', padding: 24, background: '#f5f5f5', color: '#0f172a', fontFamily: FONT };
 const center = { maxWidth: 980, margin: '0 auto', padding: '0 16px' };
-const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
+// 5.12.57: the symbol of the currency given (unknown codes no longer read as pounds).
+const money = (n, cur) => `${currencySymbol(cur)}${Number(n || 0).toFixed(2)}`;
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const addDays = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d; };
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -119,7 +121,9 @@ export default function CateringSurface({ location }) {
   const [notice, setNotice] = useState('');     // why checkout is blocked (shown on the event card)
   const eventRef = useRef(null);
 
-  const cur = cfg?.currency || (location.currency || 'gbp').toLowerCase();
+  // 5.12.57: the venue's own currency first. The catering settings had their own, defaulting to GBP, and
+  // the checkout charged in it, so a US venue could take pounds.
+  const cur = String(location.currency || cfg?.currency || 'gbp').toLowerCase();
   // Themeable menu (prototype design system): one brand colour drives the palette via CSS vars.
   const mt = useMemo(() => readTheme(branding), [branding]);
   const vars = useMemo(() => deriveVars(mt.brandColor, mt.bodyBg), [mt.brandColor, mt.bodyBg]);
@@ -439,7 +443,7 @@ export default function CateringSurface({ location }) {
           </div>
         )}
         {/* v5.11.93 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
-        {showKcal && <div style={{ marginBottom: 10, fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{KCAL_NOTE_EN}</div>}
+        {showKcal && <div style={{ marginBottom: 10, fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{kcalNote(null, cur) /* 5.12.57: the venue's own currency: FDA line at a US venue */}</div>}
         {/* Allergy filter — only when the menu carries allergen tags */}
         {knownAllergens.length > 0 && (
           <div style={{ marginBottom: 16 }}>
@@ -485,7 +489,7 @@ export default function CateringSurface({ location }) {
                         {tItemDescription(item) && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{tItemDescription(item)}</div>}
                         {/* v5.11.108: the shared allergen chip row; the ones the guest asked to avoid stand out. */}
                         <AllergenChips ids={[...itemAllergenIds(item), ...unsafe]} size="card" active={unsafe} palette={allergenPaletteFromTheme(theme)} style={{ marginTop: 6 }} />
-                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}{!sold && showKcal && item.kcal != null && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{kcalWords(item.kcal)}</span>}</div>
+                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}{!sold && showKcal && item.kcal != null && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{kcalWords(item.kcal, null, cur)}</span>}</div>
                       </div>
                     </button>
                   );

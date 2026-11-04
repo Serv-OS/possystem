@@ -10,13 +10,17 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
 import { supabase, isMock, getActiveLocationSync } from '../lib/supabase';
 import { getLocationConfig } from '../lib/locationTime';
+import { localeDateString, timeText, zoneOr, setActiveTimezone } from '../lib/venueDates';
+import { setActiveCurrency } from '../lib/currency';
 import { Icon } from '../components/ServOSIcons';
 import CashTipsStep from '../components/CashTipsStep';
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
 // Punches are stored UTC (the edge fn uses toISOString) — render in the VENUE tz, not the device's
 // browser tz, so an off-tz tablet still shows the correct local clock-in time.
-const fmtTime = (iso, tz) => iso ? new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)) : '';
+// 5.12.57: the venue's way too (2:05 PM at a US venue), and never London for a venue elsewhere: with no
+// zone yet the time reads nothing rather than a wrong one.
+const fmtTime = (iso, tz) => iso ? timeText(iso, tz) : '';
 const hoursSince = iso => iso ? Math.max(0, (Date.now() - new Date(iso).getTime()) / 3600000) : 0;
 const fmtHrs = h => `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`;
 
@@ -59,8 +63,11 @@ export default function TimeClockSurface() {
   const [flash, setFlash] = useState(null);      // confirmation message
   const [, force] = useState(0);
   const locationId = getActiveLocationSync();
-  const [tz, setTz] = useState('Europe/London');
-  useEffect(() => { let alive = true; getLocationConfig(locationId).then(c => { if (alive && c?.timezone) setTz(c.timezone); }).catch(() => {}); return () => { alive = false; }; }, [locationId]);
+  // 5.12.57: the venue's zone. An anonymous tablet often cannot read the venue row (its config comes back
+  // as the London default, with no currency): that default is not taken, and the zone comes with the
+  // first PIN instead (workforce-clock status, venueClock).
+  const [tz, setTz] = useState(() => zoneOr(null));
+  useEffect(() => { let alive = true; getLocationConfig(locationId).then(c => { if (alive && c?.timezone && c?.currency) setTz(c.timezone); }).catch(() => {}); return () => { alive = false; }; }, [locationId]);
   const venueName = (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.name; } catch { return null; } })();
   const resetTimer = useRef(null);
 
@@ -103,6 +110,10 @@ export default function TimeClockSurface() {
       setBusy(true);
       try {
         const r = await callClock('status', next);
+        if (r?.venueClock?.timezone) {   // 5.12.57: the venue's own clock and money, from the server
+          setTz(r.venueClock.timezone); setActiveTimezone(r.venueClock.timezone);
+          if (r.venueClock.currency) setActiveCurrency(r.venueClock.currency);
+        }
         // v5.8.21: keep the PIN WITH the session. The punch buttons used the
         // keypad state, which is emptied by any reset, so a status screen left
         // open (or restored) sent an empty PIN and the server replied
@@ -210,7 +221,7 @@ export default function TimeClockSurface() {
                 <div style={{ display: 'grid', gap: 3, marginTop: 6 }}>
                   {(s.outstanding.training || []).slice(0, 4).map((t, i) => (
                     <div key={i} style={{ fontSize: 12, color: 'var(--t2)' }}>
-                      • {t.name}{t.due ? <span style={{ color: t.overdue ? 'var(--red)' : 'var(--t4)' }}> — due {new Date(t.due + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span> : null}
+                      • {t.name}{t.due ? <span style={{ color: t.overdue ? 'var(--red)' : 'var(--t4)' }}> — due {localeDateString(new Date(t.due + 'T00:00:00'), { day: 'numeric', month: 'short' })}</span> : null}
                     </div>
                   ))}
                   {s.outstanding.onboardingOpen > 0 && (
@@ -230,7 +241,7 @@ export default function TimeClockSurface() {
                 {s.announcements.map((a, i) => (
                   <div key={i} style={{ padding: '10px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
                     <div style={{ fontSize: 13.5, color: 'var(--t1)', lineHeight: 1.5 }}>{a.body}</div>
-                    <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>{a.author ? `${a.author} · ` : ''}{a.at ? new Date(a.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : ''}</div>
+                    <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>{a.author ? `${a.author} · ` : ''}{a.at ? localeDateString(new Date(a.at), { day: 'numeric', month: 'short' }) : ''}</div>
                   </div>
                 ))}
               </div>

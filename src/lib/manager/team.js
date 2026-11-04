@@ -78,6 +78,15 @@ export function breaksDue(punches, opts = {}, nowMs = Date.now()) {
     .filter((p) => p.owedMins > 0);
 }
 
+/** 5.12.57: live labour from the server's labourLive ({ soFarMinor, burnMinorPerHour, atMs }), run forward to
+ *  now. The server no longer sends anyone's hourly rate; this is the figure the app shows. */
+export function liveLabourFromSnapshot(labourLive, nowMs = Date.now()) {
+  if (!labourLive || typeof labourLive !== 'object') return 0;
+  const at = Number(labourLive.atMs);
+  const since = Math.max(0, nowMs - (Number.isFinite(at) ? at : nowMs));
+  return Math.round((Number(labourLive.soFarMinor) || 0) + (Number(labourLive.burnMinorPerHour) || 0) * since / 3600000);
+}
+
 /** Live labour cost so far today, in MINOR units (pennies). rateMinorPerHour keyed by staffId. */
 export function liveLabourMinor(punches, ratesMinorPerHour, nowMs = Date.now()) {
   return (punches || []).reduce((sum, p) => {

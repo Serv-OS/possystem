@@ -51,6 +51,7 @@ import VatGateNotice from './VatGateNotice';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, venueCurrency } from '../../lib/currency';
+import { activeRegionPack } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
 import { orderTypeChip, tipModuleFor } from '../../lib/counterOrder';
 import { Icon } from '../../components/ServOSIcons';
 import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from '../../lib/loyaltyMenuMatch';
@@ -1919,7 +1920,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           <SectionTitle>Your details</SectionTitle>
           <Field label="Name" value={name} onChange={setName} placeholder="Full name" required theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <Field label="Phone" value={phone} onChange={setPhone} placeholder="07700 900000" type="tel" required theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+            <Field label="Phone" value={phone} onChange={setPhone} placeholder={addressCountry(location) === 'us' ? activeRegionPack().phoneFormat : '07700 900000'} type="tel" required theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
             <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" required theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           </div>
           {/* v5.5.243: Loyalty member detection hint */}

@@ -3,6 +3,7 @@
 // report screens (SalesSummary.jsx and ZReport.jsx re-export and use it unchanged).
 import { refundVatOf, saleGoods } from '../../supabase/functions/_shared/saleVat.js';
 import { isGiftSaleLine } from '../../supabase/functions/_shared/accountingDay.js';
+import { taxWords } from '../../supabase/functions/_shared/taxWords.js';
 
 // 29 Oct 2026 (Drop C): a gift card sold at the till is a line of kind 'gift_card_sale'. Money in,
 // not sales: its value leaves gross (the stored subtotal, when that holds it) and net, and is
@@ -102,11 +103,14 @@ export function computeSalesStats(checks) {
   };
 }
 
-/** "1 sale has no VAT recorded: QR-4OGI7", or '' when every sale booked its VAT. */
-export function vatMissingLine(stats) {
+/**
+ * "1 sale has no VAT recorded: QR-4OGI7", or '' when every sale booked its VAT.
+ * 5.12.57: `venue` (a currency code or a row) names its own tax: "no tax recorded" at a US venue.
+ */
+export function vatMissingLine(stats, venue = null) {
   const list = stats?.vatMissing || [];
   if (!list.length) return '';
   const refs = list.slice(0, 12).map((x) => x.ref || x.id).filter(Boolean);
   const more = list.length > refs.length ? ` and ${list.length - refs.length} more` : '';
-  return `${list.length === 1 ? '1 sale has' : `${list.length} sales have`} no VAT recorded: ${refs.join(', ')}${more}`;
+  return `${list.length === 1 ? '1 sale has' : `${list.length} sales have`} no ${taxWords(venue).tax} recorded: ${refs.join(', ')}${more}`;
 }

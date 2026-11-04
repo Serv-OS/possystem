@@ -116,6 +116,10 @@ test('wiring: settings for UK and US, the form writes only while on, the rota, p
   assert.match(read('supabase/functions/staff-portal/openShifts.ts'), /return err\(409, HEAD_OFFICE_SHIFT_WORDS, 'head_office'\)/);
   assert.match(read('src/surfaces/TimeClockSurface.jsx'), /s\.state === 'out' && !s\.headOffice && <BigBtn icon="clock" label="Clock in"/);
   assert.match(read('src/surfaces/OwnerSurface.jsx'), /headOfficeLineView\(r\?\.head_office, rv\.period === 'today'\)/);
+  // 5.12.57: the staff app shows the words instead of a Clock in button (no location prompt first).
+  const card = read('src/staff/ClockCard.jsx');
+  assert.match(card, /\{!onShift && !state\?\.head_office && \(/);
+  assert.match(card, /state\?\.head_office && !onShift && \(/);
 });
 
 test('migration 20261119a: ASCII, Ops only, 3 s lock wait, grants the columns to the API, a visible check; the rollback', () => {

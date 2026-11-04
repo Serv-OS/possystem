@@ -21,16 +21,17 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
-import { UNITS, DIMENSIONS } from '../../../../lib/stock/units';
 import { countPackOf, packAmount, packPrice, moneyText } from '../../../../lib/stock/packPrice';
-import { nextPriceWords, vatChoices, sameRate, queuedNote } from '../../../../lib/stock/itemPageRules';
+import { nextPriceWords, purchaseTaxChoices, sameRate, queuedNote } from '../../../../lib/stock/itemPageRules';
+import { regionOf } from '../../../../lib/regionPack';
+import { useSiteTaxWords } from '../useSiteRegion';
+import { useSiteCurrency } from '../useSiteCurrency';
+import UnitOptions from '../UnitOptions';
 import { allergenWords, differRule, factsOf } from '../../../../lib/stock/factsRules';
 import { Btn, Pill, Sheet, Field, Notice, TableWrap, Th, Td, EmptyLine, useConfirm, ui } from '../stockUi';
 import WhatIsInIt from './WhatIsInIt';
 import MakeNewItemModal from './MakeNewItemModal';
 
-const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
-const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 const small = { fontSize: 11.5, color: 'var(--t4)', marginTop: 3, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' };
 const linkBtn = { background: 'none', border: 'none', padding: 0, color: 'var(--t1)', fontWeight: 700, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', fontSize: 13 };
 const num = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
@@ -46,6 +47,11 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
   const storeRates = useStore((s) => s.taxRates);
+  // 5.12.57: the words and purchase tax of the item's own site. The signed in venue's tax rows are
+  // offered only when that site is in the same country (a UK site never gets a US rate).
+  const tw = useSiteTaxWords(homeSiteId);
+  const activeCode = useSiteCurrency(null);
+  const ratesHere = regionOf(tw.code) === regionOf(activeCode) ? (storeRates || []) : [];
   const item = detail?.item || {};
   const countPack = countPackOf(detail);
   const [editing, setEditing] = useState(null);
@@ -133,7 +139,7 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
                     <Td>{packWords(si)}</Td>
                     <Td right num>
                       {each || moneyText(si.pack_price, si.currency)}
-                      {each && <div style={small}>{moneyText(si.pack_price, si.currency)} for {packWords(si)}{si.price_includes_tax ? ' (VAT in)' : ''}</div>}
+                      {each && <div style={small}>{moneyText(si.pack_price, si.currency)} for {packWords(si)}{si.price_includes_tax ? ` ${tw.taxIn}` : ''}</div>}
                     </Td>
                     <Td grey={!si.next_price}>{nextPriceWords(si.next_price, si.currency, countPack, factorOf(si))}</Td>
                     <Td>
@@ -178,7 +184,7 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
       )}
       {editing && (
         <SupplierPackSheet detail={detail} start={editing} homeSiteId={homeSiteId} currency={currencyHere}
-          rates={storeRates || []} onClose={() => setEditing(null)}
+          rates={ratesHere} onClose={() => setEditing(null)}
           onSaved={(words, tone) => { setEditing(null); say(words, tone); reload?.(); }} />
       )}
       {makeNew && (
@@ -212,7 +218,8 @@ function SupplierPackSheet({ detail, start, homeSiteId, currency, rates, onClose
   const upd = (k, v) => setRow((r) => ({ ...r, [k]: v }));
   const isNew = !row.id;
   const orgId = item.org_id || sc.orgId || null;
-  const vatList = vatChoices(rates, row.purchase_vat_rate ?? item.purchase_vat_rate);
+  const tw = useSiteTaxWords(homeSiteId);
+  const vatList = purchaseTaxChoices(rates, row.purchase_vat_rate ?? item.purchase_vat_rate, tw.code);
   const dirty = JSON.stringify(row) !== JSON.stringify(start);
 
   useEffect(() => {
@@ -299,11 +306,7 @@ function SupplierPackSheet({ detail, start, homeSiteId, currency, rates, onClose
           <div style={{ ...ui.row, gap: 6 }}>
             <input type="number" min="0" step="any" value={row.inner_qty} onChange={(e) => upd('inner_qty', e.target.value)} style={{ ...ui.input, width: 90 }} />
             <select value={row.inner_unit} onChange={(e) => upd('inner_unit', e.target.value)} style={{ ...ui.input, width: 'auto' }}>
-              {DIM_ORDER.map((dim) => (
-                <optgroup key={dim} label={dim[0] + dim.slice(1).toLowerCase()}>
-                  {UNIT_OPTS.filter((u) => u.dimension === dim).map((u) => <option key={u.code} value={u.code}>{u.code}</option>)}
-                </optgroup>
-              ))}
+              <UnitOptions siteId={homeSiteId} show="code" />
             </select>
           </div>
         </Field>
@@ -314,17 +317,19 @@ function SupplierPackSheet({ detail, start, homeSiteId, currency, rates, onClose
         <Field label="Price of one case">
           <input type="number" min="0" step="any" value={row.pack_price} onChange={(e) => upd('pack_price', e.target.value)} placeholder="8.70" style={ui.input} />
         </Field>
-        <Field label="VAT">
+        <Field label={tw.us ? tw.purchaseTax : 'VAT'} hint={tw.us ? 'It stays in the cost. Enter the price you pay, tax included.' : null}>
           <select value={vatList.find((v) => sameRate(v.value, row.purchase_vat_rate))?.label || 'None set'} style={ui.input}
             onChange={(e) => upd('purchase_vat_rate', vatList.find((v) => v.label === e.target.value)?.value ?? null)}>
             {vatList.map((v) => <option key={v.label} value={v.label}>{v.label}</option>)}
           </select>
         </Field>
+        {!tw.us && (
         <Field label=" ">
           <label style={{ ...ui.row, fontSize: 13, color: 'var(--t2)', marginTop: 8 }}>
             <input type="checkbox" checked={row.price_includes_tax} onChange={(e) => upd('price_includes_tax', e.target.checked)} /> The price includes VAT
           </label>
         </Field>
+        )}
       </div>
       {!isNew && (
         <label style={{ ...ui.row, fontSize: 13, color: 'var(--t2)', marginBottom: 12 }}>

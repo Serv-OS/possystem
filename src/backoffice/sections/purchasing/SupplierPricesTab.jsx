@@ -6,6 +6,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { useSiteSymbolOf } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { listSites } from '../../../lib/stock/supplierListRules';
 import { dayWords, moneyWords } from '../../../lib/stock/purchasingRules';
@@ -19,6 +20,8 @@ const SOURCES = { invoice: 'Invoice', edit: 'Edit', dated: 'Dated price', compan
 export default function SupplierPricesTab({ orgCtx = null, focus = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: each price in its own currency (its site's), not the signed in venue's.
+  const symbolOf = useSiteSymbolOf();
   void orgCtx; // the contract's prop; the list needs only the scope
   const [risesOnly, setRisesOnly] = useState(false);
   const [source, setSource] = useState('');
@@ -30,7 +33,7 @@ export default function SupplierPricesTab({ orgCtx = null, focus = null }) {
   const p = usePaged(fetchPage, `${sc.orgId}|${sites ? sites.join(',') : 'all'}|${JSON.stringify(filters)}`);
   const editor = sc.canEditCompany('purchasing');
   const makeCompany = async (r) => {
-    if (!(await confirm({ title: 'Make this the company price?', words: `${r.item_name} from ${r.supplier_name} becomes ${moneyWords(r.new)} for every site that follows the company price.`, yes: 'Make it the company price' }))) return;
+    if (!(await confirm({ title: 'Make this the company price?', words: `${r.item_name} from ${r.supplier_name} becomes ${moneyWords(r.new, symbolOf(r.location_id, r.currency))} for every site that follows the company price.`, yes: 'Make it the company price' }))) return;
     setBusy(`${r.supplier_item_id}:${r.location_id}`);
     const res = await stockApi.makeCompanyPrice(r.supplier_item_id, r.location_id, r.row_version ?? r.supplier_item_version ?? null);
     setBusy(null);
@@ -63,10 +66,10 @@ export default function SupplierPricesTab({ orgCtx = null, focus = null }) {
                   <Td strong>{r.item_name}</Td>
                   <Td>{r.supplier_name}</Td>
                   <Td grey>{r.pack_label || ''}</Td>
-                  <Td num grey>{r.old != null ? moneyWords(r.old) : ''}</Td>
-                  <Td num>{r.new != null ? moneyWords(r.new) : ''}</Td>
+                  <Td num grey>{r.old != null ? moneyWords(r.old, symbolOf(r.location_id, r.currency)) : ''}</Td>
+                  <Td num>{r.new != null ? moneyWords(r.new, symbolOf(r.location_id, r.currency)) : ''}</Td>
                   <Td num>{pctWords(r.pct)}{priceRose(r.pct) && <> <Pill tone={PILLS.priceRose.tone}>{PILLS.priceRose.text}</Pill></>}</Td>
-                  <Td num>{r.cost_effect_4w != null ? moneyWords(r.cost_effect_4w) : ''}</Td>
+                  <Td num>{r.cost_effect_4w != null ? moneyWords(r.cost_effect_4w, symbolOf(r.location_id, r.currency)) : ''}</Td>
                   <Td grey>{SOURCES[r.source] || r.source || ''}</Td>
                   <Td right>{editor && r.location_id && !r.coming && r.source !== 'company' && <Btn small disabled={busy === `${r.supplier_item_id}:${r.location_id}`} onClick={() => makeCompany(r)}>Make this the company price</Btn>}</Td>
                 </tr>

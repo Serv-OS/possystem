@@ -7,6 +7,9 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { activeCountry } from '../../../lib/regionPack';
+import { dateNumeric } from '../../../lib/venueDates';
+// 5.12.57 (US basics batch 8): days in the venue's order on its clock (11/03/2026 at a US venue; UK as before).
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -64,7 +67,7 @@ export default function Compliance() {
         <h2 style={S.h2}>Add a manual block</h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <select style={{ ...S.input, width: 'auto' }} value={add.channel} onChange={(e) => setAdd({ ...add, channel: e.target.value })}><option value="email">Email</option><option value="sms">SMS</option></select>
-          <input style={{ ...S.input, flex: 1, minWidth: 220 }} value={add.address} onChange={(e) => setAdd({ ...add, address: e.target.value })} placeholder={add.channel === 'email' ? 'name@example.com' : '+447…'} onKeyDown={(e) => e.key === 'Enter' && doAdd()} />
+          <input style={{ ...S.input, flex: 1, minWidth: 220 }} value={add.address} onChange={(e) => setAdd({ ...add, address: e.target.value })} placeholder={add.channel === 'email' ? 'name@example.com' : activeCountry() === 'US' ? '+1801…' : '+447…'} onKeyDown={(e) => e.key === 'Enter' && doAdd()} />
           <button style={S.btn} onClick={doAdd} disabled={msg.busy || !add.address.trim()}>{msg.busy ? 'Adding…' : 'Block'}</button>
           {msg.ok && <span style={{ fontSize: 12.5, color: 'var(--grn)', fontWeight: 700 }}>{msg.ok}</span>}
           {msg.err && <span style={S.err}>{msg.err}</span>}
@@ -85,7 +88,7 @@ export default function Compliance() {
               <span style={{ fontSize: 13.5, color: 'var(--t1)', fontFamily: 'var(--font-mono,monospace)' }}>{s.address}</span>
               <span style={{ ...S.pill, marginLeft: 8 }}>{s.channel}</span>
               <span style={{ ...S.pill, marginLeft: 6 }}>{s.reason}</span>
-              <span style={{ fontSize: 11.5, color: 'var(--t4)', marginLeft: 8 }}>{new Date(s.created_at).toLocaleDateString('en-GB')}{s.source ? ` · ${s.source}` : ''}</span>
+              <span style={{ fontSize: 11.5, color: 'var(--t4)', marginLeft: 8 }}>{dateNumeric(s.created_at)}{s.source ? ` · ${s.source}` : ''}</span>
             </div>
             <button style={S.ghost} onClick={() => remove(s)}>Remove</button>
           </div>

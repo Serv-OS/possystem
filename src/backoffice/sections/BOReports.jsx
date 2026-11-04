@@ -39,6 +39,7 @@ import { leaveOutDemo, DEMO_NOTE } from '../../../supabase/functions/_shared/dem
 import { demoChecksIn } from '../../lib/reportDemo.js';
 import SitesControl, { SiteNote } from './reports/SitesControl';
 import { getLocationConfig } from '../../lib/locationTime';
+import { activeTimezone } from '../../lib/venueDates';
 import { compareRange, compareMoves, prevTopUp, notLoaded, COMPARE_STEP_MS } from '../../lib/reportCompare.js';
 import Catalog, { CATEGORIES, REPORT_INDEX } from './reports/Catalog';
 import { SegToggle } from './reports/reportKit';
@@ -204,7 +205,8 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
     let alive = true;
     getLocationConfig()
       .then(cfg => { if (alive) setHomeConfig(cfg); })
-      .catch(() => { if (alive) setHomeConfig({ timezone: 'Europe/London', businessDayStart: '06:00', shifts: [] }); });
+      // 5.12.57 (batch 8): a failed read keeps the active venue's own zone (never a fixed London)
+      .catch(() => { if (alive) setHomeConfig({ timezone: activeTimezone(), businessDayStart: '06:00', shifts: [] }); });
     return () => { alive = false; };
   }, []);
 

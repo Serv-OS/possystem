@@ -14,6 +14,8 @@
 
 import { ensureAuthToken, getLocationId } from './supabase';
 import { buildAiRequest } from './aiRequestBuild';
+import { getActiveCurrencyCode } from './currency';
 
 /** The fetch init for a POST to an AI route, with this session's token and venue. */
-export const aiRequestInit = (body) => buildAiRequest(body, { token: ensureAuthToken, location: getLocationId });
+// 5.12.57: plus the venue's currency, so the assistant answers in dollars at a US venue (it was told pounds).
+export const aiRequestInit = (body) => buildAiRequest({ currency: getActiveCurrencyCode(), ...(body || {}) }, { token: ensureAuthToken, location: getLocationId });

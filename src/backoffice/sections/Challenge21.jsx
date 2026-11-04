@@ -20,6 +20,7 @@ import { saveLocation, resetChallenge21Counter } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
 import { useStore } from '../../store';
 import Challenge21Report from './Challenge21Report';
+import { foodLawWords } from '../../lib/foodLaw';
 import { Icon } from '../../components/ServOSIcons';
 
 export default function Challenge21() {
@@ -186,7 +187,7 @@ export default function Challenge21() {
       <div style={{ padding: '28px 0' }}>
         <h1 style={{ fontSize: 26, fontWeight: 900, margin: 0, color:'var(--t1)' }}>Challenge ID</h1>
         <p style={{ fontSize: 14, color: 'var(--t3)', margin: '8px 0 0', maxWidth: 680, lineHeight: 1.6 }}>
-          UK licensing compliance. When enabled, the POS will prompt staff every Nth alcohol-containing sale to record ID details for the customer. Submissions log to a date-filtered report you can export for licensing reviews.
+          {foodLawWords().idCheckIntro /* 5.12.57: UK licensing at a UK venue; legal age 21 at a US venue */} When enabled, the POS will prompt staff every Nth alcohol-containing sale to record ID details for the customer. Submissions log to a date-filtered report you can export for licensing reviews.
         </p>
 
         {/* Tab switch */}
@@ -271,7 +272,7 @@ export default function Challenge21() {
             <Card disabled={!enabled}>
               <div style={{ fontSize: 15, fontWeight: 700, color:'var(--t1)' }}>Trigger frequency</div>
               <div style={{ fontSize: 12, color:'var(--t3)', marginTop: 3, marginBottom: 14 }}>
-                Prompt fires after every <strong>N</strong> alcohol-containing sales. Lower = more frequent checks. UK best practice is every 5–20 sales.
+                Prompt fires after every <strong>N</strong> alcohol-containing sales. Lower = more frequent checks.{foodLawWords().idCheckFrequencyHint}
               </div>
               <div style={{ display:'flex', alignItems:'center', gap: 12 }}>
                 <span style={{ fontSize: 13, color:'var(--t2)' }}>Every</span>

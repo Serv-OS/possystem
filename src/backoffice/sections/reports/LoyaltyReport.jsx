@@ -9,6 +9,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../../lib/supabase';
 import { money } from '../../../lib/currency';
 import { EmojiIcon } from '../../../components/ServOSIcons';
+import { localeDateString, localeString, zoneOr } from '../../../lib/venueDates';
 
 // 28 Sep 2026 (Peter: "its also capped to 1000 in the loyalty reports"): the API returns at most
 // 1,000 rows per request, so members and stamp cards stopped at 1,000 and the period's
@@ -179,7 +180,8 @@ function OverviewTab({ data }) {
   const enrollByDay = {};
   members.forEach(m => {
     if (!m.enrolled_at) return;
-    const d = new Date(m.enrolled_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    // 5.12.57 (batch 8): the venue's day and words, never the laptop's
+    const d = localeDateString(new Date(m.enrolled_at), { day: '2-digit', month: 'short', ...(zoneOr() ? { timeZone: zoneOr() } : {}) });
     enrollByDay[d] = (enrollByDay[d] || 0) + 1;
   });
 
@@ -460,7 +462,7 @@ function TransactionsTab({ data }) {
                 display: 'grid', gridTemplateColumns: '140px 1.5fr 1fr auto',
                 gap: 6, padding: '8px 14px', fontSize: 12, borderBottom: '1px solid var(--bdr)', alignItems: 'center',
               }}>
-                <span style={{ color: 'var(--t3)', fontSize: 11 }}>{new Date(t.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                <span style={{ color: 'var(--t3)', fontSize: 11 }}>{zoneOr() ? localeString(new Date(t.created_at), { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: zoneOr() }) : ''}</span>
                 <span style={{ color: 'var(--t1)', fontWeight: 600 }}>{c.name || 'Unnamed'}</span>
                 <span style={{ color: 'var(--t4)', fontSize: 11 }}>{t.source || t.items || t.type || ''}</span>
                 <span style={{

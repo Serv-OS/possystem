@@ -17,7 +17,9 @@ import { useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
 import { getVenueUberConfig, setVenueUberConfig, setStuartCreds, testStuart, disconnectStuart } from '../../lib/delivery/deliveryConfig';
 import { computeSurcharge } from '../../lib/delivery/surcharge';
-import { money } from '../../lib/currency';
+// 5.12.57: the delivery money labels use the venue's own symbol, never a typed pound.
+import { money, currencySymbol, getActiveCurrencyCode } from '../../lib/currency';
+import { postcodeLabel, addressCountry } from '../../lib/online/deliveryCoverage';
 import MoneyField from '../../components/MoneyField';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { Icon } from '../../components/ServOSIcons';
@@ -72,6 +74,9 @@ export default function UberDirect() {
   const setAddr = (k, v) => setForm((f) => ({ ...f, pickup_address: { ...f.pickup_address, [k]: v } }));
   const setContact = (k, v) => setForm((f) => ({ ...f, pickup_contact: { ...f.pickup_contact, [k]: v } }));
   const setPolicy = (k, v) => setForm((f) => ({ ...f, surcharge_policy: { ...f.surcharge_policy, [k]: v } }));
+  // 5.12.57: the address search and the postcode label follow the venue (its currency: USD is the
+  // US). The search was always Great Britain, so a US venue could not find its own address.
+  const venueCcy = { currency: getActiveCurrencyCode() };
 
   const isCourier = form.delivery_mode === 'uber';
 
@@ -176,7 +181,7 @@ export default function UberDirect() {
         </div>
         <div style={{ ...S.row, marginTop: 14 }}>
           <div style={S.col}>
-            <label style={S.label}>{isCourier ? 'Your delivery charge (£) — fallback if the live Stuart quote fails' : 'Your delivery charge (£)'}</label>
+            <label style={S.label}>{isCourier ? `Your delivery charge (${currencySymbol()}) — fallback if the live Stuart quote fails` : `Your delivery charge (${currencySymbol()})`}</label>
             <MoneyField style={S.input} valueMinor={form.flat_fee_minor} onMinor={(m) => set('flat_fee_minor', m)} placeholder="0.00 = free" />
           </div>
         </div>
@@ -242,6 +247,7 @@ export default function UberDirect() {
             <label style={S.label}>Address line 1</label>
             <AddressAutocomplete
               value={form.pickup_address.line1 || ''} inputStyle={S.input}
+              country={addressCountry(venueCcy)}
               placeholder="Start typing the venue address…"
               onChangeText={(v) => setAddr('line1', v)}
               onSelect={(a) => setForm((f) => ({ ...f, pickup_address: {
@@ -257,7 +263,7 @@ export default function UberDirect() {
         </div>
         <div style={{ ...S.infoNote, marginTop: 8 }}>Pick your address from the suggestions so the courier gets exact coordinates — this matches how customers enter their delivery address (no mismatch).</div>
         <div style={{ ...S.row, marginTop: 10 }}>
-          <div style={S.col}><label style={S.label}>Postcode</label><input style={S.input} value={form.pickup_address.postcode || ''} onChange={(e) => setAddr('postcode', e.target.value)} /></div>
+          <div style={S.col}><label style={S.label}>{postcodeLabel(venueCcy)}</label><input style={S.input} value={form.pickup_address.postcode || ''} onChange={(e) => setAddr('postcode', e.target.value)} /></div>
           <div style={S.col}><label style={S.label}>Latitude (optional)</label><input style={S.input} value={form.pickup_address.lat ?? ''} onChange={(e) => setAddr('lat', e.target.value === '' ? null : Number(e.target.value))} /></div>
           <div style={S.col}><label style={S.label}>Longitude (optional)</label><input style={S.input} value={form.pickup_address.lng ?? ''} onChange={(e) => setAddr('lng', e.target.value === '' ? null : Number(e.target.value))} /></div>
         </div>
@@ -278,8 +284,8 @@ export default function UberDirect() {
       <div style={S.card}>
         <h2 style={S.h2}>Delivery rules</h2>
         <div style={S.row}>
-          <div style={S.col}><label style={S.label}>Minimum order for delivery (£, blank = none)</label><MoneyField style={S.input} valueMinor={p.minOrderMinor} onMinor={(m) => setPolicy('minOrderMinor', m)} placeholder="none" /></div>
-          <div style={S.col}><label style={S.label}>Free delivery over (£, blank = none)</label><MoneyField style={S.input} valueMinor={p.freeOverMinor} onMinor={(m) => setPolicy('freeOverMinor', m)} placeholder="none" /></div>
+          <div style={S.col}><label style={S.label}>Minimum order for delivery ({currencySymbol()}, blank = none)</label><MoneyField style={S.input} valueMinor={p.minOrderMinor} onMinor={(m) => setPolicy('minOrderMinor', m)} placeholder="none" /></div>
+          <div style={S.col}><label style={S.label}>Free delivery over ({currencySymbol()}, blank = none)</label><MoneyField style={S.input} valueMinor={p.freeOverMinor} onMinor={(m) => setPolicy('freeOverMinor', m)} placeholder="none" /></div>
         </div>
         <div style={{ ...S.infoNote, marginTop: 10 }}>Orders below the minimum can't choose delivery — the customer is shown how much more to spend. "Free delivery over" waives the fee on big baskets. Both apply on POS, online and catering.</div>
       </div>
@@ -302,16 +308,16 @@ export default function UberDirect() {
           </div>
           {p.mode === 'markup' && <>
             <div style={S.col}><label style={S.label}>Mark-up %</label><input type="number" style={S.input} value={p.markupPct || 0} onChange={(e) => setPolicy('markupPct', Number(e.target.value))} /></div>
-            <div style={S.col}><label style={S.label}>Mark-up fixed (£)</label><MoneyField style={S.input} valueMinor={p.markupFixedMinor} onMinor={(m) => setPolicy('markupFixedMinor', m || 0)} /></div>
+            <div style={S.col}><label style={S.label}>Mark-up fixed ({currencySymbol()})</label><MoneyField style={S.input} valueMinor={p.markupFixedMinor} onMinor={(m) => setPolicy('markupFixedMinor', m || 0)} /></div>
           </>}
           {p.mode === 'subsidise' && <>
-            <div style={S.col}><label style={S.label}>Absorb fixed (£)</label><MoneyField style={S.input} valueMinor={p.subsidiseMinor} onMinor={(m) => setPolicy('subsidiseMinor', m || 0)} /></div>
+            <div style={S.col}><label style={S.label}>Absorb fixed ({currencySymbol()})</label><MoneyField style={S.input} valueMinor={p.subsidiseMinor} onMinor={(m) => setPolicy('subsidiseMinor', m || 0)} /></div>
             <div style={S.col}><label style={S.label}>Absorb %</label><input type="number" style={S.input} value={p.subsidisePct || 0} onChange={(e) => setPolicy('subsidisePct', Number(e.target.value))} /></div>
           </>}
-          {p.mode === 'flat' && <div style={S.col}><label style={S.label}>Flat fee (£)</label><MoneyField style={S.input} valueMinor={p.flatMinor} onMinor={(m) => setPolicy('flatMinor', m || 0)} /></div>}
+          {p.mode === 'flat' && <div style={S.col}><label style={S.label}>Flat fee ({currencySymbol()})</label><MoneyField style={S.input} valueMinor={p.flatMinor} onMinor={(m) => setPolicy('flatMinor', m || 0)} /></div>}
         </div>
         <div style={{ ...S.row, marginTop: 10 }}>
-          <div style={S.col}><label style={S.label}>Cap customer fee (£, blank = none)</label><MoneyField style={S.input} valueMinor={p.capMinor} onMinor={(m) => setPolicy('capMinor', m)} placeholder="none" /></div>
+          <div style={S.col}><label style={S.label}>Cap customer fee ({currencySymbol()}, blank = none)</label><MoneyField style={S.input} valueMinor={p.capMinor} onMinor={(m) => setPolicy('capMinor', m)} placeholder="none" /></div>
         </div>
         <div style={{ ...S.infoNote, marginTop: 12, background: '#22c55e14', color: 'var(--t2)' }}>
           Preview: a <b>{money(SAMPLE / 100)}</b> courier cost → customer pays <b>{preview.freeDelivery ? 'Free' : money(preview.customerFeeMinor / 100)}</b>
@@ -325,7 +331,7 @@ export default function UberDirect() {
       <div style={S.card}>
         <h2 style={S.h2}>Fallback & tracking</h2>
         <div style={S.row}>
-          <div style={S.col}><label style={S.label}>Fallback fee if Stuart is unavailable (£, blank = block)</label><MoneyField style={S.input} valueMinor={form.fallback_fee_minor} onMinor={(m) => set('fallback_fee_minor', m)} placeholder="block" /></div>
+          <div style={S.col}><label style={S.label}>Fallback fee if Stuart is unavailable ({currencySymbol()}, blank = block)</label><MoneyField style={S.input} valueMinor={form.fallback_fee_minor} onMinor={(m) => set('fallback_fee_minor', m)} placeholder="block" /></div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
           <div style={{ fontSize: 13, color: 'var(--t2)' }}>Text the customer a tracking link</div>

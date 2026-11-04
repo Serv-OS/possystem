@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const at = (p) => new URL(`../../backoffice/sections/${p}`, import.meta.url);
 const MARK = /\/\/ d3 multi|\{\/\* d3 multi \*\/\}/;
@@ -90,8 +91,10 @@ const D4A = {
 // contract 3.3: at most 8 changed lines on Stock counts and Transfers
 const MAX_PAIRS = { 'StockCounts.jsx': 8, 'Wastage.jsx': 8, 'StockTransfers.jsx': 8 };
 
+// 5.12.57: the site money edits are put back first (fixtures/siteMoneyEdits.js): for a one site company
+// the site's currency is the signed in venue's, so they change nothing it sees.
 function mainText(file) {
-  const src = fs.readFileSync(at(file), 'utf8');
+  const src = undoSiteMoney(at(file), fs.readFileSync(at(file), 'utf8'));
   let text = src.slice(src.indexOf('import '));
   for (const [now, was] of D4A[file]) {
     assert.equal(text.split(now).length - 1, 1, `${file}: the Drop 4a lines are there exactly once: ${now.trim().slice(0, 90)}`);

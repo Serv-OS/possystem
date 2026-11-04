@@ -166,7 +166,9 @@ test('the Items banner says what really happens to a product with no rate', () =
   assert.match(mm, /No rate here is set as the default, so until set they record NO/);
   assert.match(mm, /' \(an inactive rate\)'/, 'an inactive rate of this venue is not called another venue\'s');
   assert.match(mm, /if \(!taggedOwn\.length && hasProfiles && !bulkTaxResult\) return null;/);
-  assert.match(mm, /ukVenue \? 'press Seed UK rates' : 'set up tax profiles or press Seed US rates'/);
+  // 5.12.57 (batch 6): this pinned a US venue being told to "press Seed US rates", which now needs the
+  // venue's rate typed first (the fixed New York 8.875% seed is gone). UK words unchanged.
+  assert.match(mm, /ukVenue \? 'press Seed UK rates' : tw\.us \? 'set up tax profiles, or type the rate under US Sales Tax and press Seed US rates' : 'add its rates'/);
   assert.match(mm, /This venue also has tax profiles: until a rate is set, they charge through those\./, 'a profile venue is not promised the venue default');
 });
 

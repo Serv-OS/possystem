@@ -21,6 +21,7 @@ import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { classifyShift, dayText, groupChecksByDay, groupChecksByService, reportClock } from './_filters';
 import { money } from '../../../lib/currency';
+import { localeTimeString } from '../../../lib/venueDates';
 import { voidedValue } from '../../../lib/voidRules';
 import { isSplit, sumFields } from '../../../lib/reportSplit.js';
 import { useParts, exportSites, titleSt } from './_siteSplit';
@@ -58,7 +59,7 @@ function formatDuration(ms) {
 // A check's time on the venue's wall clock (the row's day is the venue's, so its times are too).
 function formatTime(ts, timeZone) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone });
+  return localeTimeString(new Date(ts), { hour: '2-digit', minute: '2-digit', timeZone }); // 5.12.57: 2:05 PM at a US venue
 }
 
 // A business day ('YYYY-MM-DD') as "Sun 27 Sep".
@@ -123,7 +124,8 @@ function DayBasedShifts({ checks, fmt, fmtN, locationConfig }) {
       tips: r.tips.toFixed(2),
       cash: r.cash.toFixed(2),
       discounts: r.discounts.toFixed(2),
-      voids: `${r.voidCount} (${money(r.voidValue)})`,
+      // 5.12.57: the void value in the site's own money (fmt), not the signed in site's.
+      voids: `${r.voidCount} (${(fmt || money)(r.voidValue)})`,
     }));
     const csv = toCsv(rows, [
       { label:'Date',      key:'date' },

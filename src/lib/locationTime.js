@@ -8,8 +8,9 @@
  * Checks closed between midnight and 6am belong to the PREVIOUS business day.
  */
 
-import { platformSupabase, getLocationId } from './supabase';
+import { platformSupabase, getLocationId, getActiveLocationSync } from './supabase';
 import { setActiveCurrency } from './currency';
+import { setActiveTimezone } from './venueDates';
 import { resolveLocalDateTime } from './openingHours';
 
 // v5.5.11: per-location cache. The previous module-level cache returned the
@@ -18,6 +19,30 @@ import { resolveLocalDateTime } from './openingHours';
 // timezone, business_day_start, and shifts schedule. We now key the cache
 // by location id so each location gets its own config.
 const _locationConfigCache = new Map();
+
+// 5.12.58: the Back Office money, phone format and payroll fields (the region pack) follow the
+// active currency, and only the venue being worked on may set it. It used to be set by EVERY read
+// (another venue's config for a report, a supplier, a site list) and only on a cache miss, so a US
+// site switched to after a UK one kept the pound sign, the +44 phone format and the National
+// Insurance box, and staff texts were read as UK numbers. Now: set on every read of the ACTIVE
+// venue, cache hit or miss, never by another venue's read, and again on every location switch.
+function isActiveVenue(locationId, explicitLocationId) {
+  if (!explicitLocationId) return true;
+  let active = null;
+  try { active = getActiveLocationSync(); } catch { /* no location yet */ }
+  // No venue saved on this device (a kiosk or customer page opened by link): the venue asked for is
+  // the only one in play, as before. Only a read of a DIFFERENT venue than the active one is skipped.
+  if (!active || typeof active === 'object') return true;
+  return String(active) === String(locationId);
+}
+function adoptCurrency(cfg, locationId, explicitLocationId) {
+  if (cfg && cfg.currency && isActiveVenue(locationId, explicitLocationId)) {
+    setActiveCurrency(cfg.currency);
+    // 5.12.57 (batch 8): the venue's clock rides with its currency, so times read on its own zone
+    if (cfg.timezone) setActiveTimezone(cfg.timezone);
+  }
+  return cfg;
+}
 
 export async function getLocationConfig(explicitLocationId = null) {
   // Resolve location id. The previous version did .from('locations').limit(1)
@@ -35,7 +60,7 @@ export async function getLocationConfig(explicitLocationId = null) {
   }
 
   if (_locationConfigCache.has(locationId)) {
-    return _locationConfigCache.get(locationId);
+    return adoptCurrency(_locationConfigCache.get(locationId), locationId, explicitLocationId);
   }
 
   // Cross-DB join — platform.locations.id ≠ ops.locations.id in general.
@@ -59,11 +84,8 @@ export async function getLocationConfig(explicitLocationId = null) {
         row = r2.data;
       }
       if (row) {
-        // v5.5.326: resolve the location's currency at boot so money() formats
-        // in the right symbol/code everywhere. Persisted to localStorage so it
-        // survives reloads and resolves from the first render (no £→$ flash on
-        // a configured device).
-        setActiveCurrency(row.currency || 'GBP');
+        // v5.5.326: the location's currency for money() everywhere, persisted to localStorage so it
+        // resolves from the first render. 5.12.58: set by adoptCurrency below, for the active venue only.
         const cfg = {
           timezone: row.timezone || 'Europe/London',
           businessDayStart: row.business_day_start || '06:00',
@@ -94,7 +116,7 @@ export async function getLocationConfig(explicitLocationId = null) {
           }
         } catch { /* not migrated — staff fall back to the kitchen-start lead */ }
         _locationConfigCache.set(locationId, cfg);
-        return cfg;
+        return adoptCurrency(cfg, locationId, explicitLocationId);
       }
     } catch (e) { console.warn('[locationTime] platform DB read failed:', e?.message); }
   }
@@ -107,6 +129,30 @@ export async function getLocationConfig(explicitLocationId = null) {
 
 export function clearLocationConfigCache() {
   _locationConfigCache.clear();
+}
+
+// 5.12.58: a screen that belongs to one site (Workforce) sets that site's region before it draws, so
+// its money, phone format and payroll fields are the site's own whatever was open before. Resolves
+// with the config; a failed read leaves the currency as it was.
+export async function adoptVenueRegion(locationId) {
+  const cfg = await getLocationConfig(locationId);
+  if (cfg && cfg.currency) {
+    setActiveCurrency(cfg.currency);
+    if (cfg.timezone) setActiveTimezone(cfg.timezone);   // 5.12.57: and the site's clock
+  }
+  return cfg;
+}
+
+// 5.12.58: a Back Office location switch (setLocationId) reads the new venue's config, which sets
+// its currency, then tells the screens (rpos-region-changed) so they draw with its region pack.
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('rpos-location-changed', (e) => {
+    const id = e?.detail?.locationId;
+    if (!id) return;
+    getLocationConfig(id).then(() => {
+      try { window.dispatchEvent(new CustomEvent('rpos-region-changed', { detail: { locationId: id } })); } catch { /* old browser */ }
+    }).catch(() => {});
+  });
 }
 
 // v5.10.3: ANOTHER venue's report clock, { timezone, businessDayStart }, read the way

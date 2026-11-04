@@ -1,11 +1,13 @@
 // purchasing/BudgetBar.jsx: the Order pad's budget card (multi site stock Drop 3, v5.11.96, contract
-// 4.2): 'Budget this week (a % of forecast sales)' and '£2,140 spent + £320 basket of £2,600' with the
-// Over budget pill. Nothing at all when the site has no budget.
+// 4.2): 'Budget this week (a % of forecast sales)' and '$2,140 spent + $320 basket of $2,600' with the
+// Over budget pill. Nothing at all when the site has no budget. 5.12.57: symbol is the site's (the Order
+// pad passes it); none is the active venue's, never a typed pound sign.
 
 import { Pill } from '../stock/stockUi';
 import { budgetWords, PILLS } from '../../../lib/stock/purchasingWords';
+import { currencySymbol } from '../../../lib/currency';
 
-export default function BudgetBar({ budget, basketTotal = 0, symbol = '£' }) {
+export default function BudgetBar({ budget, basketTotal = 0, symbol = currencySymbol() }) {
   const w = budgetWords(budget, basketTotal, symbol);
   if (!w) return null;
   const total = Number(budget.budget) || 0;

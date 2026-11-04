@@ -14,6 +14,8 @@
 // PURE: imports only the shared period names; node:test loads it.
 
 import { OWNER_PERIODS, ownerPeriod } from '../../supabase/functions/_shared/ownerPeriod.js';
+import { getActiveCurrencyCode } from './currency.js';
+import { venueCountry } from '../../supabase/functions/_shared/venueDates.js';
 
 export const OWNER_PERIOD_KEY = 'servos-owner-period';
 
@@ -112,14 +114,16 @@ export function likeForLikeNote(rv, venues) {
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const dayMonth = (ymd) => {
+// 5.12.57 (batch 8): month first at a US venue ('Sep 28'), the day first everywhere else as before.
+const dayMonth = (ymd, currency) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd ?? ''));
-  return m && MONTHS[Number(m[2]) - 1] ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]}` : '';
+  if (!m || !MONTHS[Number(m[2]) - 1]) return '';
+  return venueCountry(currency || 'GBP') === 'US' ? `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}` : `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]}`;
 };
 
-/** "28 Sep to 2 Oct", or "2 Oct" for a single day. '' when the dates are missing. */
-export function rangeLabel(range) {
-  const a = dayMonth(range?.from), b = dayMonth(range?.to);
+/** "28 Sep to 2 Oct" ("Sep 28 to Oct 2" at a US venue), or "2 Oct" for a single day. '' when the dates are missing. */
+export function rangeLabel(range, currency = 'GBP') {
+  const a = dayMonth(range?.from, currency), b = dayMonth(range?.to, currency);
   if (!a || !b) return '';
   return a === b ? a : `${a} to ${b}`;
 }
@@ -148,7 +152,7 @@ export function groupCards(data) {
   if (!r || !locs.length) return [];
   const by = Array.isArray(r.by_currency) ? r.by_currency.filter((g) => g?.currency && g.locations > 0) : [];
   if (by.length > 1) return by.map((g) => ({ rollup: g, currency: g.currency, locations: locs.filter((l) => l.currency === g.currency) }));
-  return [{ rollup: r, currency: r.currency || locs[0]?.currency || 'GBP', locations: locs }];
+  return [{ rollup: r, currency: r.currency || locs[0]?.currency || getActiveCurrencyCode(), locations: locs }];   // 5.12.57: the active venue's, not a fixed GBP
 }
 
 /** '+12%' or '-3%'; '' when there is nothing to compare with. */

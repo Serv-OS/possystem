@@ -17,6 +17,7 @@ import { stockApi } from '../../../lib/stock/stockApi';
 import { fnErrorText } from '../../../lib/stock/purchasing';
 import { monthChoices, rechargeState, rechargeToSend, shortDay } from '../../../lib/stock/kitchenRules';
 import { money } from '../../../lib/currency';
+import { useSiteCurrencyOf } from '../stock/useSiteCurrency';
 import { Btn, Pill, TableWrap, Th, Td, ErrorLine, EmptyLine, ui } from '../stock/stockUi';
 
 const todayYmd = () => new Date().toISOString().slice(0, 10);
@@ -24,6 +25,8 @@ const todayYmd = () => new Date().toISOString().slice(0, 10);
 export default function RechargeStatement({ orgCtx = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: each row in its own currency (the receiving site paid it), not the signed in venue's.
+  const currencyOf = useSiteCurrencyOf();
   const orgId = sc.orgId || orgCtx?.orgId || null;
   const months = useMemo(() => monthChoices(todayYmd(), 12), []);
   const [month, setMonth] = useState(months[1]?.value || months[0]?.value || '');
@@ -89,7 +92,7 @@ export default function RechargeStatement({ orgCtx = null }) {
                   <Td>{r.from_name}<div style={ui.sub}>{r.from_tenant ? (r.from_tenant_name || '') : 'No Xero company set'}</div></Td>
                   <Td>{r.to_name}<div style={ui.sub}>{r.to_tenant ? (r.to_tenant_name || '') : 'No Xero company set'}</div></Td>
                   <Td num>{Number(r.lines) || 0}</Td>
-                  <Td num strong>{money(r.amount)}</Td>
+                  <Td num strong>{money(r.amount, r.currency || currencyOf(r.to_location_id))}</Td>
                   <Td>
                     {state === 'sent' && <Pill tone="good">Sent to Xero {shortDay(r.posted.posted_at)}</Pill>}
                     {state === 'part' && <Pill tone="warn">Half sent</Pill>}

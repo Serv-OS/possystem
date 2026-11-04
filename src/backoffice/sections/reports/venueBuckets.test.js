@@ -347,7 +347,8 @@ test('the Z report prints From, To and Printed in the venue zone', () => {
   assert.match(z, /formatDate\(rangeFrom, tz\)\} \{formatTime\(rangeFrom, tz\)\}/);
   assert.match(z, /formatDate\(rangeTo, tz\)\} \{formatTime\(rangeTo, tz\)\}/);
   assert.match(z, /formatDate\(printedAt, tz\)\} \{formatTime\(printedAt, tz\)\}/);
-  assert.match(z, /toLocaleTimeString\('en-GB', \{ hour:'2-digit', minute:'2-digit', timeZone \}\)/);
+  // 5.12.57 (batch 8): the same call in the venue's words (exactly en-GB at a UK venue)
+  assert.match(z, /localeTimeString\(new Date\(ts\), \{ hour:'2-digit', minute:'2-digit', timeZone \}\)/);
 });
 
 test('Location compare reads each venue on its own clock, without touching the active venue', () => {

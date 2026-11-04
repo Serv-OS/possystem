@@ -11,7 +11,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { getLocationId } from '../../../lib/supabase';
-import { moneyMinor } from '../../../lib/currency';
+import { moneyMinor, getActiveCurrencyCode } from '../../../lib/currency';
 import { faultText } from '../../../lib/pagedRead';
 import { loadBookingPaymentsRange, loadBookingsByIds, loadTableLabels } from '../../../lib/bookings/bookingMoneyData.js';
 import { paymentLines, paymentTotals, filterLines, KIND_NAMES } from '../../../lib/bookings/bookingReports.js';
@@ -74,7 +74,7 @@ export default function BookingPaymentsReport({ range = null, sites = [], fmtN =
           dayOf: siteDayOf(site),
         });
         const timeOf = siteTimeOf(site);
-        for (const l of lines) all.push({ ...l, time: timeOf(l.at), currency: l.currency || site.currency || 'GBP' });
+        for (const l of lines) all.push({ ...l, time: timeOf(l.at), currency: l.currency || site.currency || getActiveCurrencyCode() }); // 5.12.57: the active venue's, never a fixed GBP
       }
       if (!alive) return;
       all.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
@@ -219,7 +219,7 @@ function SiteTable({ lines, sites }) {
       </div>
       {rows.map(({ site, totals }) => {
         const curs = Object.keys(totals);
-        const cur = curs[0] || site.currency || 'GBP';
+        const cur = curs[0] || site.currency || getActiveCurrencyCode();   // 5.12.57: the active venue's currency
         const t = totals[cur] || { taken: 0, noShow: 0, owedBack: 0, cardsSaved: 0 };
         return (
           <div key={site.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr repeat(4, 110px)', ...rowSt, minWidth: 600 }}>

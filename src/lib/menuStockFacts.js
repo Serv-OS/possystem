@@ -15,13 +15,27 @@
 // Pure: the Supabase client is passed in (node:test drives it with a fake).
 
 import { readAllRows } from './venueMenuRead.js';
-import { mergeStockFacts, kcalWords } from '../../supabase/functions/_shared/menuStockFacts.js';
+import { mergeStockFacts, kcalWords as kcalWordsFor, kcalNoteFor } from '../../supabase/functions/_shared/menuStockFacts.js';
+import { getActiveCurrencyCode } from './currency.js';
 import { allergenIds } from '../../supabase/functions/_shared/allergenIds.js';
 
 export {
-  mergeStockFacts, withItemFacts, factsByItemId, showCalories, kcalWords, mayContainWords,
-  KCAL_KEY, KCAL_NOTE_KEY, MAY_CONTAIN_KEY, ALLERGEN_CHECK_KEY, KCAL_NOTE_EN, ALLERGEN_CHECK_EN,
+  mergeStockFacts, withItemFacts, factsByItemId, showCalories, mayContainWords, kcalNoteFor,
+  KCAL_KEY, KCAL_NOTE_KEY, MAY_CONTAIN_KEY, ALLERGEN_CHECK_KEY, KCAL_NOTE_EN, KCAL_NOTE_US, ALLERGEN_CHECK_EN,
 } from '../../supabase/functions/_shared/menuStockFacts.js';
+
+/**
+ * 5.12.57: '146 kcal' at a UK venue (as before), '146 Cal' at a US one. The venue is the one the
+ * screen is on (a customer screen sets it from its own venue) unless one is given.
+ */
+export function kcalWords(kcal, t = null, venue = getActiveCurrencyCode()) {
+  return kcalWordsFor(kcal, t, venue);
+}
+
+/** 5.12.57: the calorie line for the screen's venue: the UK line, or the FDA statement at a US venue. */
+export function kcalNote(t = null, venue = getActiveCurrencyCode()) {
+  return kcalNoteFor(venue, t);
+}
 export { allergenIds, normaliseAllergenId, UK_ALLERGENS } from '../../supabase/functions/_shared/allergenIds.js';
 
 export const FACTS_TABLE = 'menu_item_stock_facts';

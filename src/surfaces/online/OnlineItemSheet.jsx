@@ -19,7 +19,7 @@ import { unsafeAllergenIds, itemAllergenIds, optionAllergenList, shownAllergenId
 import AllergenChips, { allergenPaletteFromTheme, allergenChipLabels } from '../../components/AllergenChips.js';
 // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
-import { kcalWords, mayContainWords, KCAL_NOTE_EN, ALLERGEN_CHECK_EN } from '../../lib/menuStockFacts';
+import { kcalWords, mayContainWords, kcalNote, ALLERGEN_CHECK_EN } from '../../lib/menuStockFacts';
 
 const capFirst = (s) => { const v = String(s || ''); return v ? v.charAt(0).toUpperCase() + v.slice(1) : ''; };
 
@@ -614,7 +614,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           {/* v5.11.93: '<n> kcal' and the 2,000 kcal line, where the venue shows calories. */}
           {showCalories && item?.kcal != null && (
             <div style={{ fontSize: 13, color: muted, lineHeight: 1.5, marginBottom: 16 }}>
-              <b>{kcalWords(item.kcal)}</b> · {KCAL_NOTE_EN}
+              <b>{kcalWords(item.kcal)}</b> · {kcalNote() /* 5.12.57: FDA line at a US venue */}
             </div>
           )}
 

@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { fetchSuppliers } from '../../../lib/stock/data';
 import { moneyWords } from '../../../lib/stock/purchasingRules';
@@ -23,6 +24,8 @@ export default function CreditRequestModal({ request = null, onDone, onClose }) 
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
   const [loc, setLoc] = useState(request?.location_id || sc.oneSite?.id || '');
+  // 5.12.57: the amount in the chosen site's own currency, not the signed in venue's.
+  const { symbol } = useSiteMoney(loc || null);
   const [supplierId, setSupplierId] = useState(request?.supplier_id || '');
   const [suppliers, setSuppliers] = useState([]);
   const [reason, setReason] = useState(request?.reason || 'overcharge');
@@ -54,7 +57,7 @@ export default function CreditRequestModal({ request = null, onDone, onClose }) 
   };
   return (
     <Modal title={request?.id ? 'Credit request' : 'New credit request'} onClose={onClose} width={760} dirty
-      footer={<><span style={{ fontSize: 13 }}>Amount <b>{moneyWords(total)}</b></span><span style={{ marginLeft: 'auto' }} /><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</Btn></>}>
+      footer={<><span style={{ fontSize: 13 }}>Amount <b>{moneyWords(total, symbol)}</b></span><span style={{ marginLeft: 'auto' }} /><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</Btn></>}>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <Field label="Site">
           <select value={loc} onChange={(e) => { setLoc(e.target.value); setSupplierId(''); }} disabled={!!request?.id} style={{ ...ui.input, width: 200 }} aria-label="Site">
@@ -83,7 +86,7 @@ export default function CreditRequestModal({ request = null, onDone, onClose }) 
               <Td right><input inputMode="decimal" value={l.qty} onChange={(e) => setLine(i, 'qty', e.target.value)} style={{ ...ui.input, width: 64, textAlign: 'right' }} aria-label="Qty" /></Td>
               <Td right><input inputMode="decimal" value={l.unit_price_charged} onChange={(e) => setLine(i, 'unit_price_charged', e.target.value)} style={{ ...ui.input, width: 90, textAlign: 'right' }} aria-label="Charged each" /></Td>
               <Td right><input inputMode="decimal" value={l.unit_price_agreed} onChange={(e) => setLine(i, 'unit_price_agreed', e.target.value)} style={{ ...ui.input, width: 90, textAlign: 'right' }} aria-label="Agreed each" /></Td>
-              <Td num>{moneyWords(lineAmount(l))}</Td>
+              <Td num>{moneyWords(lineAmount(l), symbol)}</Td>
               <Td right>{lines.length > 1 && <Btn small kind="link" onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}>Remove</Btn>}</Td>
             </tr>
           ))}

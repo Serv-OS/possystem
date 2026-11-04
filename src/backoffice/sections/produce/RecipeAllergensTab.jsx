@@ -17,8 +17,10 @@ import { fmtVenueDate } from '../../../lib/venueDate';
 import { allergenWords, factsWords, signedOff, PPDS_NOT_CHECKED, costSiteOf } from '../../../lib/stock/recipeRules';
 import { Btn, Pill, TableWrap, Th, Td, ErrorLine, EmptyLine, ui } from '../stock/stockUi';
 import BatchLabels from './BatchLabels';
+import { foodLawWords } from '../../../lib/foodLaw';
 
-const NOTE = 'Rolled up per site from the supplier items each site actually buys. Ingredient declaration in weight order with allergens in bold, for PPDS labels. Every channel reads it: till, kiosk, online, QR, printed menus, HubRise.';
+// 5.12.57: 'food labels' at a US venue (PPDS is the UK term).
+const note = () => `Rolled up per site from the supplier items each site actually buys. Ingredient declaration in weight order with allergens in bold, ${foodLawWords().recipeAllergenNote} Every channel reads it: till, kiosk, online, QR, printed menus, HubRise.`;
 const grey = { color: 'var(--t4)' };
 
 /** The declaration with every *word* in bold (the label renderer's marks). */
@@ -129,7 +131,7 @@ export default function RecipeAllergensTab({ detail, editable = false }) {
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                         <Btn small kind="link" onClick={() => setOpen((o) => ({ ...o, [row.location_id]: !isOpen }))}>{isOpen ? 'Hide' : 'From'}</Btn>
                         <Btn small kind="soft" disabled={!signed || !row.menu_item_id} title={signed ? undefined : PPDS_NOT_CHECKED}
-                          onClick={() => setLabel({ siteId: row.location_id, menuItemId: row.menu_item_id })}>Print PPDS label</Btn>
+                          onClick={() => setLabel({ siteId: row.location_id, menuItemId: row.menu_item_id })}>{foodLawWords().printFoodLabel}</Btn>
                       </div>
                     </Td>
                   </tr>
@@ -172,7 +174,7 @@ export default function RecipeAllergensTab({ detail, editable = false }) {
           </tbody>
         </TableWrap>
       )}
-      <div style={ui.sub}>{NOTE}</div>
+      <div style={ui.sub}>{note()}</div>
       {label && <BatchLabels siteId={label.siteId} mode="ppds" menuItemId={label.menuItemId} recipeId={recipe.id} onClose={() => setLabel(null)} />}
     </div>
   );

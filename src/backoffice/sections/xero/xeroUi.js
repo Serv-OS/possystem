@@ -129,8 +129,12 @@ export function previewWords(view, { tw = 'VAT', fmt = (n) => Number(n || 0).toF
     note: !(asLines && view.invoice) ? ''
       : fee ? `Refunds are the minus lines before the card fees line. Sales ${fmt(view.totals?.sales || 0)} less refunds ${fmt(view.totals?.refunds || 0)} ${feeWords} makes the invoice total.`
         : `Refunds are the minus lines at the end. Sales ${fmt(view.totals?.sales || 0)} less refunds ${fmt(view.totals?.refunds || 0)} makes the invoice total.`,
-    paymentsTitle: fee ? (asLines ? 'Payments on the invoice, takings less refunds and card fees (it shows as Paid)' : 'Payments on the invoice, takings less card fees (it shows as Paid)')
-      : asLines ? 'Payments on the invoice, takings less refunds (it shows as Paid)' : 'Payments on the invoice (it shows as Paid)',
+    // 5.12.57: "takings" is the UK word; a site whose tax is added on top (tw 'Tax', a US venue) says sales.
+    paymentsTitle: tw !== 'VAT'
+      ? (fee ? (asLines ? 'Payments on the invoice, sales less refunds and card fees (it shows as Paid)' : 'Payments on the invoice, sales less card fees (it shows as Paid)')
+        : asLines ? 'Payments on the invoice, sales less refunds (it shows as Paid)' : 'Payments on the invoice (it shows as Paid)')
+      : fee ? (asLines ? 'Payments on the invoice, takings less refunds and card fees (it shows as Paid)' : 'Payments on the invoice, takings less card fees (it shows as Paid)')
+        : asLines ? 'Payments on the invoice, takings less refunds (it shows as Paid)' : 'Payments on the invoice (it shows as Paid)',
     feeNote: fee ? feeNoteWords(view, fee, fmt) : '',
     creditNote: view?.creditNote || null,
     refundPayments: view?.refundPayments || [],

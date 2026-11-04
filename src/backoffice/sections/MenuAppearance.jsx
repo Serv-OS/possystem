@@ -18,6 +18,8 @@ import { Icon } from '../../components/ServOSIcons';
 import MenuHeader from '../../surfaces/menu/MenuHeader';
 import { readTheme, deriveVars, THEME_DEFAULTS, DISPLAY_FONT, BODY_FONT, FIXED } from '../../surfaces/menu/menuTheme';
 import { buildGiftTheme, fetchGiftLimits, giftPresetsFor, GIFT_DEFAULT_LIMITS, formatAmount } from '../../surfaces/gift/giftHelpers';
+// 5.12.57: the preview's sample prices show the venue's own money, never a typed pound.
+import { money, currencySymbol } from '../../lib/currency';
 
 const ASSET_BUCKET = 'receipt-assets';
 async function uploadAsset(file, locationId, kind) {
@@ -429,7 +431,7 @@ export default function MenuAppearance() {
                   {previewPage === 'catering' && (
                     <div style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 16, padding: 16, marginBottom: 20 }}>
                       <div style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, color: FIXED.ink, marginBottom: 6 }}>Your event</div>
-                      <div style={{ fontSize: 12.5, color: FIXED.muted }}>Date &amp; time pickers · “Orders at least 1 day ahead. Minimum order £100.”</div>
+                      <div style={{ fontSize: 12.5, color: FIXED.muted }}>Date &amp; time pickers · “Orders at least 1 day ahead. Minimum order {currencySymbol()}100.”</div>
                     </div>
                   )}
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 16 }}>
@@ -437,8 +439,8 @@ export default function MenuAppearance() {
                     <span style={{ height: 1, flex: 1, background: 'var(--line)' }} /><span style={{ fontSize: 12, color: FIXED.muted, fontWeight: 600 }}>3 items</span>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 280px), 1fr))', gap: 14 }}>
-                    <SampleCard name="Margherita" desc="Tomato, Mozzarella, Basil, EVOO" price="£16.00" img />
-                    <SampleCard name="Pepperoni" desc="Tomato, Mozzarella, Pepperoni, Oregano" price="£16.00" img />
+                    <SampleCard name="Margherita" desc="Tomato, Mozzarella, Basil, EVOO" price={money(16)} img />
+                    <SampleCard name="Pepperoni" desc="Tomato, Mozzarella, Pepperoni, Oregano" price={money(16)} img />
                   </div>
                 </div>
               </div>

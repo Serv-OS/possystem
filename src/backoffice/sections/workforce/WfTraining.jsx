@@ -7,12 +7,13 @@
 // staff-portal fn, so the matrix here is read from the same rows.
 
 import { useState, useEffect, useMemo } from 'react';
+import { localeDateString } from '../../../lib/venueDates';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, th, td, inputStyle, labelStyle, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
-const fmtDate = iso => iso ? new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—';
+const fmtDate = iso => iso ? localeDateString(new Date(iso + 'T00:00:00'), { day: 'numeric', month: 'short' }) : '—';   // 5.12.57: the venue's way
 const newTaskId = () => `t-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 
 function assignmentState(a) {

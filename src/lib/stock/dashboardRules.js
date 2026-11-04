@@ -8,7 +8,8 @@
 // nothing here works a GP out from the stock take off, nothing adds two currencies (one block of
 // cards per currency), and a figure the server did not give is shown as words, never as a zero.
 
-import { currencySymbol, signedMoney } from '../currency.js';
+import { currencySymbol, signedMoney, getActiveCurrencyCode } from '../currency.js';
+import { localeDateString } from '../../../supabase/functions/_shared/venueDates.js';
 import { RULES_LINE as REPORT_RULES_LINE } from './reportRules.js';
 
 // ── the fixed words (the mockup scrReport, word for word) ────────────────────────────────────────
@@ -102,12 +103,13 @@ export function notPostedWords(count) {
   return n === 1 ? '1 sale waiting' : `${n.toLocaleString('en-GB')} sales waiting`;
 }
 
-/** A calendar day as 'Mon 13 Oct', whatever the browser's zone; '' for anything else. */
-export function dayWords(ymd) {
+/** A calendar day as 'Mon 13 Oct' ('Mon, Oct 13' at a US venue), whatever the browser's zone; '' for anything else. */
+export function dayWords(ymd, venue = getActiveCurrencyCode()) {
   if (typeof ymd !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return '';
   const d = new Date(`${ymd}T12:00:00Z`);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+  // 5.12.57 (batch 8): the venue's words; a UK venue gets exactly the en-GB call it had
+  return localeDateString(d, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }, venue);
 }
 
 // ── the totals: site rows first, then one company row per currency ───────────────────────────────

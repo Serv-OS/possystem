@@ -32,6 +32,8 @@ import { venueZone } from '../../../../supabase/functions/_shared/businessDay.js
 import { venueZoneLabel } from '../../../lib/payments/venueTime';
 import { computeSalesStats } from './SalesSummary';
 import { vatMissingLine } from '../../../lib/salesStats';
+import { getActiveCurrencyCode } from '../../../lib/currency';
+import { localeDateString, localeTimeString } from '../../../lib/venueDates';
 import { breakdownLines, rewardsVatLine } from '../../../lib/salesBreakdown';
 import { summariseShift } from '../../../lib/shiftReport';
 import { applyFilters } from './_filters';
@@ -45,11 +47,12 @@ const DIV = { borderTop:'1px dashed currentColor', margin:'8px 0' };
 const BOLD = { fontWeight:700 };
 const NONE = Object.freeze([]);
 
+// 5.12.57 (batch 8): the venue's words (a US venue 'Nov 03, 2026' and '2:05 PM'; a UK one as before)
 function formatDate(ts, timeZone) {
-  return new Date(ts).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', timeZone });
+  return localeDateString(new Date(ts), { day:'2-digit', month:'short', year:'numeric', timeZone });
 }
 function formatTime(ts, timeZone) {
-  return new Date(ts).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', timeZone });
+  return localeTimeString(new Date(ts), { hour:'2-digit', minute:'2-digit', timeZone });
 }
 
 // timeZone = range.timeZone (the venue's; none = London, never the browser's).
@@ -201,7 +204,7 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         ))}
         {taxByRate.length > 0 && <div style={{ ...ROW, ...BOLD, marginTop:4 }}><span>Total tax</span><span>{fmt(stats.tax)}</span></div>}
         {/* 8 Oct 2026: a sale with no VAT recorded is counted 0 and named, never hidden. */}
-        {stats.vatMissingCount > 0 && <div style={{ ...ROW, color:'var(--red)', fontWeight:700 }}><span>{vatMissingLine(stats)}</span><span/></div>}
+        {stats.vatMissingCount > 0 && <div style={{ ...ROW, color:'var(--red)', fontWeight:700 }}><span>{vatMissingLine(stats, currency || getActiveCurrencyCode())}</span><span/></div>}
         {/* 16 Oct 2026: this block includes the VAT on free loyalty rewards, the SALES VAT does not (Peter's open question, D1). */}
         {sales.rewardsTax >= 0.005 && <div style={{ ...ROW, paddingLeft:10 }}><span>of which on loyalty rewards</span><span>{fmt(sales.rewardsTax)}</span></div>}
 

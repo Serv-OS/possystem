@@ -13,7 +13,8 @@
  * builders awaited the rasteriser. A missing asset is simply skipped, as before.
  */
 
-import { money } from './currency.js';
+import { money, getActiveCurrencyCode } from './currency.js';
+import { localeDateString, localeTimeString, localeString } from '../../supabase/functions/_shared/venueDates.js';
 import { v2ReceiptLines, taxLineLabel, breakdownLabel } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
@@ -76,10 +77,15 @@ export class DocBuilder {
   toDoc() { return { ops: this.ops, cols: this.cols }; }
 }
 
-const datePart = (d) => ({
-  time: d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-  date: d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+// 5.12.57 (US basics batch 8): the venue's words, from the document's venue (else the till's own):
+// a US venue prints 'Nov 3, 2026' and '2:05 PM', a UK one exactly as before. The clock is the till's,
+// which stands in the venue.
+const venueOf = (code) => code || getActiveCurrencyCode();
+const datePart = (d, code) => ({
+  time: localeTimeString(d, { hour: '2-digit', minute: '2-digit' }, venueOf(code)),
+  date: localeDateString(d, { day: 'numeric', month: 'short', year: 'numeric' }, venueOf(code)),
 });
+const ticketTime = (sentAt) => localeTimeString(new Date(sentAt||Date.now()), {hour:'2-digit',minute:'2-digit'}, venueOf());
 
 // ─── Customer receipt ─────────────────────────────────────────────────────────
 // All branding is optional: a location with no receipt_branding falls back to the legacy
@@ -100,7 +106,7 @@ export function buildCustomerReceiptDoc({ location, check, items, totals }, { co
   // strings on every GBP venue and prints $ at USD venues.
   const mny = (n) => money(n, location?.currency);
   const b = new DocBuilder(cols);
-  const { time: timeStr, date: dateStr } = datePart(new Date());
+  const { time: timeStr, date: dateStr } = datePart(new Date(), location?.currency);
 
   const branding = location?.receipt_branding || null;
   const header = branding?.header || null;
@@ -285,7 +291,7 @@ export function buildCustomerReceiptDoc({ location, check, items, totals }, { co
 // scheme block, then the write-in lines. No items: this is the signature voucher, not the bill.
 export function buildMerchantTipSlipDoc({ location, check, totals }, { cols = 42, assets = {} } = {}) {
   const b = new DocBuilder(cols);
-  const { time: timeStr, date: dateStr } = datePart(new Date());
+  const { time: timeStr, date: dateStr } = datePart(new Date(), location?.currency);
   const branding = location?.receipt_branding || null;
   const header = branding?.header || null;
 
@@ -340,7 +346,7 @@ export function buildMerchantTipSlipDoc({ location, check, totals }, { cols = 42
 //   check: { ref, server? }
 export function buildGiftCardSlipDoc({ location, card, check }, { cols = 42, assets = {} } = {}) {
   const b = new DocBuilder(cols);
-  const { time: timeStr, date: dateStr } = datePart(new Date());
+  const { time: timeStr, date: dateStr } = datePart(new Date(), location?.currency);
   const branding = location?.receipt_branding || null;
   const header = branding?.header || null;
   const currency = card?.currency || location?.currency;
@@ -411,7 +417,7 @@ export function docketNameLines(name) {
 
 export function buildKitchenTicketDoc({ table, server, covers, centreName, items, sentAt, delivery, itemLabel, reprint }, { cols = 42 } = {}) {
   const b = new DocBuilder(cols);
-  const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  const time = ticketTime(sentAt);
 
   b.init().center().bold(true).doubleBoth().text(centreName||'Kitchen').lf()
    .normal().center().line(time).divider('=')
@@ -530,7 +536,7 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
 
 export function buildFireCourseTicketDoc({ table, courseNum, centreName, sentAt }, { cols = 42 } = {}) {
   const b = new DocBuilder(cols);
-  const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  const time = ticketTime(sentAt);
 
   b.init().center().bold(true).doubleBoth().text(centreName||'Kitchen').lf()
    .normal().center().line(time).divider('=');
@@ -552,7 +558,7 @@ export function buildTransferNoticeTicketDoc({ fromTable, toTable, centreName, i
   // v4.6.28: kitchen alert docket fired when a table is moved/combined so the expo/kitchen
   // sees that previously-sent items now sit at a different table.
   const b = new DocBuilder(cols);
-  const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  const time = ticketTime(sentAt);
   b.init().center().bold(true).doubleBoth().text(centreName||'Kitchen').lf()
    .normal().center().line(time).divider('=');
   b.lf().center().bold(true).doubleBoth().line('** TABLE MOVED **').normal();
@@ -612,7 +618,7 @@ export function buildTestPageDoc(info = null, { cols = 42 } = {}) {
    .twoCol('Paper', `${spec.paper || 80}mm, ${spec.cols || cols} columns`)
    .twoCol('Sent from', sentFrom || 'unknown')
    .twoCol('App version', version ? `v${version}` : 'unknown')
-   .twoCol('Time', new Date().toLocaleString('en-GB'))
+   .twoCol('Time', localeString(new Date(), undefined, venueOf()))
    .divider()
    .bold(true).line('Text test:').bold(false)
    .line('Normal text')

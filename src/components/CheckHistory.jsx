@@ -16,7 +16,8 @@ import GiftActivateModal from './GiftActivateModal';
 import { giftLinesOf } from '../lib/giftCardLine';
 import { giftFunctionsUrl, giftCardsOnCheck, giftLineSlots, giftActivationWords } from '../lib/giftAtTill';
 import { ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
-import { moneyMinor } from '../lib/currency';
+// 5.12.57: the refund amount boxes show the venue's own symbol, never a typed pound.
+import { moneyMinor, currencySymbol } from '../lib/currency';
 import { Icon, hasIcon } from './ServOSIcons';
 
 const REFUND_REASONS = [
@@ -477,7 +478,7 @@ function RefundModal({check, onConfirm, onCancel}){
                         </div>
                       </div>
                       <div style={{display:'flex',alignItems:'center',gap:6}}>
-                        <span style={{fontSize:12,color:'var(--t3)'}}>£</span>
+                        <span style={{fontSize:12,color:'var(--t3)'}}>{currencySymbol()}</span>
                         <input className="input" type="number" step="0.01" min="0"
                           max={room!=null?(room/100):undefined}
                           value={val===0?'':val.toFixed(2)}
@@ -577,7 +578,7 @@ function AmountRow({label,suffix,value,max,disabled,onChange,isOverridden,onRese
         </div>
       </div>
       <div style={{display:'flex',alignItems:'center',gap:5,flexShrink:0}}>
-        <span style={{fontSize:12,color:'var(--t3)'}}>£</span>
+        <span style={{fontSize:12,color:'var(--t3)'}}>{currencySymbol()}</span>
         <input className="input" type="number" step="0.01" min="0" max={max} disabled={disabled}
           value={Number(value||0).toFixed(2)}
           onChange={e=>onChange(Math.min(max,Math.max(0,Number(e.target.value)||0)))}

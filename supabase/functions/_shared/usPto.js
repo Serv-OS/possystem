@@ -29,6 +29,18 @@ export function ptoRules(settings = null) {
 }
 
 /**
+ * 5.12.57: how an approved time off request is paid. At a US venue with PTO switched off there is no
+ * PTO to pay or to spend, so a holiday (PTO) request is unpaid and deducts nothing, whatever the
+ * approver picked (before, it was deducted and balances went below zero). Every other case, and every
+ * UK venue, is the approver's choice as before.
+ * Returns { paid, ptoOff }.
+ */
+export function timeOffPay({ holidayRules = 'uk', type = 'holiday', settings = null, paid = false } = {}) {
+  const ptoOff = holidayRules === 'us' && type === 'holiday' && !ptoRules(settings).on;
+  return { paid: ptoOff ? false : paid, ptoOff };
+}
+
+/**
  * Ledger rows for timesheets not yet accrued.
  *   sheets:   [{ id, staff_id, actual_hours, effective_rate, currency, year }] approved, not yet in the ledger
  *   earned:   { `${staff_id}|${year}`: hours already accrued that calendar year }

@@ -18,6 +18,7 @@ import { mayMessageCustomer } from '../_shared/ezcaterCatering.js';
 import { isVenueWriter } from '../_shared/venueWriter.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { reviewCardLink, REVIEW_CARD_ROOT } from '../_shared/reviewLink.js';
+import { toE164 } from '../_shared/regionPack.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -143,8 +144,17 @@ Deno.serve(async (req) => {
   if (action === 'scan') return json({ ok: true, ...(await scanLocation(ops)) });
 
   if (action === 'send_now') {
-    const phone = String(body.phone ?? '').trim();
-    if (!phone) return json({ error: 'phone required' }, 400);
+    const typed = String(body.phone ?? '').trim();
+    if (!typed) return json({ error: 'phone required' }, 400);
+    // 5.12.57: the "Test it" phone read with the venue's country (its currency: USD is the US).
+    // It went to send-sms raw, so 07700 900000 or (801) 555-1234 was refused as not E.164.
+    // A failed currency read reads it the UK way; what cannot be read is sent as typed.
+    let currency: string | null = null;
+    try {
+      const { data: oloc } = await opsAdmin.from('locations').select('currency').eq('id', ops).maybeSingle();
+      currency = (oloc?.currency as string) || null;
+    } catch { /* UK reading */ }
+    const phone = toE164(typed, currency || 'GBP') || typed;
     const loc = await venueInfo(ops);
     const slug = loc?.online_slug;
     if (!slug) return json({ error: 'venue has no online_slug to build the review link' }, 400);

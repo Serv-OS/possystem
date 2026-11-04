@@ -17,7 +17,9 @@
 
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../../../store';
+// 5.12.57: fmtSymbol, so the hourly chart names the money of the site on screen.
 import { StatTile, ExportBtn, EmptyState, HourBar, BarRow } from './_charts';
+import { fmtSymbol } from './_fmtSymbol';
 import { toCsv, downloadCsv } from './_csv';
 import { reportClock, workedTime, sumByVenueHour, venueHour } from './_filters';
 import { currencySymbol } from '../../../lib/currency';
@@ -421,7 +423,7 @@ function TipsOne({ checks, fmt, fmtN, locationConfig, sites }) {
       {/* Tips by hour */}
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'16px', marginBottom:14 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:14 }}>Tips by hour</div>
-        <HourBar values={headline.byHour} maxLabel={v => `${currencySymbol()}${Math.round(v)}`} nowHour={nowHour}/>
+        <HourBar values={headline.byHour} maxLabel={v => `${fmtSymbol(fmt)}${Math.round(v)}`} nowHour={nowHour}/>
       </div>
 
       {/* Per-server tips table */}

@@ -13,9 +13,14 @@ import * as wf from '../../../staff/wfData';
 import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
 import WfGeofenceCard from './WfGeofenceCard';
 import { activeRegionPack } from '../../../lib/regionPack';
+import { localeDateString } from '../../../lib/venueDates';
 import { overtimeRules, FEDERAL_MINIMUM_WAGE } from '../../../../supabase/functions/_shared/multiSiteOvertime.js';
 import { CURRENCIES as ALL_CURRENCIES } from '../../../lib/currency';
 import { US_STATE_BREAKS, usBreakRule, usBreakWords } from '../../../../supabase/functions/_shared/usBreaks.js';
+// 5.12.57: UK law words (12.07%, Working Time Regulations, tronc, HMRC) only at UK venues; the built in
+// templates follow the venue's country; the tip pool's name follows the venue.
+import { templatesForVenue } from '../../../staff/docTemplates';
+import { tipPoolName } from '../../../staff/payLaw';
 
 // v5.11.101: pay period types and their names. Which ones a venue may pick follows the region pack
 // (a US venue adds semi-monthly). Fixed lengths roll on from an anchor; semi-monthly is the 1st to
@@ -41,7 +46,7 @@ function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOf
   };
   let cur, next;
   try { cur = payPeriod(cfg); next = shiftPayPeriod(cfg, cur.startIso, 1); } catch { return null; }
-  const fmt = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  const fmt = iso => localeDateString(new Date(iso + 'T00:00:00'), { weekday: 'short', day: 'numeric', month: 'short' }, country);   // 5.12.57: the venue's way
   return (
     <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 10, lineHeight: 1.7 }}>
       <span style={{ fontWeight: 700, color: 'var(--t2)' }}>Current period:</span> {cur.label} · paid <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{fmt(cur.payDateIso)}</span>
@@ -323,7 +328,9 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
           <Icon name="status" size={15} /> Venue
         </div>
         <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.6, maxWidth: 520, marginBottom: 16 }}>
-          The labour target drives the rota’s cost-vs-sales gauge. Holiday accrues at the statutory UK rate of 12.07% by default. Currency and sales source affect how takings appear across Workforce.
+          {pack.country === 'US'
+            ? 'The labour target drives the rota’s cost against sales gauge. Paid time off (PTO) is off until you switch it on below: no US law requires it. Currency and sales source affect how takings appear across Workforce.'
+            : 'The labour target drives the rota’s cost-vs-sales gauge. Holiday accrues at the statutory UK rate of 12.07% by default. Currency and sales source affect how takings appear across Workforce.'}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
           <div>
@@ -343,6 +350,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             <label style={labelStyle}>AI rota: min rest between shifts (hours)</label>
             <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="24" step="0.5" inputMode="decimal"
               value={minRestHours} onChange={e => setMinRestHours(e.target.value)} disabled={savingVenue} />
+            {/* 5.12.57: 11 hours is the UK Working Time Regulations daily rest; US law has no federal rule. */}
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>{pack.country === 'US' ? 'No federal rule. Some states and cities set a rest between a closing and an opening shift: check yours. 11 hours is the default.' : 'The UK Working Time Regulations give 11 hours of rest a day: 11 is the default.'}</div>
           </div>
           {pack.holidayRules === 'uk' ? <div>
             <label style={labelStyle}>Holiday accrual rate %</label>
@@ -457,10 +466,10 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               </div>
             )}
             <div>
-              <label style={labelStyle}>New starter holiday day (hours)</label>
+              <label style={labelStyle}>{pack.holidayRules === 'uk' ? 'New starter holiday day (hours)' : 'New starter PTO day (hours)'}</label>
               <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="1" max="24" step="0.5" inputMode="decimal"
                 value={holidayDayHours} onChange={e => setHolidayDayHours(e.target.value)} disabled={savingVenue} />
-              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>What a day of leave is worth before someone has timesheet history. Once they have real worked weeks, their own 52-week average takes over automatically.</div>
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>{pack.holidayRules === 'uk' ? 'What a day of leave is worth before someone has timesheet history. Once they have real worked weeks, their own 52-week average takes over automatically.' : 'What a day of PTO is worth before someone has timesheet history. Once they have real worked weeks, their own average day takes over automatically.'}</div>
             </div>
             {pack.overtimeWeeklyHours ? (
               <div>
@@ -590,14 +599,17 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
           <div style={{ fontSize: 11.5, color: 'var(--t3)', lineHeight: 1.6, marginBottom: 12 }}>
             {currency === 'GBP'
               ? 'How card tips are shared. Service charge is always pooled and distributed via Tronc. UK law: 100% of tips must reach staff (no deductions), paid no later than the end of the month after the customer tipped — keep a written policy.'
-              : 'How card tips are shared. Service charge is always pooled and distributed via the weekly pool run. US federal law (FLSA): all tips belong to staff — owners, managers and supervisors can’t keep or receive pooled tips, and tip-credit rules vary by state.'}
+              : pack.country === 'US'
+                ? 'How card tips are shared. A service charge is not a tip at a US venue: it is the venue’s money, paid out as wages, and never added to the tip pool. US federal law (FLSA): all tips belong to staff. Owners, managers and supervisors can’t keep or receive pooled tips (the tip pool leaves them out), and tip credit rules vary by state.'
+                : 'How card tips are shared. Service charge is always pooled and distributed via the weekly pool run. US federal law (FLSA): all tips belong to staff — owners, managers and supervisors can’t keep or receive pooled tips, and tip-credit rules vary by state.'}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14 }}>
             <div>
               <label style={labelStyle}>Card tips go to</label>
               <select style={inputStyle} value={tipMode} onChange={e => setTipMode(e.target.value)} disabled={savingVenue}>
-                <option value="pool">Pool everything (US: “shared pool”)</option>
-                <option value="direct">Seller keeps their own (US: “no pooling”)</option>
+                {/* 5.12.57: the US names only at a US venue. */}
+                <option value="pool">{pack.country === 'US' ? 'Pool everything (shared pool)' : 'Pool everything'}</option>
+                <option value="direct">{pack.country === 'US' ? 'Seller keeps their own (no pooling)' : 'Seller keeps their own'}</option>
                 <option value="hybrid">Keep own + tip-out a % to the pool</option>
               </select>
             </div>
@@ -608,7 +620,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
                   value={String(100 - (parseInt(directPct, 10) || 0))}
                   onChange={e => setDirectPct(String(Math.min(100, Math.max(0, 100 - (parseInt(e.target.value, 10) || 0)))))}
                   disabled={savingVenue} />
-                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>US-style tip-out: each seller gives this % of their own tips to the pool and keeps the rest.</div>
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>{pack.country === 'US' ? 'Tip-out: each seller gives this % of their own tips to the pool and keeps the rest.' : 'Each seller gives this % of their own tips to the pool and keeps the rest.'}</div>
               </div>
             )}
             {currency === 'GBP' && (<>
@@ -637,8 +649,13 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 12, lineHeight: 1.7 }}>
                 <span style={{ fontWeight: 700, color: 'var(--t2)' }}>So with {sym}100 of card tips:</span>{' '}
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{sym}{keep}</span> stays with the sellers whose tables tipped it ·{' '}
+                {pack.country === 'US' ? <>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{sym}{100 - keep}</span> joins the weekly pool, split in <b>{tipPoolName(pack)}</b> by hours × role weights (that's how kitchen and support staff share; managers and supervisors are left out).
+                A service charge never joins the pool: it is wages. Payroll then shows each person's two tip lines: <b>direct</b> (their own tables) + <b>pooled</b> (their tip pool share). The Tips report in Reports opens on this same policy.
+                </> : <>
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{sym}{100 - keep}</span> joins the weekly pool — split in <b>Tronc / tips</b> by hours × role weights (that's how kitchen and support staff share).
                 Service charge always joins the pool. Payroll then shows each person's two tip lines: <b>direct</b> (their own tables) + <b>pooled</b> (their tronc share). The Tips report in Reports opens on this same policy.
+                </>}
               </div>
             );
           })()}
@@ -705,7 +722,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               <input type="number" min="1" max="13" step="0.5" value={autoBreakHours}
                 onChange={e => setAutoBreakHours(e.target.value)} disabled={savingVenue || !autoBreak}
                 style={{ width: 52, padding: '3px 6px', borderRadius: 6, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 12 }} />
-              hours. When it deducts, the amount is at least the UK statutory minimum for the worker's age (the under-18 rule needs a date of birth on their record); managers can still edit any timesheet.
+              hours. {pack.country === 'US' ? 'When it deducts, the amount is at least the meal break your state rule asks for (State break rules above); managers can still edit any timesheet.' : "When it deducts, the amount is at least the UK statutory minimum for the worker's age (the under-18 rule needs a date of birth on their record); managers can still edit any timesheet."}
             </span>
           </span>
         </label>
@@ -780,8 +797,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
           <Icon name="team" size={15} /> Roles &amp; pay rates
         </div>
         <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.6, maxWidth: 560 }}>
-          Your venue has {roleCount} role{roleCount === 1 ? '' : 's'} configured. Roles and their hourly rates, salaries, tronc weighting and SIA requirements are managed on the rate card under{' '}
-          <span style={{ color: 'var(--t1)', fontWeight: 600 }}>Pay &amp; rates</span>. Changes there flow through to rota costing, timesheets and tronc automatically.
+          Your venue has {roleCount} role{roleCount === 1 ? '' : 's'} configured. {pack.country === 'US' ? 'Roles and their hourly rates, salaries and tip pool weighting are managed on the rate card under' : 'Roles and their hourly rates, salaries, tronc weighting and SIA requirements are managed on the rate card under'}{' '}
+          <span style={{ color: 'var(--t1)', fontWeight: 600 }}>Pay &amp; rates</span>. {pack.country === 'US' ? 'Changes there flow through to rota costing, timesheets and the tip pool automatically.' : 'Changes there flow through to rota costing, timesheets and tronc automatically.'}
         </div>
       </Card>
 
@@ -800,7 +817,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
 
 // ── Offer-letter & contract templates (create / edit / merge) ────────────────
 const TOKENS = ['first_name', 'full_name', 'position', 'rate', 'contract_type', 'start_date', 'weekly_hours', 'business_name', 'today'];
-const SAMPLE_VARS = { first_name: 'Jordan', full_name: 'Jordan Lee', position: 'Bartender', rate: '£12.50 per hour', contract_type: 'Part time', start_date: '1 July 2026', weekly_hours: '20', business_name: 'The Anchor', today: '9 June 2026' };
+const SAMPLE_VARS = { first_name: 'Jordan', full_name: 'Jordan Lee', position: 'Bartender', rate: '12.50 per hour', contract_type: 'Part time', start_date: '1 July 2026', weekly_hours: '20', business_name: 'The Anchor', today: '9 June 2026' };
 
 function WfTemplatesCard({ ctx, roles, showToast }) {
   const [tpls, setTpls] = useState([]);
@@ -810,7 +827,7 @@ function WfTemplatesCard({ ctx, roles, showToast }) {
   async function reload() {
     setLoading(true);
     try { setTpls(await wf.loadTemplates(ctx.locationId) || []); }
-    catch { setTpls(wf.DEFAULT_TEMPLATES); }
+    catch { setTpls(templatesForVenue([], { country: activeRegionPack().country })); }
     finally { setLoading(false); }
   }
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [ctx.locationId]);
@@ -877,7 +894,10 @@ function TemplateEditor({ tpl, onClose, onSave }) {
   const [f, setF] = useState({ id: tpl.id, kind: tpl.kind || 'offer', name: tpl.name || '', body: tpl.body || '', contractType: tpl.contractType || '' });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const valid = f.name.trim() && f.body.trim();
-  const preview = wf.mergeTemplate(f.body, SAMPLE_VARS);
+  // 5.12.58: the sample rate in the venue's own money (it was always pounds).
+  // 5.12.57: the sample dates read the venue's way too (July 1, 2026 at a US venue)
+  const us = activeRegionPack().country === 'US';
+  const preview = wf.mergeTemplate(f.body, { ...SAMPLE_VARS, rate: `${activeRegionPack().currencySymbol}12.50 per hour`, ...(us ? { start_date: 'July 1, 2026', today: 'June 9, 2026' } : {}) });
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box" style={{ maxWidth: 760, maxHeight: '88vh', overflowY: 'auto' }}>

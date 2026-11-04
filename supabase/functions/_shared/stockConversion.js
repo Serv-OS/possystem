@@ -20,7 +20,7 @@
  * shortest path. If no path exists it throws — we never silently guess.
  */
 
-import { UNITS, normUnit, globalFactor } from './stockUnits.js';
+import { ALL_UNITS, normUnit, globalFactor } from './stockUnits.js';
 
 /**
  * Convert `qty` from unit `from` to unit `to`.
@@ -88,8 +88,8 @@ export function convert(qty, from, to, opts = {}) {
       if (!seen.has(e.to)) { seen.add(e.to); queue.push([e.to, acc * e.factor]); }
     }
   }
-  const knownF = UNITS[f] ? '' : ' (unknown unit)';
-  const knownT = UNITS[t] ? '' : ' (unknown unit)';
+  const knownF = ALL_UNITS[f] ? '' : ' (unknown unit)'; // 5.12.57: the US units are known too
+  const knownT = ALL_UNITS[t] ? '' : ' (unknown unit)';
   throw new Error(
     `No conversion path from "${f}"${knownF} to "${t}"${knownT}. ` +
     `Add an item unit conversion bridge (e.g. 1 ${f} = N ${t}).`

@@ -9,7 +9,11 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { activeRegionPack } from '../../../lib/regionPack';
-import { buildWeek, addWeeks, weekRangeLabel } from '../../../staff/wfWeek';
+import { buildWeek, addWeeks, alignWeek, weekRangeLabel } from '../../../staff/wfWeek';
+import { workweekStartDow } from '../../../lib/venueDates';
+// 5.12.57 (US, FLSA): a US venue's pool is card tips only (a service charge is wages, never tips) and
+// managers, supervisors and exempt positions share nothing (workforce-compute tronc.run). UK unchanged.
+import { suggestedTipPool } from '../../../../supabase/functions/_shared/usTipPool.js';
 
 const STATUS_TONE = { draft: 'grey', run: 'blue', exported: 'green' };
 const STATUS_LBL = { draft: 'Draft', run: 'Run', exported: 'Exported' };
@@ -23,7 +27,11 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
   // Week being distributed — navigable, so past weeks' tips (the usual case:
   // you run tronc AFTER the week ends) pull through. Was locked to the
   // current week, which made the system look like it found no tips.
-  const [wk, setWk] = useState(() => buildWeek());
+  // 5.12.57: the tip pool week is the venue's work week (Workforce settings, Work week starts), Monday
+  // when unset, so a US venue's pool runs over the same week its overtime and tip credit are worked on.
+  const startDow = workweekStartDow(settings?.settings);
+  const [wk, setWk] = useState(() => buildWeek(null, startDow));
+  useEffect(() => { setWk(w => alignWeek(w, startDow)); }, [startDow]);
 
   // Venue tipping policy decides how much of the till's card tips are POOLED:
   // 'pool' → all of them; 'hybrid' → (100 − directPct)%; 'direct' → none
@@ -32,6 +40,7 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
   const policy = settings?.settings || {};
   const tipMode = ['pool', 'direct', 'hybrid'].includes(policy.tipMode) ? policy.tipMode : 'pool';
   const pooledShare = tipMode === 'pool' ? 1 : tipMode === 'hybrid' ? 1 - Math.min(100, Math.max(0, Number(policy.directPct) || 0)) / 100 : 0;
+  const us = activeRegionPack().country === 'US';
 
   useEffect(() => {
     let alive = true;
@@ -40,13 +49,13 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
       .then(info => {
         if (!alive) return;
         const r2 = n => Math.round(n * 100) / 100;
-        const suggested = r2(info.serviceCharge + info.cardTips * pooledShare);
+        const suggested = suggestedTipPool({ country: us ? 'US' : 'UK', cardTips: info.cardTips, serviceCharge: info.serviceCharge, pooledShare });
         setTipInfo({ ...info, suggestedPool: suggested, pooledCardTips: r2(info.cardTips * pooledShare) });
         setPool(suggested > 0 ? suggested.toFixed(2) : '');
       })
       .catch(() => {});
     return () => { alive = false; };
-  }, [ctx.locationId, wk.startIso, wk.endIso, pooledShare]);
+  }, [ctx.locationId, wk.startIso, wk.endIso, pooledShare, us]);
 
   const nameOf = useMemo(() => {
     const m = {};
@@ -84,7 +93,8 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
     setRunning(true);
     try {
       const res = await wf.invokeCompute('tronc.run', { location_id: ctx.locationId, week_start: wk.startIso, pool: amount });
-      showToast(`Tronc distributed — ${money(res.total_paid ?? amount, 2)} across the team`, 'success');
+      if (us) showToast(`Tip pool shared: ${money(res.total_paid ?? amount, 2)} across the team${res.note ? `. ${res.note}` : ''}`, 'success');
+      else showToast(`Tronc distributed — ${money(res.total_paid ?? amount, 2)} across the team`, 'success');
       await reload();
     } catch (e) {
       showToast(e.message || 'Distribution failed', 'error');
@@ -93,7 +103,7 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
     }
   }
 
-  if (loading) return <LoadingCard label="Loading tronc…" />;
+  if (loading) return <LoadingCard label={us ? 'Loading the tip pool…' : 'Loading tronc…'} />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -107,13 +117,15 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(addWeeks(wk.startIso, -1))} title="Previous week"><Icon name="chevron" size={13} style={{ transform: 'rotate(180deg)' }} /></button>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, minWidth: 86, textAlign: 'center' }}>{weekRangeLabel(wk)}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, minWidth: 86, textAlign: 'center' }}>{weekRangeLabel(wk, activeRegionPack().country)}</span>
                 <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(addWeeks(wk.startIso, 1))} title="Next week"><Icon name="chevron" size={13} /></button>
-                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(buildWeek())}>This week</button>
+                <button className="btn btn-ghost btn-xs" disabled={running} onClick={() => setWk(buildWeek(null, startDow))}>This week</button>
               </div>
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.6, maxWidth: 520 }}>
-              How it works: tips taken on the till (card tips + service charge) during the selected week make the pool — pulled in automatically below. The pool is split by published-shift hours × role tronc weights, penny-exact, and the payouts feed Payroll for that period. You'd normally run a week once it's finished.
+              {us
+                ? 'How it works: card tips taken on the till during the selected week make the pool, pulled in automatically below. The pool is split by published shift hours × each position’s tip pool weight, to the cent, and the payouts feed Payroll for that period. Managers, supervisors and positions with no overtime (exempt) are left out: under federal law (FLSA) they cannot share pooled tips. A service charge is not a tip at a US venue: it is the venue’s money and is paid as wages, so it is not added here. You’d normally run a week once it’s finished.'
+                : "How it works: tips taken on the till (card tips + service charge) during the selected week make the pool — pulled in automatically below. The pool is split by published-shift hours × role tronc weights, penny-exact, and the payouts feed Payroll for that period. You'd normally run a week once it's finished."}
             </div>
             {/* Real tip pool pulled from the POS for the selected week */}
             <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '9px 13px', borderRadius: 11, background: 'var(--inset)', border: '1px solid var(--inset-border)', fontSize: 12 }}>
@@ -123,7 +135,7 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--acc)' }}>{money(tipInfo.suggestedPool, 2)}</span>
                 <span style={{ color: 'var(--t3)' }}>to pool this week</span>
                 <span style={{ color: 'var(--t4)' }}>
-                  · {tipMode === 'pool' ? `card tips ${money(tipInfo.cardTips, 2)}` : tipMode === 'hybrid' ? `pooled share of card tips ${money(tipInfo.pooledCardTips, 2)} (sellers keep ${policy.directPct || 0}%)` : `card tips go direct to sellers`} + service {money(tipInfo.serviceCharge, 2)}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} not pooled` : ''}
+                  · {tipMode === 'pool' ? `card tips ${money(tipInfo.cardTips, 2)}` : tipMode === 'hybrid' ? `pooled share of card tips ${money(tipInfo.pooledCardTips, 2)} (sellers keep ${policy.directPct || 0}%)` : `card tips go direct to sellers`}{us ? (tipInfo.serviceCharge > 0 ? ` · service charge ${money(tipInfo.serviceCharge, 2)} is wages, not pooled` : '') : <> + service {money(tipInfo.serviceCharge, 2)}</>}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} not pooled` : ''}
                 </span>
                 {/* v5.6.79 (#108) — tips CAN now be refunded, so the pool is net of
                     them. Shown explicitly: a refund that lands after this week's
@@ -136,7 +148,7 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
               </>) : tipInfo.cardTips > 0 && tipMode === 'direct' ? (
                 <span style={{ color: 'var(--t3)' }}>Card tips ({money(tipInfo.cardTips, 2)}) go direct to sellers under your tipping policy — they appear in Payroll's direct-tips column. Nothing to pool this week.</span>
               ) : (
-                <span style={{ color: 'var(--t3)' }}>No card tips or service charge on the till for this week — use ‹ to pick the week you want to distribute.</span>
+                <span style={{ color: 'var(--t3)' }}>{us ? `No card tips on the till for this week${tipInfo.serviceCharge > 0 ? ` (service charge ${money(tipInfo.serviceCharge, 2)} is wages, not pooled)` : ''}. Use ‹ to pick the week you want to distribute.` : 'No card tips or service charge on the till for this week — use ‹ to pick the week you want to distribute.'}</span>
               )}
             </div>
             {existingRun && (
@@ -184,8 +196,8 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
       {runs.length === 0 ? (
         <EmptyState
           icon="tag"
-          title="No tronc runs yet"
-          body="Tips and service charge are pooled and shared fairly across the team each week. Publish this week’s rota, then enter the pool above and run the distribution — every payout will appear here, reconciled to the penny."
+          title={us ? 'No tip pool runs yet' : 'No tronc runs yet'}
+          body={us ? 'Card tips are pooled and shared across the team each week, managers and supervisors left out. Publish this week’s rota, then enter the pool above and run the distribution: every payout appears here, to the cent.' : 'Tips and service charge are pooled and shared fairly across the team each week. Publish this week’s rota, then enter the pool above and run the distribution — every payout will appear here, reconciled to the penny.'}
         />
       ) : (
         runs.map(run => <RunCard key={run.id} run={run} nameOf={nameOf} showToast={showToast} />)
@@ -228,7 +240,7 @@ function RunCard({ run, nameOf, showToast }) {
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>{weekRangeLabel({ startIso: run.weekStart, endIso: weekEnd(run.weekStart) })}</div>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{weekRangeLabel({ startIso: run.weekStart, endIso: weekEnd(run.weekStart) }, activeRegionPack().country)}</div>
           <Badge tone={STATUS_TONE[run.status] || 'grey'}>{STATUS_LBL[run.status] || run.status || '—'}</Badge>
         </div>
         <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>

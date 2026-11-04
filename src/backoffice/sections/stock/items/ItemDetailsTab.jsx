@@ -22,19 +22,23 @@ import { useStore } from '../../../../store';
 import { ALLERGENS } from '../../../../data/seed';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
-import { UNITS, DIMENSIONS } from '../../../../lib/stock/units';
 import {
-  ITEM_TYPES, FIELD_WORDS, detailsDraft, detailsPatch, onTopRows, vatChoices, sameRate, queuedNote, factsLine,
+  ITEM_TYPES, itemFieldWords, detailsDraft, detailsPatch, onTopRows, purchaseTaxChoices, sameCountrySiteIds, sameRate, queuedNote, factsLine,
 } from '../../../../lib/stock/itemPageRules';
+import { purchaseTaxHint } from '../../../../lib/stock/stockRegion';
+import { regionOf } from '../../../../lib/regionPack';
+import { useSiteTaxWords } from '../useSiteRegion';
+import { useSiteCurrencyOf } from '../useSiteCurrency';
+import UnitOptions from '../UnitOptions';
 import { Btn, Pill, Field, ui } from '../stockUi';
 import SavedFirstModal from '../SavedFirstModal';
 import CategoriesModal from './CategoriesModal';
 
-const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
-const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 const NEW_CATEGORY = '__new_category__';
-const DETAIL_WORDS = Object.freeze(Object.fromEntries(['name', 'category_id', 'type', 'base_unit', 'sku', 'barcode', 'purchase_vat_rate',
-  'shelf_life_days', 'notes', 'exclude_from_gp', 'key_item', 'returns_to_shelf', 'allergens'].map((k) => [k, FIELD_WORDS[k]])));
+const DETAIL_KEYS = ['name', 'category_id', 'type', 'base_unit', 'sku', 'barcode', 'purchase_vat_rate',
+  'shelf_life_days', 'notes', 'exclude_from_gp', 'key_item', 'returns_to_shelf', 'allergens'];
+// 5.12.57: a US site reads 'Sales tax paid' for Purchase VAT
+const detailWordsFor = (currency) => { const w = itemFieldWords(currency); return Object.freeze(Object.fromEntries(DETAIL_KEYS.map((k) => [k, w[k]]))); };
 
 const off = (locked) => (locked ? { opacity: 0.55, cursor: 'not-allowed' } : null);
 const tickRow = { display: 'flex', gap: 7, alignItems: 'center', fontSize: 13, color: 'var(--t2)' };
@@ -43,6 +47,11 @@ export default function ItemDetailsTab({ detail, editable = false, reload, homeS
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
   const storeRates = useStore((s) => s.taxRates);
+  // 5.12.57: the item's own site decides its purchase tax words and choices (a US site: sales tax
+  // paid stays in the cost, no rates offered)
+  const tw = useSiteTaxWords(homeSiteId);
+  const currencyOf = useSiteCurrencyOf();
+  const DETAIL_WORDS = detailWordsFor(tw.code);
   const item = useMemo(() => detail?.item || {}, [detail]);
   const orgId = item.org_id || sc.orgId || null;
   const locked = !editable;
@@ -68,14 +77,18 @@ export default function ItemDetailsTab({ detail, editable = false, reload, homeS
 
   // Purchase VAT by rate: every rate of the company's sites' tax rows (stockApi.siteTaxRates). Until
   // that read answers (or if it fails), the signed in venue's rates and the item's own.
-  const siteIds = useMemo(() => (sc.sites || []).map((s) => s.id), [sc.sites]);
+  // 5.12.57: only the sites in the item's own country (a UK site is never offered a US rate, a US
+  // site never 20%); the signed in venue's rates only when it is in that country too.
+  const siteKey = sameCountrySiteIds(sc.sites || [], tw.code, (s) => currencyOf(s.id)).join(',');
+  const siteIds = useMemo(() => (siteKey ? siteKey.split(',') : []), [siteKey]);
+  const storeHere = regionOf(currencyOf(null)) === regionOf(tw.code) ? storeRates : null;
   useEffect(() => {
     if (typeof stockApi.siteTaxRates !== 'function' || !siteIds.length) return undefined;
     let live = true;
     stockApi.siteTaxRates(siteIds).then((r) => { if (live && Array.isArray(r?.data)) setRates(r.data); });
     return () => { live = false; };
   }, [siteIds]);
-  const vatList = vatChoices(rates || storeRates || [], item.purchase_vat_rate);
+  const vatList = purchaseTaxChoices(rates || storeHere || [], item.purchase_vat_rate, tw.code);
 
   const catName = (id) => cats.rows.find((c) => c.id === id)?.name || (id && id === item.category_id ? (item.category_name || item.category || '') : '');
   const catOptions = useMemo(() => {
@@ -145,16 +158,12 @@ export default function ItemDetailsTab({ detail, editable = false, reload, homeS
         </Field>
         <Field label="Base unit" hint={unitLocked ? 'Locked: a site has stock, counts, pars or orders on it.' : null}>
           <select value={draft.base_unit || ''} disabled={locked || unitLocked} onChange={(e) => upd('base_unit', e.target.value)} style={{ ...field, ...off(locked || unitLocked) }}>
-            {DIM_ORDER.map((dim) => (
-              <optgroup key={dim} label={dim[0] + dim.slice(1).toLowerCase()}>
-                {UNIT_OPTS.filter((u) => u.dimension === dim).map((u) => <option key={u.code} value={u.code}>{u.label} ({u.code})</option>)}
-              </optgroup>
-            ))}
+            <UnitOptions siteId={homeSiteId} />
           </select>
         </Field>
         <Field label="SKU"><input value={draft.sku} disabled={locked} onChange={(e) => upd('sku', e.target.value)} style={field} /></Field>
         <Field label="Barcode"><input value={draft.barcode} disabled={locked} onChange={(e) => upd('barcode', e.target.value)} style={field} /></Field>
-        <Field label="Purchase VAT" hint="The VAT you pay when you buy it. Cost and GP always use the price without VAT.">
+        <Field label={tw.purchaseTax} hint={purchaseTaxHint(tw.code)}>
           <select value={vatList.find((v) => sameRate(v.value, draft.purchase_vat_rate))?.label || 'None set'} disabled={locked} style={field}
             onChange={(e) => upd('purchase_vat_rate', vatList.find((v) => v.label === e.target.value)?.value ?? null)}>
             {vatList.map((v) => <option key={v.label} value={v.label}>{v.label}</option>)}

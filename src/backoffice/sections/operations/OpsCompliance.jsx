@@ -1,4 +1,4 @@
-// OpsCompliance — the EHO-ready compliance history: a month coloured by status on the
+// OpsCompliance — the EHO-ready (inspection ready, at a US venue) compliance history: a month coloured by status on the
 // left, a day-detail event TIMELINE on the right (every temperature round, checklist
 // sign-off, breach/corrective action + maintenance raised), and a CSV export of the
 // audit trail. (Back Office → Operations → Compliance.)
@@ -7,12 +7,17 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { getActiveLocationSync, getLocationId, getAvailableLocations } from '../../../lib/supabase';
 import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance } from '../../../lib/ops/data';
 import { fetchRunsRange, fetchChecklists, fetchRunCompletions } from '../../../lib/ops/checklists';
-import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
+import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp, defaultTempUnit } from '../../../lib/ops/temp';
+import { activeCountry } from '../../../lib/regionPack';
 import { getLocationConfig, buildScheduleCtx, minutesInTz, ymdInTz } from '../../../lib/locationTime';
+import { clockParts, localeDateString, localeString, localeTimeString, timeText, zoneOr } from '../../../lib/venueDates';
 const mono = { fontFamily: 'var(--font-mono)' };
 const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const DAY_COL = { green: 'var(--grn)', amber: 'var(--orn)', coral: 'var(--red)', idle: 'transparent' };
-const hhmm = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+// 5.12.57 (US basics batch 8): times on the venue's clock in its words (2:05 PM at a US venue), never
+// the laptop's; a US venue whose zone is not known yet shows no time, not a wrong one.
+const hhmm = (t, tz) => timeText(t, tz);
+const zoneOpt = (tz) => (zoneOr(tz) ? { timeZone: zoneOr(tz) } : null);
 
 export default function OpsCompliance() {
   const [locId, setLocId] = useState(getActiveLocationSync());
@@ -105,11 +110,14 @@ export default function OpsCompliance() {
     setSelDay(ymd(new Date(month.y, month.m, days)));
   }, [month, selDay]);
 
+  // 5.12.57: a US venue reads its log in °F (readings stay stored in °C); the UK as before.
+  const tUnit = defaultTempUnit(activeCountry());
   const exportCsv = () => {
-    const rows = [['Date', 'Time', 'Unit', 'Reading°C', 'In range', 'Severity', 'By', 'Source']];
+    const rows = [['Date', 'Time', 'Unit', `Reading°${tUnit}`, 'In range', 'Severity', 'By', 'Source']];
     data.readings.slice().reverse().forEach(r => {
       const u = data.units.find(x => x.id === r.tempUnitId);
-      rows.push([ymd(r.recordedAt), new Date(r.recordedAt).toLocaleTimeString('en-GB'), u?.name || r.tempUnitId, r.readingC, r.inRange ? 'yes' : 'NO', r.severity, r.operatorName || '', r.source]);
+      const z = zoneOpt(data.tz);   // 5.12.57: the venue's day and time
+      rows.push([z ? ymdInTz(r.recordedAt, z.timeZone) : '', z ? localeTimeString(r.recordedAt, z) : '', u?.name || r.tempUnitId, tUnit === 'C' ? r.readingC : displayTemp(r.readingC, tUnit).value, r.inRange ? 'yes' : 'NO', r.severity, r.operatorName || '', r.source]);
     });
     const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -117,12 +125,12 @@ export default function OpsCompliance() {
     a.download = `compliance-${month.y}-${String(month.m + 1).padStart(2, '0')}.csv`; a.click();
   };
 
-  // EHO-ready PDF: opens a self-contained branded report window → user saves as PDF.
+  // EHO-ready (inspection ready) PDF: opens a self-contained branded report window → user saves as PDF.
   const exportPdf = () => {
     const html = buildEhoHtml({
-      siteName, monthLabel, generatedAt: new Date(),
+      siteName, monthLabel, generatedAt: new Date(), tz: data.tz,
       units: data.units, readings: data.readings, corr: data.corr,
-      runs: data.runs, maint: data.maint, checklists: data.checklists, dayStatus,
+      runs: data.runs, maint: data.maint, checklists: data.checklists, dayStatus, tUnit,
     });
     const w = window.open('', '_blank', 'width=920,height=1000');
     if (!w) { alert('Allow pop-ups for this site to export the PDF.'); return; }
@@ -132,7 +140,7 @@ export default function OpsCompliance() {
   const firstDow = (new Date(month.y, month.m, 1).getDay() + 6) % 7; // Mon-first
   const daysInMonth = new Date(month.y, month.m + 1, 0).getDate();
   const cells = [...Array(firstDow).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
-  const monthLabel = monthStart.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  const monthLabel = localeDateString(monthStart, { month: 'long', year: 'numeric' });
   const today = ymd(new Date());
 
   return (
@@ -187,6 +195,8 @@ export default function OpsCompliance() {
             runs={data.runs.filter(r => r.runDate === selDay)}
             maint={data.maint.filter(m => ymdInTz(m.createdAt, data.tz) === selDay)}
             checklists={data.checklists}
+            tUnit={tUnit}
+            tz={data.tz}
           />
         )}
       </div>
@@ -196,12 +206,14 @@ export default function OpsCompliance() {
 
 // ── EHO PDF report (self-contained branded print document) ─────────────────────
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr, runs, maint, checklists, dayStatus }) {
+function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr, runs, maint, checklists, dayStatus, tUnit = 'C', tz = null }) {
   const uName = (id) => (units.find(u => u.id === id)?.name) || '—';
   const clName = (id) => (checklists.find(c => c.id === id)?.name) || 'Checklist';
   const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
-  const dDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-  const dTime = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  // 5.12.57: the venue's day and time in its words, on its clock
+  const z = zoneOpt(tz);
+  const dDate = (iso) => (z ? localeDateString(iso, { day: '2-digit', month: 'short', ...z }) : '');
+  const dTime = (iso) => hhmm(iso, tz);
 
   const dv = Object.values(dayStatus || {});
   const compliantDays = dv.filter(v => v === 'green').length;
@@ -216,7 +228,7 @@ function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr
   const kpi = (v, l, warn) => `<div class="kpi"><div class="kv" style="${warn ? 'color:#c0392b' : ''}">${v}</div><div class="kl">${l}</div></div>`;
 
   const tempRows = [...readings].sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt))
-    .map(r => `<tr class="${r.inRange ? '' : 'br'}"><td>${dDate(r.recordedAt)}</td><td>${dTime(r.recordedAt)}</td><td>${esc(uName(r.tempUnitId))}</td><td class="n">${esc(r.readingC)}&deg;C</td><td>${r.inRange ? 'In range' : 'BREACH'}</td><td>${esc(r.operatorName || '')}</td></tr>`).join('');
+    .map(r => `<tr class="${r.inRange ? '' : 'br'}"><td>${dDate(r.recordedAt)}</td><td>${dTime(r.recordedAt)}</td><td>${esc(uName(r.tempUnitId))}</td><td class="n">${esc(tUnit === 'C' ? r.readingC : displayTemp(r.readingC, tUnit).value)}&deg;${tUnit}</td><td>${r.inRange ? 'In range' : 'BREACH'}</td><td>${esc(r.operatorName || '')}</td></tr>`).join('');
   const corrRows = [...corr].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
     .map(c => `<tr><td>${dDate(c.createdAt)} ${dTime(c.createdAt)}</td><td>${esc((c.action || '').replace(/_/g, ' '))}</td><td>${esc(c.severity || '')}</td><td>${esc(c.operatorName || '')}</td><td>${c.maintenanceRequestId ? 'Yes' : '—'}</td></tr>`).join('');
   const runRows = [...runs].sort((a, b) => String(a.runDate).localeCompare(String(b.runDate)))
@@ -259,7 +271,7 @@ function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr
       <h1>Food Safety Compliance Report</h1>
       <div class="sub">${esc(siteName || 'Site')} &middot; ${esc(monthLabel)}</div>
     </div>
-    <div class="gen">Generated<br>${generatedAt.toLocaleString('en-GB')}</div>
+    <div class="gen">Generated<br>${z ? localeString(generatedAt, z) : ''}</div>
   </div>
   <div class="summary">
     ${kpi(`${inRangePct}%`, 'Temps in range', inRangePct < 90)}
@@ -282,7 +294,7 @@ const ghostBtn = { padding: '9px 14px', borderRadius: 8, background: 'transparen
 // ── the day timeline ──────────────────────────────────────────────────────────
 // Builds one time-sorted list of event cards from temperature rounds (rolled up per
 // AM/PM round), checklist sign-offs, corrective actions and maintenance raised.
-function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
+function DayDetail({ day, units, readings, corr, runs, maint, checklists, tUnit = 'C', tz = null }) {
   const uName = (id) => units.find(u => u.id === id)?.name || '—';
   const clName = (id) => checklists.find(c => c.id === id)?.name || 'Checklist';
   const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
@@ -308,7 +320,7 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
     // (a) temperature rounds rolled up per AM/PM round
     const rounds = {}; // 'AM' | 'PM' → { reads:[] }
     readings.forEach(r => {
-      const h = new Date(r.recordedAt).getHours();
+      const h = clockParts(r.recordedAt, zoneOr(tz))?.hh ?? new Date(r.recordedAt).getHours(); // 5.12.57: the venue's hour
       const round = h < 12 ? 'AM' : 'PM';
       (rounds[round] ??= []).push(r);
     });
@@ -321,7 +333,7 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
         at: firstAt,
         tone: inRangeN === total ? 'green' : 'coral',
         title: `${round} temperature round`,
-        sub: `${inRangeN}/${total} in range · ${hhmm(last.recordedAt)}`,
+        sub: `${inRangeN}/${total} in range · ${hhmm(last.recordedAt, tz)}`,
       });
     });
 
@@ -344,7 +356,7 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
     corr.forEach(c => {
       const reading = readings.find(r => r.id === c.sourceId);
       const unit = reading ? uName(reading.tempUnitId) : (c.sourceType === 'reading' ? 'Reading' : (c.sourceType || 'Unit'));
-      const temp = reading ? displayTemp(reading.readingC, 'C').label : '';
+      const temp = reading ? displayTemp(reading.readingC, tUnit).label : '';
       out.push({
         at: c.createdAt,
         tone: 'coral',
@@ -359,12 +371,12 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
         at: m.createdAt,
         tone: 'maint',
         title: 'Maintenance raised',
-        sub: `${m.assetType || m.title || 'asset'} · assigned ${hhmm(m.createdAt)}`,
+        sub: `${m.assetType || m.title || 'asset'} · assigned ${hhmm(m.createdAt, tz)}`,
       });
     });
 
     return out.sort((a, b) => new Date(a.at) - new Date(b.at));
-  }, [readings, runs, corr, maint, day, evidence]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readings, runs, corr, maint, day, evidence, tz]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // day summary: exceptions = breach readings + corrective actions + maintenance raised
   const breachReads = readings.filter(r => !r.inRange).length;
@@ -376,7 +388,7 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
 
   return (
     <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18 }}>
-      <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>{new Date(day + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+      <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>{localeDateString(new Date(day + 'T00:00:00'), { weekday: 'long', day: 'numeric', month: 'long' })}</div>
       {exceptions > 0 && (
         <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginTop: 4, marginBottom: 14, color: allCorrected ? 'var(--orn)' : 'var(--red)', ...mono }}>
           {`${exceptions} EXCEPTION${plural} · ${allCorrected ? 'CORRECTED' : 'OPEN'}`}

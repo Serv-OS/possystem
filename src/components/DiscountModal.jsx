@@ -146,7 +146,8 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel, ch
 
               <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Custom</div>
               <div style={{display:'flex',gap:6,marginBottom:8}}>
-                {[['percent','% off'],['amount','£ off']].map(([t,l])=>(
+                {/* 5.12.57: the venue's own symbol, never a typed pound. */}
+                {[['percent','% off'],['amount',`${currencySymbol()} off`]].map(([t,l])=>(
                   <button key={t} onClick={()=>{setSelected('custom');setCT(t);}} style={{flex:1,padding:'8px',borderRadius:8,cursor:'pointer',fontFamily:'inherit',border:`1.5px solid ${selected==='custom'&&customType===t?'var(--acc)':'var(--bdr)'}`,background:selected==='custom'&&customType===t?'var(--acc-d)':'var(--bg3)',color:selected==='custom'&&customType===t?'var(--acc)':'var(--t2)',fontSize:12,fontWeight:700}}>{l}</button>
                 ))}
               </div>

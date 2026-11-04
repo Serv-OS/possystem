@@ -6,6 +6,11 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { money as venueMoneyText } from '../../../lib/currency';
+import { dateNumeric, venueStamp } from '../../../lib/venueDates';
+// 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
+// US venue's zone is not known yet); days as 11/03/2026 at a US venue (dateNumeric). A UK venue reads as before.
+const atVenue = (ts) => venueStamp(ts);
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -23,7 +28,8 @@ const S = {
   seg: { display: 'inline-flex', border: '1px solid var(--bdr2)', borderRadius: 8, overflow: 'hidden' },
   segBtn: (on) => ({ padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: 'none', background: on ? 'var(--acc)' : 'transparent', color: on ? '#0b0c10' : 'var(--t2)' }),
 };
-const money = (n) => `£${Number(n || 0).toFixed(2)}`;
+// 5.12.57: the venue's own money ($ at a US venue), never a typed pound. The CSV carries plain numbers.
+const money = (n) => venueMoneyText(n || 0);
 const pct = (n, d) => (d ? `${Math.round((n / d) * 100)}%` : '—');
 
 export default function MarketingReports() {
@@ -60,8 +66,8 @@ export default function MarketingReports() {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const head = 'code,status,customer,email,phone,campaign,offer,issued,expires,redeemed,redeemed_value';
     const body = rows.map((c) => [c.code, c.status, c.customer_name, c.customer_email, c.customer_phone, c.campaign_name, c.offer_name,
-      c.issued_at ? new Date(c.issued_at).toLocaleString('en-GB') : '', c.expires_at ? new Date(c.expires_at).toLocaleDateString('en-GB') : '',
-      c.redeemed_at ? new Date(c.redeemed_at).toLocaleString('en-GB') : '', c.redeemed_value ?? ''].map(esc).join(','));
+      c.issued_at ? atVenue(c.issued_at) : '', c.expires_at ? dateNumeric(c.expires_at) : '',
+      c.redeemed_at ? atVenue(c.redeemed_at) : '', c.redeemed_value ?? ''].map(esc).join(','));
     const blob = new Blob([[head, ...body].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'promo-codes.csv'; a.click(); URL.revokeObjectURL(a.href);
   };
@@ -194,9 +200,9 @@ export default function MarketingReports() {
                     </td>
                     <td style={S.td}>{c.campaign_name || '—'}</td>
                     <td style={S.td}>{c.offer_name || '—'}</td>
-                    <td style={S.td}>{c.issued_at ? new Date(c.issued_at).toLocaleDateString('en-GB') : '—'}</td>
+                    <td style={S.td}>{c.issued_at ? dateNumeric(c.issued_at) : '—'}</td>
                     <td style={{ ...S.td, color: c.status === 'redeemed' ? 'var(--grn, #3fd97b)' : c.status === 'issued' ? 'var(--t1)' : 'var(--t4)', fontWeight: 700 }}>{c.status === 'issued' ? 'to use' : c.status}</td>
-                    <td style={S.tdr}>{c.redeemed_at ? `${new Date(c.redeemed_at).toLocaleDateString('en-GB')} · ${money(c.redeemed_value)}` : '—'}</td>
+                    <td style={S.tdr}>{c.redeemed_at ? `${dateNumeric(c.redeemed_at)} · ${money(c.redeemed_value)}` : '—'}</td>
                   </tr>
                 ))}
               </tbody>

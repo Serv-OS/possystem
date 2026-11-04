@@ -8,11 +8,16 @@ import { stockApi } from '../../../lib/stock/stockApi';
 import { scanInvoice } from '../../../lib/stock/purchasing';
 import { moneyWords } from '../../../lib/stock/purchasingRules';
 import { Modal, Btn, Field, ErrorLine, ui } from '../stock/stockUi';
+import { useSiteMoney } from '../stock/useSiteCurrency';
+import { stockTaxWords } from '../../../lib/stock/stockRegion';
 
 const toB64 = (file) => new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1] || ''); r.onerror = reject; r.readAsDataURL(file); });
 
 export default function CreditNoteModal({ request, onDone, onClose }) {
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: the request's own site currency, not the signed in venue's.
+  const { symbol, code } = useSiteMoney(request?.location_id || null);
+  const tw = stockTaxWords(code); // 5.12.57: 'Tax' at a US site
   const [number, setNumber] = useState('');
   const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
   const [amount, setAmount] = useState(request?.amount != null ? String(request.amount) : '');
@@ -23,7 +28,7 @@ export default function CreditNoteModal({ request, onDone, onClose }) {
     if (!file) return;
     setBusy(true); setError(null);
     try {
-      const { data, error: e } = await scanInvoice(await toB64(file), file.type || 'image/jpeg', request.location_id);
+      const { data, error: e } = await scanInvoice(await toB64(file), file.type || 'image/jpeg', request.location_id, { currency: code });
       if (e) throw e;
       if (data?.invoice_number) setNumber(String(data.invoice_number));
       if (data?.invoice_date) setDay(String(data.invoice_date).slice(0, 10));
@@ -43,7 +48,7 @@ export default function CreditNoteModal({ request, onDone, onClose }) {
     onDone?.();
   };
   return (
-    <Modal title="Add credit note" sub={`For the request of ${moneyWords(request?.amount)}`} onClose={onClose} width={520}
+    <Modal title="Add credit note" sub={`For the request of ${moneyWords(request?.amount, symbol)}`} onClose={onClose} width={520}
       footer={<><Btn onClick={onClose}>Cancel</Btn><span style={{ marginLeft: 'auto' }} /><Btn kind="primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</Btn></>}>
       <Field label="Scan the credit note" hint="Or type it below.">
         <input type="file" accept="image/*,application/pdf" onChange={(e) => scan(e.target.files?.[0])} aria-label="Scan the credit note" />
@@ -52,7 +57,7 @@ export default function CreditNoteModal({ request, onDone, onClose }) {
         <Field label="Number"><input value={number} onChange={(e) => setNumber(e.target.value)} style={{ ...ui.input, width: 160 }} aria-label="Number" /></Field>
         <Field label="Date"><input type="date" value={day} onChange={(e) => setDay(e.target.value)} style={{ ...ui.input, width: 160 }} aria-label="Date" /></Field>
         <Field label="Amount"><input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...ui.input, width: 120 }} aria-label="Amount" /></Field>
-        <Field label="VAT"><input inputMode="decimal" value={tax} onChange={(e) => setTax(e.target.value)} style={{ ...ui.input, width: 100 }} aria-label="VAT" /></Field>
+        <Field label={tw.Tax}><input inputMode="decimal" value={tax} onChange={(e) => setTax(e.target.value)} style={{ ...ui.input, width: 100 }} aria-label={tw.Tax} /></Field>
       </div>
       <ErrorLine error={error} />
     </Modal>

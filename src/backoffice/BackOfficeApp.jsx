@@ -121,6 +121,7 @@ import TableBookings from './sections/TableBookings';
 import ServosMessages from './sections/ServosMessages';
 import VenueMessagePopup from '../components/VenueMessagePopup';
 import { money, currencySymbol } from '../lib/currency';
+import { dayText, venueToday } from '../lib/venueDates';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf, STOCK_REPORTS_ALIAS } from '../lib/boSections';
@@ -205,7 +206,7 @@ const NAV = [
   { id:'eod',        label:'Close day',        icon:'lock',  group:'Analytics' },
   { id:'pettycash',  label:'Petty cash',        icon:'money', group:'Analytics' },
   { id:'customers',  label:'Customers',         icon:'users', group:'Analytics' },
-  { id:'tax',        label:'Tax & VAT',          icon:'percent',   group:'Analytics' },
+  { id:'tax',        label:'Tax & VAT',          icon:'percent',   group:'Analytics' },   // uk only: boSections routeLabel says Tax at a US venue (TAX_LABEL_WHEN_US)
   { id:'ai',         label:'AI Assistant',      icon:'ai',   group:'Analytics' },
   { id:'network',    label:'Network & Sync',     icon:'radio',  group:'Analytics' },
   { id:'location',   label:'Location settings', icon:'settings',  group:'Analytics' },
@@ -1195,7 +1196,8 @@ export default function BackOfficeApp() {
               <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 6px var(--grn)' }}/>
               <span>Live</span>
               <span style={{ color:'var(--bdr2)' }}>·</span>
-              <span>{new Date().toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })}</span>
+              {/* 5.12.57: the venue's today in its words (Tue, Nov 3 at a US venue), not the laptop's */}
+              <span>{dayText(venueToday(), { weekday: true, year: false })}</span>
               <span style={{ color:'var(--bdr2)' }}>·</span>
               <span style={{ fontFamily:'monospace', fontSize:11, color:'var(--t4)' }}>{VERSION}</span>
             </div>
@@ -1863,7 +1865,8 @@ function BOOverview({ setSection, canOpen = () => true, orgCtx }) {
           {currentStaff?.name ? `, ${currentStaff.name}` : ''}
         </div>
         <div style={{ fontSize:13, color:'var(--t3)' }}>
-          {new Date().toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long', year:'numeric' })}
+          {/* 5.12.57: the venue's today in its words */}
+          {dayText(venueToday(), { weekday: 'long', month: 'long' })}
         </div>
       </div>
 

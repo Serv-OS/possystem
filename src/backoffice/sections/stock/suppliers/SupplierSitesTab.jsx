@@ -20,6 +20,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
+import { getActiveCurrencyCode } from '../../../../lib/currency';
 import {
   siteRows, canEditSiteField, sitesTabNote, followValue, siteValueText, siteCommitValue, ccText, savedWords,
 } from '../../../../lib/stock/supplierListRules';
@@ -123,7 +124,8 @@ export default function SupplierSitesTab({ detail, reload }) {
                       ? { value: siteVal, follow: false }
                       : followValue(siteVal, companyVal, c.kind === 'number' ? 'money' : 'text');
                     if (!editable) {
-                      const words = siteValueText(c.key, link?.[c.key] ?? null, companyVal, row.site.currency || 'GBP');
+                      // 5.12.57: each site in its own currency; none known is the active venue's, never GBP.
+                      const words = siteValueText(c.key, link?.[c.key] ?? null, companyVal, row.site.currency || getActiveCurrencyCode());
                       const grey = words === '(company)' || words === '(none)';
                       return <Td key={c.key} right={c.kind === 'number'} num={c.kind === 'number'} grey={grey}>{words}</Td>;
                     }

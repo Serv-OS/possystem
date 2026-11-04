@@ -44,7 +44,7 @@ import { orderOptionFlow } from '../lib/optionFlow';
 import { resolveItemPrice, variantChildren, variantFromPrice } from '../lib/menuPricing';
 import { normalizeGroup, kioskSheetGroupHint } from '../lib/kioskGroupRules';
 // v5.11.93 (multi site stock Drop 2): kcal, 'May contain' and 'Allergens being checked' from the stock facts.
-import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../lib/menuStockFacts';
+import { kcalWords, mayContainWords, kcalNote, ALLERGEN_CHECK_KEY } from '../lib/menuStockFacts';
 import { kioskAllergenLabels, kioskPickedOptionIds, shownAllergenIds } from '../lib/kioskAllergens';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../components/AllergenChips.js';
@@ -778,7 +778,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
         {/* v5.11.93: kcal and the 2,000 kcal line, where the venue shows calories (from the stock recipe). */}
         {kcalOn && item?.kcal != null && (
           <div style={{ fontSize: 'clamp(15px, 1.7vw, 18px)', color: 'var(--kFgMuted)', fontWeight: 600, marginBottom: 'clamp(20px, 2.6vw, 28px)' }}>
-            {kcalWords(item.kcal, t)} · {t(KCAL_NOTE_KEY)}
+            {kcalWords(item.kcal, t)} · {kcalNote(t) /* 5.12.57: FDA line at a US venue */}
           </div>
         )}
 

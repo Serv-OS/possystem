@@ -18,7 +18,8 @@
 import { dietaryBadges } from './dietary';
 // v5.11.93 (multi site stock Drop 2): '<n> kcal' per item and the 2,000 kcal line, where the venue
 // shows calories (the figures come from the stock recipe linked at this site).
-import { kcalWords, KCAL_NOTE_EN } from '../../supabase/functions/_shared/menuStockFacts.js';
+// 5.12.57: the browser wrapper, so a US venue prints 'Cal' and the FDA calorie line.
+import { kcalWords, kcalNote } from './menuStockFacts.js';
 
 export const PRINT_FONTS = {
   serif:      { label: 'Elegant serif',  css: "Georgia, 'Times New Roman', serif" },
@@ -142,7 +143,7 @@ export function buildPrintMenuHtml(cfg, data) {
 
   const disclaimers = [
     c.allergenNote.show && c.allergenNote.text ? `<div class="pm-note">${esc(c.allergenNote.text)}</div>` : '',
-    c.showCalories ? `<div class="pm-note">${esc(KCAL_NOTE_EN)}</div>` : '',
+    c.showCalories ? `<div class="pm-note">${esc(kcalNote())}</div>` : '',
     c.serviceNote.show && c.serviceNote.text ? `<div class="pm-note">${esc(c.serviceNote.text)}</div>` : '',
     c.footer ? `<div class="pm-footer">${esc(c.footer)}</div>` : '',
   ].filter(Boolean).join('');

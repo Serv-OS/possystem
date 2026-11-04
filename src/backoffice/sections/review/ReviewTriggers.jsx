@@ -14,6 +14,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { activeCountry, activeRegionPack } from '../../../lib/regionPack';
 
 const CHANNELS = [['sms', 'SMS'], ['email', 'Email']];
 
@@ -316,7 +317,7 @@ export default function ReviewTriggers() {
             <code style={{ color: 'var(--t2)' }}>{'{venue}'}</code>{' '}
             <code style={{ color: 'var(--t2)' }}>{'{link}'}</code> — swapped in per guest.
             {form.ask_channel === 'sms' && !/stop/i.test(form.ask_message) &&
-              <span style={{ color: 'var(--red)' }}> Add a STOP opt-out for SMS (PECR).</span>}
+              <span style={{ color: 'var(--red)' }}> Add a STOP opt-out for SMS ({activeCountry() === 'US' ? 'TCPA and carrier rules' : 'PECR'}).</span>}
           </span>
           <div style={{ ...S.label, marginTop: 10 }}>Preview</div>
           <div style={S.preview}>{previewText}</div>
@@ -327,7 +328,7 @@ export default function ReviewTriggers() {
           <strong style={{ color: 'var(--t1)' }}>Sent to every guest, fairly.</strong> Review asks go to all guests with
           contact details — the review threshold is only used internally to triage and emphasise feedback; it never decides
           who gets asked or who can leave a public review. Every SMS must include a <strong>STOP</strong> opt-out, and we
-          always honour standing marketing opt-outs and unsubscribes (PECR).
+          always honour standing marketing opt-outs and unsubscribes ({activeCountry() === 'US' ? 'TCPA and carrier rules' : 'PECR'}).
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
@@ -347,7 +348,7 @@ export default function ReviewTriggers() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginTop: 16, alignItems: 'end' }}>
           <div style={S.field}>
             <label style={S.label}>Phone</label>
-            <input style={S.input} value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder="07700 900000" />
+            <input style={S.input} value={testPhone} onChange={e => setTestPhone(e.target.value)} placeholder={activeCountry() === 'US' ? activeRegionPack().phoneFormat : '07700 900000'} />
           </div>
           <div style={S.field}>
             <label style={S.label}>Name <span style={{ color: 'var(--t4)', fontWeight: 400 }}>(optional)</span></label>

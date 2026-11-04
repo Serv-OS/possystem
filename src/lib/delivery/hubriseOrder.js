@@ -39,7 +39,7 @@ export function buildHubriseOrder({ order, quote, currency = 'GBP' }) {
     customer: {
       first_name: first,
       last_name: last,
-      phone: toE164(cust.phone),
+      phone: toE164(cust.phone, currency),   // 5.12.57: read with the venue's country (its currency)
       address_1: a.line1 || '',
       address_2: a.line2 || '',
       city: a.city || '',

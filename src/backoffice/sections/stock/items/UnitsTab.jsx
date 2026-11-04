@@ -20,6 +20,8 @@ import { stockApi } from '../../../../lib/stock/stockApi';
 import { reportSave } from '../../../../lib/saveHealth';
 import { queuedNote, packsOf } from '../../../../lib/stock/itemPageRules';
 import { Icon } from '../../../../components/ServOSIcons';
+import { stockPlaceholders } from '../../../../lib/stock/stockRegion';
+import { useSiteCurrency } from '../useSiteCurrency';
 
 const fieldStyle = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const badge = () => ({ fontSize: 10, fontWeight: 700, color: 'var(--acc)', padding: '3px 7px', borderRadius: 20, background: 'var(--acc-d, rgba(249,115,22,0.12))' });
@@ -27,6 +29,7 @@ const ghostBtn = { fontSize: 10, padding: '3px 7px', borderRadius: 6, background
 const offLook = (locked) => (locked ? { opacity: 0.55, cursor: 'not-allowed' } : null);
 
 export default function UnitsTab({ detail, homeSiteId, locked = false, reload }) {
+  const glass = stockPlaceholders(useSiteCurrency(homeSiteId)).glass; // 5.12.57: '6 fl oz glass' at a US site
   const showToast = useStore(s => s.showToast);
   const itemId = detail?.item?.id || null;
   const baseUnit = detail?.item?.base_unit || 'each';
@@ -93,7 +96,7 @@ export default function UnitsTab({ detail, homeSiteId, locked = false, reload })
   return (
     <div style={{ maxWidth: 680 }}>
       <p style={{ fontSize: 13, color: 'var(--t2)', marginTop: 0 }}>
-        Define the units your staff actually use: <b>Keg</b>, <b>Case</b>, <b>Bottle</b>, <b>175ml glass</b>. You then
+        Define the units your staff actually use: <b>Keg</b>, <b>Case</b>, <b>Bottle</b>, <b>{glass}</b>. You then
         <b> buy, count and sell</b> in these; the maths happens in the background in {baseUnit} (which staff never see).
         A unit can be made of another (e.g. <b>Case = 6 × Bottle</b>).
       </p>
@@ -115,7 +118,7 @@ export default function UnitsTab({ detail, homeSiteId, locked = false, reload })
 
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, padding: 14, ...(locked ? { opacity: 0.55 } : null) }}>
         <span style={{ fontSize: 13, color: 'var(--t3)', paddingBottom: 8 }}>1</span>
-        <input disabled={locked} value={row.name} onChange={e => setRow(r => ({ ...r, name: e.target.value }))} placeholder="Keg / Case / Bottle / 175ml glass" style={{ ...fieldStyle, width: 200 }} />
+        <input disabled={locked} value={row.name} onChange={e => setRow(r => ({ ...r, name: e.target.value }))} placeholder={`Keg / Case / Bottle / ${glass}`} style={{ ...fieldStyle, width: 200 }} />
         <span style={{ fontSize: 13, color: 'var(--t3)', paddingBottom: 8 }}>=</span>
         <input disabled={locked} type="number" min="0" step="any" value={row.qty} onChange={e => setRow(r => ({ ...r, qty: e.target.value }))} placeholder="50" style={{ ...fieldStyle, width: 80 }} />
         <select disabled={locked} value={row.of} onChange={e => setRow(r => ({ ...r, of: e.target.value }))} style={{ ...fieldStyle, width: 150 }}>

@@ -504,7 +504,8 @@ test('the company list: the contract words, the one site view filter, Start a co
   assert.match(src, /stockApi\.saveItemSite\(row\.id, siteId, \{ price_here: v \}, link\.row_version \?\? null\)/, 'the price carries the link version');
   assert.match(src, /toCsv\(out, headers\)/);
   assert.match(src, /getVenueClock\(clockSite\)/, 'the export file is named by the venue\'s day');
-  assert.match(src, /exportFileName\(ymdInTz\(new Date\(\), tz \|\| 'Europe\/London'\)\)/);
+  // 5.12.57 (batch 8): the site's day, else the active venue's, never London's for a US site
+  assert.match(src, /exportFileName\(ymdInTz\(new Date\(\), zoneOr\(tz\) \|\| Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone\)\)/);
   assert.doesNotMatch(code(src), /toLocaleDateString|new Date\(\)\.toISOString\(\)\.slice/, 'never the device\'s date');
   assert.match(src, /<NewSiteBanner \/>/);
 });
@@ -540,7 +541,7 @@ test('the modals: the contract words and the calls', () => {
   assert.match(prices, /disabled=\{busy \|\| !rows\.length\} onClick=\{apply\}/, 'Apply only after a preview with rows');
   assert.match(prices, /dateBoxWords\(fromDay, \{ set: 'From', empty: 'No day picked yet\.' \}\)/, 'the From a date box says whether a day is set');
   has('CategoriesModal.jsx', ['title="Categories"', 'sub="One list for every site. Each category can carry an accounting code and a GP target."', '<Th>Category</Th>', '<Th>Accounting code</Th>', '<Th right>GP target</Th>', '<Th right>Items</Th>', '+ Add a category', '>Archive<', 'stockApi.archiveCategory(']);
-  const imp = has('ImportModal.jsx', ["label: 'Import CSV'", "label: 'Import from Nory or MarketMan'", 'pars, or recipes (one ingredient a line)', 'No till product is linked on import.', '{unusedWords(unknown)}', "'Import'", 'stockApi.importCommit(jobId, chosen)', 'stockApi.importCancel(', 'stageFile(mapped, { siteIdByName: sc.sites })']);
+  const imp = has('ImportModal.jsx', ["label: 'Import CSV'", "label: 'Import from Nory or MarketMan'", 'pars, or recipes (one ingredient a line)', 'No till product is linked on import.', '{unusedWords(unknown)}', "'Import'", 'stockApi.importCommit(jobId, chosen)', 'stockApi.importCancel(', 'stageFile(mapped, { siteIdByName: sc.sites, currency: unitPicks.code })']);
   assert.doesNotMatch(imp, /Recipes come in with the recipe update|importRecipeRows|skipped/, 'Drop 2: recipes import for real');
   assert.match(imp, /const STAGE_ROWS = 2000;/);
   assert.ok(imp.indexOf('stockApi.importStage(') < imp.indexOf('stockApi.importCheck(') || imp.indexOf('readCheck(id)') > imp.indexOf('stockApi.importStage('), 'stage, then the check screen');

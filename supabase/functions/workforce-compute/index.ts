@@ -21,14 +21,17 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.101: the venue's region (currency, US overtime) and the pay premiums, applied at last.
 import { regionPack } from '../_shared/regionPack.js';
+import { workweekStartDow } from '../_shared/venueDates.js';
 import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, venueDay } from '../_shared/payPremiums.js';
 import { tipCreditTopUps } from '../_shared/tipCredit.js';
-import { ptoRules, ptoAccruals } from '../_shared/usPto.js';
+import { ptoRules, ptoAccruals, timeOffPay } from '../_shared/usPto.js';
 import { caRules, caOvertimeAcrossSites } from '../_shared/caOvertime.js';
 import { primaryRecord, personBalance } from '../_shared/primaryLocation.js';
 import { acaReport, monthsBetween } from '../_shared/acaHours.js';
 import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime.js';
 import { headOfficeOn, isHeadOffice, headOfficePay } from '../_shared/headOffice.js';
+// 5.12.57: a US tip pool leaves managers and exempt positions out (FLSA).
+import { tipPoolExclusion } from '../_shared/usTipPool.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -136,15 +139,19 @@ Deno.serve(async (req) => {
       const weekEndExcl = (() => { const d = new Date(week_start + 'T00:00:00'); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10); })();
 
       // Immutability check + shifts + roles + (fallback) timesheets/staff — independent → in parallel.
-      const [{ data: existing }, { data: shifts }, { data: roles }, { data: tsheets }, { data: staffRows }] = await Promise.all([
+      const [{ data: existing }, { data: shifts }, { data: roles }, { data: tsheets }, { data: staffRows }, { data: tipVs }] = await Promise.all([
         admin.from('wf_tronc_runs').select('id, status').eq('location_id', location_id).eq('week_start', week_start).maybeSingle(),
         // v5.11.101: an open shift (nobody on it) shares no tips.
         admin.from('wf_shifts').select('staff_id, computed_hours, role_key')
           .eq('location_id', location_id).gte('shift_date', week_start).lte('shift_date', weekEnd).eq('status', 'published').not('staff_id', 'is', null),
-        admin.from('wf_roles').select('key, tronc_weight').eq('location_id', location_id),
+        admin.from('wf_roles').select(pack.country === 'US' ? 'key, tronc_weight, grp, pay_type' : 'key, tronc_weight').eq('location_id', location_id),
         admin.from('wf_timesheets').select('staff_id, actual_hours')
           .eq('location_id', location_id).in('status', ['approved', 'paid']).gte('clock_in', week_start).lt('clock_in', weekEndExcl),
         admin.from('wf_staff').select('id, role_key').eq('location_id', location_id),
+        // 5.12.57: a US venue's no overtime (exempt) list decides who is left out of the pool.
+        pack.country === 'US'
+          ? admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle()
+          : Promise.resolve({ data: null }),
       ]);
       if (existing && existing.status !== 'draft') return json({ error: `a ${existing.status} tronc run already exists for this week` }, 409);
       if (existing) await admin.from('wf_tronc_runs').delete().eq('id', existing.id).eq('status', 'draft'); // draft → replace (lines cascade)
@@ -166,9 +173,22 @@ Deno.serve(async (req) => {
           b.hours += Number(t.actual_hours || 0);
         });
       }
+      // 5.12.57 (FLSA): at a US venue managers, supervisors and exempt positions share nothing: they
+      // are left out of the split (their weight never counts) and named in the answer. UK unchanged.
+      const leftOut: { staff_id: string; reason: string }[] = [];
+      const roleRow: Record<string, any> = {}; (roles ?? []).forEach((r: any) => { roleRow[r.key] = r; });
       const rows = Object.entries(byStaff)
         .map(([staff_id, v]) => ({ staff_id, hours: round2(v.hours), points: pts[v.role] ?? 1 }))
-        .filter((r) => r.hours > 0);
+        .filter((r) => r.hours > 0)
+        .filter((r) => {
+          if (pack.country !== 'US') return true;
+          const rk = byStaff[r.staff_id].role || null;
+          const rr = (rk && roleRow[rk]) || {};
+          const reason = tipPoolExclusion({ country: pack.country, grp: rr.grp ?? null, roleKey: rk, payType: rr.pay_type ?? null, settings: (tipVs as any)?.settings ?? null });
+          if (reason) leftOut.push({ staff_id: r.staff_id, reason });
+          return !reason;
+        });
+      if (!rows.length && leftOut.length) return json({ error: 'Only managers, supervisors and positions with no overtime worked this week, and at a US venue they cannot share the tip pool (FLSA). There is no one to share the tips across.', left_out: leftOut }, 400);
       if (!rows.length) return json({ error: 'No staff hours for this week — there’s no one to share the tips across. Publish the rota or approve some timesheets for this week first, then run it again.' }, 400);
 
       const res = allocate(poolNum, rows);
@@ -191,7 +211,8 @@ Deno.serve(async (req) => {
         reason: `pool ${sym}${poolNum.toFixed(2)} over ${rows.length} staff, residual ${sym}${res.residual.toFixed(2)}`,
         after: { week_start, pool: poolNum, total_paid: res.totalPaid },
       });
-      return json({ ok: true, run_id: run.id, pool: poolNum, total_paid: res.totalPaid, residual: res.residual, point_value: res.pointValue, lines: res.lines });
+      return json({ ok: true, run_id: run.id, pool: poolNum, total_paid: res.totalPaid, residual: res.residual, point_value: res.pointValue, lines: res.lines,
+        ...(leftOut.length ? { left_out: leftOut, note: `${leftOut.length} manager${leftOut.length === 1 ? '' : 's'} or exempt staff left out: at a US venue managers and supervisors cannot share the tip pool (FLSA).` } : {}) });
     }
 
     // ── ACCRUAL RUN — UK: only HOURLY/irregular staff accrue 12.07% of hours.
@@ -394,16 +415,20 @@ Deno.serve(async (req) => {
       }
       const days = leaveDays ? leaveDays.length : Number(req.days || 0);
       const hours = round2(days * dayHours);
+      // 5.12.57: a US venue with paid time off switched off (Workforce settings, Paid time off) has no
+      // PTO to pay or to spend: an approved holiday (PTO) request is unpaid and takes nothing from a
+      // balance. Before, it was still deducted and balances went below zero. UK venues are unchanged.
+      const { paid: paidNow, ptoOff } = timeOffPay({ holidayRules: pack.holidayRules, type: req.type, settings: (vsRow?.settings as any) ?? null, paid });
       // Only HOLIDAY spends the holiday allowance. Sick/parental/unpaid leave is
       // recorded (and paid or not) but never deducts from it.
-      const deducts = status === 'approved' && paid === true && req.type === 'holiday' && hours > 0;
+      const deducts = status === 'approved' && paidNow === true && req.type === 'holiday' && hours > 0;
 
       const patch: Record<string, unknown> = {
         status,
         decided_by: user.id, decided_at: new Date().toISOString(),
-        paid: status === 'approved' ? paid : null,
+        paid: status === 'approved' ? paidNow : null,
         deducted_hours: deducts ? hours : null,
-        pay_rate: status === 'approved' && paid ? rate : null,
+        pay_rate: status === 'approved' && paidNow ? rate : null,
         leave_days: status === 'approved' && req.type === 'holiday' ? leaveDays : null,
       };
       const { error: upErr } = await admin.from('wf_time_off').update(patch).eq('id', time_off_id);
@@ -433,11 +458,12 @@ Deno.serve(async (req) => {
 
       await writeAudit(location_id, org, 'timeoff.decide', {
         actorId: user.id,
-        reason: `${status}${status === 'approved' ? (paid ? ' (paid)' : ' (unpaid)') : ''} — ${days}d ${req.type} for ${req.staff_id}`,
+        reason: `${status}${status === 'approved' ? (paidNow ? ' (paid)' : ' (unpaid)') : ''}${status === 'approved' && ptoOff ? ' (PTO off)' : ''} — ${days}d ${req.type} for ${req.staff_id}`,
         after: { time_off_id, status, paid: patch.paid, deducted_hours: patch.deducted_hours, rate, balance },
       });
 
-      return json({ ok: true, status, paid: patch.paid, hours: deducts ? hours : 0, rate, day_hours: dayHours, statutory_average: avgUsed, balance, salaried });
+      return json({ ok: true, status, paid: patch.paid, hours: deducts ? hours : 0, rate, day_hours: dayHours, statutory_average: avgUsed, balance, salaried,
+        ...(status === 'approved' && ptoOff ? { pto_off: true, note: 'Paid time off is switched off (Workforce settings, Paid time off), so this time off is unpaid and nothing is taken from a balance.' } : {}) });
     }
 
     // ── PAY PERIOD (read-only summary) ────────────────────────────────────────
@@ -771,11 +797,14 @@ Deno.serve(async (req) => {
 
       // Mondays inside [from, to] with no tronc run = pooled tips not yet
       // distributed (only matters when something is pooled).
+      // 5.12.57: the week starts on the venue's work week day (Workforce settings, Work week starts), as
+      // the tip pool screen runs it; Monday when unset, so a UK venue is checked exactly as before.
       const missingWeeks: string[] = [];
       if (tipMode !== 'direct') {
         const covered = new Set((runs ?? []).map((r: any) => r.week_start));
+        const poolDow = workweekStartDow(policy);
         for (const d = new Date(from + 'T00:00:00'); d <= new Date(to + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
-          if (d.getDay() === 1) {
+          if (d.getDay() === poolDow) {
             const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
             if (!covered.has(iso)) missingWeeks.push(iso);
           }

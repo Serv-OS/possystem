@@ -373,7 +373,8 @@ test('pin: the Manager app is on the business day, the P&L labour rule and the d
   assert.match(src, /in\('shift_date', bizDay === today \? \[today\] : \[bizDay, today\]\)/);
   // 5.12.24: a venue flagged is_demo keeps its demo history (it exists to show it); a real venue
   // leaves demo checks out by the one rule, exactly as before.
-  assert.match(src, /select\('timezone, name, is_demo'\)/);
+  // 5.12.57: the same read also brings the venue's own currency.
+  assert.match(src, /select\('timezone, name, is_demo, currency'\)/);
   assert.match(src, /const demoVenue = \(locRow as \{ is_demo\?: boolean \} \| null\)\?\.is_demo === true;/);
   assert.match(src, /const live = demoVenue \? \{ rows: checks, left: 0 \} : leaveOutDemo\(checks\);/);
   assert.match(src, /const older = demoVenue \? \{ rows: olderRefunds, left: 0 \} : leaveOutDemo\(olderRefunds\);/);
@@ -415,7 +416,8 @@ test('pin: the Wastage log values waste from the ledger; one Gross; the menu eng
   assert.doesNotMatch(dtr, />Gross takings |Gross \(inc VAT\)<\/th>/, 'Daily trading no longer says Gross for takings before refunds');
   assert.match(dtr, /Takings before refunds/);
   assert.match(read('../backoffice/sections/reports/MenuEngineering.jsx'), /Margin here is the average price per unit/);
-  assert.match(read('../backoffice/sections/StockReports.jsx'), /GP here is each dish's menu price excluding VAT less its plate cost at today's costs/);
+  // 5.12.57 (US basics batch 7): the tax word is the site's ({tw.tax}: VAT at a UK site, tax at a US one)
+  assert.match(read('../backoffice/sections/StockReports.jsx'), /GP here is each dish's menu price excluding \{tw\.tax\} less its plate cost at today's costs/);
 });
 
 test('pin: the SQL release puts the rules where this test holds them (20261029a)', () => {

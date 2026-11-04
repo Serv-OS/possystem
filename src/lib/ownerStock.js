@@ -20,6 +20,8 @@
 // PURE: node:test loads it (src/lib/ownerStock.test.js).
 
 import { hasFeature } from './ownerCompare.js';
+import { currencyConfig } from './currency.js';
+import { localeDateString } from '../../supabase/functions/_shared/venueDates.js';
 
 /** True when the snapshot's own function sends the stock block. */
 export const canStock = (snapshot) => hasFeature(snapshot, 'stock');
@@ -63,17 +65,21 @@ export function daysWords(v) {
   return (Math.round(v * 10) / 10).toFixed(1);
 }
 
-/** 'Mon 13 Oct' from a 'YYYY-MM-DD' day (no clock involved), or null. */
-export function dayWords(ymd) {
+/** 'Mon 13 Oct' from a 'YYYY-MM-DD' day (no clock involved), or null. 'Mon Oct 13' at a US venue. */
+// 5.12.57 (batch 8): in the venue's words (its currency); a pound venue reads exactly as before.
+export function dayWords(ymd, currency = 'GBP') {
   if (typeof ymd !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
   const d = new Date(`${ymd}T12:00:00Z`);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).replace(/,/g, '');
+  return localeDateString(d, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }, currency || 'GBP').replace(/,/g, '');
 }
 
-/** Whole pounds (or dollars) in the venue's currency, the Owner app's money format. */
+/**
+ * Whole pounds (or dollars) in the venue's currency, the Owner app's money format.
+ * 5.12.57: in the currency's own locale, so USD reads "$3,210" (en-GB printed "US$3,210").
+ */
 export function moneyWords(n, currency = 'GBP', dp = 0) {
-  try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: currency || 'GBP', minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
+  try { return new Intl.NumberFormat(currencyConfig(currency || 'GBP').locale, { style: 'currency', currency: currency || 'GBP', minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
   catch { return `${(Number(n) || 0).toFixed(dp)} ${currency || ''}`.trim(); }
 }
 
@@ -106,7 +112,7 @@ export function stockLine(stock, currency, fmt = moneyWords) {
   if (isNum(stock.budget) && stock.budget > 0) {
     parts.push({ key: 'budget', text: `budget ${fmt(stock.purchases, cur)} of ${fmt(stock.budget, cur)}`, tone: stockTone(ragOf(stock, 'budget_pct')) });
   }
-  const day = dayWords(stock.last_full_count_day);
+  const day = dayWords(stock.last_full_count_day, cur);
   parts.push({ key: 'count', text: day ? `last count ${day}` : 'no full count yet', tone: null });
   return { parts, text: parts.map((p) => p.text).join(' · ') };
 }
@@ -125,7 +131,7 @@ export function stockTiles(stock, currency, fmt = moneyWords) {
     const w = pctWords(v);
     return { key, label, text: w || 'No sales', tone: w ? (metric ? stockTone(ragOf(stock, metric)) : plain) : grey };
   };
-  const day = dayWords(stock.last_full_count_day);
+  const day = dayWords(stock.last_full_count_day, cur);
   const days = daysWords(stock.days_on_hand);
   const tiles = [
     { key: 'value', label: 'Stock value', text: isNum(stock.value) ? fmt(stock.value, cur) : 'Not known', tone: isNum(stock.value) ? plain : grey },

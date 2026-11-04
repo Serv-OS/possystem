@@ -8,10 +8,12 @@
 //   - Per-channel table with check count, revenue, avg check, share %, and period compare
 
 import { useMemo } from 'react';
+// 5.12.57: fmtSymbol, so the chart's axis names the money of the site on screen (Order types,
+// Order sources and the site mix views all pass the site's fmt).
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
+import { fmtSymbol } from './_fmtSymbol';
 import { pctDelta, reportClock, mixSeries, mixLabel } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
-import { currencySymbol } from '../../../lib/currency';
 import { isSplit, keyedMatrix, orderTypesFromSums } from '../../../lib/reportSplit.js';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
@@ -263,7 +265,7 @@ export function StackedBarChart({ series, xKeys, xLabels, types, fmt, styleFor: 
           <g key={f}>
             <line x1={padL} y1={y} x2={padL + chartW} y2={y} stroke="var(--bdr)" strokeDasharray="2 3"/>
             <text x={padL - 4} y={y + 3} fontSize="9" fill="var(--t4)" textAnchor="end" fontFamily="var(--font-mono)">
-              {currencySymbol()}{Math.round(max * f)}
+              {fmtSymbol(fmt)}{Math.round(max * f)}
             </text>
           </g>
         );

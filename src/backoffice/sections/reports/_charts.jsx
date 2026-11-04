@@ -145,7 +145,8 @@ export function Heatmap({ grid, formatCell }) {
 // The bar's height was a PERCENT of its column, and the column had no height of its own (it was
 // bottom aligned in the row), so the percent resolved to nothing and only the 2px border drew.
 // Heights are now worked out in pixels against a fixed track, so they cannot collapse.
-export function HourBar({ values, maxLabel, nowHour, currency = true }) {
+// sym (5.12.57): the symbol for the default money label; the site's own when the report passes it.
+export function HourBar({ values, maxLabel, nowHour, currency = true, sym }) {
   const max = Math.max(1, ...values);
   return (
     <div style={{ display:'flex', alignItems:'stretch', gap:3, height:140 }}>
@@ -154,7 +155,7 @@ export function HourBar({ values, maxLabel, nowHour, currency = true }) {
         return (
           <div key={h} style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'flex-end', gap:3 }}>
             <div style={{ fontSize:9, color:'var(--t4)', fontFamily:'var(--font-mono)', whiteSpace:'nowrap' }}>
-              {val > 0 ? (maxLabel ? maxLabel(val) : (currency ? `${currencySymbol()}${Math.round(val)}` : Math.round(val))) : ''}
+              {val > 0 ? (maxLabel ? maxLabel(val) : (currency ? `${sym || currencySymbol()}${Math.round(val)}` : Math.round(val))) : ''}
             </div>
             <div style={{
               width:'100%',

@@ -11,6 +11,10 @@
 
 import { money2, toPence, pctText, CHANNELS } from '../../../supabase/functions/_shared/msmModel.js';
 import { CHANNEL_LABELS } from './msmGrid.js';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax. The constants below keep the UK
+// words the tests pin; every reader takes them through activeTaxText (tt), which leaves them exactly
+// as they are at a UK venue and says tax at a US one.
+import { activeTaxWords, activeTaxText as tt } from '../taxWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 // A price that moves from or to "follows" in words (17 Oct verification: never "price the group
@@ -56,7 +60,7 @@ export const HELP = Object.freeze({
   mustChoose: 'On: the till will not move on until they pick.',
   quantity: 'Same choice more than once: for boxes, for example 3 donuts of any flavour.',
   thenAsk: 'After this option, ask another group, for example Syrup then Which syrup.',
-  optionVat: "An option is taxed at its product's VAT, because it is part of the same sale.",
+  optionVat: "An option is taxed at its product's VAT, because it is part of the same sale.",   // taxText: the screens read it through tt()
   groupName: 'What the till shows as the question.',
 });
 
@@ -73,7 +77,7 @@ export const PRICE_TYPE_HELP = Object.freeze({
   base: 'Used when nothing else is set.',
   dineIn: 'Till eat in, QR and kiosk eat in. Blank uses the Standard price.',
   takeaway: 'Till and kiosk takeaway. Blank uses the Standard price.',
-  collection: 'Till Collect, online collection and ezCater takeout. Blank uses the Standard price, not Takeaway. Its VAT follows Takeaway.',
+  collection: 'Till Collect, online collection and ezCater takeout. Blank uses the Standard price, not Takeaway. Its VAT follows Takeaway.',   // taxText: the screens read it through tt()
   delivery: 'Online delivery and the HubRise catalogue. Blank uses the Standard price.',
   driveThru: 'Drive thru. Blank uses the Takeaway price.',
 });
@@ -96,24 +100,25 @@ export const TAX_TYPE_HELP = Object.freeze({
  */
 export function sizeVatWords({ size = true, product = 'its product', sizes = 0, taxByType = null } = {}) {
   const set = Object.keys(TAX_TYPE_WORDS).filter((k) => taxByType && taxByType[k]);
-  const list = set.map((k) => `${TAX_TYPE_WORDS[k]} ${taxByType[k].name || 'VAT'} (${pctText(taxByType[k].percent)})`).join(', ');
+  const tw = activeTaxWords();
+  const list = set.map((k) => `${TAX_TYPE_WORDS[k]} ${taxByType[k].name || tw.Tax} (${pctText(taxByType[k].percent)})`).join(', ');
   if (!size) return sizes > 0 ? `Its ${sizes === 1 ? 'size uses' : `${sizes} sizes use`} these too.` : '';
-  if (!set.length) return `This size uses its VAT for every order type, as ${product} does. To set VAT by order type, set it on ${product}: its sizes follow it.`;
+  if (!set.length) return `This size uses its ${tw.tax} for every order type, as ${product} does. To set ${tw.tax} by order type, set it on ${product}: its sizes follow it.`;
   return `This size follows ${product}: ${list}. To change it, change it on ${product}.`;
 }
 
 // A site's own column names in words (one map for the product sheet, the preview and the grid).
 export const COL_WORDS = Object.freeze({
   cat: 'category', cats: 'extra categories', image: 'photo', name: 'name', menu_name: 'menu name', receipt_name: 'receipt name',
-  kitchen_name: 'kitchen name', description: 'description', tax_rate_id: 'VAT rate', allergens: 'allergens', tags: 'tags',
+  kitchen_name: 'kitchen name', description: 'description', tax_rate_id: 'VAT rate', allergens: 'allergens', tags: 'tags',   // taxText: colWord
   visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code', assigned_modifier_groups: 'option groups',
-  type: 'type', parent_id: 'size of', tax_overrides: 'VAT by order type', label: 'name', sort_order: 'order',
+  type: 'type', parent_id: 'size of', tax_overrides: 'VAT by order type', label: 'name', sort_order: 'order',   // taxText: colWord
   min: 'choose at least', max: 'choose up to', selection_type: 'kind of choice', item_link: 'sub item link', sub_group: 'Then ask',
   // 17 Oct recheck: a site whose row has no Standard price keeps none (said as "No price at <site>").
   no_price: 'no price',
 });
 /** A column in words, never the column itself ("its own setting" when the map has none). */
-export const colWord = (k) => COL_WORDS[k] || 'its own setting';
+export const colWord = (k) => tt(COL_WORDS[k] || 'its own setting', { mid: true });
 
 const KIND_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with sizes', subitem: 'a sub item' };
 /**
@@ -125,9 +130,10 @@ const KIND_WORDS = { simple: 'a simple product', modifiable: 'a product with opt
  */
 export function keptValueWords(col, v, opts = {}) {
   if (col === 'tax_rate_id') {
-    if (v == null || v === '') return 'no VAT rate';
+    const tw = activeTaxWords();
+    if (v == null || v === '') return `no ${tw.tax} rate`;
     const r = listOf(opts.rates).find((x) => x && String(x.id) === String(v));
-    return r ? `${r.name || 'VAT'} ${pctText(r.rate)}` : 'a VAT rate of its own';
+    return r ? `${r.name || tw.Tax} ${pctText(r.rate)}` : `a ${tw.tax} rate of its own`;
   }
   if (col === 'image') return v ? 'its own photo' : 'no photo';
   if (col === 'type') return KIND_WORDS[v] || 'its own kind of product';
@@ -149,14 +155,14 @@ export const CHOICE_WORDS = Object.freeze({ single: 'One choice', multiple: 'Sev
 const FIELD = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
   category_id: 'category', extra_category_ids: 'extra categories', parent_product_id: 'size of', type: 'type',
-  default_price: 'group price', default_channels: 'order type prices', tax_rate_name: 'VAT', tax_rate_percent: 'VAT',
+  default_price: 'group price', default_channels: 'order type prices', tax_rate_name: 'VAT', tax_rate_percent: 'VAT',   // taxText: fieldWord
   allergens: 'allergens', tags: 'tags', image: 'photo', modifier_groups: 'option groups', visibility: 'where it shows',
   sold_alone: 'sold on its own', item_code: 'item code', archived: 'removed', sort_order: 'order', label: 'name',
   parent_id: 'under', route_like_id: 'prints like', icon: 'icon', color: 'colour', use_name_everywhere: 'name at every site',
-  tax_by_type: 'VAT by order type', min: 'rule', max: 'rule', selection_type: 'kind of choice', group_id: 'option group',
+  tax_by_type: 'VAT by order type', min: 'rule', max: 'rule', selection_type: 'kind of choice', group_id: 'option group',   // taxText: fieldWord
   price: 'price', product_id: 'sub item', sub_group_id: 'Then ask',
 };
-export const fieldWord = (k) => FIELD[k] || 'a setting';
+export const fieldWord = (k) => tt(FIELD[k] || 'a setting', { mid: true });
 
 /** "Choose exactly 1", "Choose up to 3", "Choose between 1 and 3", "Choose as many as they like". */
 export function ruleSentence(min, max) {
@@ -201,11 +207,12 @@ export function changeWords(row, names = {}) {
         const ac = a.default_channels || {}, bc = b.default_channels || {};
         const ch = CHANNELS.filter((c) => toPence(ac[c]) !== toPence(bc[c]));
         if (ch.length) parts.push(ch.map((c) => (ac[c] == null ? `${CHANNEL_LABELS[c] || 'Order type'} goes back to the Standard price` : `${CHANNEL_LABELS[c] || 'Order type'} group price to ${money2(ac[c])}`)).join(', '));
-      } else if (k === 'tax_rate_percent' || k === 'tax_rate_name') { if (!parts.includes('VAT changed')) parts.push('VAT changed'); }
+      } else if (k === 'tax_rate_percent' || k === 'tax_rate_name') { const w = `${activeTaxWords().Tax} changed`; if (!parts.includes(w)) parts.push(w); }
       else if (k === 'tax_by_type') {
         const bt = b.tax_by_type || {}, at = a.tax_by_type || {};
         const keys = Object.keys(TAX_TYPE_WORDS).filter((t) => JSON.stringify(bt[t] ?? null) !== JSON.stringify(at[t] ?? null));
-        parts.push(keys.length ? keys.map((t) => `${TAX_TYPE_WORDS[t]} VAT ${at[t] ? `to ${at[t].name || pctText(at[t].percent)}` : "back to the product's VAT"}`).join(', ') : 'VAT by order type changed');
+        const tw = activeTaxWords();
+        parts.push(keys.length ? keys.map((t) => `${TAX_TYPE_WORDS[t]} ${tw.tax} ${at[t] ? `to ${at[t].name || pctText(at[t].percent)}` : `back to the product's ${tw.tax}`}`).join(', ') : `${tw.Tax} by order type changed`);
       } else if (k === 'sold_alone') parts.push(a.sold_alone ? 'now also sold on its own' : 'now only used as an option');
       else if (k === 'type') parts.push(a.type === 'subitem' ? 'now a sub item' : 'now a product');
       else if (k === 'modifier_groups') {

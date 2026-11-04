@@ -15,6 +15,7 @@ import { firstNameOf } from '../../lib/customerInitials';
 import { readProfileReply, customerAfterSave, isSignInAgain } from '../../lib/portalProfileReply';
 import { portalLoyaltyView } from '../../lib/portalLoyaltyView';
 import { Icon, EmojiIcon } from '../../components/ServOSIcons';
+import { activeCountry, activeRegionPack } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -491,7 +492,7 @@ function LoginScreen({ t, phone, setPhone, loading, error, onSubmit }) {
         inputMode="tel"
         value={phone}
         onChange={e => setPhone(e.target.value)}
-        placeholder="07931 123456"
+        placeholder={activeCountry() === 'US' ? activeRegionPack().phoneFormat : '07931 123456'}
         onKeyDown={e => e.key === 'Enter' && onSubmit()}
         style={{
           width: '100%', padding: '14px 16px', fontSize: 16,
@@ -600,7 +601,7 @@ function RegisterFormScreen({ t, loading, error, onSubmit }) {
       <input
         type="tel" inputMode="tel" value={phone}
         onChange={e => setPhone(e.target.value)}
-        placeholder="07931 123456"
+        placeholder={activeCountry() === 'US' ? activeRegionPack().phoneFormat : '07931 123456'}
         style={inputStyle(t)}
       />
       <div style={{ fontSize: 11, color: t.textDim, marginTop: 4 }}>

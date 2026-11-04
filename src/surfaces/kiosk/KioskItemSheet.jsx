@@ -27,7 +27,7 @@ import DietaryChips, { KIOSK_DIET_PALETTE } from '../../components/DietaryChips.
 import { useKioskKeyboardLift, kioskRevealOnFocus } from '../../lib/kioskKeyboard.js';
 // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
-import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../../lib/menuStockFacts';
+import { kcalWords, mayContainWords, kcalNote, ALLERGEN_CHECK_KEY } from '../../lib/menuStockFacts';
 import { KioskCloseButton, KioskPhoto } from './KioskChrome';
 import { MinusIcon, PlusIcon, TickIcon, WarningIcon } from './KioskIcons';
 
@@ -123,7 +123,7 @@ export default function KioskItemSheet(props) {
             ) : null}
             <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 10, fontVariantNumeric: 'tabular-nums' }}>{priceLine}</div>
             {showCalories === true && item?.kcal != null ? (
-              <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{kcalWords(item.kcal, t)} · {t(KCAL_NOTE_KEY)}</div>
+              <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{kcalWords(item.kcal, t)} · {kcalNote(t) /* 5.12.57: FDA line at a US venue */}</div>
             ) : null}
             {/* v5.11.110: dietary tags as words; the picked size's own tags win over the item's. */}
             <DietaryChips item={pickedVariantOpt ? byId.get(pickedVariantOpt.id) || null : null} fallback={item} size="detail" palette={KIOSK_DIET_PALETTE} fontSize={19} translate={t} style={{ marginTop: 10 }} />

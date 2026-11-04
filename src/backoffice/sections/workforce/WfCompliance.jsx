@@ -12,6 +12,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { activeRegionPack, DOC_INFO } from '../../../lib/regionPack';
+import { localeDateString } from '../../../lib/venueDates';
 
 /** Open a stored document via a short-lived signed URL (private bucket). */
 function ViewDocLink({ path }) {
@@ -38,7 +39,7 @@ export const GROUP_LABEL = { compliance: 'Compliance', training: 'Training', oth
 const EXPIRING_DAYS = 30;
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
-const fmtDate = iso => iso ? new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+const fmtDate = iso => iso ? localeDateString(new Date(iso + 'T00:00:00'), { day: '2-digit', month: 'short', year: 'numeric' }) : '—';   // 5.12.57: the venue's way
 const daysBetween = (a, b) => Math.round((new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 86400000);
 
 /** Status: review state first (an upload is only an upload — a manager must
@@ -160,7 +161,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
       <EmptyState
         icon="team"
         title="No staff to track yet"
-        body="Add team members in the Staff section first. Compliance documents — Right to Work, SIA, food hygiene — appear here per person once you have a team."
+        body={activeRegionPack().country === 'US' ? 'Add team members in the Staff section first. Compliance documents (Form I-9, Form W-4, food handler permits) appear here per person once you have a team.' : 'Add team members in the Staff section first. Compliance documents — Right to Work, SIA, food hygiene — appear here per person once you have a team.'}
       />
     );
   }
@@ -170,7 +171,8 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 17, fontWeight: 700 }}>Compliance vault</div>
-          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2 }}>Right to Work, licences and training records — one row per document.</div>
+          {/* 5.12.57: the work document follows the venue (Right to Work in the UK, Form I-9 in the US). */}
+          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2 }}>{activeRegionPack().country === 'US' ? `${activeRegionPack().workDocLabel}, W-4, permits and training records: one row per document.` : 'Right to Work, licences and training records — one row per document.'}</div>
         </div>
         <button className="btn btn-acc" onClick={() => setAdding(true)}>
           <Icon name="plus" size={14} /> Add document

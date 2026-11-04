@@ -10,6 +10,10 @@ import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import EmailBuilder from './EmailBuilder';
 import { compileEmail, MERGE_TAGS, STARTER_BLOCKS } from '../../../lib/emailCompiler';
+import { venueStamp } from '../../../lib/venueDates';
+// 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
+// US venue's zone is not known yet); days as 11/03/2026 at a US venue (dateNumeric). A UK venue reads as before.
+const atVenue = (ts) => venueStamp(ts);
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -184,7 +188,7 @@ export default function QuickSend() {
           <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>A quick send stopped before it finished</div>
           {recent.filter((b) => b.progress && b.progress.pending > 0).map((b) => (
             <div key={b.id} style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: 13, marginBottom: 6 }}>
-              <span><b>{b.name || 'Quick send'}</b> · {new Date(b.created_at).toLocaleString('en-GB')} · {b.progress.sent} sent · {b.progress.failed} failed · {b.progress.pending} still to go</span>
+              <span><b>{b.name || 'Quick send'}</b> · {atVenue(b.created_at)} · {b.progress.sent} sent · {b.progress.failed} failed · {b.progress.pending} still to go</span>
               <button style={S.btn} disabled={continuing === b.id} onClick={() => continueBlast(b.id)}>{continuing === b.id ? 'Continuing…' : 'Continue sending'}</button>
             </div>
           ))}

@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { getLocationConfig, buildScheduleCtx } from '../../../lib/locationTime';
 import { suggestForecast, historyFromRows } from '../../../../supabase/functions/_shared/salesForecast.js';
@@ -23,6 +24,8 @@ const dowOf = (ymd) => new Date(`${ymd}T00:00:00Z`).getUTCDay();
 export default function Forecast({ orgCtx = null, siteId }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
+  // 5.12.57: the forecast in this site's own currency, not the signed in venue's.
+  const { symbol } = useSiteMoney(siteId);
   void orgCtx; // the contract's prop; the forecast needs only the site
   const [today, setToday] = useState(null);
   const [weekStartDow, setWeekStartDow] = useState(1);
@@ -106,9 +109,9 @@ export default function Forecast({ orgCtx = null, siteId }) {
               return (
                 <tr key={d}>
                   <Td strong>{dayWords(d)}</Td>
-                  <Td num grey>{suggested[d] ? moneyWords(suggested[d].amount) : ''}</Td>
-                  <Td num><Btn kind="link" small onClick={() => setOpen({ day: d, row })}>{row.amount != null ? moneyWords(row.amount) : 'Set'}</Btn>{(row.hours || []).length > 0 && <span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 4 }}>by hour</span>}</Td>
-                  <Td num>{act != null ? moneyWords(act) : ''}</Td>
+                  <Td num grey>{suggested[d] ? moneyWords(suggested[d].amount, symbol) : ''}</Td>
+                  <Td num><Btn kind="link" small onClick={() => setOpen({ day: d, row })}>{row.amount != null ? moneyWords(row.amount, symbol) : 'Set'}</Btn>{(row.hours || []).length > 0 && <span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 4 }}>by hour</span>}</Td>
+                  <Td num>{act != null ? moneyWords(act, symbol) : ''}</Td>
                   <Td>{forecastReasonWords(row.reason)}{row.reason_note ? <span style={{ color: 'var(--t3)' }}>: {row.reason_note}</span> : null}</Td>
                   <Td grey>{row.edited_by_name || ''}</Td>
                 </tr>
@@ -119,7 +122,7 @@ export default function Forecast({ orgCtx = null, siteId }) {
       )}
       {hist?.borrowed && <div style={{ ...ui.sub, marginTop: 10 }}>Suggestions use {hist.borrowed.from_name}'s sales times {hist.borrowed.scale} until this site has 4 weeks of its own.</div>}
       {editor && hist && Number(hist.own_days) < 28 && <ForecastSourceCard siteId={siteId} borrowed={hist.borrowed} onSaved={() => setAgain((n) => n + 1)} />}
-      {open && <ForecastDayModal day={open.day} amount={open.row.amount ?? null} suggested={suggested[open.day]?.amount ?? null} reason={open.row.reason || null} note={open.row.reason_note || ''} hours={open.row.hours || []} onSave={saveDay} onClose={() => setOpen(null)} />}
+      {open && <ForecastDayModal day={open.day} amount={open.row.amount ?? null} suggested={suggested[open.day]?.amount ?? null} reason={open.row.reason || null} note={open.row.reason_note || ''} hours={open.row.hours || []} onSave={saveDay} onClose={() => setOpen(null)} siteId={siteId} />}
     </div>
   );
 }

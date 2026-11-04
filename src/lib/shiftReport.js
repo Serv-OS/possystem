@@ -125,7 +125,8 @@ export function buildShiftReportDoc(r, { cols = 42 } = {}) {
   if ((Number(s.giftSold) || 0) >= 0.005) {
     b.twoColTrunc('Gift cards sold (in the payments above)', m(s.giftSold));
     b.fontB();
-    for (const ln of wrapWords('Gift cards sold are money in, not sales: outside Net sales and VAT until the card is spent.', cols)) b.line(ln);
+    // 5.12.57: the venue's own tax word (tax at a US venue), as the lines above.
+    for (const ln of wrapWords(`Gift cards sold are money in, not sales: outside Net sales and ${s.taxWord === 'tax' ? 'tax' : 'VAT'} until the card is spent.`, cols)) b.line(ln);
     b.fontA();
   }
   b.bold(true).twoColTrunc('Money collected', m(s.collected)).bold(false);

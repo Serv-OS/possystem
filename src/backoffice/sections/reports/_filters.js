@@ -27,6 +27,8 @@ import {
   venueZone, businessDayOf, wallTimeToInstant, wallClock, addDays, isYmd,
 } from '../../../../supabase/functions/_shared/businessDay.js';
 import { compareRange, dayWindow, serviceWindow } from '../../../lib/reportCompare.js';
+import { localeDateString, localeTimeString, uses12h } from '../../../../supabase/functions/_shared/venueDates.js';
+import { getActiveCurrencyCode } from '../../../lib/currency.js';
 
 export const PERIODS = [
   { id:'today',      label:'Today'        },
@@ -85,9 +87,11 @@ function mondayIndex(ymd) {
 }
 
 // A calendar date as words, whatever the browser's zone ('2026-09-27' is Sun 27 Sep everywhere).
-export function dayText(ymd, opts) {
+// 5.12.57 (batch 8): in the venue's words (the active venue, or `venue`): a US venue reads
+// 'Sun, Sep 27' and 9/27/2026, never the UK day first 27/09/2026; a UK venue exactly as before.
+export function dayText(ymd, opts, venue = getActiveCurrencyCode()) {
   if (!isYmd(ymd)) return '';
-  return new Date(`${ymd}T12:00:00Z`).toLocaleDateString('en-GB', { ...opts, timeZone: 'UTC' });
+  return localeDateString(new Date(`${ymd}T12:00:00Z`), { ...opts, timeZone: 'UTC' }, venue);
 }
 
 // 0 = Sunday … 6 = Saturday, for a calendar date (no clock involved).
@@ -247,8 +251,10 @@ export function periodLabel(periodId, custom, range) {
   if (typeof periodId === 'string' && periodId.startsWith('service:today:')) {
     if (!range) return '';
     const tz = venueZone(range.timeZone);
-    const fmtTime = (d) => d.toLocaleTimeString('en-GB', { timeZone: tz, hour:'2-digit', minute:'2-digit' });
-    return `${dayText(range.fromDay, { weekday:'short', day:'numeric', month:'short' })} \u00b7 ${fmtTime(range.from)}\u2013${fmtTime(range.to)}`;
+    // 5.12.57: a US venue reads '5:00 PM to 10:00 PM'; a UK venue '17:00' and '22:00' as before
+    const venue = getActiveCurrencyCode();
+    const fmtTime = (d) => localeTimeString(d, { timeZone: tz, hour:'2-digit', minute:'2-digit' }, venue);
+    return `${dayText(range.fromDay, { weekday:'short', day:'numeric', month:'short' })} \u00b7 ${fmtTime(range.from)}${uses12h(venue) ? ' to ' : '\u2013'}${fmtTime(range.to)}`;
   }
   if (periodId === 'custom' && custom?.from && custom?.to) {
     return `${dayText(range?.fromDay ?? custom.from)} \u2192 ${dayText(range?.toDay ?? custom.to)}`;

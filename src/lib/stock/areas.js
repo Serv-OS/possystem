@@ -18,7 +18,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { readAllPagesResult } from '../pagedRead.js';
-import { transferReference, USUAL_SIX, normaliseAreaName } from './areaRules.js';
+import { transferReference, usualSixFor, normaliseAreaName } from './areaRules.js';
 import { areaPatch, SECTIONS } from './saveRules.js';
 import { callSave } from './companyData.js';
 
@@ -132,8 +132,8 @@ export const saveArea = async (area, locationId = null) => {
   return { data: data ? areaFromRow(data) : null, error: error || noRow('Area save', data) };
 };
 
-/** The usual six for a venue with none. Returns how many were added. */
-export const addUsualSix = async (locationId = null) => {
+/** The usual six for a venue with none. Returns how many were added. 5.12.57: currency is the site's (a US site gets the US words). */
+export const addUsualSix = async (locationId = null, { currency = null } = {}) => {
   if (isMock || !supabase) return { data: 0, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: 0, error: new Error('No locationId') };
@@ -141,7 +141,7 @@ export const addUsualSix = async (locationId = null) => {
   if (readErr) return { data: 0, error: readErr };
   // the same spelling rule as the migration's backfill: a backfilled "Walk-in fridge" is the usual "Walk in fridge"
   const have = new Set((existing || []).map((a) => normaliseAreaName(a.name)));
-  const rows = USUAL_SIX.filter((s) => !have.has(normaliseAreaName(s.name)))
+  const rows = usualSixFor(currency).filter((s) => !have.has(normaliseAreaName(s.name)))
     .map((s, i) => ({ location_id: locationId, name: s.name, kind: s.kind, sort_order: ((existing || []).length + i + 1) * 10 }));
   if (!rows.length) return { data: 0, error: null };
   const { data, error } = await supabase.from('storage_areas').insert(rows).select('id');

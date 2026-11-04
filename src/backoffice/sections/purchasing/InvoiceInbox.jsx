@@ -10,7 +10,7 @@ import { stockApi } from '../../../lib/stock/stockApi';
 import { placedWords, inboxLine } from '../../../../supabase/functions/_shared/invoiceInbox.js';
 import { atWords } from '../../../lib/stock/purchasingWords';
 import { Btn, Segmented, TableWrap, Th, Td, ShowMore, ErrorLine, EmptyLine, Notice, ui } from '../stock/stockUi';
-import { usePaged } from './usePaged';
+import { usePaged, useSiteZones } from './usePaged';
 
 const STATUSES = [{ value: 'waiting', label: 'Waiting' }, { value: 'placed', label: 'Placed' }, { value: 'posted', label: 'Posted' }, { value: 'ignored', label: 'Ignored' }];
 
@@ -31,6 +31,8 @@ export default function InvoiceInbox({ orgCtx = null, onPost = null }) {
   }, [editor, sc.orgId]);
   const fetchPage = useCallback((after) => stockApi.inboxPage({ orgId: sc.orgId, status, after }), [sc.orgId, status]);
   const p = usePaged(fetchPage, `${sc.orgId}|${status}`);
+  // 5.12.57 (batch 8): the arrival time on the placed site's clock, else the active venue's (never London for a US company)
+  const zones = useSiteZones(p.rows.map((r) => r.location_id));
   const upload = async (f) => {
     if (!f) return;
     setBusy('upload');
@@ -76,7 +78,7 @@ export default function InvoiceInbox({ orgCtx = null, onPost = null }) {
           <tbody>
             {p.rows.map((r) => (
               <tr key={r.id}>
-                <Td grey>{atWords(r.created_at, null, { withDate: true })}</Td>
+                <Td grey>{atWords(r.created_at, zones[r.location_id] || null, { withDate: true })}</Td>
                 <Td>{r.from_email || (r.source === 'upload' ? 'Uploaded' : '')}{r.subject ? <div style={ui.sub}>{r.subject}</div> : null}</Td>
                 <Td><Btn small kind="link" onClick={() => openFile(r)}>{r.file_name || 'Open the file'}</Btn></Td>
                 <Td>{r.supplier_name || ''}{r.account_number ? <div style={ui.sub}>Account {r.account_number}</div> : null}</Td>

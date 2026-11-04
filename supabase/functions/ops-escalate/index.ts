@@ -19,6 +19,7 @@
 //      is only counted when at least one message actually went out.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { toE164 as regionE164 } from '../_shared/regionPack.js';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -30,14 +31,29 @@ const RANK: Record<string, number> = { none: 0, minor: 1, major: 2, critical: 3 
 const MAX_STEPS = 3;
 // Alerts older than this are never escalated out of band — see the check in the scan loop.
 const STALE_ALERT_MAX_AGE_MIN = 7 * 24 * 60;   // 7 days
-// UK local → E.164 (07… → +447…), else assume already international.
-const toE164 = (p: string) => {
+// A manager's phone → E.164 with the VENUE's country. 5.12.57: through the one region reader with
+// the venue's currency (USD is the US): the old UK only reader sent a US (801) 555-1234 out as
+// 8015551234, which send-sms refuses, so a US venue's alert texts reached nobody. No currency
+// reads as the UK, as before; what cannot be read passes through as before.
+const toE164 = (p: string, currency?: string | null) => {
   const d = (p || '').replace(/[^\d+]/g, '');
-  if (d.startsWith('+')) return d;
-  if (d.startsWith('07')) return '+44' + d.slice(1);
-  if (d.startsWith('44')) return '+' + d;
-  return d;
+  return regionE164(d, currency || 'GBP') || d;
 };
+
+// The venue's currency (its country follows it), read once per venue per sweep (cleared each run). A failed read
+// is null, which reads the phone the UK way, as before.
+const currencyCache = new Map<string, string | null>();
+async function venueCurrency(locationId: string): Promise<string | null> {
+  if (!locationId) return null;
+  if (currencyCache.has(locationId)) return currencyCache.get(locationId) ?? null;
+  let c: string | null = null;
+  try {
+    const { data } = await sb.from('locations').select('currency').eq('id', locationId).maybeSingle();
+    c = (data?.currency as string) || null;
+  } catch { /* UK reading */ }
+  currencyCache.set(locationId, c);
+  return c;
+}
 
 // Returns true only if the downstream function actually accepted the send. The old
 // version swallowed every failure, so a Twilio/Resend outage looked like a delivery.
@@ -65,9 +81,10 @@ async function invokeFn(name: string, body: unknown): Promise<boolean> {
 async function resolveRecipients(locationId: string, recipients: any[]) {
   const phones = new Set<string>(), emails = new Set<string>();
   const roles: string[] = [], userIds: string[] = [], problems: string[] = [];
+  const currency = await venueCurrency(locationId);
 
   for (const r of recipients || []) {
-    if (r?.phone) phones.add(toE164(r.phone));
+    if (r?.phone) phones.add(toE164(r.phone, currency));
     if (r?.email) emails.add(r.email);
     if (r?.role) roles.push(String(r.role));
     if (r?.userId) userIds.push(String(r.userId));
@@ -75,7 +92,7 @@ async function resolveRecipients(locationId: string, recipients: any[]) {
 
   const addHr = (rows: any[] | null) => {
     for (const s of rows || []) {
-      if (s?.mobile) phones.add(toE164(s.mobile));
+      if (s?.mobile) phones.add(toE164(s.mobile, currency));
       if (s?.email) emails.add(s.email);
     }
   };
@@ -136,6 +153,7 @@ Deno.serve(async (req) => {
   if (auth !== SERVICE_ROLE && !(RUN_SECRET && runSec === RUN_SECRET)) return json({ error: 'unauthorized' }, 401);
 
   const now = Date.now();
+  currencyCache.clear();   // a warm worker reads each venue's currency afresh every sweep
   const { data: alerts, error: alertsErr } = await sb.from('ops_alerts').select('*').eq('status', 'sent').limit(500);
   if (alertsErr) return json({ ok: false, error: `could not read ops_alerts: ${alertsErr.message}` }, 500);
 
@@ -152,7 +170,7 @@ Deno.serve(async (req) => {
         .select('mobile, email').eq('pos_user_id', a.target_user_id).maybeSingle();
       const msg = `ServOS: ${a.title}. ${a.body || ''}`;
       let sent = false;
-      if (hr?.mobile) sent = await invokeFn('send-sms', { to: toE164(hr.mobile), message: msg, location_id: a.location_id, type: 'status_update' }) || sent;
+      if (hr?.mobile) sent = await invokeFn('send-sms', { to: toE164(hr.mobile, await venueCurrency(a.location_id)), message: msg, location_id: a.location_id, type: 'status_update' }) || sent;
       if (hr?.email) sent = await invokeFn('send-receipt', { location_id: a.location_id, to: hr.email, subject: `ServOS — ${a.title}`, html: `<p>${msg}</p>` }) || sent;
       if (!sent) {
         unreachable.push({ alert: a.id, title: a.title, reason: hr ? 'send failed' : 'assignee has no linked HR record with contact details' });

@@ -15,6 +15,7 @@ import { money, currencySymbol } from '../lib/currency';
 import { OTHER_SECTION, orphanSectionTables, tablesForSectionView, effectiveSectionView } from '../lib/sectionPlan';
 import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 import { Icon } from '../components/ServOSIcons';
+import { activeCountry } from '../lib/regionPack';   // 5.12.57: phone example follows the venue
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)', label:'Available' },
@@ -215,7 +216,7 @@ function ReservationModal({ table, existing, onConfirm, onCancel }) {
           {/* Phone */}
           <div style={{ marginBottom:14 }}>
             <label style={L}>Phone number</label>
-            <input className="input" type="tel" placeholder="+44 7700 000000" value={phone} onChange={e=>handlePhoneChange(e.target.value)}/>
+            <input className="input" type="tel" placeholder={activeCountry() === 'US' ? '+1 801 555 1234' : '+44 7700 000000'} value={phone} onChange={e=>handlePhoneChange(e.target.value)}/>
           </div>
 
           {/* v5.5.10: customer search results */}

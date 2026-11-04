@@ -194,7 +194,9 @@ export default function BookingsSurface() {
   const locations = useStore((s) => s.locations) || [];
   const currentLocationId = useStore((s) => s.currentLocationId);
   const bookingsDate = useStore((s) => s.bookingsDate);
-  const venue = locations.find((l) => l.id === currentLocationId) || locations[0];
+  // 5.12.57: never the store's built in demo venue ('The Anchor, High Street, London') while the real name
+  // loads: a venue that is not this device's own reads as no name yet.
+  const venue = locations.find((l) => l.id === currentLocationId && l.id !== 'loc-demo') || null;
   const { ymd: venueYmd } = useVenueClock();
 
   const goBook = () => setScreen('book');

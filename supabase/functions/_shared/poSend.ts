@@ -17,6 +17,7 @@
 // as it ships (src/lib/stock/poSendRules.test.js).
 
 import { fmtYmd } from './venueDate.js';
+import { regionOf } from './regionPack.js';
 
 export const WAITING_WORDS = 'This order is waiting for approval.';
 export const OVER_LIMIT_WORDS = 'This order is over the approval limit. It is waiting for approval now.';
@@ -34,6 +35,37 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** The pack words of a line, as today's email writes them: '6×2kg'. */
 export const packCell = (l: any) => `${Number(l.pack_qty)}×${Number(l.inner_qty)}${String(l.inner_unit ?? '')}`;
+
+// 5.12.57 (US basics batch 7): the supplier email in the venue's own words. A US venue's email
+// carries the dollar sign, 'before tax' and the US date ('Tue, Nov 3, 2026'); its CSV names the
+// currency. A UK (or Irish) venue's email and CSV are exactly what they were, byte for byte.
+const US_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const US_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** 'Tue, Nov 3, 2026' from '2026-11-03' (anything else as it is). */
+export function usDay(ymd: unknown, { weekday = true }: { weekday?: boolean } = {}): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+  if (!m) return ymd == null ? '' : String(ymd);
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12) return String(ymd);
+  const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  return `${weekday ? `${US_DAYS[dow]}, ` : ''}${US_MONTHS[mo - 1]} ${d}, ${y}`;
+}
+
+/**
+ * The words of one venue's supplier emails, by its currency: { us, exTax, money(n), day(ymd), plainDay(ymd) }.
+ * money is '1234.50' for a UK venue (as before) and '$1,234.50' for a US one.
+ */
+export function poEmailWords(currency?: string | null) {
+  const us = regionOf(String(currency || 'GBP')) === 'US';
+  return {
+    us,
+    exTax: us ? 'before tax' : 'ex VAT',
+    money: (n: unknown) => (us ? `$${num(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : num(n).toFixed(2)),
+    day: (ymd: unknown) => (us ? usDay(ymd) : fmtYmd(ymd as string, { weekday: true })),
+    plainDay: (ymd: unknown) => (us ? usDay(ymd, { weekday: false }) : fmtYmd(ymd as string)),
+  };
+}
 
 /** The cc list of a site supplier row: valid addresses only, once each, at most 10. */
 export function ccList(raw: unknown, to = ''): string[] {
@@ -55,8 +87,9 @@ export function ccList(raw: unknown, to = ''): string[] {
 export const feeOf = (po: any) => (po && po.delivery_fee != null && num(po.delivery_fee) > 0 ? Math.round(num(po.delivery_fee) * 100) / 100 : null);
 
 /** The CSV rows: the header, one row per line, then the delivery fee row when there is a fee. */
-export function poCsvRows(lines: any[], { skuBySp = {}, deliveryFee = null }: { skuBySp?: Record<string, string>; deliveryFee?: number | null } = {}): string[][] {
-  const rows: string[][] = [CSV_HEADER.slice()];
+export function poCsvRows(lines: any[], { skuBySp = {}, deliveryFee = null, currency = null }: { skuBySp?: Record<string, string>; deliveryFee?: number | null; currency?: string | null } = {}): string[][] {
+  // 5.12.57: a US venue's CSV says the currency in the price headings; a UK one is as before
+  const rows: string[][] = [poEmailWords(currency).us ? ['SKU', 'Item', 'Pack', 'Quantity', 'Unit price (USD)', 'Line total (USD)'] : CSV_HEADER.slice()];
   for (const l of lines || []) {
     const qty = num(l.qty_packs);
     const price = num(l.unit_price);
@@ -97,23 +130,24 @@ export const csvName = (ref: string) => `order_${String(ref || 'order').replace(
  * The email body. With no fee it is exactly the html po-send has sent since v5.11.79 (pinned in
  * poSendRules.test.js): a one site company's supplier sees no change at all.
  */
-export function poEmailHtml({ venue, ref, po, supplier, locRow, lines, skuBySp, anyCode, fee = null }: any): string {
+export function poEmailHtml({ venue, ref, po, supplier, locRow, lines, skuBySp, anyCode, fee = null, currency = null }: any): string {
+  const w = poEmailWords(currency); // 5.12.57: the venue's money, tax word and date order
   const rows = lines.map((l: any) => `
     <tr>
       ${anyCode ? `<td style="padding:6px 10px;border-bottom:1px solid #ddd;font-family:monospace">${esc(skuBySp[l.supplier_product_id] || '')}</td>` : ''}
       <td style="padding:6px 10px;border-bottom:1px solid #ddd">${esc(l.description)}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #ddd;text-align:right">${Number(l.qty_packs)}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #ddd">${Number(l.pack_qty)}×${Number(l.inner_qty)}${esc(l.inner_unit)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #ddd;text-align:right">${Number(l.unit_price).toFixed(2)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #ddd;text-align:right">${(Number(l.qty_packs) * Number(l.unit_price)).toFixed(2)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #ddd;text-align:right">${w.us ? w.money(l.unit_price) : Number(l.unit_price).toFixed(2)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #ddd;text-align:right">${w.us ? w.money(Number(l.qty_packs) * Number(l.unit_price)) : (Number(l.qty_packs) * Number(l.unit_price)).toFixed(2)}</td>
     </tr>`).join('');
   const feeLine = fee != null ? `
-    <p style="margin:14px 0 0;font-size:14px">Delivery fee: ${fee.toFixed(2)}</p>` : '';
+    <p style="margin:14px 0 0;font-size:14px">Delivery fee: ${w.money(fee)}</p>` : '';
   const total = fee != null ? Number(po.subtotal || 0) + fee : Number(po.subtotal || 0);
   return `
   <div style="font-family:Arial,sans-serif;max-width:640px">
     <h2 style="margin:0 0 4px">Purchase order ${EM} ${esc(venue)}</h2>
-    <p style="margin:0 0 8px;color:#555">Ref ${esc(ref)}${po.expected_date ? ` · requested delivery ${esc(fmtYmd(po.expected_date, { weekday: true }))}` : ''}</p>
+    <p style="margin:0 0 8px;color:#555">Ref ${esc(ref)}${po.expected_date ? ` · requested delivery ${esc(w.day(po.expected_date))}` : ''}</p>
     ${supplier.account_number ? `<p style="margin:0 0 4px;font-size:14px"><b>Account no:</b> ${esc(supplier.account_number)}</p>` : ''}
     <p style="margin:0 0 14px;font-size:14px"><b>Deliver to:</b> ${esc(venue)}${locRow?.address ? `, ${esc(locRow.address)}` : ''}</p>
     <table style="border-collapse:collapse;width:100%;font-size:14px">
@@ -127,7 +161,7 @@ export function poEmailHtml({ venue, ref, po, supplier, locRow, lines, skuBySp, 
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>${feeLine}
-    <p style="margin:14px 0 0;font-size:14px"><b>Order total (ex VAT): ${total.toFixed(2)}</b></p>
+    <p style="margin:14px 0 0;font-size:14px"><b>Order total (${w.exTax}): ${w.money(total)}</b></p>
     <p style="margin:14px 0 0;color:#555;font-size:12px">Please reply to this email to confirm or query the order.</p>
   </div>`;
 }
@@ -164,6 +198,12 @@ export async function sendPurchaseOrder(admin: any, { poId, locationId, supabase
     admin.from('po_lines').select('*').eq('location_id', locationId).eq('po_id', poId).order('sort_order'),
     admin.from('locations').select('name,address,org_id').eq('id', locationId).maybeSingle(),
   ]);
+  // 5.12.57: the venue's currency (its words in the email); a read that fails is a UK email, as before
+  let currency: string | null = null;
+  try {
+    const { data: cur, error: curErr } = await admin.from('locations').select('currency').eq('id', locationId).maybeSingle();
+    currency = !curErr && cur?.currency ? String(cur.currency) : null;
+  } catch { currency = null; }
   if (!po) return { ok: false, status: 404, error: 'PO not found', final: true };
   if (onlyDraft && po.status !== 'DRAFT') return { ok: true, status: 200, skipped: true };
   if (po.status === 'RECEIVED' || po.status === 'CANCELLED') return { ok: false, status: 409, error: `PO is ${po.status}`, final: true };
@@ -218,10 +258,10 @@ export async function sendPurchaseOrder(admin: any, { poId, locationId, supabase
   const venue = locRow?.name || 'Our venue';
   const ref = po.reference || String(poId).slice(0, 8);
   const fee = feeOf(po);
-  const html = poEmailHtml({ venue, ref, po, supplier, locRow, lines, skuBySp, anyCode, fee });
+  const html = poEmailHtml({ venue, ref, po, supplier, locRow, lines, skuBySp, anyCode, fee, currency });
   const cc = multi ? ccList(supplier.cc_emails, supplier.email) : [];
   const attachments = multi
-    ? [{ filename: csvName(ref), content_base64: b64utf8(csvText(poCsvRows(lines, { skuBySp, deliveryFee: fee }))), mime: 'text/csv' }]
+    ? [{ filename: csvName(ref), content_base64: b64utf8(csvText(poCsvRows(lines, { skuBySp, deliveryFee: fee, currency }))), mime: 'text/csv' }]
     : [];
 
   // Send via the receipts pipeline (provider switch + audit row live there).

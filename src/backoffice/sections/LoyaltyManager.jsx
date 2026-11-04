@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { customerUrl } from '../../lib/env';
-import { money } from '../../lib/currency';
+import { money, currencySymbol } from '../../lib/currency';
 import { groupCategoriesByPath, isGroupSelected, isGroupCovered, toggleGroup, selectedGroupCount, missingCategoryState, PATH_SEP } from '../../lib/stampCategoryGroups';
 import { groupItemsForPicker, pickGroupSelected, togglePickGroup, selectedChips, removeChip } from '../../lib/loyaltyItemPicker';
 import { eligibleItemsOf, eligibleCategoriesOf } from '../../lib/loyaltyMenuMatch';
@@ -138,7 +138,8 @@ async function callLoyaltyDelete(endpoint, body) {
 
 // ── Reward type labels ────────────────────────────────────────────────
 const REWARD_TYPES = [
-  { value: 'discount_fixed', label: 'Fixed discount (e.g. £1 off)' },
+  // 5.12.57: read when shown, so the example names the venue's own money ($1 off at a US venue).
+  { value: 'discount_fixed', get label() { return `Fixed discount (e.g. ${currencySymbol()}1 off)`; } },
   { value: 'discount_percent', label: 'Percentage discount (e.g. 10% off)' },
   { value: 'free_item', label: 'Free item' },
   { value: 'free_delivery', label: 'Free delivery' },
@@ -301,7 +302,7 @@ export default function LoyaltyManager() {
             (with a warning) neither. The customer/staff surfaces hide whichever is off. */}
         {loyaltyEnabled && config && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginTop: 4, marginBottom: 12 }}>
-            <LoyTypeToggle label="Points" desc="Earn points per £ spent, redeem for rewards" on={pointsOn} disabled={enabling} onToggle={() => toggleField('points_enabled', pointsOn)} />
+            <LoyTypeToggle label="Points" desc={`Earn points per ${currencySymbol()} spent, redeem for rewards`} on={pointsOn} disabled={enabling} onToggle={() => toggleField('points_enabled', pointsOn)} />
             <LoyTypeToggle label="Stamp cards" desc="Collect stamps, free item when the card is full" on={stampsOn} disabled={enabling} onToggle={() => toggleField('stamps_enabled', stampsOn)} />
           </div>
         )}
@@ -317,7 +318,7 @@ export default function LoyaltyManager() {
         {/* Config summary stats */}
         {config && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 6, fontSize: 12 }}>
-            <ConfigStat label="Points per £1" value={config.points_per_currency_unit ?? 1} />
+            <ConfigStat label={`Points per ${currencySymbol()}1`} value={config.points_per_currency_unit ?? 1} />
             <ConfigStat label="Rounding" value={(config.points_rounding || 'floor').charAt(0).toUpperCase() + (config.points_rounding || 'floor').slice(1)} />
             <ConfigStat label="Rewards" value={rewards.filter(r => r.active).length} />
           </div>
@@ -863,7 +864,7 @@ function RewardsPanel({ rewards, onReload, menuItems = [], categoryGroups = [] }
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
             <div>
               <label style={S.label}>Name</label>
-              <input style={S.input} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. £1 off your next order" />
+              <input style={S.input} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder={`e.g. ${currencySymbol()}1 off your next order`} />
             </div>
             <div>
               <label style={S.label}>Points cost</label>
@@ -917,7 +918,7 @@ function RewardsPanel({ rewards, onReload, menuItems = [], categoryGroups = [] }
                 style={S.input} type="number" min="1"
                 value={form.reward_value.amount_minor || ''}
                 onChange={e => setForm(f => ({ ...f, reward_value: { ...f.reward_value, amount_minor: Number(e.target.value) } }))}
-                placeholder="e.g. 100 for £1.00 off"
+                placeholder={`e.g. 100 for ${money(1)} off`}
               />
             </div>
           )}
@@ -953,7 +954,7 @@ function RewardsPanel({ rewards, onReload, menuItems = [], categoryGroups = [] }
               {!eligibleItemsOf(form.reward_value).length && !eligibleCategoriesOf(form.reward_value).length && (
                 <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 8, lineHeight: 1.4 }}>
                   Nothing picked yet. A free item reward with nothing named gives away the cheapest
-                  line on the order, capped at £15.00. Pick the products or categories you mean.
+                  line on the order, capped at {money(15)}. Pick the products or categories you mean.
                 </div>
               )}
             </div>
@@ -997,7 +998,7 @@ function RewardsPanel({ rewards, onReload, menuItems = [], categoryGroups = [] }
                 cheapest line on the order, capped at £15.00. Say so where it can be seen. */}
             {r.reward_type === 'free_item' && !eligibleItemsOf(r.reward_value).length && !eligibleCategoriesOf(r.reward_value).length && (
               <div style={{ fontSize: 11, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 4 }}>
-                Nothing named: this gives away the cheapest line on the order (up to £15.00). Edit it and pick the products or categories.
+                Nothing named: this gives away the cheapest line on the order (up to {money(15)}). Edit it and pick the products or categories.
               </div>
             )}
           </div>
@@ -1090,7 +1091,7 @@ function SettingsPanel({ config, onUpdate }) {
         <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)', marginBottom: 14 }}>Points earning</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14, marginBottom: 14 }}>
           <div>
-            <label style={S.label}>Points per {'£'}1 spent</label>
+            <label style={S.label}>Points per {currencySymbol()}1 spent</label>
             <input
               style={S.input} type="number" min="0.1" step="0.1"
               value={form.points_per_currency_unit}
@@ -1120,7 +1121,7 @@ function SettingsPanel({ config, onUpdate }) {
 
         {/* Example calc */}
         <div style={{ padding: '10px 14px', background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t3)' }}>
-          Example: A {'£'}25 order earns{' '}
+          Example: A {currencySymbol()}25 order earns{' '}
           <strong style={{ color: 'var(--acc)' }}>
             {Math.floor(25 * (form.points_per_currency_unit || 1))} points
           </strong>
@@ -2157,7 +2158,7 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
               style={{ ...S.input, cursor: 'pointer' }}>
               <option value="free_item">Free item</option>
               <option value="discount_percent">% Discount</option>
-              <option value="discount_fixed">£ Discount</option>
+              <option value="discount_fixed">{currencySymbol()} Discount</option>
               <option value="bonus_points">Bonus points</option>
             </select>
           </div>
@@ -2167,7 +2168,7 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
         <div style={{ marginBottom: 16 }}>
           <label style={S.label}>Reward description</label>
           <input value={rewardDescription} onChange={e => setRewardDescription(e.target.value)}
-            placeholder={rewardType === 'free_item' ? 'e.g. 1 free coffee' : rewardType === 'discount_percent' ? 'e.g. 20% off next order' : rewardType === 'bonus_points' ? 'e.g. 500 bonus points' : 'e.g. £5 off next order'}
+            placeholder={rewardType === 'free_item' ? 'e.g. 1 free coffee' : rewardType === 'discount_percent' ? 'e.g. 20% off next order' : rewardType === 'bonus_points' ? 'e.g. 500 bonus points' : `e.g. ${currencySymbol()}5 off next order`}
             style={S.input} />
         </div>
 
@@ -2193,7 +2194,7 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
             {!eligibleItemsOf(rewardConfig).length && !eligibleCategoriesOf(rewardConfig).length && (
               <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 8, lineHeight: 1.4 }}>
                 Nothing picked yet. A stamp card with nothing named gives away the cheapest line on
-                the order, capped at £15.00. Pick the products or categories this card is for.
+                the order, capped at {money(15)}. Pick the products or categories this card is for.
               </div>
             )}
           </div>

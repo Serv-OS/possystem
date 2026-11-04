@@ -8,13 +8,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../../store';
 import { money } from '../../../lib/currency';
+import { useSiteCurrency } from './useSiteCurrency';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { lockProblem, periodWords, snapshotRows, dayMonWords } from '../../../lib/stock/countPlanRules';
 import { Modal, Btn, Field, Notice, Pill, ui, ErrorLine, EmptyLine } from './stockUi';
+import { getVenueClock } from '../../../lib/locationTime';
+import { venueToday } from '../../../lib/venueDates';
 
-const localYmd = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-
-function Figures({ metrics }) {
+// 5.12.57: cur is the locked site's currency, not the signed in venue's.
+function Figures({ metrics, cur = null }) {
   const rows = snapshotRows(metrics);
   if (!rows.length) return null;
   return (
@@ -22,7 +24,7 @@ function Figures({ metrics }) {
       {rows.map((r) => (
         <div key={r.key} style={{ background: 'var(--bg2)', borderRadius: 8, padding: '8px 10px' }}>
           <div style={{ fontSize: 11, color: 'var(--t3)' }}>{r.label}</div>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>{r.pct ? `${r.value.toFixed(1)}%` : money(r.value)}</div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{r.pct ? `${r.value.toFixed(1)}%` : money(r.value, cur)}</div>
         </div>
       ))}
     </div>
@@ -31,6 +33,7 @@ function Figures({ metrics }) {
 
 export default function LockPeriodModal({ siteId, onClose }) {
   const showToast = useStore((s) => s.showToast);
+  const cur = useSiteCurrency(siteId);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -38,6 +41,15 @@ export default function LockPeriodModal({ siteId, onClose }) {
   const [periods, setPeriods] = useState(null);
   const [error, setError] = useState(null);
   const [unlocking, setUnlocking] = useState(null); // { id, reason }
+  // 5.12.57 (US basics batch 8): "today" is the site's own day on its clock, not the laptop's: a laptop
+  // in California is still on yesterday when a UK site's day has begun. Until the site's zone is read,
+  // the active venue's (no zone at a US venue: no early check, the database still refuses an open period).
+  const [siteTz, setSiteTz] = useState(null);
+  useEffect(() => {
+    let live = true;
+    if (siteId) getVenueClock(siteId).then((c) => { if (live) setSiteTz(c?.timezone || null); }).catch(() => { /* the active venue's zone below */ });
+    return () => { live = false; };
+  }, [siteId]);
 
   const load = useCallback(async () => {
     const r = await stockApi.periods(siteId);
@@ -46,7 +58,7 @@ export default function LockPeriodModal({ siteId, onClose }) {
   }, [siteId]);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
 
-  const problem = lockProblem(from, to, localYmd());
+  const problem = lockProblem(from, to, venueToday(siteTz));
   const lock = async () => {
     if (problem) { showToast?.(problem, 'error'); return; }
     setBusy(true);
@@ -80,7 +92,7 @@ export default function LockPeriodModal({ siteId, onClose }) {
       {locked && (
         <div style={{ marginTop: 14 }}>
           <Notice tone="good"><b>Locked.</b> The closing figures are stored.</Notice>
-          <Figures metrics={locked.metrics} />
+          <Figures metrics={locked.metrics} cur={cur} />
         </div>
       )}
       <div style={{ ...ui.label, marginTop: 20 }}>Periods</div>
@@ -98,7 +110,7 @@ export default function LockPeriodModal({ siteId, onClose }) {
               <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>{periodWords(p)}</span>
               {isLocked && unlocking?.id !== p.id && <Btn small style={{ marginLeft: 'auto' }} onClick={() => setUnlocking({ id: p.id, reason: '' })}>Unlock</Btn>}
             </div>
-            {snap?.metrics && <Figures metrics={snap.metrics} />}
+            {snap?.metrics && <Figures metrics={snap.metrics} cur={cur} />}
             {unlocking?.id === p.id && (
               <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                 <Field label="Why are you unlocking it?" style={{ marginBottom: 0, flex: '1 1 260px' }}>

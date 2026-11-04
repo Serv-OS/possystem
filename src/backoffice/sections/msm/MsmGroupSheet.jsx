@@ -36,6 +36,8 @@ import { ui, money } from './msmStyle';
 import { useConfirm } from './useConfirm';
 import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
 import MsmAddToProducts from './MsmAddToProducts';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
+import { activeTaxText as tt } from '../../../lib/taxWords';
 
 const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)));
@@ -268,7 +270,7 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
           )}
         </div>
         <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: 10 }}>
-          {HELP.option} Grey prices follow the group price; a site's own price is bold. Leave a site's box blank to charge the group price. {HELP.optionVat}
+          {HELP.option} Grey prices follow the group price; a site's own price is bold. Leave a site's box blank to charge the group price. {tt(HELP.optionVat)}
         </div>
         {!draft.options.length && <Notice>No options yet. Add the answers, like Oat milk and Soya milk.</Notice>}
         {pendingSites.length > 0 && (
@@ -518,7 +520,7 @@ function NewSubItem({ ix, taxOptions, onAdd, onClose }) {
               {tree.map((t) => <option key={t.id} value={t.id}>{'  '.repeat(t.depth)}{t.label}</option>)}
             </select>
           </Field>
-          <Field label="VAT" hint="Each site uses its own rate with this name." style={{ gridColumn: '1 / -1' }}>
+          <Field label={tt('VAT')} hint="Each site uses its own rate with this name." style={{ gridColumn: '1 / -1' }}>
             <select style={ui.input} value={tax} onChange={(e) => setTax(e.target.value)}>
               {taxOptions.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>

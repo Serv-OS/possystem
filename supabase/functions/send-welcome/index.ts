@@ -28,6 +28,7 @@
 //   RECEIPT_EMAIL_FROM (defaults to 'hello@posup.co.uk')
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { toE164 as regionE164 } from '../_shared/regionPack.js';
 import { resolveSenderFrom, callerCanBrandForLocation, type Sender } from '../_shared/sending-domain.ts';
 import { resolveAndRender } from '../_shared/template-resolver.ts';
 import { wrapInEmailHtml } from '../_shared/template-resolver.ts';
@@ -64,8 +65,13 @@ const json = (b: unknown, s = 200) =>
   });
 
 // ── Phone normalization ──────────────────────────────────────────────
-function toE164(phone: string): string {
+// 5.12.57: read with the venue's country (its currency: USD is the US) through the one region
+// reader. The old reader was UK only: a US (801) 555-1234 became +(801)555-1234, which Twilio
+// refuses. No currency reads as the UK; what cannot be read is sent as before.
+function toE164(phone: string, currency?: string | null): string {
   const clean = phone.replace(/\s/g, '');
+  const read = regionE164(clean, currency || 'GBP');
+  if (read) return read;
   if (clean.startsWith('+')) return clean;
   if (clean.startsWith('0')) return '+44' + clean.slice(1);
   return '+' + clean;
@@ -166,7 +172,7 @@ Deno.serve(async (req) => {
   // link): online_slug lives on PLATFORM locations; asking OPS for it failed the whole read.
   const { data: loc } = await opsAdmin
     .from('locations')
-    .select('name')
+    .select('name, currency')
     .eq('id', location_id)
     .maybeSingle();
   const { data: pLoc } = await platformAdmin
@@ -192,7 +198,7 @@ Deno.serve(async (req) => {
 
   // ── 4. Send SMS (uses custom template if operator edited it) ───────
   if (customer.phone) {
-    const e164 = toE164(customer.phone);
+    const e164 = toE164(customer.phone, loc?.currency ?? null);
 
     // Resolve template: custom → default from message-types registry
     const rendered = await resolveAndRender(company_id, 'loyalty_welcome', 'sms', mergeData);

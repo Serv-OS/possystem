@@ -5,6 +5,7 @@
 // a role. Past announcements appear in a reverse-chronological feed below.
 
 import { useState, useEffect, useMemo } from 'react';
+import { localeDateString } from '../../../lib/venueDates';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, inputStyle, labelStyle, groupColor, cellTint, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
@@ -26,7 +27,7 @@ function timeAgo(iso) {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return localeDateString(new Date(iso), { day: 'numeric', month: 'short' });   // 5.12.57: the venue's way
 }
 
 // Render the stored audience jsonb ({} = all, {sectionId} or {roleKey}) as a label.

@@ -19,6 +19,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../../lib/db';
 import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
+import { foodLawWords } from '../../lib/foodLaw';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
 import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, headerBasePx, LINE_SPACING_OPTS, LINE_SPACING_DEFAULT, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
@@ -27,6 +28,7 @@ import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, se
 import { normalisePlaylist, itemHoldMs, addPlaylistItem, movePlaylistItem, removePlaylistItem, setPlaylistItem, clampItemSeconds, DEFAULT_ITEM_SECONDS, MIN_ITEM_SECONDS, MAX_ITEM_SECONDS, MAX_ITEMS, TRANSITIONS } from '../../lib/menuBoardPlaylist';
 import { fetchScreenNotes } from '../../lib/menuBoardNotes';
 import { screenNoteView } from '../../lib/menuBoardPairing';
+import { dateNumeric, localeTimeString } from '../../lib/venueDates';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
@@ -243,7 +245,7 @@ export default function MenuBoards() {
                 : `${(b.layout?.blocks?.length || 0)} categories · ${b.orientation}`}
             </div>
             <div style={{ fontSize: 11, color: b.published_at ? 'var(--grn)' : 'var(--t4)', marginTop: 6 }}>
-              {b.published_at ? `Published ${new Date(b.published_at).toLocaleDateString('en-GB')}` : 'Not published'}
+              {b.published_at ? `Published ${dateNumeric(b.published_at)}` : 'Not published'}{/* 5.12.57: the venue's day, 11/03/2026 at a US venue */}
             </div>
             <button style={{ ...S.btn, width: '100%', marginTop: 12 }} onClick={() => copyLink(b.id)}>{copied === b.id ? '✓ Link copied' : 'Copy screen link'}</button>
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -341,7 +343,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
   ).map(s => s.id));
   const hiddenNow = (catId) => followMenus && !!activeMenuId && !shownNow.has(catId);
   let venueClock = '';
-  try { venueClock = tz ? new Date().toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }) : ''; } catch { venueClock = ''; }
+  try { venueClock = tz ? localeTimeString(new Date(), { timeZone: tz, hour: '2-digit', minute: '2-digit' }) : ''; } catch { venueClock = ''; } // 5.12.57: 2:05 PM at a US venue
   const followStatus = !followMenus ? null
     : !menusOk ? 'Menus could not be loaded, so this preview shows every category. The TV applies the schedule.'
     : menus.length === 0 ? 'No menus are set up at this venue yet, so the board shows every category.'
@@ -607,7 +609,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                   <ColorRow label="Accent (size lines)" val={board.theme.accent} on={v => setTheme({ accent: v })} />
                 </div>
                 <Field label="Font"><select style={S.inp} value={board.theme.font} onChange={e => setTheme({ font: e.target.value })}>{FONTS.map(f => <option key={f} value={f}>{f || 'Default (Jakarta)'}</option>)}</select></Field>
-                <Field label="Footer note"><input style={S.inp} value={board.theme.footerNote} onChange={e => setTheme({ footerNote: e.target.value })} placeholder="e.g. Please ask staff about the 14 allergens." /></Field>
+                <Field label="Footer note"><input style={S.inp} value={board.theme.footerNote} onChange={e => setTheme({ footerNote: e.target.value })} placeholder={foodLawWords().boardFooterPlaceholder} /></Field>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button style={S.btn} onClick={() => pickFile('bg', 'image/*', url => setTheme({ bgImageUrl: url }))}>{busy === 'upload-bg' ? 'Uploading…' : board.theme.bgImageUrl ? 'Replace background image' : 'Upload background image'}</button>
                   {board.theme.bgImageUrl && <button style={S.btnGhost} onClick={() => setTheme({ bgImageUrl: '' })}>Clear bg</button>}

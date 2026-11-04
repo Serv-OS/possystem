@@ -19,6 +19,8 @@
 import { useMemo } from 'react';
 import { useStore } from '../../store';
 import { selectOnFocus } from '../../lib/selectOnFocus';
+// 5.12.57: the price boxes show the venue's own symbol, never a typed pound.
+import { currencySymbol } from '../../lib/currency';
 
 const inp = {
   background: 'var(--bg2)',
@@ -150,7 +152,7 @@ export default function PerMenuPricingTiers({ item, onUpdate }) {
                       <div key={k} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                         <label style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</label>
                         <div style={{ position: 'relative' }}>
-                          <span style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--t4)', fontSize: 11, pointerEvents: 'none' }}>£</span>
+                          <span style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--t4)', fontSize: 11, pointerEvents: 'none' }}>{currencySymbol()}</span>
                           <input type="number" step="0.01" min="0" {...selectOnFocus}
                             value={v != null && v !== undefined ? v : ''}
                             onChange={e => setTierField(menuId, k, e.target.value)}

@@ -17,6 +17,7 @@ import { createRequire, registerHooks } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { undoSiteMoney } from '../fixtures/siteMoneyEdits.js';
 
 const SRC = new URL('../../', import.meta.url);
 const at = (p) => new URL(p, SRC);
@@ -31,7 +32,10 @@ const EDIT_LOC = ['useState(siteId || getActiveLocationSync())', 'useState(getAc
 const count = (text, part) => text.split(part).length - 1;
 
 /** Today's StockItems.jsx from its first import line, rebuilt from the moved file. */
+// 5.12.57: the site money edits are put back first (fixtures/siteMoneyEdits.js): for a one site company
+// the site's currency is the signed in venue's, so they change nothing it sees.
 function mainText(moved) {
+  moved = undoSiteMoney(SPLIT, moved);
   const body = moved.slice(moved.search(/^import /m));
   return body.split(EDIT_PATH[0]).join(EDIT_PATH[1]).replace(EDIT_SIG[0], EDIT_SIG[1]).replace(EDIT_LOC[0], EDIT_LOC[1]);
 }
@@ -41,7 +45,9 @@ test('StockItemsSplit is main\'s StockItems.jsx moved whole: undo the three edit
   const body = moved.slice(moved.search(/^import /m));
   assert.equal(count(body, EDIT_SIG[0]), 1, 'edit 3: the name and the siteId prop, once');
   assert.equal(count(body, EDIT_LOC[0]), 1, 'edit 4: start from siteId, once');
-  assert.equal(count(body, EDIT_PATH[0]), 16, 'edit 2: the 16 import paths, one folder deeper');
+  // 5.12.57 (US basics batch 7): one more lib import (lib/stock/stockRegion, the site's words and
+  // units), one folder deeper like the rest; usStockEdits.js puts it back for the hash
+  assert.equal(count(body, EDIT_PATH[0]), 17, 'edit 2: the 17 import paths, one folder deeper');
   assert.equal(count(body, "'../../../../"), count(body, EDIT_PATH[0]), 'no other path changed');
   const sha = crypto.createHash('sha256').update(mainText(moved)).digest('hex');
   assert.equal(sha, PIN, 'everything after the first import line is main\'s text byte for byte');
@@ -52,7 +58,7 @@ test('the moved file imports nothing new: no picker, no stock API, no company sc
   const head = moved.slice(0, moved.search(/^import /m));
   assert.doesNotMatch(head, /[\u2013\u2014]/, 'the rewritten top comment has no long dash');
   const imports = [...moved.matchAll(/^(?:import [^;]*?from|\} from) '([^']+)';$/gm)].map((m) => m[1]);
-  assert.equal(imports.length, 17);
+  assert.equal(imports.length, 18); // 5.12.57 batch 7: lib/stock/stockRegion (pure words and units)
   for (const p of imports) assert.ok(p === 'react' || p.startsWith('../../../../'), p);
   assert.doesNotMatch(moved.slice(head.length), /StockScope|stockApi|itemListRules|siteScope|CompanyItemList|ItemPage/);
 });

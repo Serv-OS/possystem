@@ -71,6 +71,8 @@ import OwnerDetail from './owner/OwnerDetail';
 import MixBar from './owner/MixBar';
 import { money, toneColor, periodChip, periodChipOn } from './owner/style';
 import { headOfficeLineView } from '../lib/headOffice';
+import { localeTimeString } from '../../supabase/functions/_shared/venueDates.js';
+import { getActiveCurrencyCode } from '../lib/currency';
 
 /** A refresh that has not answered by now is never going to (a woken phone). */
 const LOAD_TIMEOUT_MS = 15000;
@@ -291,7 +293,9 @@ function Dashboard({ theme, onToggleTheme }) {
       if (d?.error) throw new Error(d.error);
       if (mine !== seq.current) return;
       setData(d);
-      setUpdated(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+      // 5.12.57 (batch 8): on the venue's clock and in its words ('2:05 PM' at a US venue)
+      const v0 = d?.locations?.[0];
+      setUpdated(localeTimeString(new Date(), { hour: '2-digit', minute: '2-digit', ...(v0?.tz ? { timeZone: v0.tz } : {}) }, v0?.currency || getActiveCurrencyCode()));
       // A function from before the filters answers a week or a month with today's numbers and
       // no echo. They are shown as today's, the chip goes back to Today, and one line says why.
       if (shownPeriod(d, want).needsUpdate) {
@@ -404,7 +408,7 @@ function Dashboard({ theme, onToggleTheme }) {
           ))}
         </div>
       </div>
-      {sb.needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-6px 0 12px' }}>{grossNeedsUpdate(r?.currency || 'GBP')}</div>}
+      {sb.needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-6px 0 12px' }}>{grossNeedsUpdate(r?.currency || data?.locations?.[0]?.currency || getActiveCurrencyCode())}</div>}
 
       {loading && !data && <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '60px 0' }}>Loading your business…</div>}
       {err && <div style={{ color: 'var(--red)', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>{err}</div>}
@@ -451,7 +455,7 @@ function GroupCard({ g, shown, basis, multi, mixed, onOpen, bar }) {
   const rs = rollupSales(r, rv, basis);
   const words = cardLines(basis, cur);
   const dates = sharedRange(g.locations);
-  const heading = [copy.heading, multi ? `${r?.locations} venue${r?.locations === 1 ? '' : 's'}` : '', mixed ? cur : '', shown === 'today' ? '' : rangeLabel(dates)].filter(Boolean).join(' · ');
+  const heading = [copy.heading, multi ? `${r?.locations} venue${r?.locations === 1 ? '' : 's'}` : '', mixed ? cur : '', shown === 'today' ? '' : rangeLabel(dates, cur)].filter(Boolean).join(' · ');
   // The function's own comparison for the period shown; null from a function before the reason word.
   const cmp = basisCompare(groupCompareBlock(r, rv.period), basis);
   const line = cmp ? groupLine(cmp, sharedCompareRange(g.locations), rv.period) : null;
@@ -535,7 +539,7 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar, stockOn
       </div>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{salesHeading(basis, t.period)}{showDates && rangeLabel(l.range) ? ` · ${rangeLabel(l.range)}` : ''}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{salesHeading(basis, t.period)}{showDates && rangeLabel(l.range, l.currency) ? ` · ${rangeLabel(l.range, l.currency)}` : ''}</div>
           <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1 }}>{money(vs.sales, l.currency)}</div>
           <BasisLine text={words.line} />
         </div>

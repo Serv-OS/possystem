@@ -55,7 +55,7 @@ test('words for the figures: one decimal percents, days, the count day, money in
   assert.equal(dayWords(null), null);
   assert.equal(dayWords('yesterday'), null);
   assert.equal(moneyWords(3210, 'GBP'), '£3,210');
-  assert.equal(moneyWords(3210.4, 'USD'), 'US$3,210');
+  assert.equal(moneyWords(3210.4, 'USD'), '$3,210');   // 5.12.57: was 'US$3,210' (en-GB for every currency)
   assert.equal(moneyWords(null, 'GBP'), '£0');
   assert.doesNotMatch(moneyWords(1, 'nope'), LONG_DASHES);
 });
@@ -69,7 +69,7 @@ test('the Stock line: value, GP, gap, waste, last count, in that order, the gap 
   assert.equal(line.parts[0].tone, null);
   assert.equal(line.parts[1].tone, null);
   // the block's own currency wins over the card's
-  assert.equal(stockLine(block({ currency: 'USD' }), 'GBP').parts[0].text, 'Stock US$3,210');
+  assert.equal(stockLine(block({ currency: 'USD' }), 'GBP').parts[0].text, 'Stock $3,210');
   // no actual GP yet (no count both ends): the theoretical with its word; no sales: said so, never 100%
   assert.equal(stockLine(block({ gp_pct_actual: null }), 'GBP').parts[1].text, 'GP 74.1% theo');
   const none = stockLine(block({ gp_pct_actual: null, gp_pct_theo: null, gap_pct: null, waste_pct: null, rag: {} }), 'GBP');

@@ -13,6 +13,8 @@ import { whenText, LATE_MINUTES } from '../../../supabase/functions/_shared/msmS
 import { indexCentral, cellFor } from './msmGrid.js';
 import { priceLineWords } from '../../../supabase/functions/_shared/msmPlan.js';
 import { keptValueWords } from './msmWords.js';
+// 5.12.57 (US basics, batch 6): the audit names the venue's own tax (VAT at a UK venue, as before).
+import { activeTaxText as tt } from '../taxWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const ms = (v) => (v == null ? null : typeof v === 'number' ? v : Date.parse(v));
@@ -233,9 +235,9 @@ export function sitesToAdd(companySites, central) {
 
 const COL_WORDS = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
-  cat: 'category', cats: 'extra categories', parent_id: 'size of', tax_rate_id: 'VAT rate', allergens: 'allergens', image: 'photo',
+  cat: 'category', cats: 'extra categories', parent_id: 'size of', tax_rate_id: 'VAT rate', allergens: 'allergens', image: 'photo',   // taxText: auditLines
   assigned_modifier_groups: 'modifier groups', visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code',
-  tags: 'tags', type: 'type', label: 'name', sort_order: 'order', tax_overrides: 'VAT by order type', tax_profile_id: 'tax profile',
+  tags: 'tags', type: 'type', label: 'name', sort_order: 'order', tax_overrides: 'VAT by order type', tax_profile_id: 'tax profile',   // taxText: auditLines
 };
 const PRICE_WORDS = { base: '', dineIn: ' (eat in)', takeaway: ' (takeaway)', collection: ' (collection)', delivery: ' (delivery)', driveThru: ' (drive thru)' };
 
@@ -263,10 +265,10 @@ export function auditLines(writes, names = {}) {
         else if (k === 'updated_at') continue;
         else if (['name', 'menu_name', 'receipt_name', 'kitchen_name'].includes(k)) {
           const q = (v) => (v == null || String(v).trim() === '' ? 'blank' : `"${String(v).trim()}"`);
-          out.push(`${who}: ${COL_WORDS[k]} ${q(before[k])} to ${q(after[k])}`);
+          out.push(`${who}: ${tt(COL_WORDS[k], { mid: true })} ${q(before[k])} to ${q(after[k])}`);
         } else {
           // Never a raw value (an id, a photo link, true or false): in words (17 Oct verification).
-          const word = COL_WORDS[k] || 'a setting';
+          const word = tt(COL_WORDS[k] || 'a setting', { mid: true });
           const objectish = (v) => v != null && typeof v === 'object';
           out.push(objectish(before[k]) || objectish(after[k]) || ['description', 'cat', 'cats', 'parent_id', 'tax_rate_id', 'tax_profile_id'].includes(k)
             ? `${who}: ${word} changed`

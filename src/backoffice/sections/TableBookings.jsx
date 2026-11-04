@@ -14,7 +14,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
-import { money } from '../../lib/currency';
+// 5.12.57: the terms example names the venue's own money, never a typed pound.
+import { money, currencySymbol } from '../../lib/currency';
 import { toMin } from '../../lib/bookings/optimiser.js';
 import { editRefusal, editedLine, fmtClock, venueToday } from '../../lib/bookings/editRules.js';
 import { StatusBadge, displayStatus, bookingName } from '../../surfaces/bookings/bits.jsx';
@@ -297,7 +298,7 @@ export default function TableBookings({ userName = null }) {
           <textarea
             value={rules.bookingTerms || ''}
             onChange={e => patch({ bookingTerms: e.target.value })}
-            placeholder="e.g. Tables are held for 15 minutes. Cancellations within 24 hours may be charged £20 per guest…"
+            placeholder={`e.g. Tables are held for 15 minutes. Cancellations within 24 hours may be charged ${currencySymbol()}20 per guest…`}
             style={{ ...S.monoBox, width: '100%', minHeight: 96, marginTop: 8, resize: 'vertical', fontFamily: 'inherit', fontSize: 12.5, lineHeight: 1.5, cursor: 'text', textAlign: 'left', boxSizing: 'border-box' }} />
         </div>
 

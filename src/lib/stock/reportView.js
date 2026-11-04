@@ -7,6 +7,8 @@
 
 import { dayWords as rulesDayWords } from './reportRules.js';
 import { currencySymbol } from '../currency.js';
+import { localeString } from '../../../supabase/functions/_shared/venueDates.js';
+import { zoneOrActive, activeVenueCurrency } from './venueZone.js';
 
 /** The words on a tile or a cell whose report waits for a later Drop (contract 2.3 LATER_WORDS). */
 export const LATER_WORDS = Object.freeze({
@@ -96,13 +98,19 @@ export function weekWords(weekStart) {
   return d ? `Week of ${d}` : '';
 }
 
-/** 'Mon 13 Oct, 14:05' for a timestamp, read in the venue's time zone when given. */
-export function whenWords(ts, timeZone) {
+/**
+ * 'Mon 13 Oct, 14:05' for a timestamp, read in the venue's time zone ('Mon, Oct 13, 2:05 PM' at a US
+ * venue). 5.12.57 (batch 8): with no zone given, the active venue's, never the laptop's clock; a US
+ * venue whose zone is not known yet reads ''.
+ */
+export function whenWords(ts, timeZone, venue = activeVenueCurrency()) {
   if (!ts) return '';
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return '';
+  const zone = zoneOrActive(timeZone);
+  if (!zone) return '';
   try {
-    return d.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, ...(timeZone ? { timeZone } : {}) });
+    return localeString(d, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: zone }, venue); // batch 8 ok: venue words (en-US 12 hour at a US venue)
   } catch {
     return d.toISOString().slice(0, 16).replace('T', ', ');
   }

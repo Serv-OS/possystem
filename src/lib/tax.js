@@ -223,15 +223,39 @@ export const fmtTax = n => `${money(Math.abs(n || 0))}`;
  * Seed rates for a new UK location
  */
 export const UK_DEFAULT_RATES = [
-  { name:'Standard Rate', code:'VAT20', rate:0.2000, type:'inclusive', applies_to:['all'], is_default:true },
-  { name:'Reduced Rate',  code:'VAT5',  rate:0.0500, type:'inclusive', applies_to:['all'], is_default:false },
+  { name:'Standard Rate', code:'VAT20', rate:0.2000, type:'inclusive', applies_to:['all'], is_default:true },    // uk only: the UK seed
+  { name:'Reduced Rate',  code:'VAT5',  rate:0.0500, type:'inclusive', applies_to:['all'], is_default:false },   // uk only: the UK seed
   { name:'Zero Rate',     code:'ZERO',  rate:0.0000, type:'inclusive', applies_to:['all'], is_default:false },
 ];
 
 /**
- * Seed rates for a new US location (example: NYC)
+ * 5.12.57 (US basics, batch 6): a US venue's seed. There is no one US rate (Provo, Utah is about
+ * 7.45%, New York City 8.875%), so the owner types the venue's rate and its name; it is never a
+ * fixed rate. Returns { ok: true, rates } or { ok: false, error } with the words to show.
+ *   ratePct  the venue's combined sales tax rate in percent, required, a number from 0 to 20
+ *   name     what the rate is called on receipts (default 'Sales tax')
  */
-export const US_DEFAULT_RATES = [
-  { name:'Sales Tax',  code:'US_SALES', rate:0.08875, type:'exclusive', applies_to:['all'], is_default:true },
-  { name:'Tax Exempt', code:'EXEMPT',   rate:0.0000,  type:'exclusive', applies_to:['all'], is_default:false },
-];
+export function usSeedRates(ratePct, name = 'Sales tax') {
+  const raw = typeof ratePct === 'string' ? ratePct.trim().replace(/%$/, '').trim() : ratePct;
+  if (raw === '' || raw == null) return { ok: false, error: 'Type this venue\'s sales tax rate first (for example 7.45).' };
+  const pct = Number(raw);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 20) return { ok: false, error: 'The sales tax rate must be a number from 0 to 20 (percent).' };
+  const label = String(name ?? '').trim() || 'Sales tax';
+  // The fraction to 6 places (7.45 becomes 0.0745), never a float tail.
+  const rate = Math.round(pct * 10000) / 1000000;
+  return {
+    ok: true,
+    rates: [
+      { name: label,        code: 'US_SALES', rate,       type: 'exclusive', applies_to: ['all'], is_default: true },
+      { name: 'Tax Exempt', code: 'EXEMPT',   rate: 0,    type: 'exclusive', applies_to: ['all'], is_default: false },
+    ],
+  };
+}
+
+/**
+ * 5.12.57: a new legacy rate's starting values. A US venue's tax is added on top of the price
+ * (exclusive); a UK or Irish venue's VAT is inside it (inclusive), as before.
+ */
+export function newRateDefaults(country = 'UK') {
+  return { name:'', code:'', rate:'', type: country === 'US' ? 'exclusive' : 'inclusive', applies_to:['all'], is_default:false, active:true };
+}

@@ -18,7 +18,8 @@
  */
 
 import { ALLERGENS } from '../../data/seed.js';
-import { UNITS } from './units.js';
+import { UNITS, US_UNITS, ALL_UNITS } from './units.js';
+import { isUsSite } from './stockRegion.js';
 import { money } from '../currency.js';
 import { conflictRows as itemConflictRows, changeWords as itemChangeWords, valueWords } from './itemPageRules.js';
 import { sitesText } from './siteScope.js';
@@ -409,6 +410,8 @@ export function scaleLines(lines, factor) {
   return (lines || []).map((l) => ({ ...l, qty: l && num(l.qty) != null ? round(num(l.qty) * f, 6) : l?.qty }));
 }
 
+const US_LINE_UNITS = Object.freeze(Object.fromEntries(Object.entries(ALL_UNITS).filter(([code]) => !['floz', 'pt', 'gal'].includes(code))));
+
 /**
  * The unit choices of one line: its item's packs first (largest first, '@' plus the pack id,
  * labelled by the pack name), the base unit, then the other units of the same dimension.
@@ -416,6 +419,8 @@ export function scaleLines(lines, factor) {
 export function lineUnitOptions(line, units = UNITS) {
   const l = line || {};
   const base = l.base_unit || 'each';
+  // 5.12.57: an item counted in a US unit offers the US units and metric beside it (never the UK imperial ones)
+  if (units === UNITS && Object.prototype.hasOwnProperty.call(US_UNITS, base)) units = US_LINE_UNITS;
   const dim = units[base]?.dimension || null;
   const out = [];
   const packs = [...(l.packs || [])].filter((p) => p && p.id).sort((a, b) => Number(b.qty_in_base) - Number(a.qty_in_base));
@@ -466,6 +471,11 @@ export const FIELD_WORDS = Object.freeze({
   suggestion: 'Suggested change',
 });
 
+/** 5.12.57: the field words of a site: 'POS item' for Till product at a US site. */
+export function recipeFieldWords(currency = null) {
+  return isUsSite(currency) ? Object.freeze({ ...FIELD_WORDS, menu_item_id: 'POS item', site_menu_item_id: 'POS item' }) : FIELD_WORDS;
+}
+
 /** The saved first table rows for a recipe: the fields where two versions differ. */
 export function conflictRows(draft, fresh, fieldWords = FIELD_WORDS, opts = {}) {
   return itemConflictRows(draft, fresh, fieldWords || FIELD_WORDS, opts);
@@ -476,10 +486,11 @@ export function recipeChangeWords(row, siteById, opts = {}) {
   const r = row || {};
   const field = r.field || '';
   const base = itemChangeWords(r, siteById, opts);
+  const fw = recipeFieldWords(opts.currency); // 5.12.57: the row's site words
   // the item rule already says these in full (Ticked at <site>, Made, Suggested a change, the cost)
-  if (['on_here', 'created', 'suggestion', 'current_cost'].includes(field) || r.kind === 'cost' || !FIELD_WORDS[field]) return base;
+  if (['on_here', 'created', 'suggestion', 'current_cost'].includes(field) || r.kind === 'cost' || !fw[field]) return base;
   const site = siteNameOf(siteById, r.location_id);
-  const what = site ? `${FIELD_WORDS[field]}, ${site}` : FIELD_WORDS[field];
+  const what = site ? `${fw[field]}, ${site}` : fw[field];
   const words = (v, table) => (v == null ? 'None' : (table[v] || valueWords(field, v, opts)));
   if (field === 'kind' || field === 'recipe_type') {
     const w = (v) => (v == null ? 'None' : KIND_WORDS[v] || KIND_WORDS[typeToKind(v)] || valueWords(field, v, opts));

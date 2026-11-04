@@ -40,6 +40,8 @@ import { venueMenuChoices } from '../../../lib/msm/msmImportReview';
 import { Btn, Pill, Notice, Modal, Sheet, Segmented, Field } from './msmUi';
 import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
+import { activeTaxText as tt } from '../../../lib/taxWords';
 
 export default function MsmSites({ api, client, menu, live, eff, sites, rows, canEdit, editable, stage, setWorkingId, setNote, setTab, refreshSets, reload }) {
   const history = useMsmHistory(api, menu?.id, { every: 20000, onSettled: () => { reload(); refreshSets(); } });
@@ -682,7 +684,7 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
             )}
           </Field>}
           {!joining && <div style={{ ...ui.sub, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
-            Publishing makes the site's menu, its categories, the modifier groups and every product, with VAT matched by name and rate.
+            {tt('Publishing makes the site\'s menu, its categories, the modifier groups and every product, with VAT matched by name and rate.')}{' '}
             Set up its printers and kitchen screens in its own Back Office before it opens. You can schedule it for opening morning.
           </div>}
         </>

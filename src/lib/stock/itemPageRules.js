@@ -21,6 +21,8 @@ import { countPackOf, packAmount, packPrice, packQtyWords, moneyText } from './p
 import { toBase } from './uom.js';
 import { fmtVenueDateTime, fmtVenueDate, fmtYmd } from '../venueDate.js';
 import { allergenWords, dietWords, factsOf, nutritionOf, NUTRITION_FIELDS } from './factsRules.js';
+import { isUsSite } from './stockRegion.js';
+import { regionOf } from '../../../supabase/functions/_shared/regionPack.js';
 
 const num = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
 const round = (v, places = 3) => { const f = 10 ** places; return Math.round(Number(v) * f) / f; };
@@ -152,6 +154,32 @@ export function vatChoices(taxRows, current = null) {
   if (cur != null && !seen.has(round(cur, 6))) seen.set(round(cur, 6), round(cur, 6));
   const list = [...seen.values()].sort((a, b) => a - b).map((v) => ({ value: v, label: vatWords(v) }));
   return [{ value: null, label: 'None set' }, ...list];
+}
+
+/**
+ * 5.12.57 (US basics batch 7): the purchase tax choices of one site. A US site never offers sales
+ * tax rates as purchase rates (the tax it pays stays in the cost): only None, and the item's own
+ * rate when it has one, so it can be cleared. Any other site: vatChoices, exactly as before.
+ */
+export function purchaseTaxChoices(taxRows, current = null, currency = null) {
+  if (!isUsSite(currency)) return vatChoices(taxRows, current);
+  const cur = num(current);
+  const none = { value: null, label: 'None set' };
+  return cur == null ? [none] : [none, { value: round(cur, 6), label: vatWords(cur) }];
+}
+
+/**
+ * The sites whose tax rows may give a site its purchase rates: only those in the same country
+ * (a UK site is never offered a US rate, a US site never 20%). sites: [{ id, currency }].
+ */
+export function sameCountrySiteIds(sites, currency, currencyOf = (s) => s?.currency) {
+  const country = regionOf(currency);
+  return (sites || []).filter((s) => s && s.id && regionOf(currencyOf(s) || currency) === country).map((s) => s.id);
+}
+
+/** The field words of a site: FIELD_WORDS, with 'Sales tax paid' for Purchase VAT at a US site. */
+export function itemFieldWords(currency = null) {
+  return isUsSite(currency) ? Object.freeze({ ...FIELD_WORDS, purchase_vat_rate: 'Sales tax paid' }) : FIELD_WORDS;
 }
 
 const sameRate = (a, b) => (num(a) == null && num(b) == null) || (num(a) != null && num(b) != null && round(num(a), 6) === round(num(b), 6));
@@ -706,7 +734,7 @@ export function changeWords(row, siteById, opts = {}) {
   }
   if (field === 'created') return { who, what: withSite('Made', site), old: '', new: '' };
   if (field === 'suggestion') return { who, what: 'Suggested a change', old: '', new: valueWords('suggestion', r.after, opts) };
-  const label = FIELD_WORDS[field] || human(field);
+  const label = itemFieldWords(opts?.currency)[field] || human(field); // 5.12.57: the row's site words
   return { who, what: withSite(label, site), old: valueWords(field, r.before, opts), new: valueWords(field, r.after, opts) };
 }
 

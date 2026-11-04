@@ -5,8 +5,9 @@
 // All dates are local-formatted YYYY-MM-DD (no UTC shift).
 
 import { publicHolidays } from '../../supabase/functions/_shared/publicHolidays.js';
+import { localeDateString } from '../../supabase/functions/_shared/venueDates.js';
 
-const LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /** Local YYYY-MM-DD (avoids the toISOString UTC off-by-one). */
 export function ymd(d) {
@@ -16,27 +17,38 @@ export function ymd(d) {
   return `${y}-${m}-${day}`;
 }
 
-/** Monday of the week containing `ref`. */
-export function weekStartOf(ref = new Date()) {
+/**
+ * The first day of the week containing `ref`: Monday, or the venue's own work week start
+ * (5.12.57: startDow 0 = Sunday ... 6 = Saturday, from Workforce settings, Work week starts).
+ */
+export function weekStartOf(ref = new Date(), startDow = 1) {
   const d = new Date(ref);
   d.setHours(0, 0, 0, 0);
-  const dow = d.getDay();                 // 0=Sun … 6=Sat
-  d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow));
+  const s = Number.isInteger(Number(startDow)) && Number(startDow) >= 0 && Number(startDow) <= 6 ? Number(startDow) : 1;
+  d.setDate(d.getDate() - ((d.getDay() - s + 7) % 7));
   return d;
 }
 
-/** Build a 7-day week descriptor from a Monday (or the current week). */
-export function buildWeek(startDate) {
-  const start = startDate ? new Date(startDate) : weekStartOf();
+/** Build a 7-day week descriptor from its first day (or the current week, starting on startDow). */
+export function buildWeek(startDate, startDow = 1) {
+  const start = startDate ? new Date(startDate) : weekStartOf(new Date(), startDow);
   start.setHours(0, 0, 0, 0);
   const todayIso = ymd(new Date());
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(start);
     d.setDate(start.getDate() + i);
     const iso = ymd(d);
-    return { iso, label: LABELS[i], dom: String(d.getDate()), isToday: iso === todayIso };
+    return { iso, label: DOW_LABELS[d.getDay()], dom: String(d.getDate()), isToday: iso === todayIso };
   });
   return { startIso: ymd(start), endIso: days[6].iso, days, todayIdx: days.findIndex(x => x.isToday) };
+}
+
+/** 5.12.57: the week holding `wk`, starting on the venue's work week day (unchanged when it already does). */
+export function alignWeek(wk, startDow = 1) {
+  if (!wk?.startIso) return buildWeek(null, startDow);
+  const start = new Date(wk.startIso + 'T00:00:00');
+  const s = Number.isInteger(Number(startDow)) && Number(startDow) >= 0 && Number(startDow) <= 6 ? Number(startDow) : 1;
+  return start.getDay() === s ? wk : buildWeek(weekStartOf(start, s));
 }
 
 /** Shift a week by ±n weeks (returns a fresh descriptor). */
@@ -59,7 +71,10 @@ export function addWeeks(startIso, n) {
  * startDay. Returns { startIso, endIso, payDateIso, label }.
  */
 const PERIOD_LEN = { weekly: 7, fortnightly: 14, fourweekly: 28 };
-const fmtD = x => x.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+// 5.12.57: a period reads the venue's way (cfg.country): a UK venue exactly as before; a US one
+// "Nov 1, 2026 to Nov 30, 2026".
+const fmtD = (x, country = 'UK') => localeDateString(x, { day: 'numeric', month: 'short', year: 'numeric' }, country);
+const periodLabel = (start, end, country) => (country === 'US' ? `${fmtD(start, 'US')} to ${fmtD(end, 'US')}` : `${fmtD(start)} – ${fmtD(end)}`);
 
 // ── Working days (England & Wales) ──────────────────────────────────────────
 // For "paid on the last working day". Scotland (2 Jan, St Andrew's Day) and
@@ -94,7 +109,7 @@ export function payPeriod(cfg = {}, ref = new Date()) {
     const end = first ? new Date(d.getFullYear(), d.getMonth(), 15) : new Date(d.getFullYear(), d.getMonth() + 1, 0);
     let payDate = new Date(end); payDate.setDate(end.getDate() + Math.max(0, Number(cfg.payDay) || 0));
     if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate, cfg.country || 'UK');
-    return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: `${fmtD(start)} – ${fmtD(end)}` };
+    return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: periodLabel(start, end, cfg.country) };
   }
 
   const len = PERIOD_LEN[type];
@@ -105,7 +120,7 @@ export function payPeriod(cfg = {}, ref = new Date()) {
     const end = new Date(start); end.setDate(start.getDate() + len - 1);
     let payDate = new Date(end); payDate.setDate(end.getDate() + Math.max(0, Number(cfg.payDay) || 0));
     if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate, cfg.country || 'UK');
-    return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: `${fmtD(start)} – ${fmtD(end)}` };
+    return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: periodLabel(start, end, cfg.country) };
   }
 
   // monthly (default — also the fallback when no anchor has been set yet)
@@ -133,7 +148,7 @@ export function payPeriod(cfg = {}, ref = new Date()) {
     if (payDate < start) payDate = at(base.getMonth() + 1);                     // never before the period opens
   }
   if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate, cfg.country || 'UK');
-  return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: `${fmtD(start)} – ${fmtD(end)}` };
+  return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: periodLabel(start, end, cfg.country) };
 }
 
 /** Build a payPeriod() config from a venue settings row. The two working-day
@@ -171,11 +186,15 @@ export function shiftPayPeriod(cfg, currentStartIso, n) {
   return payPeriod(cfg, d);
 }
 
-/** Human label e.g. "9–15 Jun". */
-export function weekRangeLabel(week) {
+/** Human label e.g. "9–15 Jun".
+ *  5.12.57: a US venue (country 'US') reads "Jun 9 to 15", "Jun 30 to Jul 6". */
+export function weekRangeLabel(week, country = 'UK') {
   const a = new Date(week.startIso + 'T00:00:00');
   const b = new Date(week.endIso + 'T00:00:00');
-  const mon = d => d.toLocaleDateString('en-GB', { month: 'short' });
+  const mon = d => localeDateString(d, { month: 'short' }, country);
+  if (country === 'US') {
+    return a.getMonth() === b.getMonth() ? `${mon(a)} ${a.getDate()} to ${b.getDate()}` : `${mon(a)} ${a.getDate()} to ${mon(b)} ${b.getDate()}`;
+  }
   return a.getMonth() === b.getMonth()
     ? `${a.getDate()}–${b.getDate()} ${mon(b)}`
     : `${a.getDate()} ${mon(a)} – ${b.getDate()} ${mon(b)}`;

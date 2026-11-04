@@ -37,6 +37,8 @@ import { riskChecks } from '../../../lib/msm/msmRisk';
 import { PUBLISHED_CHANNELS as CHANNELS } from '../../../../supabase/functions/_shared/msmModel.js';
 import { Btn, Pill, Switch, Segmented, Popover, SiteChecklist, MenuButton, Notice } from './msmUi';
 import { ui, money } from './msmStyle';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
+import { activeTaxText as tt } from '../../../lib/taxWords';
 
 // The product column: up to 300 px, narrower on an iPad so the site prices stay on screen.
 const NAME_W = 300;
@@ -335,7 +337,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
         </select>
         <Segmented small value={mode} onChange={setMode} options={[
           { value: 'prices', label: 'Prices' },
-          { value: 'vat', label: 'VAT', title: 'The VAT each product is charged for an order type, at each site' },
+          { value: 'vat', label: tt('VAT'), title: tt('The VAT each product is charged for an order type, at each site') },
           { value: 'gp', label: 'GP', title: 'Cost and gross profit from each site\'s own recipes' },
         ]} />
         {mode !== 'vat' && (
@@ -350,8 +352,8 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
           </select>
         )}
         {mode === 'vat' && (
-          <select aria-label="VAT for" style={{ ...ui.input, width: 'auto', minWidth: 160 }} value={taxKey} onChange={(e) => setTaxKey(e.target.value)}>
-            {taxTypes.map((k) => <option key={k} value={k}>VAT for: {TAX_TYPE_WORDS[k]}</option>)}
+          <select aria-label={tt('VAT for')} style={{ ...ui.input, width: 'auto', minWidth: 160 }} value={taxKey} onChange={(e) => setTaxKey(e.target.value)}>
+            {taxTypes.map((k) => <option key={k} value={k}>{tt('VAT for:')} {TAX_TYPE_WORDS[k]}</option>)}
           </select>
         )}
         <Popover label={`Sites (${cols.length} of ${sites.length})`} width={260} testId="msm-sites-filter">
@@ -418,8 +420,8 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
               <input type="checkbox" aria-label="Select every product shown" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(productRows.map((r) => r.id)))} />
               <span>Product <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({products})</span></span>
             </div>
-            <div style={{ ...headCell, width: DEF_W }} title={mode === 'vat' ? 'The group\'s VAT for this order type' : 'The price every site follows unless it has its own'}>
-              {mode === 'vat' ? <>Group VAT<br /><span style={{ fontWeight: 500, color: 'var(--t4)' }}>{TAX_TYPE_WORDS[taxKey]}</span></>
+            <div style={{ ...headCell, width: DEF_W }} title={tt(mode === 'vat' ? 'The group\'s VAT for this order type' : 'The price every site follows unless it has its own')}>
+              {mode === 'vat' ? <>{tt('Group VAT')}<br /><span style={{ fontWeight: 500, color: 'var(--t4)' }}>{TAX_TYPE_WORDS[taxKey]}</span></>
                 : <>Group price<br /><span style={{ fontWeight: 500, color: 'var(--t4)' }}>{channel ? `${CHANNEL_LABELS[channel]} (blank = ${channel === 'driveThru' ? 'takeaway' : 'standard'})` : 'Standard price'}</span></>}
             </div>
             {cols.map((s) => (
@@ -531,7 +533,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
         </div>
       </div>
       <div style={{ ...ui.sub, fontSize: 11.5 }}>
-        {mode === 'vat' ? 'VAT is changed on each product (open it).' : 'Tap a price to change it. Blank puts a site back on the group price. Paste a column from a spreadsheet to fill prices down.'}
+        {mode === 'vat' ? tt('VAT is changed on each product (open it).') : 'Tap a price to change it. Blank puts a site back on the group price. Paste a column from a spreadsheet to fill prices down.'}
       </div>
     </div>
   );
@@ -674,9 +676,9 @@ function Key({ mode }) {
   // 17 Oct verification: the VAT sample carries its dot, the group column is named, and the GP
   // colours are explained (low GP is coral, never the amber of a change waiting).
   const items = mode === 'vat'
-    ? [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>VAT 20%</span>, 'Grey: follows the group\'s VAT for this order type.'],
-      [<span key="o" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{dot('var(--blu)')}<span style={{ color: 'var(--t1)', fontWeight: 750 }}>Zero 0%</span></span>, 'Bold with a blue dot: this site keeps its own VAT for it.'],
-      [<span key="c" style={{ color: 'var(--t1)', fontWeight: 750 }}>Group VAT</span>, 'The first column: what every site follows unless it keeps its own.']]
+    ? [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>{tt('VAT 20%')}</span>, tt('Grey: follows the group\'s VAT for this order type.')],
+      [<span key="o" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{dot('var(--blu)')}<span style={{ color: 'var(--t1)', fontWeight: 750 }}>Zero 0%</span></span>, tt('Bold with a blue dot: this site keeps its own VAT for it.')],
+      [<span key="c" style={{ color: 'var(--t1)', fontWeight: 750 }}>{tt('Group VAT')}</span>, 'The first column: what every site follows unless it keeps its own.']]
     : mode === 'gp'
       ? [...priceItems.slice(0, 4),
         [<span key="gg" style={{ color: 'var(--grn, var(--acc))', fontWeight: 650 }}>65% GP</span>, `Green: GP ${GP_LOW}% or more.`],
@@ -739,7 +741,7 @@ function KeptDotBody({ cols, editable, vatWords, onUseGroup }) {
 // One VAT cell (the grid's VAT view): grey is the group's, bold a site that keeps its own.
 function VatCellView({ width, cell, group = false, off = false, onOpen }) {
   return (
-    <div role="gridcell" onClick={onOpen} title={group ? 'Open the product to change its VAT' : cell.own ? 'This site keeps its own VAT for this order type' : 'Follows the group'}
+    <div role="gridcell" onClick={onOpen} title={tt(group ? 'Open the product to change its VAT' : cell.own ? 'This site keeps its own VAT for this order type' : 'Follows the group')}
       style={{ ...cellBase, width, justifyContent: 'center', cursor: 'pointer', opacity: off ? 0.5 : 1, background: group ? 'color-mix(in srgb, var(--bg2) 55%, transparent)' : undefined }}>
       {cell.own && <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--blu)', display: 'inline-block' }} />}
       <span style={{ fontSize: 11.5, lineHeight: 1.2, textAlign: 'center', fontWeight: group || cell.own ? 750 : 500, color: group || cell.own ? 'var(--t1)' : 'var(--t3)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{cell.words}</span>

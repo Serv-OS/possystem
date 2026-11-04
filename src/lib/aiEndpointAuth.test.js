@@ -179,7 +179,8 @@ test('every caller sends the token and the venue through aiRequestInit (source)'
 test('aiRequestInit is wired to this session\'s token and venue (source)', () => {
   const src = read('src/lib/aiRequest.js');
   assert.match(src, /import \{ ensureAuthToken, getLocationId \} from '\.\/supabase';/);
-  assert.ok(src.includes('buildAiRequest(body, { token: ensureAuthToken, location: getLocationId })'));
+  // 5.12.57: the venue's currency rides along too (the assistant answers in the venue's money).
+  assert.ok(src.includes('buildAiRequest({ currency: getActiveCurrencyCode(), ...(body || {}) }, { token: ensureAuthToken, location: getLocationId })'));
 });
 
 test('buildAiRequest: the bearer and the venue ride along; no token means no header, never a throw', async () => {

@@ -5,10 +5,13 @@
  * Centred modal in the prototype's geometry. Picks apply as they are tapped.
  */
 import { t } from '../../lib/i18n';
-import { UK_ALLERGENS, kioskAllergenKey, toggleAllergen } from '../../lib/kioskAllergens';
+import { sheetAllergenIds, allergenNameFor, toggleAllergen } from '../../lib/kioskAllergens';
+import { activeCountry } from '../../lib/regionPack';
 
 export default function KioskAllergenSheet({ allergenFilter, setAllergenFilter, onClose }) {
   const selected = allergenFilter instanceof Set ? allergenFilter : new Set();
+  // 5.12.57: a US venue offers the 9 major food allergens in US words; the UK the 14 as before.
+  const country = activeCountry();
   return (
     <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'var(--k2Scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 56, zIndex: 30 }}>
       <div
@@ -21,7 +24,7 @@ export default function KioskAllergenSheet({ allergenFilter, setAllergenFilter, 
         <div style={{ fontSize: 42, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.1 }}>{t('k2.allergens.title')}</div>
         <div style={{ fontSize: 21, color: 'var(--k2InkSubtle)', marginTop: -12, lineHeight: 1.35 }}>{t('k2.allergens.sub')}</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-          {UK_ALLERGENS.map(id => {
+          {sheetAllergenIds(country).map(id => {
             const on = selected.has(id);
             return (
               <button
@@ -34,7 +37,7 @@ export default function KioskAllergenSheet({ allergenFilter, setAllergenFilter, 
                   background: on ? 'var(--k2DangerFill)' : '#FFFFFF', color: 'var(--k2Ink)', borderRadius: 999,
                   padding: '18px 26px', fontSize: 22, fontWeight: 700, cursor: 'pointer',
                 }}
-              >{t(kioskAllergenKey(id))}</button>
+              >{allergenNameFor(id, t, country)}</button>
             );
           })}
         </div>

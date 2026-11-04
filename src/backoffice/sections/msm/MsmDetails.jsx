@@ -21,11 +21,13 @@ import { shownPriceTypes } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP } from '../../../lib/msm/msmWords';
 import { ui } from './msmStyle';
 import { useConfirm } from './useConfirm';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
+import { activeTaxText as tt } from '../../../lib/taxWords';
 
 // The order types a group menu can show. Delivery is a platform price (set by the menu that platform
 // uses at each site, UI issue 2), so it is not one of them; its VAT row always shows.
 const TYPE_CHOICES = ['dineIn', 'takeaway', 'collection', 'driveThru', 'bar'];
-const TYPE_HELP = { ...PRICE_TYPE_HELP, bar: 'Shows a Bar tab VAT row. Bar tabs have no price of their own.' };
+const TYPE_HELP = { ...PRICE_TYPE_HELP, bar: 'Shows a Bar tab VAT row. Bar tabs have no price of their own.' };   // taxText: read through tt() below
 
 export default function MsmDetails({ api, client, menu, live, eff, sites, stage, editable, canEdit, rows = [], setNote, reload }) {
   const effMenu = eff?.menu || menu;
@@ -166,7 +168,7 @@ function OrderTypes({ api, menu, live, canEdit, setNote, reload }) {
       {TYPE_CHOICES.map((k) => (
         <label key={k} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '5px 0', fontSize: 13, cursor: canEdit ? 'pointer' : 'default' }}>
           <input type="checkbox" checked={now.has(k)} disabled={!canEdit || saving} onChange={() => flip(k)} style={{ marginTop: 2 }} />
-          <span><strong>{PRICE_TYPE_WORDS[k]}</strong><span style={{ ...ui.sub, display: 'block' }}>{TYPE_HELP[k]}</span></span>
+          <span><strong>{PRICE_TYPE_WORDS[k]}</strong><span style={{ ...ui.sub, display: 'block' }}>{tt(TYPE_HELP[k])}</span></span>
         </label>
       ))}
       {canEdit && <div style={{ marginTop: 8 }}><Btn kind="primary" small disabled={!changed || saving} onClick={save}>{saving ? 'Saving…' : 'Save order types'}</Btn></div>}

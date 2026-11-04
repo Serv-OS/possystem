@@ -23,8 +23,12 @@ import { recordedCheckTax } from '../../../lib/taxCompute';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { isSplit, sumFields } from '../../../lib/reportSplit.js';
-import { siteTaxAnalysis, taxSourceNote, siteCheckTax, taxAnalysisOf } from '../../../lib/reportSiteMenu.js';
-import { noVatLine, noRecordLine, flaggedLines, LOYALTY_VAT_LINE, toAccountingRow } from '../../../../supabase/functions/_shared/saleVat.js';
+import { siteTaxAnalysis, taxSourceNote, siteCheckTax, taxAnalysisOf, taxIsSetUp } from '../../../lib/reportSiteMenu.js';
+import { noVatLine, noRecordLine, flaggedLines, loyaltyVatLine, toAccountingRow } from '../../../../supabase/functions/_shared/saleVat.js';
+// 5.12.57 (US basics, batch 6): every line names the venue's own tax (VAT, or tax at a US venue),
+// a site's own word where one site is shown, the neutral word where sites of two countries mix.
+import { taxWords, mixedTaxWords } from '../../../lib/taxWords.js';
+import { getActiveCurrencyCode } from '../../../lib/currency';
 import { creditTaxMinor } from '../../../../supabase/functions/_shared/accountingDay.js';
 import { useParts, exportSites } from './_siteSplit';
 import { useSiteMenus, useOtherSiteMenu } from './_siteMenus';
@@ -83,9 +87,10 @@ function loyaltyVatOf(checks) {
 }
 
 /** The red and amber lines under the tiles: what the figures leave out or had to fill in. */
-function VatNotes({ ledger, loyaltyVat, fmt, hasRates }) {
-  const red = [noVatLine(ledger), noRecordLine(ledger)].filter(Boolean);
-  const amber = flaggedLines(ledger);
+function VatNotes({ ledger, loyaltyVat, fmt, hasRates, venue }) {
+  const tw = taxWords(venue);
+  const red = [noVatLine(ledger, venue), noRecordLine(ledger)].filter(Boolean);
+  const amber = flaggedLines(ledger, venue);
   const mismatch = (ledger.mismatched || []).map((m) => `${m.ref || m.id}: ${m.reason}`);
   return (
     <div style={{ marginBottom: 14, fontSize: 12, lineHeight: 1.7 }}>
@@ -93,9 +98,9 @@ function VatNotes({ ledger, loyaltyVat, fmt, hasRates }) {
       {amber.map((l) => <div key={l} style={{ color: 'var(--amber)' }}>{l}</div>)}
       {mismatch.map((l) => <div key={l} style={{ color: 'var(--amber)' }}>{l}</div>)}
       {ledger.refundsEstimated > 0 && (
-        <div style={{ color: 'var(--t4)' }}>{ledger.refundsEstimated === 1 ? '1 refund saved no VAT figure; its share of the sale\'s VAT is used.' : `${ledger.refundsEstimated} refunds saved no VAT figure; their share of each sale's VAT is used.`}</div>
+        <div style={{ color: 'var(--t4)' }}>{ledger.refundsEstimated === 1 ? `1 refund saved no ${tw.tax} figure; its share of the sale's ${tw.tax} is used.` : `${ledger.refundsEstimated} refunds saved no ${tw.tax} figure; their share of each sale's ${tw.tax} is used.`}</div>
       )}
-      <div style={{ color: 'var(--t4)' }}>{LOYALTY_VAT_LINE}{loyaltyVat > 0 ? ` ${fmt(loyaltyVat)} of the VAT on sales is on goods paid with rewards.` : ''}</div>
+      <div style={{ color: 'var(--t4)' }}>{loyaltyVatLine(venue)}{loyaltyVat > 0 ? ` ${fmt(loyaltyVat)} of the ${tw.tax} on sales is on goods paid with rewards.` : ''}</div>
     </div>
   );
 }
@@ -118,13 +123,19 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo, locationId = null }) {
   const siteId = other.other ? String(other.site.id) : (locationId ? String(locationId) : null);
   const lookback = useRefundLookback(siteId ? [siteId] : [], rangeFrom);
   const refundRows = (siteId && lookback.rows[siteId]) || NONE;
+  // 5.12.57: tax is set up when the site has legacy rates OR tax profiles (a US venue may have
+  // profiles only); before, a profiles only venue read "No tax rates configured" and its red
+  // "no tax recorded" lines were hidden. The words are the shown site's own.
+  const hasRates = other.other ? !!other.menu?.hasRates : taxIsSetUp({ taxRates, taxProfiles: store.taxProfiles, defaultProfileId: store.venueDefaultTaxProfileId, taxCtx });
+  const venue = (other.other && other.site?.currency) || getActiveCurrencyCode();
+  const tw = taxWords(venue);
 
   const analysis = useMemo(() => {
-    const a = taxAnalysisOf(checks, taxOf, { range, hasRates: taxRates.length > 0, refundRows });
+    const a = taxAnalysisOf(checks, taxOf, { range, hasRates, refundRows });
     return { ...a, loyaltyVat: loyaltyVatOf(checks) };
     // taxOf follows taxCtx and other.menu
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checks, taxCtx, other.menu, range, taxRates.length, refundRows]);
+  }, [checks, taxCtx, other.menu, range, hasRates, refundRows]);
 
   const onExportRates = () => {
     const csv = toCsv(analysis.rateRows, [
@@ -152,7 +163,7 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo, locationId = null }) {
 
   if (other.loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading this site's tax rates…</div>;
   if (checks.length === 0) return <EmptyState icon="money" message="No checks in this period."/>;
-  if (taxRates.length === 0 && !(other.other && (other.failed || !other.menu?.taxLoaded))) return <EmptyState icon="money" message="No tax rates configured. Set them up under Settings → Tax to see breakdowns here."/>;
+  if (!hasRates && !(other.other && (other.failed || !other.menu?.taxLoaded))) return <EmptyState icon="money" message="No tax rates configured. Set them up under Settings → Tax to see breakdowns here."/>;
 
   const { ledger } = analysis;
   const varianceNames = analysis.varianceSales.map((v) => `${v.ref || v.id} ${v.diff > 0 ? '+' : ''}${v.diff.toFixed(2)}`).join(', ');
@@ -163,12 +174,12 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo, locationId = null }) {
         <div style={{ marginBottom:10, fontSize:11, color:'var(--amber)' }}>{other.site.name}: the tax rates could not be read, so each check shows the tax stored on it with no rate breakdown.</div>
       )}
       {siteId && lookback.failed.includes(siteId) && (
-        <div style={{ marginBottom:10, fontSize:11, color:'var(--amber)' }}>Refunds made in this period on sales closed before it could not be read, so VAT refunded may be short.</div>
+        <div style={{ marginBottom:10, fontSize:11, color:'var(--amber)' }}>Refunds made in this period on sales closed before it could not be read, so {tw.tax} refunded may be short.</div>
       )}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:12 }}>
-        <StatTile label="VAT on sales"     value={fmt(ledger.salesVat)} color="var(--acc)" sub={`${ledger.count} sales${ledger.noVatCount ? ` · ${ledger.noVatCount} with no VAT` : ''}`}/>
-        <StatTile label="VAT refunded"     value={fmt(ledger.refundVat)} color={ledger.refundVat > 0 ? 'var(--red)' : 'var(--t1)'} sub="refunds made in this period"/>
-        <StatTile label="VAT due"          value={fmt(ledger.vatDue)} color="var(--acc)" sub="sales less refunds"/>
+        <StatTile label={`${tw.Tax} on sales`} value={fmt(ledger.salesVat)} color="var(--acc)" sub={`${ledger.count} sales${ledger.noVatCount ? ` · ${ledger.noVatCount} with no ${tw.tax}` : ''}`}/>
+        <StatTile label={`${tw.Tax} refunded`} value={fmt(ledger.refundVat)} color={ledger.refundVat > 0 ? 'var(--red)' : 'var(--t1)'} sub="refunds made in this period"/>
+        <StatTile label={`${tw.Tax} due`}  value={fmt(ledger.vatDue)} color="var(--acc)" sub="sales less refunds"/>
         <StatTile label="Variance"         value={fmt(Math.abs(analysis.variance))} color={Math.abs(analysis.variance) > 0.5 ? 'var(--red)' : 'var(--t1)'} sub={varianceNames ? `booked vs item rules: ${varianceNames}` : 'booked vs item rules'}/>
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>
@@ -178,7 +189,7 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo, locationId = null }) {
         <StatTile label="Rate records"     value={`${analysis.sources.booked}`} sub={`of ${ledger.count} sales stored their split by rate`}/>
       </div>
 
-      <VatNotes ledger={ledger} loyaltyVat={analysis.loyaltyVat} fmt={fmt} hasRates={taxRates.length > 0}/>
+      <VatNotes ledger={ledger} loyaltyVat={analysis.loyaltyVat} fmt={fmt} hasRates={hasRates} venue={venue}/>
 
       {/* Per rate */}
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'hidden', marginBottom:14 }}>
@@ -235,7 +246,7 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo, locationId = null }) {
       </div>
 
       <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-        ⓘ VAT on sales is what each sale booked when it was saved (the Back Office item rules, per order type). Refunds come off on the day the refund was made, the same as Daily trading, the Owner app and Xero. The split by rate is the record each sale stored; an older sale with no record is worked out again through the till's engine. Variance is the VAT booked against the item rules as they are today, and names the sales behind it. A sale with no VAT recorded is shown in red and counted as 0, never hidden.
+        {`ⓘ ${tw.Tax} on sales is what each sale booked when it was saved (the Back Office item rules, per order type). Refunds come off on the day the refund was made, the same as Daily trading, the Owner app and Xero. The split by rate is the record each sale stored; an older sale with no record is worked out again through the till's engine. Variance is the ${tw.tax} booked against the item rules as they are today, and names the sales behind it. A sale with no ${tw.tax} recorded is shown in red and counted as 0, never hidden.`}
       </div>
     </div>
   );
@@ -275,6 +286,12 @@ function TaxSites(props) {
   if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's tax rates…</div>;
   if (parts.every(p => p.rows.length === 0)) return <EmptyState icon="money" message="No checks at these sites in this period."/>;
 
+  // 5.12.57: each site's lines in its own tax word; the shared lines in the neutral word when the
+  // sites are of two countries (mixedTaxWords), else theirs.
+  const here = getActiveCurrencyCode();
+  const venueOf = (p) => p.currency || here;
+  const twAll = mixedTaxWords(parts.map(venueOf));
+
   const notes = parts.map(p => {
     const menu = menus[p.id];
     if (failed.includes(p.id)) return `${p.name}: the tax rates could not be read, so its checks show the tax stored on each check with no rate breakdown.`;
@@ -284,10 +301,10 @@ function TaxSites(props) {
   // 8 Oct 2026: a sale with no VAT recorded is named per site, in red, never a silent 0.
   const redNotes = parts.flatMap(p => {
     const l = bySite.get(p.id).ledger;
-    return [noVatLine(l), noRecordLine(l)].filter(Boolean).map((line) => `${p.name}: ${line}`);
+    return [noVatLine(l, venueOf(p)), noRecordLine(l)].filter(Boolean).map((line) => `${p.name}: ${line}`);
   });
-  const amberNotes = parts.flatMap(p => flaggedLines(bySite.get(p.id).ledger).map((line) => `${p.name}: ${line}`));
-  const lookbackNotes = parts.filter(p => lookback.failed.includes(String(p.id))).map(p => `${p.name}: refunds made in this period on sales closed before it could not be read, so VAT refunded may be short.`);
+  const amberNotes = parts.flatMap(p => flaggedLines(bySite.get(p.id).ledger, venueOf(p)).map((line) => `${p.name}: ${line}`));
+  const lookbackNotes = parts.filter(p => lookback.failed.includes(String(p.id))).map(p => `${p.name}: refunds made in this period on sales closed before it could not be read, so ${taxWords(venueOf(p)).tax} refunded may be short.`);
 
   return (
     <div>
@@ -296,28 +313,29 @@ function TaxSites(props) {
         {redNotes.map(n => <div key={n} style={{ color:'var(--red)', fontWeight:700 }}>{n}</div>)}
         {amberNotes.map(n => <div key={n} style={{ color:'var(--amber)' }}>{n}</div>)}
         {lookbackNotes.map(n => <div key={n} style={{ color:'var(--amber)' }}>{n}</div>)}
-        <div style={{ color:'var(--t4)' }}>{LOYALTY_VAT_LINE}</div>
+        <div style={{ color:'var(--t4)' }}>{loyaltyVatLine(twAll.us ? 'USD' : 'GBP')}</div>
       </SplitHeader>
       <Blocks blocks={blocks}>{b => {
         const site = b.parts.map(p => ({ part: p, cells: bySite.get(p.id) }));
         const all = sumFields(site.map(x => x.cells), ['salesVat', 'refundVat', 'vatDue', 'totalDerivedTax', 'totalNet', 'totalGross', 'variance', 'loyaltyVat']);
         const eff = all.totalNet > 0 ? (all.totalDerivedTax / all.totalNet) * 100 : 0;
         const rateRows = rateMatrix(b.parts, p => bySite.get(p.id).rateRows);
+        const tw = b.currency ? taxWords(b.currency) : mixedTaxWords(b.parts.map(venueOf));
         const typeRows = rateMatrix(b.parts, p => bySite.get(p.id).orderTypeRows.map(r => ({ ...r, key: r.orderType, label: r.orderType })));
         return (
           <>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }}>
-              <StatTile label="VAT on sales"   value={b.fmt(all.salesVat)} color="var(--acc)" sub={`${b.parts.length} site${b.parts.length === 1 ? '' : 's'}`}/>
-              <StatTile label="VAT refunded"   value={b.fmt(all.refundVat)} color={all.refundVat > 0 ? 'var(--red)' : 'var(--t1)'} sub="refunds made in this period"/>
-              <StatTile label="VAT due"        value={b.fmt(all.vatDue)} color="var(--acc)" sub={all.loyaltyVat > 0 ? `includes ${b.fmt(all.loyaltyVat)} on loyalty rewards` : 'sales less refunds'}/>
+              <StatTile label={`${tw.Tax} on sales`} value={b.fmt(all.salesVat)} color="var(--acc)" sub={`${b.parts.length} site${b.parts.length === 1 ? '' : 's'}`}/>
+              <StatTile label={`${tw.Tax} refunded`} value={b.fmt(all.refundVat)} color={all.refundVat > 0 ? 'var(--red)' : 'var(--t1)'} sub="refunds made in this period"/>
+              <StatTile label={`${tw.Tax} due`}  value={b.fmt(all.vatDue)} color="var(--acc)" sub={all.loyaltyVat > 0 ? `includes ${b.fmt(all.loyaltyVat)} on loyalty rewards` : 'sales less refunds'}/>
               <StatTile label="Variance"       value={b.fmt(Math.abs(all.variance))} color={Math.abs(all.variance) > 0.5 ? 'var(--red)' : 'var(--t1)'} sub={`booked vs item rules · eff. rate ${eff.toFixed(2)}%`}/>
             </div>
             <SiteRows block={b} rows={site} total={all} columns={[
               { label:'Net',         cell: (c, f) => f(c.totalNet) },
-              { label:'VAT on sales', cell: (c, f) => f(c.salesVat), color:'var(--acc)' },
+              { label:`${tw.Tax} on sales`, cell: (c, f) => f(c.salesVat), color:'var(--acc)' },
               { label:'Refunded',    cell: (c, f) => <span style={{ color: c.refundVat > 0 ? 'var(--red)' : undefined }}>{f(c.refundVat)}</span> },
-              { label:'VAT due',     cell: (c, f) => f(c.vatDue), color:'var(--acc)' },
-              { label:'No VAT',      cell: c => <span style={{ color: c.ledger?.noVatCount ? 'var(--red)' : undefined }}>{c.ledger?.noVatCount || 0}</span> },
+              { label:`${tw.Tax} due`, cell: (c, f) => f(c.vatDue), color:'var(--acc)' },
+              { label:`No ${tw.tax}`,  cell: c => <span style={{ color: c.ledger?.noVatCount ? 'var(--red)' : undefined }}>{c.ledger?.noVatCount || 0}</span> },
               { label:'Variance',    cell: (c, f) => <span style={{ color: Math.abs(c.variance) > 0.5 ? 'var(--red)' : undefined }}>{f(Math.abs(c.variance))}</span> },
             ]}/>
             <SiteMatrix block={b} first="Tax by rate" fmtN={fmtN} rows={rateRows.map(r => ({
@@ -342,7 +360,7 @@ function TaxSites(props) {
         );
       }}</Blocks>
       <div style={{ padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-        ⓘ Each site's checks are read on their own record or their own site's rates, through the same tax engine the till used; the signed in site's rates are never applied to another site. A rate with the same name, percentage and kind at two sites is one line. VAT on sales is what each sale booked; refunds come off on the day they were made; a sale with no VAT recorded is named in red. Variance is VAT booked against the item rules, per site.
+        {`ⓘ Each site's checks are read on their own record or their own site's rates, through the same tax engine the till used; the signed in site's rates are never applied to another site. A rate with the same name, percentage and kind at two sites is one line. ${twAll.Tax} on sales is what each sale booked; refunds come off on the day they were made; a sale with no ${twAll.tax} recorded is named in red. Variance is ${twAll.tax} booked against the item rules, per site.`}
       </div>
     </div>
   );

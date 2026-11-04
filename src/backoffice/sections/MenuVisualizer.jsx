@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
 import { useStore } from '../../store';
-import { money } from '../../lib/currency';
+// 5.12.57: price boxes show the venue's own symbol, never a typed pound.
+import { money, currencySymbol } from '../../lib/currency';
 import { compareMenuItems } from '../../lib/menuItemOrder.js';
 import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 
@@ -447,7 +448,10 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
             <div>
               <span style={lbl}>Type</span>
               <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['pizza','Pizza']].map(([v,l])=>{
+                {/* 5.12.57 (US basics 9.2): the Pizza type comes with the demo venue's sample sizes, crusts and
+                    toppings (priced in the demo's numbers) and no way to change them, so it is only offered on an
+                    item that already is one, as Menu Manager does. */}
+                {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],...(isPizza?[['pizza','Pizza']]:[])].map(([v,l])=>{
                   const act=(item.type||'simple')===v||(v==='variants'&&isParent);
                   return <button key={v} onClick={()=>f('type',v)} style={{ padding:'3px 8px',borderRadius:7,cursor:'pointer',fontFamily:'inherit',fontSize:10,fontWeight:act?700:400,border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`,background:act?'var(--acc-d)':'var(--bg3)',color:act?'var(--acc)':'var(--t4)' }}>{l}</button>;
                 })}
@@ -474,7 +478,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
               <div key={k}>
                 <span style={lbl}>{label}</span>
                 <div style={{ position:'relative' }}>
-                  <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',fontSize:accent?15:13,color:accent?'var(--acc)':'var(--t4)',fontWeight:700 }}>£</span>
+                  <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',fontSize:accent?15:13,color:accent?'var(--acc)':'var(--t4)',fontWeight:700 }}>{currencySymbol()}</span>
                   <input type="number" step="0.01" min="0" style={{...inp,paddingLeft:26,fontSize:accent?15:13,fontWeight:accent?800:400,color:accent?'var(--acc)':'var(--t1)'}} value={k==='base'?(p.base||0):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k==='base'?'':(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
                 </div>
               </div>
@@ -540,7 +544,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
                   <span style={{ fontSize:10,color:'var(--t4)',cursor:'grab',textAlign:'center' }}>⠿</span>
                   <input style={inp} value={v.menuName||v.name||''} onChange={e=>updateMenuItem(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`Size ${vi+1}`}/>
                   <div style={{ position:'relative' }}>
-                    <span style={{ position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',fontSize:11,color:'var(--t4)' }}>£</span>
+                    <span style={{ position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',fontSize:11,color:'var(--t4)' }}>{currencySymbol()}</span>
                     <input type="number" step="0.01" min="0" style={{...inp,paddingLeft:18,color:'var(--acc)',fontWeight:700}} value={vp.base||''} placeholder="0.00" onChange={e=>updateMenuItem(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                   </div>
                   <button onClick={()=>{updateMenuItem(v.id,{archived:true,parentId:null});if(variants.filter(x=>x.id!==v.id).length===0)f('type','simple');}} style={{ width:32,height:34,borderRadius:7,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>

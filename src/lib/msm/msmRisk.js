@@ -22,12 +22,14 @@
 import { money2, toPence, has, channelFallback, PUBLISHED_CHANNELS, ORDER_TYPE_TAX_KEYS, pctText } from '../../../supabase/functions/_shared/msmModel.js';
 import { effectiveTaxByType } from '../../../supabase/functions/_shared/msmTax.js';
 import { isOptionOnlyItem } from '../menuRules.js';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, as before).
+import { activeTaxWords } from '../taxWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const TAX_WORDS = { 'dine-in': 'Eat in', takeaway: 'Takeaway', delivery: 'Delivery', bar: 'Bar tab' };
 const PRICE_WORDS = { dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' };
 const json = (v) => JSON.stringify(v ?? null);
-const rateWords = (r) => (r ? `${r.name}${r.percent != null ? ` (${pctText(r.percent)})` : ''}` : 'the product\'s own VAT');
+const rateWords = (r) => (r ? `${r.name}${r.percent != null ? ` (${pctText(r.percent)})` : ''}` : `the product's own ${activeTaxWords().tax}`);
 
 /** Is a move from `before` to `after` (pence) more than 20%? Exactly 20% is not. */
 export function moreThan20(before, after) {
@@ -150,14 +152,14 @@ export function riskChecks(changes, central, sold = null, trading = null, opts =
     if (ch.target === 'product' && ('tax_rate_name' in a || 'tax_rate_percent' in a) && ch.op !== 'create') {
       const p = product.get(ch.entity_id);
       const to = { name: a.tax_rate_name ?? p?.tax_rate_name, percent: a.tax_rate_percent ?? p?.tax_rate_percent };
-      add('vat', `${ch.entity_id}|rate|${json(to)}`, `${pName(ch.entity_id)} VAT changes from ${rateWords({ name: b.tax_rate_name ?? p?.tax_rate_name, percent: b.tax_rate_percent ?? p?.tax_rate_percent })} to ${rateWords(to)}. I have checked this is right.`);
+      add('vat', `${ch.entity_id}|rate|${json(to)}`, `${pName(ch.entity_id)} ${activeTaxWords().tax} changes from ${rateWords({ name: b.tax_rate_name ?? p?.tax_rate_name, percent: b.tax_rate_percent ?? p?.tax_rate_percent })} to ${rateWords(to)}. I have checked this is right.`);
     }
     if (ch.target === 'product' && 'tax_by_type' in a) {
       const before = has(b, 'tax_by_type') ? (b.tax_by_type || {}) : (product.get(ch.entity_id)?.tax_by_type || {});
       const after = a.tax_by_type || {};
       for (const k of Object.keys(TAX_WORDS)) {
         if (json(before[k]) === json(after[k])) continue;
-        add('vat', `${ch.entity_id}|${k}|${json(after[k])}`, `${pName(ch.entity_id)} ${TAX_WORDS[k].toLowerCase()} VAT changes from ${rateWords(before[k])} to ${rateWords(after[k])}. I have checked this is right.`);
+        add('vat', `${ch.entity_id}|${k}|${json(after[k])}`, `${pName(ch.entity_id)} ${TAX_WORDS[k].toLowerCase()} ${activeTaxWords().tax} changes from ${rateWords(before[k])} to ${rateWords(after[k])}. I have checked this is right.`);
       }
     }
     // A site's own VAT by order type given back ("Use the group's") or kept (Keep the site's).
@@ -170,10 +172,11 @@ export function riskChecks(changes, central, sold = null, trading = null, opts =
       for (const k of ORDER_TYPE_TAX_KEYS) {
         if (has(tb, k) === has(ta, k) && json(tb[k]) === json(ta[k])) continue;
         const where = siteName(ch.location_id);
-        const ownWords = (v) => (v === false ? 'the product\'s own VAT' : v === null ? 'its default VAT' : rateName(ch.location_id, v) || 'its own rate');
+        const tw = activeTaxWords();
+        const ownWords = (v) => (v === false ? `the product's own ${tw.tax}` : v === null ? `its default ${tw.tax}` : rateName(ch.location_id, v) || 'its own rate');
         const words = has(ta, k)
-          ? `${where} keeps its own ${TAX_WORDS[k].toLowerCase()} VAT (${ownWords(ta[k])}) for ${pName(ch.entity_id)}. I have checked this is right.`
-          : `${where} stops using its own ${TAX_WORDS[k].toLowerCase()} VAT (${ownWords(tb[k])}) for ${pName(ch.entity_id)} and uses the group's (${rateWords(groupTbt[k] || null)}). I have checked this is right.`;
+          ? `${where} keeps its own ${TAX_WORDS[k].toLowerCase()} ${tw.tax} (${ownWords(ta[k])}) for ${pName(ch.entity_id)}. I have checked this is right.`
+          : `${where} stops using its own ${TAX_WORDS[k].toLowerCase()} ${tw.tax} (${ownWords(tb[k])}) for ${pName(ch.entity_id)} and uses the group's (${rateWords(groupTbt[k] || null)}). I have checked this is right.`;
         add('vat', `${ch.entity_id}|${ch.location_id}|kept|${k}|${has(ta, k) ? json(ta[k]) : 'group'}`, words);
       }
     }

@@ -13,6 +13,7 @@
  */
 import { useMemo, useState } from 'react';
 import { t, tf, tn } from '../../lib/i18n';
+import { kcalNote } from '../../lib/menuStockFacts';
 import { resolveItemPrice, variantFromPrice, variantChildren } from '../../lib/menuPricing';
 import { railTileMode } from '../../lib/categoryPhoto';
 import { kioskModeLabels } from '../../lib/kioskFlow';
@@ -106,7 +107,7 @@ export default function KioskMenuScreen({
       </div>
       {/* v5.11.93 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
       {engine.showCalories === true ? (
-        <div style={{ padding: '10px 28px 0', fontSize: 17, color: 'var(--k2InkSubtle)', flex: 'none' }}>{t('product.kcalNote')}</div>
+        <div style={{ padding: '10px 28px 0', fontSize: 17, color: 'var(--k2InkSubtle)', flex: 'none' }}>{kcalNote(t) /* 5.12.57: FDA line at a US venue */}</div>
       ) : null}
 
       {roots.length === 0 ? (

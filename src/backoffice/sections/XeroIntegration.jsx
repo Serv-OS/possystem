@@ -18,7 +18,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tabVenue } from '../../store';
 import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily } from '../../lib/xero';
-import { money } from '../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../lib/currency';
+// 5.12.57 (US basics, batch 6): the venue's own tax words (VAT at a UK venue, as before).
+import { taxWords, activeTaxWords } from '../../lib/taxWords';
 import { migrateTaxMapping } from '../../../supabase/functions/_shared/xeroTax.js';
 import { mappingHash, setupTabName } from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
 import { offerForAnswer, answerAfterFailure, OLD_REMOVED } from '../../../supabase/functions/_shared/xeroReplacePlan.js';
@@ -156,7 +158,7 @@ function MappingCard({ locId, blocked, postMode, tabName, onSaved }) {
                   {byType(['DIRECTCOSTS', 'EXPENSE', 'OVERHEADS']).map(a => <option key={a.id} value={a.code || a.id}>{a.code ? `${a.code} · ` : ''}{a.name}</option>)}
                 </select>
               </div>
-              <div style={fieldRow}><span style={flabel}>VAT on purchases</span>
+              <div style={fieldRow}><span style={flabel}>{opts.addedOnTax || activeTaxWords().us ? 'Tax on purchases' : 'VAT on purchases'}</span>
                 <select value={map.purchaseTax || ''} onChange={e => set({ purchaseTax: e.target.value })} style={sel}>
                   <option value="">None</option>
                   {/* A saved choice missing from the purchase rates stays visible (React would show "None" while it still posts). */}
@@ -337,7 +339,7 @@ export default function XeroIntegration() {
       <h1 style={S.h1}>Xero (accounting)</h1>
       <div style={S.sub}>
         Connect this venue to its own Xero organisation so your books stay up to date automatically:
-        daily sales &amp; VAT, supplier bills/expenses, and payment data for bank reconciliation.
+        daily sales &amp; {activeTaxWords().us ? 'sales tax' : 'VAT'}, supplier bills/expenses, and payment data for bank reconciliation.
       </div>
 
       {flash === 'connected' && <div style={S.banner(true)}>✓ Connected to Xero.</div>}
@@ -375,7 +377,7 @@ export default function XeroIntegration() {
         <>
         {siblings.length > 0 && (
           <div style={{ ...S.banner(true), background: 'rgba(80,120,200,.12)', color: 'var(--t2)', border: '1px solid rgba(80,120,200,.3)' }}>
-            {siblings.map((x) => x.name).join(', ')} also post{siblings.length === 1 ? 's' : ''} to {tenantName || status.tenant_name || 'this Xero organisation'}. Sites that share a Xero organisation are one company with one VAT number; each site&rsquo;s postings carry its own name, number and tracking option.
+            {siblings.map((x) => x.name).join(', ')} also post{siblings.length === 1 ? 's' : ''} to {tenantName || status.tenant_name || 'this Xero organisation'}. Sites that share a Xero organisation are one company with one {activeTaxWords().us ? 'tax ID' : 'VAT number'}; each site&rsquo;s postings carry its own name, number and tracking option.
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -468,7 +470,7 @@ export default function XeroIntegration() {
                         {l.rates.map((r, j) => (
                           <div key={`${r.taxType}|${r.label}|${j}`}>
                             {r.label || 'Sales'} · {money(r.amount, cur)}
-                            {r.vat != null && <> · VAT {money(r.vat, cur)}</>}
+                            {r.vat != null && <> · {taxWords(cur || getActiveCurrencyCode()).Tax} {money(r.vat, cur)}</>}
                             {r.vatBooked != null && r.vatBooked !== r.vat && <span style={{ color: 'var(--t4)' }}> (ServOS booked {money(r.vatBooked, cur)})</span>}
                             {!r.taxType && <b style={{ color: '#c33' }}> · no Xero rate chosen</b>}
                           </div>

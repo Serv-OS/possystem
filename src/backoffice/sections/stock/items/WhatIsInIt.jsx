@@ -21,8 +21,14 @@ import { stockApi } from '../../../../lib/stock/stockApi';
 import { homeSiteOf, queuedNote } from '../../../../lib/stock/itemPageRules';
 import {
   ALLERGEN_CHIPS, DIETS, NUTRITION_FIELDS, factsOf, factsDraft, factsPatch, checkedWords, savedFactsWords,
+  US_ALLERGEN_CHIPS, US_NUTRITION_FIELDS,
 } from '../../../../lib/stock/factsRules';
 import { Btn, Pill, Field, Notice, ui } from '../stockUi';
+import { activeCountry } from '../../../../lib/regionPack';
+
+// 5.12.57: a US venue reads the allergen and nutrition words in US English (same ids and keys).
+const chipsNow = () => (activeCountry() === 'US' ? US_ALLERGEN_CHIPS : ALLERGEN_CHIPS);
+const nutritionNow = () => (activeCountry() === 'US' ? US_NUTRITION_FIELDS : NUTRITION_FIELDS);
 
 const chipStyle = (on, locked) => ({
   fontSize: 12, padding: '5px 10px', borderRadius: 6, cursor: locked ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
@@ -94,10 +100,10 @@ export default function WhatIsInIt({ detail, supplierItem, editable = false, rel
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '0 18px' }}>
         <div>
           <Field label="Allergens" hint="What the pack says it contains.">
-            <Chips options={ALLERGEN_CHIPS} value={draft.allergens} onChange={(v) => upd('allergens', v)} locked={locked} label="Allergens" />
+            <Chips options={chipsNow()} value={draft.allergens} onChange={(v) => upd('allergens', v)} locked={locked} label="Allergens" />
           </Field>
           <Field label="May contain" hint="Traces the pack warns about.">
-            <Chips options={ALLERGEN_CHIPS} value={draft.may_contain} onChange={(v) => upd('may_contain', v)} locked={locked} label="May contain" />
+            <Chips options={chipsNow()} value={draft.may_contain} onChange={(v) => upd('may_contain', v)} locked={locked} label="May contain" />
           </Field>
           <Field label="Diets" hint="A dish is only vegan when every ingredient is.">
             <Chips options={DIETS} value={draft.diets} onChange={(v) => upd('diets', v)} locked={locked} label="Diets" />
@@ -110,7 +116,7 @@ export default function WhatIsInIt({ detail, supplierItem, editable = false, rel
           </Field>
           <Field label="Nutrition per 100 g" hint="Or per 100 ml for a drink. Leave a box empty when the pack does not say.">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px 10px' }}>
-              {NUTRITION_FIELDS.map((f) => (
+              {nutritionNow().map((f) => (
                 <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11.5, color: 'var(--t3)' }}>
                   <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.label}{f.key === 'kcal' ? '' : ' (g)'}</span>
                   <input type="number" min="0" step="any" inputMode="decimal" value={draft.nutrition[f.key]} disabled={locked}

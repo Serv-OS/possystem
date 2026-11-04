@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react';
 import { supabase, getLocationId } from '../../../lib/supabase';
 import { reportSave } from '../../../lib/saveHealth';
 import { showCalories } from '../../../lib/menuStockFacts';
+import { foodLawWords } from '../../../lib/foodLaw';
 
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 24, marginBottom: 20 };
 
@@ -68,7 +69,7 @@ export default function CaloriesCard() {
         <span style={{ fontSize: 13, color: 'var(--t1)', lineHeight: 1.5 }}>{CALORIES_TICK}</span>
       </label>
       <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
-        Each shows the kcal of a portion and the line "Adults need around 2,000 kcal a day". The figures come from the stock recipe linked at this site. A product with no recipe shows none.
+        {foodLawWords().caloriesCardNote /* 5.12.57: the FDA line and Cal at a US venue */}
       </div>
       {saved && !problem && <div style={{ fontSize: 12, color: 'var(--grn, #2f8f4e)', marginTop: 8, fontWeight: 700 }}>Saved</div>}
       {problem && <div style={{ fontSize: 12, color: 'var(--red, #b91c1c)', marginTop: 8, fontWeight: 700 }}>{problem}</div>}

@@ -726,9 +726,9 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                   </div>
                 </button>
 
-                {/* Custom amount */}
+                {/* Custom amount. 5.12.57: the venue's own symbol here and in the amount boxes, never a typed pound. */}
                 <button onClick={()=>{ setMode('amount'); setCustomAmounts(Array(2).fill('')); }} style={{ padding:'16px 18px', borderRadius:14, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', display:'flex', alignItems:'center', gap:14, textAlign:'left' }}>
-                  <span style={{ fontSize:28 }}>£</span>
+                  <span style={{ fontSize:28 }}>{currencySymbol()}</span>
                   <div>
                     <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>Custom amounts</div>
                     <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>Each guest enters how much they're paying</div>
@@ -856,7 +856,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                   <div key={i} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
                     <div style={{ width:28, height:28, borderRadius:'50%', background:'var(--acc-d)', border:'1px solid var(--acc-b)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:'var(--acc)', flexShrink:0 }}>{i+1}</div>
                     <div style={{ position:'relative', flex:1 }}>
-                      <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'var(--t3)', fontWeight:600 }}>£</span>
+                      <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'var(--t3)', fontWeight:600 }}>{currencySymbol()}</span>
                       <input type="number" value={amt} onChange={e=>setCustomAmounts(a=>a.map((x,j)=>j===i?e.target.value:x))} placeholder="0.00" className="input" style={{ paddingLeft:24 }}/>
                     </div>
                     {customAmounts.length>2&&<button onClick={()=>setCustomAmounts(a=>a.filter((_,j)=>j!==i))} style={{ color:'var(--red)', background:'none', border:'none', cursor:'pointer', fontSize:18, fontFamily:'inherit' }}>×</button>}

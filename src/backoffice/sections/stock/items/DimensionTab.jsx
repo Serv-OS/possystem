@@ -14,24 +14,17 @@ import { useState } from 'react';
 import { useStore } from '../../../../store';
 import { stockApi } from '../../../../lib/stock/stockApi';
 import { reportSave } from '../../../../lib/saveHealth';
-import { UNITS, DIMENSIONS } from '../../../../lib/stock/units';
+import { unitDimension } from '../../../../lib/stock/units';
 import { bridgesOf, queuedNote } from '../../../../lib/stock/itemPageRules';
-
-const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
-const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
+import UnitOptions from '../UnitOptions';
 const fieldStyle = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 
-function UnitSelect({ value, onChange, style, disabled }) {
+// 5.12.57: the units of the item's own site (a US site: US volume units first)
+function UnitSelect({ value, onChange, style, disabled, siteId = null }) {
   return (
     <select value={value || ''} disabled={disabled} onChange={e => onChange(e.target.value)}
       style={{ background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '7px 8px', fontSize: 13, ...style }}>
-      {DIM_ORDER.map(dim => (
-        <optgroup key={dim} label={dim[0] + dim.slice(1).toLowerCase()}>
-          {UNIT_OPTS.filter(u => u.dimension === dim).map(u => (
-            <option key={u.code} value={u.code}>{u.label} ({u.code})</option>
-          ))}
-        </optgroup>
-      ))}
+      <UnitOptions siteId={siteId} />
     </select>
   );
 }
@@ -43,7 +36,7 @@ export default function DimensionTab({ detail, homeSiteId, locked = false, reloa
   const [row, setRow] = useState({ fromQty: 1, fromUnit: baseUnit, toQty: '', toUnit: 'g' });
   const [busy, setBusy] = useState(false);
   const bridges = bridgesOf(detail);
-  const dim = UNITS[baseUnit]?.dimension;
+  const dim = unitDimension(baseUnit);
 
   const add = async () => {
     if (locked) return;
@@ -91,10 +84,10 @@ export default function DimensionTab({ detail, homeSiteId, locked = false, reloa
       </div>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap', ...(locked ? { opacity: 0.55 } : null) }}>
         <input disabled={locked} type="number" min="0" step="any" value={row.fromQty} onChange={e => setRow(r => ({ ...r, fromQty: e.target.value }))} style={{ ...fieldStyle, width: 70 }} />
-        <UnitSelect disabled={locked} value={row.fromUnit} onChange={v => setRow(r => ({ ...r, fromUnit: v }))} />
+        <UnitSelect disabled={locked} siteId={homeSiteId} value={row.fromUnit} onChange={v => setRow(r => ({ ...r, fromUnit: v }))} />
         <span style={{ color: 'var(--t3)' }}>=</span>
         <input disabled={locked} type="number" min="0" step="any" value={row.toQty} onChange={e => setRow(r => ({ ...r, toQty: e.target.value }))} style={{ ...fieldStyle, width: 70 }} placeholder="qty" />
-        <UnitSelect disabled={locked} value={row.toUnit} onChange={v => setRow(r => ({ ...r, toUnit: v }))} />
+        <UnitSelect disabled={locked} siteId={homeSiteId} value={row.toUnit} onChange={v => setRow(r => ({ ...r, toUnit: v }))} />
         <button onClick={add} disabled={locked || busy} style={{ padding: '8px 16px', borderRadius: 7, background: 'var(--acc)', color: '#fff', border: 0, cursor: locked ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700, opacity: busy ? 0.6 : 1 }}>{busy ? 'Adding…' : 'Add bridge'}</button>
       </div>
     </div>

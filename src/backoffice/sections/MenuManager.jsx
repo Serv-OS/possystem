@@ -38,7 +38,8 @@ import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches,
 // PIZZA_* are used by PizzaBuilder below in unconditional JSX — without them the
 // pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
 // swaps the WHOLE app (POS shell included) for the red error page.
-import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
+import { PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
+import { allergenOptionsFor, foodLawWords } from '../../lib/foodLaw';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { uploadProductImage, deleteProductImage, saveQuickScreenIds, readQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks, listSharedMastersMissingAt, pullSharedProductsTo, masterTaxRatesForCopies } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
@@ -53,7 +54,9 @@ import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
 import CategoryPhotoField from '../components/CategoryPhotoField';
 import { CATEGORY_PHOTO_COPY, categoryPhotoUrl } from '../../lib/categoryPhoto';
-import { money, getActiveCurrencyCode } from '../../lib/currency';
+// 5.12.57: price boxes show the venue's own symbol ($ for a US venue), never a typed pound.
+import { money, getActiveCurrencyCode, currencySymbol } from '../../lib/currency';
+import { activeTaxWords } from '../../lib/taxWords';
 import { orderOptionFlow } from '../../lib/optionFlow';
 // v5.5.813: recipe-derived cost + GP% on the Items list. Same engine + same
 // ex-VAT net-price basis as Inventory → Reports → Recipe GP, so the two screens
@@ -319,6 +322,9 @@ function useItemCodes() {
 
 function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverrides = false }) {
   const { taxRates: allTaxRates, taxProfiles } = useStore();
+  // 5.12.57: a US venue's tax words (its menu is called Tax; it has no VAT). UK words unchanged.
+  const tw = activeTaxWords();
+  const taxMenu = tw.us ? 'Tax' : 'Tax & VAT';
   const taxRates = liveVenueRatesOf(allTaxRates);
 
   const setTaxRate = (id) => {
@@ -343,7 +349,7 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
   if (!taxRates?.length) return (
     <div style={{ padding:'20px 0', color:'var(--t4)', fontSize:12, textAlign:'center' }}>
       {NO_VENUE_RATES}.<br/>
-      Go to <strong style={{ color:'var(--t2)' }}>Tax & VAT</strong> to set up this venue's rates first.
+      Go to <strong style={{ color:'var(--t2)' }}>{taxMenu}</strong> to set up this venue's rates first.
     </div>
   );
 
@@ -368,7 +374,7 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
   // keeps its own VAT by order type (Leeds and its 3 donuts) can still change it here (design 3.2).
   return (
     <div>
-      <MsmLocked on={lockRate} label="VAT">
+      <MsmLocked on={lockRate} label={tw.Tax}>
       {/* v5.7.33: tax PROFILE override — setup only, nothing charges with it yet */}
       {activeProfiles.length > 0 && (
         <div style={{ marginBottom:16 }}>
@@ -379,7 +385,7 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
             {activeProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <div style={{ fontSize:11, color:'var(--t4)', marginTop:5, lineHeight:1.6 }}>
-            Profiles are the new way to set up tax (Tax &amp; VAT → Tax profiles). Until the calculation switchover, the legacy rate below is what actually charges.
+            Profiles are the new way to set up tax ({taxMenu} → Tax profiles). Until the calculation switchover, the legacy rate below is what actually charges.
           </div>
         </div>
       )}
@@ -411,11 +417,11 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
           Per-order-type overrides
         </span>
         <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.6 }}>
-          Override the tax rate for specific order types. Common UK use: set takeaway to Zero Rate for food items.
+          Override the tax rate for specific order types. {tw.us ? 'For example, set packaged food to go to Tax Exempt.' : 'Common UK use: set takeaway to Zero Rate for food items.'}{' '}
           Drive thru, collection and online collection use the takeaway override unless they have their own.
         </div>
         {ORDER_TYPES_TAX.map(ot => (
-          <MsmLocked key={ot} on={lockOverrides && OWNED_TAX_KEYS.includes(ot)} label={`${ORDER_TYPE_TAX_LABEL[ot] || 'Order type'} VAT`}>
+          <MsmLocked key={ot} on={lockOverrides && OWNED_TAX_KEYS.includes(ot)} label={`${ORDER_TYPE_TAX_LABEL[ot] || 'Order type'} ${tw.tax}`}>
           <div style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
             <span style={{ fontSize:12, color:'var(--t2)', fontWeight:600 }}>{ORDER_TYPE_TAX_LABEL[ot] || ot}</span>
             <select value={item.taxOverrides?.[ot] || ''}
@@ -497,7 +503,7 @@ export default function MenuManager({ setSection = null, canOpen = null } = {}) 
     <div className="bo-workspace" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
       {msmManaged > 0 && (
         <div role="status" style={{ padding:'8px 16px', background:'var(--blu-d, var(--bg2))', borderBottom:'1px solid var(--bdr)', fontSize:12.5, color:'var(--t2)', flexShrink:0 }}>
-          <Icon name="lock" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Their names, prices, categories, VAT, photos and option groups are set there and show read only here. Button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes stay yours.
+          <Icon name="lock" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Their names, prices, categories, {activeTaxWords().tax}, photos and option groups are set there and show read only here. Button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes stay yours.
           {openMsm && <> <button type="button" onClick={openMsm} style={{ background:'none', border:'none', padding:0, color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:700, textDecoration:'underline' }}>Open the Multi site menu</button></>}
         </div>
       )}
@@ -1654,7 +1660,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       </div>
                       <span style={{ fontSize:10, color:'var(--t4)' }}>size</span>
                       <div style={{ display:'flex', alignItems:'center', gap:2 }}>
-                        <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+                        <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                         <input type="number" step="0.01" min="0" {...selectOnFocus}
                           style={{ fontSize:12, fontWeight:700, color:catColor, background:'transparent', border:'none', outline:'none', width:55, fontFamily:'inherit', cursor:'text' }}
                           value={vp.base!==undefined?vp.base:''}
@@ -1987,6 +1993,9 @@ function ItemsLibrary() {
           // seeded with rates on purpose), so "no rates" is not a fault there.
           const hasProfiles = (taxProfiles || []).length > 0 || !!venueDefaultTaxProfileId;
           const ukVenue = String(getActiveCurrencyCode() || 'GBP').toUpperCase() === 'GBP';
+          // 5.12.57: each country is pointed at its own seed (US: type the rate, then Seed US rates).
+          const tw = activeTaxWords();
+          const taxMenu = tw.us ? 'Tax' : 'Tax & VAT';
           if (!taggedOwn.length && hasProfiles && !bulkTaxResult) return null;
           if (noRate.all.length === 0 && noRate.foreignOverride.length === 0 && !bulkTaxResult) return null;
           const overrideNote = noRate.foreignOverride.length > 0 && (
@@ -2007,7 +2016,7 @@ function ItemsLibrary() {
           if (noRate.all.length && !taggedOwn.length) {
             return (
               <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'var(--red-d)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
-                <span style={{ fontSize:12, fontWeight:800, color:'var(--red)' }}><Icon name="warn" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{NO_VENUE_RATES}, so {noRate.all.length} product{noRate.all.length === 1 ? '' : 's'} record no {ukVenue ? 'VAT' : 'sales tax'}. Open Tax &amp; VAT and {ukVenue ? 'press Seed UK rates' : 'set up tax profiles or press Seed US rates'}.</span>
+                <span style={{ fontSize:12, fontWeight:800, color:'var(--red)' }}><Icon name="warn" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{NO_VENUE_RATES}, so {noRate.all.length} product{noRate.all.length === 1 ? '' : 's'} record no {ukVenue ? 'VAT' : tw.sales}. Open {taxMenu} and {ukVenue ? 'press Seed UK rates' : tw.us ? 'set up tax profiles, or type the rate under US Sales Tax and press Seed US rates' : 'add its rates'}.</span>
                 {listNames}
               </div>
             );
@@ -2028,7 +2037,7 @@ function ItemsLibrary() {
             ? 'This venue also has tax profiles: until a rate is set, they charge through those. A rate set here comes before the category and venue profiles.'
             : defaultRate
               ? `Until set, they are charged the venue default (${defaultRate.name}).`
-              : `No rate here is set as the default, so until set they record NO ${ukVenue ? 'VAT' : 'sales tax'}. Set a default in Tax & VAT.`;
+              : `No rate here is set as the default, so until set they record NO ${ukVenue ? 'VAT' : tw.sales}. Set a default in ${taxMenu}.`;
           const go = async () => {
             if (!chosen || running || menuLoading) return;
             // This tab's copy of the menu can be hours old, and another tab, device, Tax & VAT or a
@@ -2133,8 +2142,12 @@ function ItemsLibrary() {
                 // 27 Sep 2026: a copy maps its tax rate to this venue's by name as it arrives; with
                 // no rates here it arrives with none (Leeds, Preston, Headingly, Huddersfield). Say so
                 // first. Seeding rates later maps them (Tax & VAT, lib/db.js mapCopiesTaxFromMasters).
+                // 5.12.57: a US venue is pointed at its own seed, in its own words.
+                const tw = activeTaxWords();
                 const noRatesWords = !isMock && !ownTaxRates.length
-                  ? ' WARNING: this venue has no tax rates yet, so the copies arrive with none and record no VAT until you press Seed UK rates in Tax & VAT (they then take their master\'s rate).'
+                  ? ' WARNING: this venue has no tax rates yet, so the copies arrive with none and record no '
+                    + (tw.us ? 'sales tax until you type the rate under US Sales Tax and press Seed US rates in Tax' : 'VAT until you press Seed UK rates in Tax & VAT')
+                    + ' (they then take their master\'s rate).'
                   : '';
                 if (!loc || !window.confirm(`Copy ${missingShared.length} shared product${missingShared.length===1?'':'s'} into this venue, with their categories and modifier groups? Runs one product at a time.${noRatesWords}`)) return;
                 setPullRun({ done: 0, total: missingShared.length });
@@ -2270,7 +2283,7 @@ function ItemsLibrary() {
           <div style={hdrSt}>Type</div>
           <div style={{ ...hdrSt, textAlign:'right' }}>Price</div>
           {showMoney && <div style={{ ...hdrSt, textAlign:'right' }}>Cost</div>}
-          {showMoney && <div style={{ ...hdrSt, textAlign:'right' }} title="Gross profit % — auto-calculated from the linked recipe, on the ex-VAT price">GP %</div>}
+          {showMoney && <div style={{ ...hdrSt, textAlign:'right' }} title={activeTaxWords().us ? 'Gross profit %, worked out from the linked recipe on the price before tax' : 'Gross profit % — auto-calculated from the linked recipe, on the ex-VAT price'}>GP %</div>}
           <div style={{ ...hdrSt, textAlign:'center' }}>Mods</div>
           <div style={{ ...hdrSt, textAlign:'center' }} title="Allergens"><Icon name="warn" size={11} style={{ display:'inline-block' }} /></div>
         </div>
@@ -2719,6 +2732,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const subCats  = allCategories.filter(c =>  c.parentId);
 
   const [sec, setSec]             = useState('details');  // always open on Details (was 'flow' for products)
+  // 5.12.57: the allergen tick boxes and their heading follow the venue's country (FDA 9 at a US venue).
+  const allergenOpts = allergenOptionsFor();
+  const allergenWordsNow = foodLawWords();
   const [modSearch, setModSearch] = useState('');
   const [instSearch, setInstSearch] = useState('');
   const [showAllCats, setShowAllCats] = useState(false);  // v5.5.813 — "Also in" chip cap
@@ -2963,7 +2979,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   <span style={lbl}>Base price</span>
                   <MsmLocked on={lockOn('pricing')} label="Price">
                   <div style={{ position:'relative' }}>
-                    <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:16, color:'var(--acc)', fontWeight:700 }}>£</span>
+                    <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:16, color:'var(--acc)', fontWeight:700 }}>{currencySymbol()}</span>
                     {/* Shows EMPTY once cleared, same rule as the Pricing tab used to have:
                         forcing a 0 back in put the next digit beside it (05). */}
                     <input type="number" step="0.01" min="0" {...selectOnFocus} aria-label="Base price"
@@ -3233,7 +3249,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       <div key={v.id} style={{ display:'grid', gridTemplateColumns:'1fr 90px 32px', gap:6, marginBottom:6, alignItems:'center' }}>
                         <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={v.menuName||v.name||''} onChange={e=>updVariant(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`Size ${vi+1}`}/>
                         <div style={{ position:'relative' }}>
-                          <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>£</span>
+                          <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                           <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                         </div>
                         <button onClick={()=>removeVariant(v.id)} style={{ width:32,height:34,borderRadius:7,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:15,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
@@ -3411,7 +3427,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab', textAlign:'center' }}>⠿</span>
                     <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={v.menuName||v.name||''} onChange={e=>updVariant(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`${item.variantLabel||'Size'} ${vi+1}`}/>
                     <div style={{ position:'relative' }}>
-                      <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>£</span>
+                      <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                       <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                     </div>
                     <button onClick={()=>removeVariant(v.id)} style={{ width:32, height:34, borderRadius:7, border:'1px solid var(--red-b)', background:'var(--red-d)', color:'var(--red)', cursor:'pointer', fontSize:15, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
@@ -3604,7 +3620,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   {hint && <span style={{ fontSize:9, color:'var(--t4)', fontWeight:400 }}>{hint}</span>}
                 </div>
                 <div style={{ position:'relative' }}>
-                  <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:13, color:'var(--t4)', fontWeight:700 }}>£</span>
+                  <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:13, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                   <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:26, fontSize:13, fontWeight:400, color:'var(--t1)' }} value={p[k]!==null&&p[k]!==undefined?p[k]:''} placeholder={(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
                   {p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
                 </div>
@@ -3638,9 +3654,11 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 );
               })}
             </div>
-            <span style={lbl}>Declared allergens — EU 14 mandatory</span>
+            {/* 5.12.57: the venue's own allergen list: the UK 14 as before; at a US venue the 9
+                major food allergens, then the other five (stored ids never change). */}
+            <span style={lbl}>{allergenWordsNow.allergenEditorHeading}</span>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
-              {ALLERGENS.map(a=>{
+              {allergenOpts.major.map(a=>{
                 const on=(item.allergens||[]).includes(a.id);
                 return (
                   <button key={a.id} onClick={()=>onUpdate({allergens:on?(item.allergens||[]).filter(x=>x!==a.id):[...(item.allergens||[]),a.id]})} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 9px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?'var(--red)':'var(--bdr)'}`, background:on?'var(--red-d)':'var(--bg3)', transition:'all .1s' }}>
@@ -3652,6 +3670,22 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 );
               })}
             </div>
+            {allergenOpts.extra.length>0 && <>
+            <span style={{ ...lbl, marginTop:12 }}>{allergenWordsNow.allergenEditorExtraHeading}</span>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
+              {allergenOpts.extra.map(a=>{
+                const on=(item.allergens||[]).includes(a.id);
+                return (
+                  <button key={a.id} onClick={()=>onUpdate({allergens:on?(item.allergens||[]).filter(x=>x!==a.id):[...(item.allergens||[]),a.id]})} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 9px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?'var(--red)':'var(--bdr)'}`, background:on?'var(--red-d)':'var(--bg3)', transition:'all .1s' }}>
+                    <div style={{ width:16,height:16,borderRadius:3,border:`2px solid ${on?'var(--red)':'var(--bdr2)'}`,background:on?'var(--red)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+                      {on&&<div style={{ width:6,height:6,borderRadius:1,background:'#fff' }}/>}
+                    </div>
+                    <span style={{ fontSize:11, fontWeight:on?700:400, color:on?'var(--red)':'var(--t1)' }}>{a.icon} {a.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            </>}
             {/* v5.11.93 (multi site stock Drop 2): read only, what the stock recipe linked at this
                 venue adds (menu_item_stock_facts). Never written by a menu save. */}
             <MenuItemFactsPanel locationId={tabVenue()} menuItemId={item.id} />
@@ -3735,7 +3769,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
           <div key={s.id} style={{ display:'grid', gridTemplateColumns:'1fr 90px 32px', gap:6, marginBottom:6, alignItems:'center' }}>
             <input value={s.name} onChange={e=>updateSize(s.id,{name:e.target.value})} style={{ ...inp, fontSize:12, fontWeight:600 }} placeholder={`Size ${i+1}`}/>
             <div style={{ position:'relative' }}>
-              <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+              <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
               <input type="number" step="0.01" min="0" {...selectOnFocus} value={s.basePrice||''} onChange={e=>updateSize(s.id,{basePrice:parseFloat(e.target.value)||0})} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} placeholder="0.00"/>
             </div>
             <button onClick={()=>removeSize(s.id)} style={{ width:32, height:34, borderRadius:7, border:'1px solid var(--red-b)', background:'var(--red-d)', color:'var(--red)', cursor:'pointer', fontSize:15, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
@@ -3745,7 +3779,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
         <div style={{ display:'grid', gridTemplateColumns:'1fr 90px auto', gap:6, marginTop:4 }}>
           <input value={newSizeName} onChange={e=>setNewSizeName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSize()} style={{ ...inp, fontSize:12 }} placeholder={'Size name e.g. Medium 11"'}/>
           <div style={{ position:'relative' }}>
-            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
             <input type="number" step="0.01" min="0" {...selectOnFocus} value={newSizePrice} onChange={e=>setNewSizePrice(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSize()} style={{ ...inp, paddingLeft:20, fontSize:12 }} placeholder="0.00"/>
           </div>
           <button onClick={addSize} disabled={!newSizeName.trim()} style={{ padding:'7px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700, opacity:newSizeName.trim()?1:.4 }}>+ Add</button>
@@ -4138,7 +4172,7 @@ function ModifiersTab() {
                   </div>
                   <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={opt.name} onChange={e=>updOpt(opt.id,{name:e.target.value})} placeholder="Option name"/>
                   <div style={{ position:'relative' }}>
-                    <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
+                    <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                     {/* Database fence stage 1 (fix round 3, 19 Sep): min="0" is only a hint to
                         the spinner, so a typed minus sign saved a minus priced option in
                         silence. A minus price is a real setting (a venue may price "No cheese"
@@ -4149,7 +4183,7 @@ function ModifiersTab() {
                       onBlur={e=>{
                         const v = parseFloat(e.target.value) || 0;
                         if (v >= 0) return;
-                        const ok = window.confirm(`"${opt.name || 'This option'}" is priced £${v.toFixed(2)}. A minus price takes money OFF the bill every time a customer picks it. Is that what you want?`);
+                        const ok = window.confirm(`"${opt.name || 'This option'}" is priced ${money(v)}. A minus price takes money OFF the bill every time a customer picks it. Is that what you want?`);
                         if (!ok) updOpt(opt.id,{price:0});
                       }}/>
                   </div>

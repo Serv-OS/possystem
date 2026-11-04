@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
+import { getActiveCurrencyCode } from '../../../../lib/currency';
 import { DETAILS_FIELDS, ORDER_METHODS, detailsDraft, detailsPayload, onTopPlan, savedWords } from '../../../../lib/stock/supplierListRules';
 import { Btn, Field, ui, ErrorLine, useConfirm } from '../stockUi';
 import LockLine from '../LockLine';
@@ -35,7 +36,8 @@ export default function SupplierDetailsTab({ detail, editable, reload, onArchive
   const [clash, setClash] = useState(null); // { byName, at, rows, patch, version }
   const [confirm, confirmDialog] = useConfirm();
   const version = detail?.row_version ?? s.row_version ?? null;
-  const currency = (sc.sites || []).find((x) => (detail?.sites || []).some((d) => d.location_id === x.id))?.currency || (sc.sites || [])[0]?.currency || 'GBP';
+  // 5.12.57: no site currency known is the active venue's currency, never GBP.
+  const currency = (sc.sites || []).find((x) => (detail?.sites || []).some((d) => d.location_id === x.id))?.currency || (sc.sites || [])[0]?.currency || getActiveCurrencyCode();
   // The site the save is named at: its own site for a local supplier, else a site in reach that has
   // its row. None known: the database picks a site of this login that has one.
   const placeOf = s.local_location_id || (detail?.sites || []).find((d) => d && d.site_supplier_id)?.location_id || null;

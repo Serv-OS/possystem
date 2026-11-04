@@ -8,6 +8,8 @@ import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
+import { currencySymbol, getActiveCurrencyCode } from '../../lib/currency';
+import { activeCountry } from '../../lib/regionPack';
 const ASSET_BUCKET = 'receipt-assets';
 
 const BLANK_BRANDING = {
@@ -68,10 +70,10 @@ async function uploadGiftAsset(file, locationId, kind) {
 }
 
 // ── Currency formatter ──────────────────────────────────────────────────
-function fmtMoney(minor, currency = 'gbp') {
+// 5.12.57: the card's own currency's symbol (euro cards read as pounds before); no currency = the venue's.
+function fmtMoney(minor, currency) {
   const amt = (minor || 0) / 100;
-  const sym = currency === 'usd' ? '$' : String.fromCodePoint(0x00A3);
-  return `${sym}${amt.toFixed(2)}`;
+  return `${currencySymbol(currency || getActiveCurrencyCode())}${amt.toFixed(2)}`;
 }
 
 // ── Voucher PDF generator ──────────────────────────────────────────────
@@ -79,7 +81,7 @@ function fmtMoney(minor, currency = 'gbp') {
 // save as PDF via the browser's native print dialog.
 // v5.5.208: accepts branding colours (accentColor, bgColor, fgColor) and
 // uses them in the gradient, amount colour, and code styling.
-function openVoucher({ code, amount, currency = 'gbp', recipientName, businessName, expiresAt, note, logoUrl, accentColor, bgColor, fgColor }) {
+function openVoucher({ code, amount, currency, recipientName, businessName, expiresAt, note, logoUrl, accentColor, bgColor, fgColor }) {
   const formattedCode = code.replace(/\s/g, '').match(/.{1,4}/g)?.join(' ') || code;
   const amtDisplay = fmtMoney(amount, currency);
   const expiryLine = expiresAt ? `Valid until ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'No expiry date';
@@ -436,7 +438,7 @@ function IssuePanel({ businessName, brandConfig }) {
         </div>
         <div>
           <label style={S.label}>Recipient phone (optional)</label>
-          <input type="tel" value={recipientPhone} onChange={e => setRecipientPhone(e.target.value)} placeholder="+44 7700 900000" style={S.input}/>
+          <input type="tel" value={recipientPhone} onChange={e => setRecipientPhone(e.target.value)} placeholder={activeCountry() === 'US' ? '+1 801 555 1234' : '+44 7700 900000'} style={S.input}/>
         </div>
         <div>
           <label style={S.label}>Expiry date (optional)</label>
@@ -823,7 +825,7 @@ function ImportPanel() {
           <textarea
             value={csvText}
             onChange={e => setCsvText(e.target.value)}
-            placeholder={"25.00, Jane Smith, jane@email.com, 07700900123, VIP customer, OLD-CODE-123\n50.00, Bob Jones, , , , OLD-456"}
+            placeholder={`25.00, Jane Smith, jane@email.com, ${activeCountry() === 'US' ? '8015551234' : '07700900123'}, VIP customer, OLD-CODE-123\n50.00, Bob Jones, , , , OLD-456`}
             rows={6}
             style={{ ...S.input, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 11 }}
           />
@@ -1555,7 +1557,9 @@ function SettingsPanel({ brandConfig, companyId, onConfigUpdate }) {
   const [maxValue, setMaxValue] = useState('');
   const [expiryMode, setExpiryMode] = useState('never'); // never | months | date
   const [expiryMonths, setExpiryMonths] = useState('');
-  const [currency, setCurrency] = useState('gbp');
+  // 5.12.57: gift cards are sold in the venue's own currency (gift-checkout-session charges in it), so it
+  // is shown, not picked. It was a picker that started on GBP.
+  const currency = getActiveCurrencyCode().toLowerCase();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
@@ -1564,7 +1568,6 @@ function SettingsPanel({ brandConfig, companyId, onConfigUpdate }) {
     if (!brandConfig) return;
     setMinValue(((brandConfig.min_card_value_minor || 500) / 100).toFixed(2));
     setMaxValue(((brandConfig.max_card_value_minor || 50000) / 100).toFixed(2));
-    setCurrency(brandConfig.currency || 'gbp');
     if (brandConfig.default_expiry_months) {
       setExpiryMode('months');
       setExpiryMonths(String(brandConfig.default_expiry_months));
@@ -1644,11 +1647,8 @@ function SettingsPanel({ brandConfig, companyId, onConfigUpdate }) {
         </div>
         <div>
           <label style={S.label}>Currency</label>
-          <select value={currency} onChange={e => setCurrency(e.target.value)} style={S.input}>
-            <option value="gbp">GBP ({String.fromCodePoint(0x00A3)})</option>
-            <option value="usd">USD ($)</option>
-            <option value="eur">EUR ({String.fromCodePoint(0x20AC)})</option>
-          </select>
+          <div style={{ ...S.input, display: 'flex', alignItems: 'center', color: 'var(--t2)' }}>{currency.toUpperCase()} ({currencySymbol(currency)})</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Follows your venue (Location settings). Each card is charged in the venue's own money.</div>
         </div>
       </div>
 

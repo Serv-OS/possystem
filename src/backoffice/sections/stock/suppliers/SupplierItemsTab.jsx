@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
+import { getActiveCurrencyCode } from '../../../../lib/currency';
 import { packPrice, countPackOf } from '../../../../lib/stock/packPrice';
 import {
   moneyText, nextPriceText, spreadText, vatText, unitPriceAt, siteRows, exportPriceRows, fileName,
@@ -23,6 +24,7 @@ import {
 import { toCsv, downloadCsv } from '../../reports/_csv';
 import { Btn, Pill, ui, TableWrap, Th, Td, ShowMore, ErrorLine, EmptyLine } from '../stockUi';
 import ChangePricesModal from '../items/ChangePricesModal';
+import { useSiteTaxWords } from '../useSiteRegion';
 import ImportModal from '../items/ImportModal';
 import PauseModal from '../items/PauseModal';
 import SupplierItemSitesPopover from './SupplierItemSitesPopover';
@@ -49,6 +51,8 @@ export default function SupplierItemsTab({ detail, reload }) {
   const orderSites = useMemo(() => siteRows(sc.sites || [], detail?.sites || []).filter((r) => r.on).map((r) => r.site), [sc.sites, detail]);
   const canPause = editor || orderSites.some((x) => sc.canEditSite(x.id, 'site_price'));
   const site = priceFor === 'company' ? null : orderSites.find((x) => x.id === priceFor) || null;
+  // 5.12.57: the tax words of the site shown (the company list: the signed in venue's company home)
+  const tw = useSiteTaxWords(site ? site.id : (sc.homeSite || null));
 
   useEffect(() => {
     const t = setTimeout(() => setQuery(search.trim()), 300);
@@ -98,7 +102,7 @@ export default function SupplierItemsTab({ detail, reload }) {
       after = r.data?.next || null;
     }
     setExporting(false);
-    const out = exportPriceRows(list.slice(0, EXPORT_MAX), { priceFor, siteName: sc.siteName });
+    const out = exportPriceRows(list.slice(0, EXPORT_MAX), { priceFor, siteName: sc.siteName, taxLabel: tw.Tax });
     downloadCsv(fileName(s.name), toCsv(out.rows, out.headers));
     if (after) showToast?.(`Exported the first ${EXPORT_MAX} items.`, 'info');
   };
@@ -107,7 +111,8 @@ export default function SupplierItemsTab({ detail, reload }) {
     : 'No items from this supplier yet. Add one from a stock item\'s Suppliers tab, or import a price list.';
 
   const done = () => { setModal(null); setTicked(new Set()); refresh(); reload?.(); };
-  const currencyOf = (row) => (site?.currency || row.currency || 'GBP');
+  // 5.12.57: no currency known is the active venue's currency, never GBP.
+  const currencyOf = (row) => (site?.currency || row.currency || getActiveCurrencyCode());
 
   return (
     <div>
@@ -145,7 +150,7 @@ export default function SupplierItemsTab({ detail, reload }) {
                 <Th>Pack</Th>
                 <Th right>{site ? `Price at ${site.name}` : 'Company price'}</Th>
                 <Th>Next price</Th>
-                <Th>VAT</Th>
+                <Th>{tw.Tax}</Th>
                 <Th>Sites</Th>
                 <Th>Price spread</Th>
               </tr>
@@ -185,7 +190,7 @@ export default function SupplierItemsTab({ detail, reload }) {
                     <Td>
                       <SupplierItemSitesPopover row={row} sites={orderSites} onChanged={refresh} />
                     </Td>
-                    <Td num>{spreadText(row.spread, row.currency || 'GBP')}</Td>
+                    <Td num>{spreadText(row.spread, row.currency || getActiveCurrencyCode())}</Td>
                   </tr>
                 );
               })}
@@ -195,7 +200,7 @@ export default function SupplierItemsTab({ detail, reload }) {
           <ShowMore next={next} busy={more} onMore={showMore} />
         </>
       )}
-      <div style={{ ...ui.sub, marginTop: 10 }}>VAT is matched by its rate, so "VAT 20%" at one site and "Standard Rate 20%" at another are the same.</div>
+      <div style={{ ...ui.sub, marginTop: 10 }}>{tw.us ? 'At a US site the sales tax paid stays in the cost.' : 'VAT is matched by its rate, so "VAT 20%" at one site and "Standard Rate 20%" at another are the same.'}</div>
 
       {modal === 'prices' && (
         <ChangePricesModal

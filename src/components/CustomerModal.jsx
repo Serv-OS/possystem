@@ -12,6 +12,9 @@ import { orderNotesFromForm } from '../lib/orderCustomerNotes';
 // 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
 import { customerFieldsFor, customerFormProblem } from '../lib/customerDetailsRule';
 import { Icon } from './ServOSIcons';
+import { activeCountry, activeRegionPack } from '../lib/regionPack';
+import { postcodeLabel, addressCountry } from '../lib/online/deliveryCoverage';
+import { getActiveCurrencyCode } from '../lib/currency';
 
 // forTable: a dine in form opened on a floor table ('Attach to table'); false for a walk in dine in
 // order ('Add customer to order'). Missing means a table (TablesSurface never passes it).
@@ -113,6 +116,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   // because the returning customer search and loyalty run on it (lib/customerDetailsRule.js).
   // Delivery always keeps the full form.
   const fields = customerFieldsFor({ orderType, mode: takeawayCustomerDetails });
+  // 5.12.57: the phone example, the address search and the postcode label follow the venue (its
+  // currency: USD is the US). A UK venue reads exactly as before.
+  const usVenue = activeCountry() === 'US';
+  const venueCcy = { currency: getActiveCurrencyCode() };
   const isDineIn = orderType === 'dine-in';
 
   // Live phone/name search
@@ -299,7 +306,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
               Phone {fields.phone ? <span style={{ color: 'var(--red)' }}>*</span> : <span style={{ fontSize: 10, color: 'var(--t3)', textTransform: 'none', letterSpacing: 0 }}>(optional, for loyalty)</span>}
             </label>
-            <input style={inputStyle} type="tel" placeholder="07700 000000" value={phone} onChange={e => setPhone(e.target.value)}/>
+            <input style={inputStyle} type="tel" placeholder={usVenue ? activeRegionPack().phoneFormat : '07700 000000'} value={phone} onChange={e => setPhone(e.target.value)}/>
           </div>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
@@ -313,15 +320,15 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
               Delivery address <span style={{ color: 'var(--red)' }}>*</span>
             </label>
-            <AddressAutocomplete value={addr1} inputStyle={inputStyle} placeholder="Start typing the delivery address…"
+            <AddressAutocomplete value={addr1} inputStyle={inputStyle} country={addressCountry(venueCcy)} placeholder="Start typing the delivery address…"
               onChangeText={(t) => { setAddr1(t); setAddrGeo(null); }}
               onSelect={(a) => { setAddr1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setAddrGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }}/>
           </div>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
-              Postcode <span style={{ color: 'var(--red)' }}>*</span>
+              {postcodeLabel(venueCcy)} <span style={{ color: 'var(--red)' }}>*</span>
             </label>
-            <input style={inputStyle} placeholder="e.g. HD4 7PT" value={postcode} onChange={e => setPostcode(e.target.value)}/>
+            <input style={inputStyle} placeholder={usVenue ? 'e.g. 84601' : 'e.g. HD4 7PT'} value={postcode} onChange={e => setPostcode(e.target.value)}/>
           </div>
           </>)}
         </div>

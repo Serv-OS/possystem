@@ -14,6 +14,7 @@
  */
 
 import { fmtVenueDate } from '../venueDate.js';
+import { isUsSite } from './stockRegion.js';
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const r4 = (v) => Math.round(num(v) * 10000) / 10000;
@@ -40,6 +41,19 @@ export const USUAL_SIX = Object.freeze([
   { name: 'Bar', kind: 'bar' },
   { name: 'Kitchen', kind: 'kitchen' },
 ]);
+
+/** 5.12.57: the usual six at a US site, in US words (a beer cooler, a walk-in, dry storage). */
+export const USUAL_SIX_US = Object.freeze([
+  { name: 'Beer cooler', kind: 'cellar' },
+  { name: 'Walk-in', kind: 'walk_in' },
+  { name: 'Freezer', kind: 'freezer' },
+  { name: 'Dry storage', kind: 'dry_store' },
+  { name: 'Bar', kind: 'bar' },
+  { name: 'Kitchen', kind: 'kitchen' },
+]);
+
+/** The usual six of one site (its currency): USUAL_SIX, or the US words at a US site. */
+export const usualSixFor = (currency = null) => (isUsSite(currency) ? USUAL_SIX_US : USUAL_SIX);
 
 export const COUNT_TYPES = Object.freeze([
   { id: 'FULL', label: 'Full', desc: 'Every tracked item, every area. The whole venue on one sheet.' },

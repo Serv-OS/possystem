@@ -48,7 +48,8 @@ import { loadingText, TOO_LONG_TEXT, isTooManyRows, rowBudget, CHECK_ROWS_ON_SCR
 import { getVenueClock } from '../../../lib/locationTime';
 import { compareRange, compareChip, notLoaded } from '../../../lib/reportCompare.js';
 import { groupCompare, groupCompareWords, MIXED_COMPARE_TEXT } from '../../../lib/reportScope.js';
-import { money } from '../../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../../lib/currency';
+import { mixedTaxWords } from '../../../lib/taxWords';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
 import { Icon } from '../../../components/ServOSIcons';
 import { toCsv, downloadCsv } from './_csv';
@@ -326,7 +327,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:12 }}>
         <div style={{ fontSize:11, color:'var(--t3)' }}>
           Every site, side by side: <strong style={{ color:'var(--t1)' }}>{locations.length}</strong> locations · {periodLabelText || 'today'}
-          <div style={{ color:'var(--t4)', marginTop:2 }}>Each location is read over these business days on its own clock (its time zone and day start). Net sales exclude VAT, tips and service, after refunds, as in Daily trading.</div>
+          <div style={{ color:'var(--t4)', marginTop:2 }}>Each location is read over these business days on its own clock (its time zone and day start). Net sales exclude {mixedTaxWords((locations || []).map(l => l.currency || getActiveCurrencyCode())).tax}, tips and service, after refunds, as in Daily trading.</div>{/* 5.12.57: VAT at UK sites, tax at US ones, tax where they mix */}
           {demoLeft && <div style={{ color:'var(--t4)', marginTop:2 }}>{DEMO_NOTE}</div>}
         </div>
         <ExportBtn onClick={onExport}/>

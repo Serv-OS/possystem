@@ -59,8 +59,13 @@ test('weeklyEmail, site row: that site only, no company line', () => {
   assert.match(m.html, /Count not in/);
   const none = weeklyEmail({ payload: PAYLOAD, league: null });
   assert.match(none.html, /No stock figures for this week\./);
-  const usd = weeklyEmail({ payload: { ...PAYLOAD, currency_symbol: '$' }, league: LEAGUE });
+  // 5.12.57: a row is in its own currency; the payload's symbol is only for a row with none. This
+  // case used to pass '$' over GBP rows; a US site's rows say USD.
+  const usdLeague = { rows: LEAGUE.rows.map((r) => ({ ...r, currency: 'USD' })), totals: LEAGUE.totals };
+  const usd = weeklyEmail({ payload: { ...PAYLOAD, currency_symbol: '$' }, league: usdLeague });
   assert.match(usd.html, /\$1,840\.50/);
+  const bare = weeklyEmail({ payload: { ...PAYLOAD, currency_symbol: '$' }, league: { rows: LEAGUE.rows.map((r) => ({ ...r, currency: null })), totals: [] } });
+  assert.match(bare.html, /\$1,840\.50/, 'a row with no currency takes the payload symbol');
 });
 
 test('planSend: weekly emails each person once with no bell; outcome by the emails', () => {

@@ -20,14 +20,15 @@ import { cancelDelivery, createOrganization, getOrganization, inviteOrgMember, p
 import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob, classifyStuartError, getStuartJob, parseStuartJob, mapStuartStatus, parseStuartCost } from '../_shared/stuart.ts';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { toE164 as regionE164 } from '../_shared/regionPack.js';
 
-const e164 = (raw: string) => {
+// 5.12.57: read with the venue's country through the one region reader (a currency code, or a
+// row with currency/country). The old reader was UK only, so a US (801) 555-1234 reached Uber as
+// 8015551234. No venue reads as the UK, as before; what cannot be read passes through as before.
+const e164 = (raw: string, venue: string | Record<string, unknown> = 'GBP') => {
   const s = String(raw || '').replace(/[\s()-]/g, '');
   if (!s) return '';
-  if (s.startsWith('+')) return s;
-  if (s.startsWith('0')) return '+44' + s.slice(1);
-  if (s.startsWith('44')) return '+' + s;
-  return s;
+  return regionE164(s, venue || 'GBP') || s;
 };
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -215,7 +216,15 @@ Deno.serve(async (req) => {
         last_name: body?.last_name || (pc.name || '').split(' ').slice(1).join(' ') || 'Manager',
       };
       if (body?.email) poc.email = body.email;
-      if (pc.phone) poc.phone_details = { phone_number: e164(pc.phone) };
+      if (pc.phone) {
+        // The venue's own currency first (its country follows it); else the pickup address country.
+        let venueCcy: string | null = null;
+        try {
+          const { data: vloc } = await sb.from('locations').select('currency').eq('id', loc).maybeSingle();
+          venueCcy = (vloc?.currency as string) || null;
+        } catch { /* the pickup address country decides */ }
+        poc.phone_details = { phone_number: e164(pc.phone, venueCcy ? { currency: venueCcy } : { country: pa.country || 'GB' }) };
+      }
       const orgBody = {
         info: {
           name: body?.name || pc.name || 'Venue',

@@ -25,7 +25,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
 import { fmtVenueDateTime } from '../../lib/venueDate';
-import { money } from '../../lib/currency';
+import { useSiteMoney } from './stock/useSiteCurrency';
 import { fetchInventoryItems, fetchSuppliers } from '../../lib/stock/data';
 import { areasReady, fetchAreas, fetchAreaHoldings, fetchTransfers, fetchTransfer } from '../../lib/stock/areas';
 import { fetchVenueChoices, fetchTransferLineSummary, moveStock, sendTransfer, retryTransfer, saveReceiveMatches, receiveTransfer, cancelTransfer } from '../../lib/stock/transfers';
@@ -60,6 +60,9 @@ const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function StockTransfers({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import;
+  // the new transfer and the detail are this site's too (locId).
+  const { money } = useSiteMoney(siteId);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [ready, setReady] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -184,6 +187,7 @@ export default function StockTransfers({ orgCtx = null, siteId = null }) {
 
 // ── New transfer ──────────────────────────────────────────────────────────────
 function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venues, byName, onDone, onError, multi = false, onRequest = null }) {
+  const { money } = useSiteMoney(locId);
   const receiving = areas.find(a => a.isReceiving)?.id || '';
   const [mode, setMode] = useState('within');
   const [fromAreaId, setFromAreaId] = useState(receiving || areas[0]?.id || '');
@@ -342,6 +346,7 @@ function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venu
 
 // ── One transfer (and the receive view) ───────────────────────────────────────
 function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsById, byName, venueTz, onChanged }) {
+  const { money } = useSiteMoney(locId);
   const [t, setT] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);

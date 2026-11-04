@@ -228,7 +228,8 @@ test('the screens use the switch: remembered, labelled on every card, and handed
   assert.match(surface, /aria-label="Net or gross sales"/);
   // The switch is a full size tap target (44 points), not smaller than the period chips.
   assert.match(surface, /\.\.\.periodChip, minHeight: 44,/);
-  assert.match(surface, /grossNeedsUpdate\(r\?\.currency \|\| 'GBP'\)/);
+  // 5.12.57 (batch 8): with no rollup, the first venue's currency, then the active venue's (never a fixed GBP)
+  assert.match(surface, /grossNeedsUpdate\(r\?\.currency \|\| data\?\.locations\?\.\[0\]\?\.currency \|\| getActiveCurrencyCode\(\)\)/);
   // Two cards draw a sales figure, and each draws the one length line under it.
   assert.equal((surface.match(/<BasisLine /g) || []).length, 2);
   for (const card of ['GroupCard', 'VenueCard']) {

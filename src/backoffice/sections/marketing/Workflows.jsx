@@ -14,6 +14,8 @@ import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import EmailBuilder from './EmailBuilder';
 import { compileEmail, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
+import { dateNumeric } from '../../../lib/venueDates';
+// 5.12.57 (US basics batch 8): days in the venue's order on its clock (11/03/2026 at a US venue; UK as before).
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -248,7 +250,7 @@ export default function Workflows() {
           {(enrollView.sends || []).length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 4 }}>Recent step sends</div>
-              {enrollView.sends.slice(0, 25).map((s, i) => <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {new Date(s.created_at).toLocaleDateString('en-GB')} — {s.step_key} — {s.channel} — {s.status}{s.promo_code ? ` — ${s.promo_code}` : ''}</div>)}
+              {enrollView.sends.slice(0, 25).map((s, i) => <div key={i} style={{ fontSize: 12, color: 'var(--t3)' }}>· {dateNumeric(s.created_at)} — {s.step_key} — {s.channel} — {s.status}{s.promo_code ? ` — ${s.promo_code}` : ''}</div>)}
             </div>
           )}
         </div>

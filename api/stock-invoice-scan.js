@@ -3,7 +3,7 @@
  * Keeps the Anthropic key server-side (same pattern as api/ai.js). Provider is
  * swappable: change only this file to use a different vision model.
  *
- * POST { image: <base64 (no data: prefix)>, media_type: 'image/jpeg'|'image/png'|'application/pdf' }
+ * POST { image: <base64 (no data: prefix)>, media_type: 'image/jpeg'|'image/png'|'application/pdf', currency?: 'GBP'|'USD'|'EUR' }
  * → { supplier_name, invoice_number, invoice_date, currency, lines:[{code, description, qty,
  *     unit, unit_price, line_total}], subtotal, tax, total, confidence }
  * v5.11.64: code is the supplier's product code as printed (null when none), so a line can be
@@ -19,19 +19,11 @@
  */
 
 import { requireVenueUser } from './_userAuth.js';
+import { invoiceScanSystem, invoiceScanAsk } from '../src/lib/stock/invoiceScanPrompt.js';
 
-const SYSTEM = `You extract structured data from a supplier invoice or delivery note for a UK hospitality business.
-Return ONLY a single JSON object, no prose, no code fences. Shape:
-{
-  "supplier_name": string|null,
-  "invoice_number": string|null,
-  "invoice_date": "YYYY-MM-DD"|null,
-  "currency": "GBP"|string|null,
-  "lines": [ { "code": string|null, "description": string, "qty": number, "unit": string, "unit_price": number, "line_total": number } ],
-  "subtotal": number|null, "tax": number|null, "total": number|null,
-  "confidence": number  // 0-1 your overall confidence
-}
-Rules: qty is the number of packs/units billed; unit is the pack/measure word as printed (e.g. "case","kg","each","ltr"); unit_price is the price per that unit (ex-VAT if shown separately); line_total is the line's net amount. Use numbers (not strings) for money/quantities. If a field is missing use null. Never invent lines. code is the supplier's product code or SKU printed on the line (for example SKU-022-HAR), null when none is printed; never invent one.`;
+// 5.12.57 (US basics batch 7): the text is the site's (src/lib/stock/invoiceScanPrompt.js). The body
+// may carry currency (the site's: 'GBP' | 'USD' | 'EUR'); a US site is told the US, USD, sales tax
+// and month first dates, so 03/11/2026 reads as 11 March. No currency: the UK text, as before.
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -41,7 +33,8 @@ export default async function handler(req, res) {
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!ANTHROPIC_API_KEY) return res.status(500).json({ error: 'Invoice scanning not configured (no API key)' });
 
-  const { image, media_type = 'image/jpeg' } = req.body || {};
+  const { image, media_type = 'image/jpeg', currency = null } = req.body || {};
+  const siteCurrency = typeof currency === 'string' && /^[A-Za-z]{3}$/.test(currency.trim()) ? currency.trim().toUpperCase() : null;
   if (!image || typeof image !== 'string') return res.status(400).json({ error: 'image (base64) required' });
   if (image.length > 8_000_000) return res.status(413).json({ error: 'Image too large (max ~6MB)' });
 
@@ -61,10 +54,10 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 4096,
-        system: SYSTEM,
+        system: invoiceScanSystem(siteCurrency),
         messages: [{
           role: 'user',
-          content: [block, { type: 'text', text: 'Extract this invoice as JSON per the schema.' }],
+          content: [block, { type: 'text', text: invoiceScanAsk(siteCurrency) }],
         }],
       }),
     });

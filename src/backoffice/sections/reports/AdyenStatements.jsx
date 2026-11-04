@@ -17,14 +17,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
 import { EmptyState } from './_charts';
-import { money } from '../../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../../lib/currency';
+import { zoneOr } from '../../../lib/venueDates';
 import { formatMonthLabel, formatVenueLongDate, recentMonths, venueZoneLabel } from '../../../lib/payments/venueTime';
 
 const FEE_NOTE = 'Some payments have no fee on record yet, so the total is not ready.';
 const BAD_MONTH = 'Pick a month from the list.';
 
 export default function AdyenStatements() {
-  const [tz, setTz] = useState('Europe/London');
+  const [tz, setTz] = useState(() => zoneOr());   // 5.12.57: the active venue's zone until the answer says, never London
   // '' until the first answer: the server opens on the venue's current month.
   const [month, setMonth] = useState('');
   const [maxMonth, setMaxMonth] = useState('');
@@ -67,7 +68,7 @@ export default function AdyenStatements() {
     load(month);
   }, [month]);
 
-  const cur = data?.currency || 'GBP';
+  const cur = data?.currency || getActiveCurrencyCode();   // 5.12.57: the active venue's, not a fixed GBP
   const m = (minor) => (minor == null ? '—' : money((Number(minor) || 0) / 100, cur));
   const shownMonth = data?.month || month;
   const hasPayments = (Number(data?.payments_count) || 0) > 0;

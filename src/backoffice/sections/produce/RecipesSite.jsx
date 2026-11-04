@@ -22,6 +22,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { money, currencySymbol } from '../../../lib/currency';
+import { useSiteMoney } from '../stock/useSiteCurrency';
 import { UNITS, DIMENSIONS } from '../../../lib/stock/units';
 import { componentUnitCost, foodCostPct, gpAmount, gpPct, RECIPE_ORDER_TYPES, ORDER_TYPE_LABELS, lineAppliesToOrderType } from '../../../lib/stock/costing';
 import { toBase, unitOptions } from '../../../lib/stock/uom';
@@ -46,7 +47,8 @@ const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)
 const otCard = (active) => ({ textAlign: 'left', minWidth: 116, padding: '7px 12px', borderRadius: 9, cursor: 'pointer', background: active ? 'var(--bg2)' : 'var(--bg1)', border: '1px solid ' + (active ? 'var(--acc)' : 'var(--bdr)'), boxShadow: active ? '0 0 0 1px var(--acc) inset' : 'none' });
 const otCardTop = { fontSize: 12, fontWeight: 700, color: 'var(--t1)' };
 const otCardSub = { fontSize: 11, marginTop: 2, color: 'var(--t3)' };
-const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
+// 5.12.57: cur is the site's currency (the screen's own site, not the signed in venue's).
+const fmtCost = (v, cur = null) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol(cur) + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
 // Standard units in the same dimension as an item's base unit (so a litre item also offers ml/cl/pt).
 const sameDimGlobals = (baseUnit) => { const dim = UNITS[baseUnit]?.dimension; return UNIT_OPTS.filter(u => u.dimension === dim).map(u => u.code); };
 
@@ -70,6 +72,8 @@ function UnitSelect({ value, onChange, width = 110, disabled = false }) {
 export default function RecipesSite({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
   const { menuItems, taxRates } = useSiteStockContext(siteId);
+  // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import.
+  const { money, code: cur } = useSiteMoney(siteId);
   const sc = useStockScope();
   const locked = sc.multi && !sc.canEditCompany('produce');
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
@@ -280,7 +284,7 @@ export default function RecipesSite({ siteId = null } = {}) {
                 <h2 style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-.3px', margin: 0, color: 'var(--t1)' }}>{draft.recipeType === 'MENU' ? (menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) || draft.name) : (draft.name || 'New prep recipe')}</h2>
                 <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? `Dish recipe${menuPrice != null ? ` · sells at ${money(menuPrice)}${menuPriceNet != null && menuPriceNet < menuPrice ? ` (${money(menuPriceNet)} ex VAT)` : ''}` : ''}` : 'Prep / sub-recipe'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
               </div>
-              <RecipeStats draft={draft} cost={draft.recipeType === 'MENU' ? (costByType[otView === 'all' ? 'dine-in' : otView] || cost) : cost} menuPrice={menuPriceNet} viewType={otView} />
+              <RecipeStats draft={draft} cost={draft.recipeType === 'MENU' ? (costByType[otView === 'all' ? 'dine-in' : otView] || cost) : cost} menuPrice={menuPriceNet} viewType={otView} cur={cur} />
               {draft.id && <button onClick={archive} disabled={locked} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13, ...(locked ? { opacity: 0.55, cursor: 'default' } : {}) }}>Remove</button>}
             </div>
 
@@ -367,7 +371,7 @@ export default function RecipesSite({ siteId = null } = {}) {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.componentItemId)}</div>
                             <div style={{ fontSize: 11, color: noCost ? 'var(--red)' : 'var(--t3)', marginTop: 1 }}>
-                              {noCost ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="warn" size={12} />no price set — add a supplier price on this item</span> : (comp ? `${fmtCost(comp.currentCost)} / ${comp.baseUnit}` : '')}
+                              {noCost ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="warn" size={12} />no price set — add a supplier price on this item</span> : (comp ? `${fmtCost(comp.currentCost, cur)} / ${comp.baseUnit}` : '')}
                             </div>
                           </div>
                           <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
@@ -393,7 +397,7 @@ export default function RecipesSite({ siteId = null } = {}) {
                     });
                   })()}
                 </div>
-                <IngredientPicker items={items} onPick={addLine} disabled={locked} />
+                <IngredientPicker items={items} onPick={addLine} disabled={locked} cur={cur} />
                 {draft.id && <RecipeFactsLine siteId={locId} recipeId={draft.id} menuItemId={draft.recipeType === 'MENU' ? draft.menuItemId : null} />}
 
                 <div style={{ marginTop: 16 }}><label style={lbl}>Method (optional)</label><textarea value={draft.method || ''} onChange={e => upd('method', e.target.value)} disabled={locked} style={{ ...field, minHeight: 64, resize: 'vertical', ...(locked ? { opacity: 0.55 } : {}) }} /></div>
@@ -411,14 +415,14 @@ export default function RecipesSite({ siteId = null } = {}) {
   );
 }
 
-function RecipeStats({ draft, cost, menuPrice, viewType }) {
+function RecipeStats({ draft, cost, menuPrice, viewType, cur = null }) {
   if (cost?.error) return <div style={{ fontSize: 12, color: 'var(--red)', maxWidth: 220, textAlign: 'right' }}>{cost.error}</div>;
   const plate = draft.recipeType === 'MENU' ? cost?.totalCost : cost?.costPerYieldBase;
   const stat = (label, val, color) => (
     <div><div style={{ fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}</div><div style={{ fontSize: 18, fontWeight: 700, color: color || 'var(--t1)' }}>{val}</div></div>
   );
   if (draft.recipeType !== 'MENU') {
-    return <div style={{ display: 'flex', gap: 20, textAlign: 'right' }}>{stat('Cost', plate == null ? '—' : money(plate))}<div style={{ fontSize: 12, color: 'var(--t3)', alignSelf: 'flex-end' }}>per {draft.yieldUnit}</div></div>;
+    return <div style={{ display: 'flex', gap: 20, textAlign: 'right' }}>{stat('Cost', plate == null ? '—' : money(plate, cur))}<div style={{ fontSize: 12, color: 'var(--t3)', alignSelf: 'flex-end' }}>per {draft.yieldUnit}</div></div>;
   }
   const price = menuPrice == null ? null : Number(menuPrice);
   const gp = price != null && plate != null ? gpPct(price, plate) : null;
@@ -427,9 +431,9 @@ function RecipeStats({ draft, cost, menuPrice, viewType }) {
   return (
     <div style={{ textAlign: 'right' }}>
       <div style={{ display: 'flex', gap: 20 }}>
-        {stat('Plate cost', plate == null ? '—' : money(plate))}
+        {stat('Plate cost', plate == null ? '—' : money(plate, cur))}
         {stat('Food cost', price != null && plate != null ? (foodCostPct(plate, price)?.toFixed(1) + '%') : '—')}
-        {stat('GP', price != null && plate != null ? money(gpAmount(price, plate)) : '—')}
+        {stat('GP', price != null && plate != null ? money(gpAmount(price, plate), cur) : '—')}
         {stat('GP %', gp == null ? '—' : gp.toFixed(1) + '%', below ? 'var(--red)' : 'var(--grn)')}
       </div>
       <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.04em' }}>
@@ -473,7 +477,7 @@ function AppliesTo({ value, onChange, disabled = false }) {
   );
 }
 
-function IngredientPicker({ items, onPick, disabled = false }) {
+function IngredientPicker({ items, onPick, disabled = false, cur = null }) {
   const [q, setQ] = useState('');
   const [focused, setFocused] = useState(false);
   const matches = useMemo(() => {
@@ -487,7 +491,7 @@ function IngredientPicker({ items, onPick, disabled = false }) {
         <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginTop: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.3)', maxHeight: 280, overflowY: 'auto' }}>
           {matches.map(i => (
             <div key={i.id} onClick={() => { onPick(i); setQ(''); }} style={{ padding: '9px 12px', cursor: 'pointer', fontSize: 13, color: 'var(--t1)', display: 'flex', justifyContent: 'space-between' }}>
-              <span>{i.name}</span><span style={{ color: 'var(--t3)', fontSize: 11 }}>{i.kind === 'MADE' ? 'prep · ' : ''}{fmtCost(i.currentCost)}/{i.baseUnit}</span>
+              <span>{i.name}</span><span style={{ color: 'var(--t3)', fontSize: 11 }}>{i.kind === 'MADE' ? 'prep · ' : ''}{fmtCost(i.currentCost, cur)}/{i.baseUnit}</span>
             </div>
           ))}
         </div>

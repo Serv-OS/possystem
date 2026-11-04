@@ -4,7 +4,10 @@
  * dispatch_backend (uber_api → Create Delivery; hubrise_bridge → deferred seam) and
  * holds the creds. Returns { ok, deliveryId, trackingUrl, status, deferred?, reason? }.
  */
-import { toE164 } from './manifest.js';
+// 5.12.57: the tracking text's phone is read with the active venue's country (its currency), never
+// the UK only reader. The shared reader, as lib/regionPack.js toE164 does it (that file is not node safe).
+import { toE164 } from '../../../supabase/functions/_shared/regionPack.js';
+import { getActiveCurrencyCode } from '../currency.js';
 import { mayBookOurCourier } from '../ezcaterCatering.js';
 
 async function invoke(action, payload) {
@@ -50,7 +53,7 @@ export async function sendDeliveryTrackingSMS({ opsLocationId, phone, trackingUr
   if (!supabase || !phone || !trackingUrl) return;
   try {
     await supabase.functions.invoke('send-sms', {
-      body: { to: toE164(phone), message: `Your order ${ref || ''} is on its way — track it here: ${trackingUrl}`.replace(/\s+/g, ' ').trim(), location_id: opsLocationId, type: 'delivery_tracking' },
+      body: { to: toE164(phone, getActiveCurrencyCode()) || String(phone), message: `Your order ${ref || ''} is on its way — track it here: ${trackingUrl}`.replace(/\s+/g, ' ').trim(), location_id: opsLocationId, type: 'delivery_tracking' },
     });
   } catch { /* best-effort */ }
 }

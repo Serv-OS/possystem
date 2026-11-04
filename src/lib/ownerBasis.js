@@ -39,6 +39,7 @@
 // PURE: node:test loads it.
 
 import { hasFeature } from './ownerCompare.js';
+import { taxWord as sharedTaxWord } from '../../supabase/functions/_shared/taxWords.js';
 
 export const OWNER_BASIS_KEY = 'servos-owner-basis';
 export const OWNER_BASES = ['net', 'gross'];
@@ -81,7 +82,8 @@ export function shownBasis(snapshot, asked) {
 }
 
 /** The tax word: VAT at a pound or euro venue, tax at a dollar one. */
-export const taxWord = (currency) => (String(currency || '').toUpperCase() === 'USD' ? 'tax' : 'VAT');
+// 5.12.57: the one tax word helper (supabase/functions/_shared/taxWords.js), the same answer.
+export const taxWord = (currency) => sharedTaxWord(currency);
 
 /** The one line shown when Gross was asked for but the function is older: VAT or tax by the venue's currency. */
 export const grossNeedsUpdate = (currency) => `Gross sales need a ServOS update. These figures exclude ${taxWord(currency)}.`;

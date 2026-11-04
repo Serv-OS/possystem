@@ -10,6 +10,7 @@ import { supabase, platformSupabase, getActiveLocationSync } from '../../../lib/
 import { customerUrl } from '../../../lib/env';
 import QRCode from 'qrcode';
 import { Icon } from '../../../components/ServOSIcons';
+import { activeCountry } from '../../../lib/regionPack';
 
 const FALLBACK_ACCENT = '#15C36B';
 const ASSET_BUCKET = 'receipt-assets';
@@ -134,7 +135,7 @@ export default function WifiPortal() {
               <>
                 <div style={S.field}><label style={S.label}>Marketing opt-in wording</label><textarea style={S.area} value={cfg.marketing_copy} onChange={e => set({ marketing_copy: e.target.value })} /><div style={S.hint}>Shown next to the (unticked) marketing box. Stored with each consent for your records.</div></div>
                 <div style={{ ...S.field, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Require marketing to connect</div><div style={{ ...S.hint, color: 'var(--red)' }}>Guests must tick marketing to get online. <Icon name="warn" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }}/>Not UK GDPR/PECR compliant — consent must be freely given. Use at your own risk.</div></div>
+                  <div><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Require marketing to connect</div><div style={{ ...S.hint, color: 'var(--red)' }}>Guests must tick marketing to get online. <Icon name="warn" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 3 }}/>{activeCountry() === 'US' ? 'Consent to marketing texts must be freely given (TCPA). Use at your own risk.' : 'Not UK GDPR/PECR compliant — consent must be freely given. Use at your own risk.'}</div></div>
                   <button style={S.toggle(cfg.marketing_required)} onClick={() => persist({ marketing_required: !cfg.marketing_required })}>{cfg.marketing_required ? 'On' : 'Off'}</button>
                 </div>
               </>

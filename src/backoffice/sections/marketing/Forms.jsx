@@ -18,6 +18,7 @@ import {
 import { FORM_CSS } from '../../../lib/forms/formHtml.js';
 import { ServosForm } from '../../../surfaces/website/blocks/components/FormBlock.jsx';
 import { siteVars } from '../../../surfaces/website/theme.js';
+import { localeString, zoneOr } from '../../../lib/venueDates';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -45,7 +46,9 @@ const S = {
 };
 
 // Venue clock (the venue-clock rule): a submission's time reads in the form's venue timezone.
-const when = (iso, tz) => { try { return new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(tz ? { timeZone: tz } : {}) }); } catch { return iso || ''; } };
+// 5.12.57 (US basics batch 8): in the venue's words (Nov 3, 2:05 PM at a US venue), and with no zone for the form
+// the active venue's, never the laptop's ('' while a US venue's zone is not known yet).
+const when = (iso, tz) => { const z = zoneOr(tz); if (!z) return ''; try { return localeString(iso, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: z }); } catch { return iso || ''; } };
 const answerText = (v) => (v === true ? 'Yes' : v === false ? 'No' : String(v ?? ''));
 
 function download(name, text) {

@@ -8,12 +8,23 @@
  * eight hours out, the Orders list and the Ops tablet printed the raw database string
  * "due 2026-10-16", and the supplier email said "requested delivery 2026-10-16". One helper
  * here, en-GB wording, the venue's timezone, used by all of them.
+ *
+ * 5.12.57 (US basics batch 8): the words follow the venue too. Every formatter takes the venue
+ * (opts.venue, or the last argument: a currency code, a country or a locale); a US venue reads
+ * 'Oct 16, 2026' and '2:05 PM', and with no venue given (or a UK one) the words are exactly as
+ * before. src/lib/venueDate.js passes the Back Office's active venue.
  */
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const YMD = /^(\d{4})-(\d{2})-(\d{2})/;
 const DEFAULT_TZ = 'Europe/London';
+const US_VENUE = /^(USD|US|USA|EN-US)$/i;
+const isUs = (venue) => (typeof venue === 'string' ? US_VENUE.test(venue.trim()) : (venue && (US_VENUE.test(String(venue.country || '')) || (!venue.country && US_VENUE.test(String(venue.currency || ''))))));
+/** 'HH:MM' from wall clock parts: '14:05', or '2:05 PM' at a US venue. */
+const clockWords = (hh, mm, venue) => (isUs(venue)
+  ? `${((hh + 11) % 12) + 1}:${String(mm).padStart(2, '0')} ${hh < 12 ? 'AM' : 'PM'}`
+  : `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`);
 
 const toDate = (ts) => {
   if (ts instanceof Date) return Number.isNaN(ts.getTime()) ? null : ts;
@@ -69,12 +80,17 @@ export function daysAgoYmd(n, tz, now = new Date()) {
  * No clock is read, so the day never shifts whatever timezone the screen is in. Anything that
  * is not a plain date comes back unchanged (never an empty cell for a value that was there).
  */
-export function fmtYmd(ymd, { weekday = false, year = true } = {}) {
+export function fmtYmd(ymd, { weekday = false, year = true, venue = null } = {}) {
   const m = YMD.exec(String(ymd || ''));
   if (!m) return ymd == null ? '' : String(ymd);
   const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
   if (mo < 1 || mo > 12) return String(ymd);
   const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  if (isUs(venue)) {
+    // 5.12.57: a US venue reads month first, 'Oct 16, 2026' ('Fri, Oct 16, 2026' with the weekday)
+    const us = `${MONTHS[mo - 1]} ${d}${year ? `, ${y}` : ''}`;
+    return weekday ? `${DAYS[dow]}, ${us}` : us;
+  }
   const core = `${d} ${MONTHS[mo - 1]}${year ? ` ${y}` : ''}`;
   return weekday ? `${DAYS[dow]} ${core}` : core;
 }
@@ -90,19 +106,19 @@ export function fmtVenueDateTime(ts, tz, opts = {}) {
   const p = partsInZone(ts, tz);
   if (!p) return '';
   const ymd = `${p.y}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`;
-  return `${fmtYmd(ymd, opts)} ${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}`;
+  return `${fmtYmd(ymd, opts)} ${clockWords(p.hh, p.mm, opts?.venue)}`;
 }
 
-/** The venue's wall clock time of an instant: '14:05'. */
-export function fmtVenueTime(ts, tz) {
+/** The venue's wall clock time of an instant: '14:05' (a US venue: '2:05 PM'). */
+export function fmtVenueTime(ts, tz, venue = null) {
   const p = partsInZone(ts, tz);
-  return p ? `${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}` : '';
+  return p ? clockWords(p.hh, p.mm, venue) : '';
 }
 
 const TYPE_WORD = { FULL: 'Full', SPOT: 'Spot check', AREA: 'By area', SUPPLIER: 'By supplier' };
 /** The name a new stock count is born with: 'Count 15 Oct 2026 · Full' (the venue's day). */
-export function countName(ts, tz, countType = 'FULL', storageArea = null) {
-  const day = fmtVenueDate(ts, tz) || fmtYmd(String(ts || ''));
+export function countName(ts, tz, countType = 'FULL', storageArea = null, venue = null) {
+  const day = fmtVenueDate(ts, tz, { venue }) || fmtYmd(String(ts || ''), { venue });
   const kind = storageArea ? String(storageArea) : (TYPE_WORD[String(countType || 'FULL').toUpperCase()] || 'Full');
   return `Count ${day} · ${kind}`;
 }

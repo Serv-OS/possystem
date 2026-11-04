@@ -16,7 +16,8 @@ import { reportWriteRefused } from './deviceLink';
 import { mustChangeRow } from './rowWrites';
 import { shortOrderRef } from './db.js';
 import { loadLocationBranding, mergeBrandingIntoLocation } from './receiptBranding';
-import { money } from './currency.js';
+import { money, getActiveCurrencyCode } from './currency.js';
+import { localeString } from '../../supabase/functions/_shared/venueDates.js';
 import { buildShiftReportDoc } from './shiftReport.js';
 import { breakdownLabel, breakdownIsExclusive } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
@@ -122,7 +123,8 @@ export function buildTestPage(info = null, printer = null) {
 
 // ─── HTML fallback builders ───────────────────────────────────────────────────
 function buildReceiptHtml({ location, check, items, totals }) {
-  const now = new Date();
+  const now = new Date();   // the till's own clock: it stands in the venue
+  // 5.12.57: the date and time in the venue's words (Nov 3, 2026, 2:05 PM at a US venue; UK as before)
   // v5.7.34: venue currency (byte-identical for GBP, symbol swaps for USD/EUR).
   const mny = (n) => money(Number(n) || 0, location?.currency);
   const rows = consolidateReceiptLines(items).map(item=>{
@@ -135,7 +137,7 @@ function buildReceiptHtml({ location, check, items, totals }) {
     <div class="center bold big">${location?.name||'Restaurant'}</div>
     <div class="center">${location?.address||''}</div>
     <div class="divider"></div>
-    <div class="row"><span>ORDER # ${shortOrderRef(check?.ref) ?? ''}</span><span>${now.toLocaleString('en-GB',{dateStyle:'short',timeStyle:'short'})}</span></div>
+    <div class="row"><span>ORDER # ${shortOrderRef(check?.ref) ?? ''}</span><span>${localeString(now,{dateStyle:'short',timeStyle:'short'},location?.currency||getActiveCurrencyCode())}</span></div>
     <div class="row"><span>Server: ${check?.server}</span><span>${check?.tableLabel||check?.orderType}</span></div>
     <div class="divider"></div>${rows}
     <div class="divider"></div>

@@ -194,7 +194,8 @@ test('manager-snapshot: the everything rule for the whole snapshot; Stock contro
   // ...and never answered
   assert.match(src, /money: full \? money : null,/);
   assert.match(src, /floor: full \? floor : null,/);
-  assert.match(src, /team: full \? \{ punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, pendingSwaps, breakPolicy \} : null,/);
+  // 5.12.57: the live labour total replaces everyone's hourly rate in the answer (private data).
+  assert.match(src, /team: full \? \{ punches, shifts: teamShifts, labourLive, pendingTimesheets, pendingTimeOff, pendingSwaps, breakPolicy \} : null,/);
   assert.match(src, /ops: full \? ops : null,/);
   // v5.11.96 (Drop 3): a kitchen order in deliveries says internal, and the Drop 3 blocks ride on the kitchen line.
   assert.match(src, /kitchen: \{ items: kitchenItems, deliveries: kitchenDeliveries\.map\(\(d: any\) => \(internalSup\.has\(String\(d\.supplierId\)\) \? \{ \.\.\.d, internal: true \} : d\)\), batches: kitchenBatches, trackedItems, recipes: kitchenRecipes,\s+orderBy: kitchenOrderBy, approvals: kitchenApprovals, transfers: kitchenTransfers, closedown: kitchenClosedown, ordersIn: kitchenOrdersIn \},/);

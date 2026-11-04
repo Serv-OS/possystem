@@ -26,7 +26,8 @@ test('no screen writes its own time zone list: every picker uses the shared one'
   walk('src');
   const own = files.filter((f) => /<option value="(Europe|America|Asia|Australia|Pacific)\//.test(readFileSync(join(root, f), 'utf8')));
   assert.deepEqual(own, [], 'hand written time zone options');
-  for (const f of ['src/admin/CompanyAdminApp.jsx', 'src/backoffice/sections/CompanyAdmin.jsx', 'src/backoffice/sections/MultiLocation.jsx']) {
+  // 5.12.57: MultiLocation.jsx was a dead screen (imported nowhere) and is deleted.
+  for (const f of ['src/admin/CompanyAdminApp.jsx', 'src/backoffice/sections/CompanyAdmin.jsx']) {
     assert.match(readFileSync(join(root, f), 'utf8'), /<TimezoneOptions value=/, `${f} uses TimezoneOptions`);
   }
   assert.match(readFileSync(join(root, 'src/backoffice/sections/LocationSettings.jsx'), 'utf8'), /from '\.\.\/\.\.\/lib\/timezones'/);

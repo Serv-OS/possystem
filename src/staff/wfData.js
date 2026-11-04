@@ -16,10 +16,12 @@
 
 import { supabase, isMock } from '../lib/supabase';
 import { aiRequestInit } from '../lib/aiRequest';
-import { toE164 as regionToE164, venueMoney } from '../lib/regionPack';
+import { toE164 as regionToE164, venueMoney, activeCountry } from '../lib/regionPack';
 import { getActiveCurrencyCode } from '../lib/currency';
+import { localeDateString, zoneOr } from '../lib/venueDates';
 import { reportSave } from '../lib/saveHealth';
 import { ROLES as SEED_ROLES } from './seed';
+import { templatesForVenue } from './docTemplates';
 
 const orgCache = {};
 
@@ -217,20 +219,25 @@ function mapStaff(r) {
     days: {},
   };
 }
+// 5.12.57: every staff column the Back Office reads, except the private ID numbers and bank details.
+const STAFF_COLS = 'id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_account_masked,portal_user_id,portal_invite_expires,created_at';
 export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
-  const COLS = 'id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,bank_account_name,ni_number,portal_user_id,portal_invite_expires,created_at';
+  // 5.12.57 (US basics batch 2): no ID numbers or bank details here (NI, SSN last 4, sort code, account
+  // number, account name). They come only through the database door (src/staff/privateDetails.js), for
+  // owners, admins and logins with Can see payroll details; after 20261120a the table refuses them.
+  const COLS = STAFF_COLS;
   const read = (cols) => supabase.from('wf_staff').select(cols)
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
   // v5.11.101: the two US payroll columns come with 20261031a. Until it has run, read without them
   // (a missing column would otherwise empty the whole staff list).
   // 5.12.36: person_id comes with 20261111a; until it has run, read without it (same reason).
   // 5.12.56: head_office and salary_annual come with 20261119a; until it has run, read without them.
-  let { data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id,head_office,salary_annual');
-  if (error && /head_office|salary_annual|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id'));
-  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4'));
-  if (error && /payroll_employee_id|ssn_last4|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
+  let { data, error } = await read(COLS + ',location_id,payroll_employee_id,person_id,head_office,salary_annual');
+  if (error && /head_office|salary_annual|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,person_id'));
+  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id'));
+  if (error && /payroll_employee_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);
 }
@@ -282,9 +289,14 @@ export async function saveStaff(member, locationId, orgId) {
   // the Sites panel changes it (setPrimaryLocation), so a save at another site never moves it.
   else row.primary_venue_id = locationId;
   const q = real ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' }) : supabase.from('wf_staff').insert(row);
-  const { data, error } = await q.select().single();
+  // 5.12.57: read back named columns only (a select of every column is refused once 20261120a hides the
+  // private ones). The private ones the form sent are kept on the answer so the screen still shows them.
+  const { data, error } = await q.select(`${STAFF_COLS},location_id,payroll_employee_id,person_id,head_office,salary_annual`).single();
   if (error) { console.warn('[wf] saveStaff:', error.message); throw new Error(error.message); }
-  return mapStaff(data);
+  const out = mapStaff(data);
+  if (member.niNumber !== undefined) out.niNumber = row.ni_number ?? null;
+  if (member.ssnLast4 !== undefined) out.ssnLast4 = row.ssn_last4 ?? null;
+  return out;
 }
 export async function softDeleteStaff(id) {
   if (isMock || !supabase) return lsDelete('staff', id);
@@ -454,21 +466,24 @@ export async function deleteSection(id) {
 // ============================================================================
 // VENUE SETTINGS (wf_venue_settings — PK location_id)
 // ============================================================================
-const DEFAULT_SETTINGS = { currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos', payPeriodType: 'monthly', payPeriodStartDay: 1, payPeriodAnchor: null, payDay: null, settings: {}, clockGeofence: {} };
-const mapSettings = r => ({ currency: r.currency || 'GBP', labourTargetPct: Number(r.labour_target_pct ?? 0.28), accrualRate: Number(r.accrual_rate ?? 0.1207), premiums: r.premiums || {}, salesSource: r.sales_source || 'pos', payPeriodType: r.pay_period_type || 'monthly', payPeriodStartDay: Number(r.pay_period_start_day ?? 1), payPeriodAnchor: r.pay_period_anchor || null, payDay: r.pay_day ?? null, settings: r.settings || {}, clockGeofence: r.clock_geofence || {} });
+// 5.12.57: currency is the venue's own (the active currency), never a GBP default: a US venue's settings
+// row was saved as GBP, and the Manager app and the trading report read it.
+const DEFAULT_SETTINGS_BASE = { labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos', payPeriodType: 'monthly', payPeriodStartDay: 1, payPeriodAnchor: null, payDay: null, settings: {}, clockGeofence: {} };
+const defaultSettings = () => ({ ...DEFAULT_SETTINGS_BASE, currency: getActiveCurrencyCode() });
+const mapSettings = r => ({ currency: r.currency || getActiveCurrencyCode(), labourTargetPct: Number(r.labour_target_pct ?? 0.28), accrualRate: Number(r.accrual_rate ?? 0.1207), premiums: r.premiums || {}, salesSource: r.sales_source || 'pos', payPeriodType: r.pay_period_type || 'monthly', payPeriodStartDay: Number(r.pay_period_start_day ?? 1), payPeriodAnchor: r.pay_period_anchor || null, payDay: r.pay_day ?? null, settings: r.settings || {}, clockGeofence: r.clock_geofence || {} });
 export async function loadSettings(locationId) {
-  if (isMock || !supabase) { const a = lsGet('settings'); return a[0] || { ...DEFAULT_SETTINGS }; }
-  if (!locationId) return { ...DEFAULT_SETTINGS };
+  if (isMock || !supabase) { const a = lsGet('settings'); return a[0] || defaultSettings(); }
+  if (!locationId) return defaultSettings();
   const { data, error } = await supabase.from('wf_venue_settings').select('*').eq('location_id', locationId).maybeSingle();
-  if (error) { console.warn('[wf] loadSettings:', error.message); return { ...DEFAULT_SETTINGS }; }
-  return data ? mapSettings(data) : { ...DEFAULT_SETTINGS };
+  if (error) { console.warn('[wf] loadSettings:', error.message); return defaultSettings(); }
+  return data ? mapSettings(data) : defaultSettings();
 }
 export async function saveSettings(patch, locationId, orgId) {
-  if (isMock || !supabase) { lsSet('settings', [{ ...DEFAULT_SETTINGS, ...patch }]); return { ...DEFAULT_SETTINGS, ...patch }; }
+  if (isMock || !supabase) { lsSet('settings', [{ ...defaultSettings(), ...patch }]); return { ...defaultSettings(), ...patch }; }
   const org = await resolveOrgForLocation(locationId, orgId);
   const row = {
     location_id: locationId, org_id: org,
-    currency: patch.currency || 'GBP', labour_target_pct: patch.labourTargetPct ?? 0.28,
+    currency: getActiveCurrencyCode(), labour_target_pct: patch.labourTargetPct ?? 0.28,
     accrual_rate: patch.accrualRate ?? 0.1207, premiums: patch.premiums || {}, sales_source: patch.salesSource || 'pos',
     pay_period_type: patch.payPeriodType || 'monthly', pay_period_start_day: patch.payPeriodStartDay ?? 1,
     pay_period_anchor: patch.payPeriodAnchor || null, pay_day: patch.payDay ?? null,
@@ -519,7 +534,7 @@ export async function saveClockGeofence(patch, locationId, orgId) {
     throw new Error('That pin is not a real place. Set it again.');
   }
   if (isMock || !supabase) {
-    const a = lsGet('settings'); const cur = a[0] || { ...DEFAULT_SETTINGS };
+    const a = lsGet('settings'); const cur = a[0] || defaultSettings();
     lsSet('settings', [{ ...cur, clockGeofence: clean }]); return clean;
   }
   const org = await resolveOrgForLocation(locationId, orgId);
@@ -928,44 +943,8 @@ export async function saveOnboarding(onb, locationId, orgId) {
 // ============================================================================
 const mapTemplate = r => ({ id: r.id, kind: r.kind, name: r.name, body: r.body || '', contractType: r.contract_type || null, isDefault: !!r.is_default, active: r.active !== false });
 
-// Built-in starting templates so there's always something to send. Editable copies
-// are created in wf_doc_templates the first time the operator saves a change.
-export const DEFAULT_TEMPLATES = [
-  { id: 'builtin-offer', kind: 'offer', name: 'Standard offer letter', contractType: null, isDefault: true, builtin: true,
-    body: `Dear {{first_name}},
-
-We're delighted to offer you the position of {{position}} at {{business_name}}.
-
-• Rate of pay: {{rate}}
-• Employment type: {{contract_type}}
-• Proposed start date: {{start_date}}
-
-We're really pleased to have you joining the team. Please reply to this email to accept, and we'll send your contract to sign and get you set up.
-
-Warm regards,
-{{business_name}}` },
-  { id: 'builtin-contract', kind: 'contract', name: 'Statement of main terms (UK)', contractType: null, isDefault: true, builtin: true,
-    body: `STATEMENT OF MAIN TERMS OF EMPLOYMENT
-
-This statement sets out the main terms of your employment with {{business_name}} ("the Employer").
-
-Employee: {{full_name}}
-Position: {{position}}
-Employment type: {{contract_type}}
-Start date: {{start_date}}
-Rate of pay: {{rate}}
-Average weekly hours: {{weekly_hours}}
-Place of work: {{business_name}}
-
-1. Pay is calculated and paid in line with the Employer's normal payroll schedule.
-2. Holiday accrues in line with statutory entitlement (5.6 weeks per year, pro rata).
-3. Either party may end this employment by giving the statutory minimum notice.
-4. You agree to follow the Employer's policies and procedures while employed.
-
-By signing below you confirm you have read, understood and agree to these terms of employment.
-
-Signed: {{full_name}}     Date: {{today}}` },
-];
+// 5.12.57: the built in templates live in docTemplates.js (pure), each with a country.
+export { DEFAULT_TEMPLATES } from './docTemplates';
 
 /** Replace {{token}} placeholders in a template body. Unknown tokens → blank. */
 export function mergeTemplate(body, vars) {
@@ -978,20 +957,26 @@ export function templateVars(staff, role, businessName) {
   const rate = staff.rateOverride != null && staff.rateOverride !== '' ? `${venueMoney(staff.rateOverride, 2)} per hour`
     : (role?.rate != null ? `${venueMoney(role.rate, 2)} per hour` : (role?.salary ? `${venueMoney(role.salary, 0)} per year` : 'to be confirmed'));
   const ctMap = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
+  // 5.12.57: contract dates the venue's way ("1 July 2026" UK as before, "July 1, 2026" US), and today
+  // is the venue's day, not the laptop's
+  const longDay = { day: 'numeric', month: 'long', year: 'numeric' };
+  const zone = zoneOr(null);
   return {
     first_name: (staff.name || '').split(' ')[0] || 'there',
     full_name: staff.name || '',
     position: role?.lbl || staff.role || 'team member',
     rate,
     contract_type: ctMap[staff.contractType] || staff.contractType || '—',
-    start_date: staff.startDate ? new Date(staff.startDate + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'to be confirmed',
+    start_date: staff.startDate ? localeDateString(new Date(staff.startDate + 'T00:00:00'), longDay) : 'to be confirmed',
     weekly_hours: staff.weeklyHoursTarget || staff.contractedWeek || '—',
     business_name: businessName || 'our team',
-    today: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
+    today: localeDateString(new Date(), zone ? { ...longDay, timeZone: zone } : longDay),
   };
 }
 
-/** Load templates (merges built-in defaults with saved ones; saved override built-ins by kind+name). */
+/** Load templates (merges built-in defaults with saved ones; saved override built-ins by kind+name).
+ *  5.12.57: the built ins follow the venue's country and a non UK venue's own come first
+ *  (docTemplates.js templatesForVenue); a UK venue's list is exactly as before. */
 export async function loadTemplates(locationId, kind) {
   let saved = [];
   if (isMock || !supabase) saved = lsGet('templates');
@@ -999,8 +984,7 @@ export async function loadTemplates(locationId, kind) {
     const { data, error } = await supabase.from('wf_doc_templates').select('*').eq('location_id', locationId).eq('active', true).order('created_at');
     if (!error) saved = (data || []).map(mapTemplate);
   }
-  const all = [...DEFAULT_TEMPLATES, ...saved];
-  return kind ? all.filter(t => t.kind === kind) : all;
+  return templatesForVenue(saved, { kind: kind || null, country: activeCountry() });
 }
 export async function saveTemplate(tpl, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('templates', { ...tpl, builtin: false });

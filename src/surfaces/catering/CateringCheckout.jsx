@@ -17,6 +17,8 @@ import { creditDiscounts } from '../../lib/taxBasis';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
+import { postcodeLabel, addressCountry } from '../../lib/online/deliveryCoverage';
+import { regionOf } from '../../lib/regionPack';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
 import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
@@ -50,6 +52,10 @@ const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1
 export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, menuId = null, onBack, vatGate = null, onRetryRates = null }) {
   const opsId = location.ops_location_id || location.id;
   const platformLocationId = location.id;
+  // 5.12.57: the address search, the postcode label and the phone example follow THIS venue (its
+  // currency: USD is the US), as OnlineCheckout does. The search was always Great Britain.
+  const venueCcy = { currency: location?.currency || cur || 'GBP' };
+  const usVenue = regionOf(venueCcy) === 'US';
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [email, setEmail] = useState('');
   const [addr1, setAddr1] = useState(''); const [postcode, setPostcode] = useState(''); const [addrGeo, setAddrGeo] = useState(null);
   const [taxId, setTaxId] = useState(''); const [promo, setPromo] = useState(''); const [notes, setNotes] = useState('');
@@ -459,13 +465,13 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16 }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div><label style={lbl}>Name *</label><input style={inp} value={name} onChange={(e) => setName(e.target.value)} /></div>
-              <div><label style={lbl}>Phone *</label><input style={inp} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44…" /></div>
+              <div><label style={lbl}>Phone *</label><input style={inp} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder={usVenue ? '+1…' : '+44…'} /></div>
             </div>
             <div style={{ marginTop: 12 }}><label style={lbl}>Email {payMode === 'now' ? '*' : <span style={{ color: '#94a3b8', fontWeight: 500 }}>for your confirmation</span>}</label><input style={inp} type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
             {isDelivery && (
               <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginTop: 12 }}>
-                <div><label style={lbl}>Delivery address *</label><AddressAutocomplete value={addr1} inputStyle={inp} placeholder="Start typing the delivery address…" onChangeText={(t) => { setAddr1(t); setAddrGeo(null); }} onSelect={(a) => { setAddr1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setAddrGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }} /></div>
-                <div><label style={lbl}>Postcode *</label><input style={inp} value={postcode} onChange={(e) => setPostcode(e.target.value)} /></div>
+                <div><label style={lbl}>Delivery address *</label><AddressAutocomplete value={addr1} inputStyle={inp} country={addressCountry(venueCcy)} placeholder="Start typing the delivery address…" onChangeText={(t) => { setAddr1(t); setAddrGeo(null); }} onSelect={(a) => { setAddr1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setAddrGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }} /></div>
+                <div><label style={lbl}>{postcodeLabel(venueCcy)} *</label><input style={inp} value={postcode} onChange={(e) => setPostcode(e.target.value)} /></div>
               </div>
             )}
             {belowMin && (

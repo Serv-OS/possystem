@@ -24,6 +24,8 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { packBaseUnitCost } from './costing.js';
 import { purchaseNet } from '../tax.js';
+import { getLocationConfig } from '../locationTime';
+import { isUsSite } from './stockRegion.js';
 import { readAllPagesResult } from '../pagedRead.js';
 import { areasReady, areasReadySync, fetchItemAreas } from './areas.js';
 import { DEFAULT_COST_RULE, normCostRule, isMissingFunctionError } from './phase0Rules.js';
@@ -45,6 +47,12 @@ const isMissingTableError = (e) => /42P01|PGRST205|relation .* does not exist|Co
 export async function fetchTaxRateMap(locationId) {
   const out = {};
   if (!supabase || !locationId) return out;
+  // 5.12.57 (US basics batch 7): a US venue's purchase tax stays IN the cost (it usually cannot be
+  // claimed back) and its tax_rates are SALES tax: no purchase rate, so nothing is taken off a
+  // price and no tax is added on an order. A venue whose currency cannot be read reads as before.
+  let currency = null;
+  try { currency = (await getLocationConfig(locationId))?.currency || null; } catch { currency = null; }
+  if (isUsSite(currency)) return out;
   const { data } = await supabase.from('tax_rates').select('id, rate').eq('location_id', locationId);
   (data || []).forEach((r) => { out[r.id] = Number(r.rate) || 0; });
   return out;

@@ -5,6 +5,7 @@ import { reportSave } from '../../lib/saveHealth';
 // Static imports — a click-time dynamic import can fail silently in the Vite bundle, and the
 // old try/catch around it swallowed that too (CLAUDE.md: static imports only).
 import { upsertDiscount, deleteDiscount, upsertDiscountRule, deleteDiscountRule } from '../../lib/db';
+// 5.12.57: every money label and example uses the venue's own symbol, never a typed pound.
 import { money, currencySymbol } from '../../lib/currency';
 import { selectOnFocus } from '../../lib/selectOnFocus';
 import { Icon, EmojiIcon } from '../../components/ServOSIcons';
@@ -158,7 +159,7 @@ function DiscountForm({ discount, categories, onSave, onCancel }) {
           <label style={S.label}>Type</label>
           <select style={S.select} value={form.type} onChange={e => f('type', e.target.value)}>
             <option value="percent">Percentage (%)</option>
-            <option value="amount">Fixed amount (£)</option>
+            <option value="amount">Fixed amount ({currencySymbol()})</option>
           </select>
         </div>
       </div>
@@ -308,7 +309,7 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Rule name</label>
         <input style={S.input} value={form.name} onChange={e => f('name', e.target.value)}
-          placeholder={isBundle ? 'e.g. Lunch deal — starter + main + drink £15' : isAll ? 'e.g. 6 donuts, 15% off all 6' : 'e.g. Buy 2 pizzas get 3rd 50% off'} />
+          placeholder={isBundle ? `e.g. Lunch deal — starter + main + drink ${currencySymbol()}15` : isAll ? 'e.g. 6 donuts, 15% off all 6' : 'e.g. Buy 2 pizzas get 3rd 50% off'} />
       </div>
 
       {/* Rule type selector */}
@@ -401,7 +402,7 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
               <label style={S.label}>Discount type</label>
               <select style={S.select} value={form.rewardType} onChange={e => f('rewardType', e.target.value)}>
                 <option value="percent">% off</option>
-                <option value="amount">{isAll ? `${currencySymbol()} off each` : '£ off'}</option>
+                <option value="amount">{isAll ? `${currencySymbol()} off each` : `${currencySymbol()} off`}</option>
                 {!isAll && <option value="free">Free (100% off)</option>}
               </select>
             </div>
@@ -441,7 +442,7 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
             Set the total price customers pay for the bundle. The difference from individual item prices is the discount.
           </div>
           <div style={{ maxWidth:200 }}>
-            <label style={S.label}>Fixed price (£)</label>
+            <label style={S.label}>Fixed price ({currencySymbol()})</label>
             <input style={S.input} type="number" min="0" step="0.01" {...selectOnFocus} value={form.rewardValue}
               onChange={e => f('rewardValue', e.target.value)} placeholder="e.g. 15.00" />
           </div>
