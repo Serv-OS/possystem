@@ -121,7 +121,8 @@ import TableBookings from './sections/TableBookings';
 import ServosMessages from './sections/ServosMessages';
 import VenueMessagePopup from '../components/VenueMessagePopup';
 import { money, currencySymbol } from '../lib/currency';
-import { dayText, venueToday } from '../lib/venueDates';
+import { dayText, venueToday, zoneOr } from '../lib/venueDates';
+import { venueHour, dayPart } from '../lib/aiClock.js';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf, STOCK_REPORTS_ALIAS } from '../lib/boSections';
@@ -1861,7 +1862,8 @@ function BOOverview({ setSection, canOpen = () => true, orgCtx }) {
           {orgCtx?.locationName ? `${orgCtx.orgName} · ${orgCtx.locationName}` : orgCtx?.orgName || 'Serv OS'}
         </div>
         <div style={{ fontSize:24, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em', marginBottom:4 }}>
-          Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}
+          {/* 5.12.60: good morning by the VENUE's hour (laptop's with no zone known) */}
+          Good {dayPart(venueHour(new Date(), zoneOr()))}
           {currentStaff?.name ? `, ${currentStaff.name}` : ''}
         </div>
         <div style={{ fontSize:13, color:'var(--t3)' }}>

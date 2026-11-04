@@ -26,6 +26,9 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { getActiveLocationSync } from '../../../lib/supabase';
 // v5.11.92 (multi site stock Drop 4a): the words on a Stock and GP tile that waits for a later Drop.
 import { LATER_WORDS } from '../../../lib/stock/reportLink';
+// 4 Nov 2026: a tile may carry `descUs`, the words a US venue reads instead of `desc` (the UK delivery
+// apps are not named at a US venue); UK venues read `desc` byte for byte as before.
+import { activeRegionPack } from '../../../lib/regionPack';
 
 /* ── Icons ───────────────────────────────────────────────────────────────── */
 const svg = (size, sw, kids) => (
@@ -73,7 +76,8 @@ export const CATEGORIES = [
       { id:'items',       label:'Product mix',      desc:'Items, categories, modifiers and 86\'d — with time of day' },
       { id:'menu_eng',    label:'Menu engineering', desc:'Stars / Plow Horses / Puzzles / Dogs 2×2 matrix' },
       { id:'order_types', label:'Order types',      desc:'Channel mix over time with period compare' },
-      { id:'order_sources', label:'Order sources',  desc:'Sales by till/surface and each delivery platform (Deliveroo, Uber Eats…)' },
+      { id:'order_sources', label:'Order sources',  desc:'Sales by till/surface and each delivery platform (Deliveroo, Uber Eats…)',
+        descUs:'Sales by till/surface and each of your delivery apps' },
       { id:'daypart',     label:'Daypart',          desc:'Hour × day-of-week revenue heatmap' },
     ],
   },
@@ -368,7 +372,11 @@ export default function Catalog({ onOpen, counts = {}, canOpen }) {
       const s = sectionOf(r, canOpen);
       return (!s || !canOpen || canOpen(s)) && (!r.gate || (!!canOpen && canOpen(r.gate)));
     };
-    const resolved = (r) => (r.multiSection ? { ...r, section: sectionOf(r, canOpen) } : r);
+    const usVenue = activeRegionPack().country === 'US';
+    const resolved = (r) => {
+      const out = r.multiSection ? { ...r, section: sectionOf(r, canOpen) } : r;
+      return usVenue && out.descUs ? { ...out, desc: out.descUs } : out;
+    };
     const all = ALL_REPORTS.filter(shown).map(resolved);
     return {
       CATS: CATEGORIES.map(c => ({ ...c, reports: c.reports.filter(shown).map(resolved) })).filter(c => c.reports.length > 0),

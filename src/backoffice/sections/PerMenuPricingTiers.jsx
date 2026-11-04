@@ -21,6 +21,8 @@ import { useStore } from '../../store';
 import { selectOnFocus } from '../../lib/selectOnFocus';
 // 5.12.57: the price boxes show the venue's own symbol, never a typed pound.
 import { currencySymbol } from '../../lib/currency';
+// 4 Nov 2026: the example names a UK delivery app only at a UK venue; a US venue reads "a delivery app".
+import { activeRegionPack } from '../../lib/regionPack';
 
 const inp = {
   background: 'var(--bg2)',
@@ -114,7 +116,7 @@ export default function PerMenuPricingTiers({ item, onUpdate }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t1)' }}>Per-menu pricing tiers</div>
-          <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 2 }}>Override prices for this item on specific menus (e.g. Deliveroo +0.50). Empty fields fall back to channel/base above.</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 2 }}>Override prices for this item on specific menus (e.g. {activeRegionPack().country === 'US' ? 'a delivery app' : 'Deliveroo'} +0.50). Empty fields fall back to channel/base above.</div>
         </div>
         {hasAnyAvailable && (
           <button onClick={addTier} style={Object.assign({}, btn, { fontSize: 11, padding: '5px 10px', whiteSpace: 'nowrap' })}>+ Add menu tier</button>
