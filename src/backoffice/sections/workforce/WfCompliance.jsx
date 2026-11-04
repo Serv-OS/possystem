@@ -13,16 +13,26 @@ import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, init
 import * as wf from '../../../staff/wfData';
 import { activeRegionPack, DOC_INFO } from '../../../lib/regionPack';
 import { localeDateString } from '../../../lib/venueDates';
+import { HIDDEN_WORDS } from '../../../staff/privateDetails';
 
 /** Open a stored document via a short-lived signed URL (private bucket). */
 function ViewDocLink({ path }) {
   const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState(false);
   const open = async () => {
     setBusy(true);
-    try { const url = await wf.signedDocUrl(path, 120); if (url) window.open(url, '_blank', 'noopener'); }
+    // 5.12.59 (Peter's decision 2.4): identity files (right to work: passports, visas, I-9 papers) open
+    // only for owners, admins and logins with Can see payroll details (20261121a). The row stays, the
+    // file says Hidden.
+    try { const url = await wf.signedDocUrl(path, 120); if (url) window.open(url, '_blank', 'noopener'); else setRefused(true); }
     finally { setBusy(false); }
   };
-  return <button className="btn btn-ghost btn-xs" disabled={busy} onClick={open}><Icon name="tag" size={13} /> {busy ? '…' : 'View'}</button>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <button className="btn btn-ghost btn-xs" disabled={busy} onClick={open}><Icon name="tag" size={13} /> {busy ? '…' : 'View'}</button>
+      {refused && <span style={{ fontSize: 11, color: 'var(--t3)' }}>{HIDDEN_WORDS}</span>}
+    </span>
+  );
 }
 
 export const DOC_TYPES = ['RTW', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other'];

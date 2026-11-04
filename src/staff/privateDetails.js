@@ -16,7 +16,7 @@ import { privateAnswer } from './privateDetailsRules';
 
 export { privateAnswer };
 
-const missingDoor = (e) => /wf_staff_private_details|PGRST202|42883|Could not find the function/i.test(`${e?.code || ''} ${e?.message || ''}`);
+const missingDoor = (e) => /wf_staff_private_details|wf_staff_rates|PGRST202|42883|Could not find the function/i.test(`${e?.code || ''} ${e?.message || ''}`);
 
 /** The private details of these staff records, for this login. Never throws. */
 export async function loadPrivateDetails(ids) {
@@ -33,6 +33,31 @@ export async function loadPrivateDetails(ids) {
   } catch {
     return { byId: {}, hidden: true };
   }
+}
+
+/**
+ * 5.12.59 (Peter's decision 2.5): pay rate overrides read through wf_staff_rates(location) (20261121a):
+ * a site the login is assigned to, or any site of the company when the payroll door is open. Before
+ * 20261121a the column is still readable and the old direct read is used. Returns
+ * { byId: { [staffId]: rate }, hidden } where hidden = this site's rates are not for this login.
+ */
+export async function loadSiteRates(locationId) {
+  if (!locationId || !supabase) return { byId: {}, hidden: false };
+  try {
+    const { data, error } = await supabase.rpc('wf_staff_rates', { p_location: locationId });
+    if (!error) return { byId: ratesById(data), hidden: false };
+    if (!missingDoor(error)) return { byId: {}, hidden: true };
+    const old = await supabase.from('wf_staff').select('id, rate_override').eq('location_id', locationId);
+    if (old.error) return { byId: {}, hidden: true };
+    return { byId: ratesById((old.data || []).map((r) => ({ staff_id: r.id, rate_override: r.rate_override }))), hidden: false };
+  } catch {
+    return { byId: {}, hidden: true };
+  }
+}
+function ratesById(rows) {
+  const out = {};
+  for (const r of rows || []) if (r && r.staff_id && r.rate_override != null) out[String(r.staff_id)] = Number(r.rate_override);
+  return out;
 }
 
 /** The words a screen shows in place of a private value it may not see. */

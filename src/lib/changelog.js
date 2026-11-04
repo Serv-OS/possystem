@@ -1,5 +1,18 @@
 export const CHANGELOG = [
   {
+    v: '5.12.59',
+    date: '4 Nov 2026',
+    items: [
+      'Private data, Peter\'s decisions 2.4 and 2.5 (4 Nov 2026): identity document files (right to work: passports, visas, I-9 papers) and pay rate overrides are behind the same door as ID numbers and bank details, enforced in the database by SQL 20261121a (run after this version is live). A manager still sees the document row and its expiry, and their own site\'s rates; the file and other sites\' rates read Hidden unless owner, admin or Can see payroll details.',
+      'Workforce dashboard (Peter: "seems basic"): a real Today view for the site: who is on shift now, rostered today, late or no show, hours so far against plan, planned wage cost, what is waiting (time off requests, onboarding, expiring documents, open shifts), and the week. Real data only.',
+      'Contracts at UK venues (4.1): the venue\'s own templates are listed first and preselected; the built in UK contract is last, still there. US venues unchanged (no built in contract).',
+      'Delivery at US venues (9.5): Stuart (UK and Europe courier) is no longer offered; the screens say a US courier is not built yet and delivery orders are driven by your own staff. HubRise copy says your delivery apps rather than Deliveroo and Just Eat at US venues. UK unchanged.',
+      'Rota at US venues (8.2): shift cells, presets, dialogs and clash messages read 5:00 PM to 11:00 PM; UK cells unchanged.',
+      'New site currency (9.8): the currency box starts blank and must be picked before the site is saved, like the time zone; Location settings never saves GBP into a site with no currency.',
+      'Decided and unchanged: customer phone and email stay on the Loyalty report and Bookings export (2.6); US menus keep the one Wheat/Gluten chip (5.2).',
+    ],
+  },
+  {
     v: '5.12.58',
     date: '4 Nov 2026',
     items: [

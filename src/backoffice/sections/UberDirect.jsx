@@ -20,6 +20,8 @@ import { computeSurcharge } from '../../lib/delivery/surcharge';
 // 5.12.57: the delivery money labels use the venue's own symbol, never a typed pound.
 import { money, currencySymbol, getActiveCurrencyCode } from '../../lib/currency';
 import { postcodeLabel, addressCountry } from '../../lib/online/deliveryCoverage';
+import { activeRegionPack } from '../../lib/regionPack';
+import { US_COURIER_LINE } from '../../lib/usCourierWords';
 import MoneyField from '../../components/MoneyField';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { Icon } from '../../components/ServOSIcons';
@@ -78,7 +80,10 @@ export default function UberDirect() {
   // US). The search was always Great Britain, so a US venue could not find its own address.
   const venueCcy = { currency: getActiveCurrencyCode() };
 
-  const isCourier = form.delivery_mode === 'uber';
+  // Decision 9.5 (4 Nov 2026): Stuart is UK and Europe only. A US venue is never offered the
+  // courier setup: it sees one line instead and its deliveries are driven by its own staff.
+  const usVenue = activeRegionPack().country === 'US';
+  const isCourier = !usVenue && form.delivery_mode === 'uber';
 
   // ── Connect this venue's OWN Stuart account ────────────────────────────────
   const [stu, setStu] = useState({ clientId: '', clientSecret: '', env: 'sandbox', busy: false, msg: null });
@@ -108,7 +113,8 @@ export default function UberDirect() {
   const save = async () => {
     setSaving(true); setMsg(null);
     // Courier mode is always the Stuart backend now (Uber Direct / HubRise Bridge are retired).
-    const payload = { ...form, dispatch_backend: isCourier ? 'stuart' : form.dispatch_backend };
+    // A US venue never saves the courier mode (no courier exists for it yet).
+    const payload = { ...form, delivery_mode: usVenue ? 'self' : form.delivery_mode, dispatch_backend: isCourier ? 'stuart' : form.dispatch_backend };
     delete payload.stuart_connected; // read-only, computed server-side
     const r = await setVenueUberConfig(locId, payload);
     setSaving(false);
@@ -128,7 +134,7 @@ export default function UberDirect() {
     <div style={S.wrap}>
       <div>
         <h1 style={S.h1}>Delivery</h1>
-        <p style={S.sub}>Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch a Stuart courier with live tracking. Used identically across POS, online and catering.</p>
+        <p style={S.sub}>{usVenue ? 'Set your delivery charge, pickup address and radius. Used identically across POS, online and catering.' : "Quote the delivery fee from the customer's address at order time, surcharge it under your policy, and dispatch a Stuart courier with live tracking. Used identically across POS, online and catering."}</p>
       </div>
 
       {/* How delivery works with Stuart — per-location account model. */}
@@ -168,17 +174,18 @@ export default function UberDirect() {
           {[
             ['self', 'walk', 'I deliver it myself', 'The order just fires to your POS / kitchen. You arrange the delivery. No courier dispatch, no account needed.'],
             ['uber', 'car', 'Stuart courier', "A Stuart courier is dispatched automatically with a live price + ETA and a tracking link. Connect this venue's Stuart account below."],
-          ].map(([val, ico, title, desc]) => (
+          ].filter(([val]) => !usVenue || val === 'self').map(([val, ico, title, desc]) => (
             <div key={val} onClick={() => set('delivery_mode', val)} style={{
               flex: '1 1 240px', cursor: 'pointer', borderRadius: 12, padding: '14px 16px',
-              border: `2px solid ${form.delivery_mode === val ? 'var(--acc)' : 'var(--bdr)'}`,
-              background: form.delivery_mode === val ? 'var(--acc-d, rgba(232,160,32,.08))' : 'var(--bg3)',
+              border: `2px solid ${form.delivery_mode === val || (usVenue && val === 'self') ? 'var(--acc)' : 'var(--bdr)'}`,
+              background: form.delivery_mode === val || (usVenue && val === 'self') ? 'var(--acc-d, rgba(232,160,32,.08))' : 'var(--bg3)',
             }}>
               <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 6 }}><Icon name={ico} size={16} />{title}</div>
               <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>{desc}</div>
             </div>
           ))}
         </div>
+        {usVenue && <div style={{ ...S.infoNote, marginTop: 10 }}>{US_COURIER_LINE}</div>}
         <div style={{ ...S.row, marginTop: 14 }}>
           <div style={S.col}>
             <label style={S.label}>{isCourier ? `Your delivery charge (${currencySymbol()}) — fallback if the live Stuart quote fails` : `Your delivery charge (${currencySymbol()})`}</label>
@@ -261,14 +268,14 @@ export default function UberDirect() {
           </div>
           <div style={S.col}><label style={S.label}>City</label><input style={S.input} value={form.pickup_address.city || ''} onChange={(e) => setAddr('city', e.target.value)} /></div>
         </div>
-        <div style={{ ...S.infoNote, marginTop: 8 }}>Pick your address from the suggestions so the courier gets exact coordinates — this matches how customers enter their delivery address (no mismatch).</div>
+        <div style={{ ...S.infoNote, marginTop: 8 }}>{usVenue ? 'Pick your address from the suggestions so the radius check uses exact coordinates. This matches how customers enter their delivery address (no mismatch).' : 'Pick your address from the suggestions so the courier gets exact coordinates — this matches how customers enter their delivery address (no mismatch).'}</div>
         <div style={{ ...S.row, marginTop: 10 }}>
           <div style={S.col}><label style={S.label}>{postcodeLabel(venueCcy)}</label><input style={S.input} value={form.pickup_address.postcode || ''} onChange={(e) => setAddr('postcode', e.target.value)} /></div>
           <div style={S.col}><label style={S.label}>Latitude (optional)</label><input style={S.input} value={form.pickup_address.lat ?? ''} onChange={(e) => setAddr('lat', e.target.value === '' ? null : Number(e.target.value))} /></div>
           <div style={S.col}><label style={S.label}>Longitude (optional)</label><input style={S.input} value={form.pickup_address.lng ?? ''} onChange={(e) => setAddr('lng', e.target.value === '' ? null : Number(e.target.value))} /></div>
         </div>
         <div style={{ ...S.row, marginTop: 10 }}>
-          <div style={S.col}><label style={S.label}>Business name (shown to the courier)</label><input style={S.input} value={form.pickup_contact.company || ''} onChange={(e) => setContact('company', e.target.value)} placeholder={form.pickup_contact.name || 'Your venue name'} /></div>
+          <div style={S.col}><label style={S.label}>{usVenue ? 'Business name' : 'Business name (shown to the courier)'}</label><input style={S.input} value={form.pickup_contact.company || ''} onChange={(e) => setContact('company', e.target.value)} placeholder={form.pickup_contact.name || 'Your venue name'} /></div>
         </div>
         <div style={{ ...S.row, marginTop: 10 }}>
           <div style={S.col}><label style={S.label}>Contact name</label><input style={S.input} value={form.pickup_contact.name || ''} onChange={(e) => setContact('name', e.target.value)} /></div>

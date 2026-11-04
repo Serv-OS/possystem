@@ -27,6 +27,7 @@ test('a shift overlapping one at their other site is refused; touching ends are 
   const c = otherSiteClash(other, 'jane-provo', '2026-11-03', '17:00', '22:00');
   assert.equal(c.site, 'Daybreak');
   assert.equal(otherSiteClashWords(c, 'Tue'), 'Clashes with their 12:00 to 18:00 shift at Daybreak on Tue. Change the times, or move that shift first.');
+  assert.equal(otherSiteClashWords(c, 'Tue', 'US'), 'Clashes with their 12:00 PM to 6:00 PM shift at Daybreak on Tue. Change the times, or move that shift first.');
   assert.equal(otherSiteClash(other, 'jane-provo', '2026-11-03', '18:00', '23:00'), null);   // split shift across sites
   assert.equal(otherSiteClash(other, 'jane-provo', '2026-11-04', '12:00', '18:00'), null);
   assert.equal(otherSiteClash(other, 'sam-provo', '2026-11-03', '12:00', '18:00'), null);

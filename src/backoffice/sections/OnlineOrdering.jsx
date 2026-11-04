@@ -24,6 +24,7 @@ import { callGiftPublic } from '../../surfaces/gift/giftHelpers';
 import { Icon } from '../../components/ServOSIcons';
 // 5.12.57: the tab money labels use the venue's own symbol, never a typed pound.
 import { currencySymbol } from '../../lib/currency';
+import { activeRegionPack } from '../../lib/regionPack';
 
 // Icon sitting inline before button or line text.
 const IC_INLINE = { display:'inline-block', verticalAlign:'-2px', marginRight:6 };
@@ -58,6 +59,8 @@ const ROOT = CUSTOMER_ROOT;
 // Location settings or the Menu manager becomes plain words for a login not shown that part.
 export default function OnlineOrdering({ setSection, canOpen = () => true }) {
   const can = (s) => !!setSection && canOpen(s);
+  // Decision 9.5 (4 Nov 2026): a US venue has no courier; its delivery words do not name one.
+  const usVenue = activeRegionPack().country === 'US';
   const [loading, setLoading] = useState(true);
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
@@ -593,7 +596,9 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
         <div style={{ marginTop:14, display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, padding:'10px 0' }}>
           <div style={{ flex:1 }}>
             <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Allow delivery</div>
-            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Show Delivery alongside Collection at checkout. The delivery fee + fulfilment (self-delivery, or a courier) are set in <b>Channels → Delivery</b> — the fee is added to the customer's total automatically.</div>
+            {usVenue
+              ? <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Show Delivery alongside Pickup at checkout. The delivery fee is set in <b>Channels → Delivery</b> and is added to the customer's total automatically.</div>
+              : <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Show Delivery alongside Collection at checkout. The delivery fee + fulfilment (self-delivery, or a courier) are set in <b>Channels → Delivery</b> — the fee is added to the customer's total automatically.</div>}
           </div>
           <Toggle on={deliveryOn && deliveryModuleOn !== false}
             onChange={(v) => { if (deliveryModuleOn !== false) setDeliveryOn(v); }}/>
@@ -602,7 +607,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
           <div style={{ fontSize:11.5, lineHeight:1.55, color:'var(--orn, #b4740a)', background:'var(--orn-d, rgba(232,160,32,.10))',
                         border:'1px solid var(--orn-b, rgba(232,160,32,.35))', borderRadius:10, padding:'9px 11px', marginTop:2 }}>
             <b>Delivery is switched off for this venue.</b> Turn it on in <b>Channels → Delivery</b>,
-            where the radius, the pricing and the courier live. It will appear here by itself once it is on.
+            where the radius{usVenue ? ' and the pricing live' : ', the pricing and the courier live'}. It will appear here by itself once it is on.
           </div>
         )}
       </div>

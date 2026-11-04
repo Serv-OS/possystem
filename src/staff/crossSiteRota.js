@@ -7,6 +7,7 @@
 // they already have elsewhere and when the week goes into overtime (US, over 40).
 
 import { spanOf } from './wfClash.js';
+import { hhmmText } from '../../supabase/functions/_shared/venueDates.js';
 
 const LIVE = new Set(['draft', 'published']);
 const hoursOfShift = (s) => {
@@ -53,9 +54,10 @@ export function otherSiteClash(otherShifts, staffId, dateIso, start, finish) {
 }
 
 /** The words for a refused overlap. */
-export function otherSiteClashWords(clash, dayLabel) {
+export function otherSiteClashWords(clash, dayLabel, country = 'UK') {
   if (!clash) return '';
-  return `Clashes with their ${clash.start} to ${clash.finish} shift at ${clash.site}${dayLabel ? ` on ${dayLabel}` : ''}. Change the times, or move that shift first.`;
+  // 5.12.57 batch 8: a US venue reads "5:00 PM to 11:00 PM"; a UK one reads the times as given.
+  return `Clashes with their ${hhmmText(clash.start, country)} to ${hhmmText(clash.finish, country)} shift at ${clash.site}${dayLabel ? ` on ${dayLabel}` : ''}. Change the times, or move that shift first.`;
 }
 
 /**

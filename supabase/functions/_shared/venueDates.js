@@ -130,6 +130,17 @@ export function hhmmText(hhmm, venue = 'GBP') {
 }
 
 /**
+ * A shift's span the venue's way (Peter 8.2, 4 Nov 2026: the rota grid at a US venue). A UK venue
+ * reads start and finish exactly as given, joined by `sep` (the rota's en dash unless the caller
+ * says): '17:00' + '23:00' = "17:00\u201323:00", byte for byte what it showed before. A US venue
+ * reads "5:00 PM to 11:00 PM".
+ */
+export function spanText(start, finish, venue = 'GBP', sep = '\u2013') {
+  if (!uses12h(venue)) return `${start ?? ''}${sep}${finish ?? ''}`;
+  return `${hhmmText(start, venue)} to ${hhmmText(finish, venue)}`;
+}
+
+/**
  * The time of an instant on the venue's clock: '14:05' (UK) or '2:05 PM' (US). A plain 'HH:MM'
  * reads as given (hhmmText). No zone: '' (never the laptop's clock, never a fixed other city).
  */

@@ -14,7 +14,7 @@
 import { getActiveCurrencyCode } from './currency.js';
 import * as core from '../../supabase/functions/_shared/venueDates.js';
 
-export { venueCountry, venueLocale, uses12h, clockParts, venueYmd, weekStartYmd, workweekStartDow, hhmmText } from '../../supabase/functions/_shared/venueDates.js';
+export { venueCountry, venueLocale, uses12h, clockParts, venueYmd, weekStartYmd, workweekStartDow, hhmmText, spanText } from '../../supabase/functions/_shared/venueDates.js';
 
 const TZ_KEY = 'rpos-active-timezone';
 const ONE_ZONE = { UK: 'Europe/London', IE: 'Europe/Dublin' };
@@ -80,4 +80,12 @@ export function venueToday(tz, now) {
 /** A wall clock 'HH:MM' for the active venue (or `venue`): as given at a UK venue, '5:00 PM' at a US one. */
 export function venueHhmm(hhmm, venue) {
   return core.hhmmText(hhmm, V(venue));
+}
+/** A shift's span for the active venue (or `venue`): "17:00\u201323:00" as before at a UK venue, "5:00 PM to 11:00 PM" at a US one. */
+export function venueSpan(start, finish, venue, sep) {
+  return core.spanText(start, finish, V(venue), sep);
+}
+/** Does the active venue (or `venue`) read a 12 hour clock? */
+export function active12h(venue) {
+  return core.uses12h(V(venue));
 }

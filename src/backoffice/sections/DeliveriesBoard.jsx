@@ -10,6 +10,8 @@ import { getActiveLocationSync } from '../../lib/supabase';
 import { listDeliveries, cancelDelivery, deliveryReport, getDeliveryDetail } from '../../lib/delivery/deliveryConfig';
 import { statusLabel, isTerminalStatus } from '../../lib/delivery/status';
 import { money } from '../../lib/currency';
+import { activeRegionPack } from '../../lib/regionPack';
+import { US_COURIER_LINE } from '../../lib/usCourierWords';
 
 const fmtAddr = (a) => !a ? '' : (typeof a === 'string' ? a : [a.line1, a.line2, a.city, a.postcode].filter(Boolean).join(', '));
 const fmtTime = (t) => { if (!t) return '—'; const d = new Date(t); return isNaN(d.getTime()) ? String(t) : d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); };
@@ -34,14 +36,17 @@ export default function DeliveriesBoard() {
   const [busy, setBusy] = useState(null);
   const [sel, setSel] = useState(null);        // selected courier_deliveries row
   const [detail, setDetail] = useState(null);  // 'loading' | { order, quote, surcharge, events } | { error:true }
+  // Decision 9.5 (4 Nov 2026): Stuart is UK and Europe only. A US venue has no courier, so the
+  // board is one line and never polls.
+  const usVenue = activeRegionPack().country === 'US';
 
   const load = useCallback(async () => {
-    if (!locId) return;
+    if (!locId || usVenue) return;
     const [r, rep] = await Promise.all([listDeliveries(locId, 50), deliveryReport(locId)]);
     if (r?.deliveries) setRows(r.deliveries);
     else if (!rows) setRows([]);
     if (rep?.report) setReport(rep.report);
-  }, [locId, rows]);
+  }, [locId, rows, usVenue]);
 
   useEffect(() => {
     load();
@@ -64,6 +69,14 @@ export default function DeliveriesBoard() {
   }, [locId]);
 
   if (!locId) return <div style={S.empty}>Select a location first.</div>;
+  if (usVenue) {
+    return (
+      <div style={S.wrap}>
+        <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--t1)', margin: '0 0 4px' }}>Deliveries (live)</h1>
+        <p style={{ fontSize: 13, color: 'var(--t3)', margin: '0 0 16px' }}>{US_COURIER_LINE}</p>
+      </div>
+    );
+  }
   if (rows === null) return <div style={S.empty}>Loading…</div>;
 
   return (
