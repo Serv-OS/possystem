@@ -8,6 +8,8 @@ import { supabase, getLocationId } from './supabase';
 import { money, getActiveCurrencyCode } from './currency.js';
 import { localeDateString, localeTimeString, localeString, zoneOr } from './venueDates';
 import { venueDayStart, venueHour, hourLabel } from './aiClock.js';
+import { fetchSops } from './ops/documents';
+import { searchSops, SOP_WORDS } from './ops/sopRules';
 
 // 5.12.57 (batch 8): the assistant reads times on the VENUE's clock and in its words ('2:05 PM' at a
 // US venue), never the till's own clock; with no zone yet it says it does not know rather than guess.
@@ -725,6 +727,14 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           return { category: c.label || c.name, items: items.length, sold_out: items.filter(i => eightySixIds.includes(i.id)).length };
         });
       return { result: { categories: cats, total_items: live.length, total_86: eightySixIds.length } };
+    }
+
+    // 5.12.62: SOPs. Documents marked as SOPs in Back Office (Operations, Documents) keep their words;
+    // the venue's SOPs are searched here and the best matches handed to the model to quote from.
+    case 'search_sops': {
+      const { data, error, absent } = await fetchSops(locationId);
+      if (error) return { result: { count: 0, sops: [], titles: [], note: absent ? SOP_WORDS.notSetUp : `Could not read the SOPs: ${error.message || error}` } };
+      return { result: searchSops(data, toolInput.query || '') };
     }
 
     // ── Write tools — return pendingAction, don't execute yet ──────────────────

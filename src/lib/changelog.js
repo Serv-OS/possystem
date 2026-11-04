@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.62',
+    date: '4 Nov 2026',
+    items: [
+      'SOPs (Peter, 4 Nov 2026: "upload documents like we have, mark as SOPs, then anywhere there is an AI chat it can read those SOPs so a staff can ask on the POS what is our SOP for this and it tells them exactly"). Operations, Documents (Back Office and the Operations tablet) has a tick box "This is an SOP": the words are read out of the file at upload (a PDF or a photo by the model, a text file as it is; Word files are refused, save as PDF first) and kept with the document. Back Office can also mark or unmark an existing document (Make SOP / Not an SOP); the list shows an SOP badge. The AI assistant on the till and in Back Office has a search_sops tool: "what is our SOP for a spill" is answered in the SOP\'s own words, steps in order, naming the SOP; no SOP = it says so and lists the ones that exist. Never invents a step. SQL 20261122a (Ops): is_sop, sop_text, sop_text_at and a read rule so a paired till (never a kiosk, kitchen screen or clock) reads SOP rows; before it runs documents work exactly as before and the SOP box is refused in words. Nothing to deploy (Vercel route api/sop-text.js ships with the build).',
+    ],
+  },
+  {
     v: '5.12.61',
     date: '4 Nov 2026',
     items: [
