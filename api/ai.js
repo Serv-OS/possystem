@@ -44,6 +44,7 @@ const ALLOWED_TOOLS_FOH = [
   'search_activity',
   'get_waitlist',
   'get_menu_overview',
+  'search_sops',
 ];
 
 const ALLOWED_TOOLS_BOH = [
@@ -73,6 +74,7 @@ const ALLOWED_TOOLS_BOH = [
   'search_activity',
   'get_waitlist',
   'get_menu_overview',
+  'search_sops',
 ];
 
 const TOOL_DEFINITIONS = {
@@ -344,6 +346,12 @@ const TOOL_DEFINITIONS = {
     description: 'High-level overview of the menu: each category with its item count and how many are 86’d, plus totals. Use for "what\'s on the menu?", "how many items are off?".',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
+  // 5.12.62: SOPs (standard operating procedures) the venue marked in Back Office, Operations, Documents.
+  search_sops: {
+    name: 'search_sops',
+    description: 'Search this venue\'s SOPs (standard operating procedures, policies and how-we-do-it documents) and get the best matching ones with their full text. Use for "what is our SOP for X", "how do we handle a spill / a refund / a complaint / closing down", "what is the procedure for", "what is our policy on". Returns the matched SOPs\' own words to quote from, plus the titles of every SOP the venue has. An empty query lists every SOP.',
+    input_schema: { type: 'object', properties: { query: { type: 'string', description: 'What the person is asking about, in a few words (e.g. "fire alarm", "cash up", "allergy complaint")' } }, required: [] },
+  },
 };
 
 const SYSTEM_FOH = `You are an AI shift assistant built into a restaurant POS system. You help front-of-house staff during live service.
@@ -369,6 +377,13 @@ YOU CAN ANSWER QUESTIONS LIKE:
 - "Any orders waiting?" / "What's in the queue?" → get_order_queue
 - "How long is the wait?" / "Who's in the queue?" → get_waitlist
 - "What's on the menu?" / "How many items are off?" → get_menu_overview
+- "What's our SOP for a spill?" / "How do we handle a complaint?" / "What's the procedure for closing down?" → search_sops
+
+SOPs (standard operating procedures): when someone asks how something is done here, what the procedure
+or policy is, or "what's our SOP for", call search_sops with the subject. Answer from the SOP's OWN
+WORDS: give the steps exactly as the SOP says them, in order, and name the SOP you are quoting
+("From the Spillage SOP: ..."). Never make up a procedure or fill in steps the SOP does not have. If no
+SOP covers it, say so and list the SOPs that exist (titles), then suggest they ask their manager.
 
 You have broad read access to this venue's live data — sales, floor, orders, the menu, stock, what's
 86'd, the fulfilment queue, the waitlist, and the operational activity timeline (who did what, when).
@@ -420,6 +435,12 @@ YOU CAN ANSWER QUESTIONS LIKE:
 - "What's in the fulfilment queue?" → get_order_queue
 - "How's the waitlist?" → get_waitlist
 - "Give me a menu overview / what's off?" → get_menu_overview
+- "What's our SOP for a spill?" / "What does the closing procedure say?" / "List our SOPs" → search_sops
+
+SOPs (standard operating procedures): for any "how do we", "what's the procedure", "what's our policy"
+question call search_sops with the subject and answer in the SOP's OWN WORDS, steps in order, naming
+the SOP ("From the Cash up SOP: ..."). Never invent a step. If no SOP covers it, say so and list the
+titles that exist. SOPs are managed in Operations, Documents (tick "This is an SOP").
 
 You have broad read access to this venue's live data. Pick the tool that fits; if a first tool comes
 back empty, try another (e.g. an item's 86 history → get_86_status AND search_activity kind:'stock')

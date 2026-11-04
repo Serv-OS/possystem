@@ -20,6 +20,7 @@ import {
   OPS_FILES_BUCKET, SIGNED_URL_SECONDS, NOT_SET_UP,
   checkDocumentDraft, contentTypeFor, documentPath, isAbsentError, isDocCategory, isUuid, newId, docOpenMode,
 } from './formRules';
+import { cleanSopText, SOP_WORDS } from './sopRules';
 
 async function ensureLoc(locationId) {
   if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync();
@@ -31,12 +32,17 @@ async function ensureLoc(locationId) {
 const NOT_LIVE = 'This needs a live connection to ServOS.';
 const NO_VENUE = 'The venue is not resolved yet. Reopen this screen and try again.';
 
+// 5.12.62: isSop and hasSopText (the text itself is read by fetchSops for the assistant only).
 const docFromRow = (r) => ({
   id: r.id, locationId: r.location_id, title: r.title, category: r.category,
   filePath: r.file_path, fileName: r.file_name, mimeType: r.mime_type, sizeBytes: Number(r.size_bytes) || 0,
   uploadedByName: r.uploaded_by_name, source: r.source, createdAt: r.created_at,
   archivedAt: r.archived_at, archivedByName: r.archived_by_name,
+  isSop: r.is_sop === true, hasSopText: !!(r.sop_text_at || (typeof r.sop_text === 'string' && r.sop_text.trim())),
 });
+const DOC_COLS = 'id, location_id, title, category, file_path, file_name, mime_type, size_bytes, uploaded_by_name, source, created_at, archived_at, archived_by_name, is_sop, sop_text_at';
+const OLD_COLS = 'id, location_id, title, category, file_path, file_name, mime_type, size_bytes, uploaded_by_name, source, created_at, archived_at, archived_by_name';
+const noSopCols = (e) => /is_sop|sop_text/.test(String(e?.message || ''));
 
 /** Documents at the venue, newest first. { data, error, absent, message }. */
 export async function fetchDocuments(locationId = null, { includeArchived = false } = {}) {
@@ -44,9 +50,14 @@ export async function fetchDocuments(locationId = null, { includeArchived = fals
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null, absent: false, message: '' };
   try {
-    let q = supabase.from('ops_documents').select('*').eq('location_id', locationId);
-    if (!includeArchived) q = q.is('archived_at', null);
-    const { data, error } = await q.order('created_at', { ascending: false }).limit(1000);
+    const list = async (cols) => {
+      let q = supabase.from('ops_documents').select(cols).eq('location_id', locationId);
+      if (!includeArchived) q = q.is('archived_at', null);
+      return q.order('created_at', { ascending: false }).limit(1000);
+    };
+    // 5.12.62: until 20261122a has run the SOP columns are missing; the list reads as before.
+    let { data, error } = await list(DOC_COLS);
+    if (error && noSopCols(error)) ({ data, error } = await list(OLD_COLS));
     if (error) {
       return isAbsentError(error)
         ? { data: [], error, absent: true, message: NOT_SET_UP.documents }
@@ -63,7 +74,7 @@ export async function fetchDocuments(locationId = null, { includeArchived = fals
  * If the row is refused the file stays behind, unlisted and harmless.
  * @returns {{ data: object|null, error: Error|null, absent?: boolean }}
  */
-export async function uploadDocument({ file, title, category, byName = null, byStaffId = null, source = 'back_office' } = {}, locationId = null) {
+export async function uploadDocument({ file, title, category, byName = null, byStaffId = null, source = 'back_office', isSop = false, sopText = '' } = {}, locationId = null) {
   if (isMock || !supabase) return { data: null, error: new Error(NOT_LIVE) };
   // TRAINING MODE never writes anything real.
   if (isTrainingMode()) return { data: null, error: new Error('Training mode: documents are not saved.') };
@@ -89,9 +100,14 @@ export async function uploadDocument({ file, title, category, byName = null, byS
       uploaded_by_staff_id: isUuid(byStaffId) ? byStaffId : null,
       source: source === 'tablet' ? 'tablet' : 'back_office',
     };
-    const { data, error } = await supabase.from('ops_documents').insert(row).select('*');
+    // 5.12.62: an SOP carries its words (read by sopText.js before the upload).
+    if (isSop) { row.is_sop = true; row.sop_text = cleanSopText(sopText); row.sop_text_at = new Date().toISOString(); }
+    let { data, error } = await supabase.from('ops_documents').insert(row).select(DOC_COLS);
+    // Before 20261122a the SOP columns are missing: a plain document is saved exactly as before.
+    if (error && !isSop && noSopCols(error)) ({ data, error } = await supabase.from('ops_documents').insert(row).select(OLD_COLS));
     if (error) {
       if (isAbsentError(error)) return { data: null, error: new Error(NOT_SET_UP.documents), absent: true };
+      if (isSop && noSopCols(error)) return { data: null, error: new Error(`The file uploaded but the document was NOT saved: ${SOP_WORDS.notSetUp}`) };
       return { data: null, error: new Error(`The file uploaded but the document was NOT saved: ${error.message || error}`) };
     }
     if (!data || !data.length) return { data: null, error: new Error('The document was NOT saved. This login or tablet may not have access to this venue.') };
@@ -118,6 +134,45 @@ export const archiveDocument = (id, locationId = null, byName = null) =>
 /** Put an archived document back in the list. Back Office only. */
 export const restoreDocument = (id, locationId = null) =>
   setArchived(id, locationId, { archived_at: null, archived_by_name: null }, 'restore');
+
+/**
+ * 5.12.62: mark a document as an SOP (or not). Back Office only (the update rule). Turning it on
+ * needs the words: sopText from sopText.js (readSopText on the file). Turning it off keeps the text.
+ */
+export async function setDocumentSop(id, on, locationId = null, { sopText = '' } = {}) {
+  if (isMock || !supabase) return { error: new Error(NOT_LIVE) };
+  if (isTrainingMode()) return { error: new Error('Training mode: documents are not changed.') };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error(NO_VENUE) };
+  const text = cleanSopText(sopText);
+  if (on && !text) return { error: new Error('No words were read out of the file, so it cannot be an SOP yet.') };
+  const patch = on ? { is_sop: true, sop_text: text, sop_text_at: new Date().toISOString() } : { is_sop: false };
+  const { data, error } = await supabase.from('ops_documents').update(patch).eq('location_id', locationId).eq('id', id).select('id');
+  if (error) return { error: noSopCols(error) ? new Error(SOP_WORDS.notSetUp) : error };
+  if (!data || !data.length) return { error: new Error('Could not change it. Only a Back Office login for this venue can mark SOPs.') };
+  return { error: null };
+}
+
+/** 5.12.62: the venue's live SOPs with their words, for the assistant. { data: [{ id, title, category, fileName, text }], error, absent }. */
+export async function fetchSops(locationId = null) {
+  if (isMock || !supabase) return { data: [], error: null, absent: false };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null, absent: false };
+  const { data, error } = await supabase.from('ops_documents').select('id, title, category, file_name, sop_text')
+    .eq('location_id', locationId).eq('is_sop', true).is('archived_at', null).order('created_at', { ascending: false }).limit(200);
+  if (error) return { data: [], error, absent: isAbsentError(error) || noSopCols(error) };
+  return { data: (data || []).map((r) => ({ id: r.id, title: r.title, category: r.category, fileName: r.file_name, text: r.sop_text || '' })), error: null, absent: false };
+}
+
+/** The stored file as a Blob with its name (to read an SOP's words out of an existing document). */
+export async function downloadDocumentFile(doc) {
+  if (isMock || !supabase) return { file: null, error: new Error(NOT_LIVE) };
+  if (!doc?.filePath) return { file: null, error: new Error('This document has no file.') };
+  const { data, error } = await supabase.storage.from(OPS_FILES_BUCKET).download(doc.filePath);
+  if (error || !data) return { file: null, error: error || new Error('Could not open the file.') };
+  try { return { file: new File([data], doc.fileName || 'file', { type: doc.mimeType || data.type || '' }), error: null }; }
+  catch { return { file: Object.assign(data, { name: doc.fileName || 'file' }), error: null }; }
+}
 
 /** A short lived signed link to one stored file in the private bucket. */
 export async function signedFileUrl(path, seconds = SIGNED_URL_SECONDS) {

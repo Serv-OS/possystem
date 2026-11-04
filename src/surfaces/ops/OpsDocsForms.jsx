@@ -24,6 +24,8 @@ import { useLayout } from '../manager/useLayout';
 import { photoInputProps, photoButtonLabel } from '../../lib/cameraCapture';
 import { reportSave } from '../../lib/saveHealth';
 import { fetchDocuments, uploadDocument, openDocument } from '../../lib/ops/documents';
+import { sopReadable, SOP_WORDS } from '../../lib/ops/sopRules';   // 5.12.62: SOPs
+import { readSopText } from '../../lib/ops/sopText';
 import { fetchForms, submitForm } from '../../lib/ops/forms';
 import {
   DOC_CATEGORIES, docCategoryLabel, checkDocumentDraft, titleFromFileName, formatBytes,
@@ -106,7 +108,7 @@ export function OpsDocuments({ loc, operator, onBack }) {
                 <button onClick={() => open(d)} disabled={!!opening} className="sv-tile" style={{ '--h': HUE.documents, width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
                   <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: `oklch(0.8 0.12 ${HUE.documents} / 0.18)`, color: `oklch(0.85 0.14 ${HUE.documents})`, flexShrink: 0 }}><Icon name="note" size={19} /></div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}{d.isSop && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: 'var(--grn)', border: '1px solid var(--grn)', borderRadius: 6, padding: '1px 5px', ...mono }}>SOP</span>}</div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{docCategoryLabel(d.category)} · {fileKindWord(fileKind(d.fileName, d.mimeType))} · {formatBytes(d.sizeBytes)}</div>
                   </div>
                   <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--acc)', ...mono }}>{opening === d.id ? 'Opening...' : 'Open'}</span>
@@ -128,7 +130,9 @@ function UploadDocument({ loc, operator, onDone }) {
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('food_safety');
+  const [isSop, setIsSop] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [busyWord, setBusyWord] = useState('');
   const [err, setErr] = useState('');
   const fileRef = useRef(null);
   const showToast = useStore((s) => s.showToast);
@@ -141,12 +145,21 @@ function UploadDocument({ loc, operator, onDone }) {
   const save = async () => {
     const check = checkDocumentDraft({ title, category, file });
     if (!check.ok) { setErr(Object.values(check.errors)[0]); return; }
+    if (isSop) { const can = sopReadable(file); if (!can.ok) { setErr(can.error); return; } }
     setBusy(true); setErr('');
-    const { error } = await uploadDocument({ file, title, category, byName: operator?.name || null, byStaffId: operator?.id || null, source: 'tablet' }, loc);
-    setBusy(false);
+    let sopText = '';
+    if (isSop) {
+      setBusyWord(SOP_WORDS.reading);
+      const r = await readSopText(file);
+      if (r.error) { setBusy(false); setBusyWord(''); setErr(r.error.message); return; }
+      sopText = r.text;
+    }
+    setBusyWord('Uploading...');
+    const { error } = await uploadDocument({ file, title, category, byName: operator?.name || null, byStaffId: operator?.id || null, source: 'tablet', isSop, sopText }, loc);
+    setBusy(false); setBusyWord('');
     reportSave('operations document', error);
     if (error) { setErr(error.message || 'Upload failed'); return; }
-    showToast?.('Document uploaded', 'success');
+    showToast?.(isSop ? 'SOP uploaded' : 'Document uploaded', 'success');
     onDone(true);
   };
 
@@ -168,8 +181,12 @@ function UploadDocument({ loc, operator, onDone }) {
         {DOC_CATEGORIES.map((c) => <Chip key={c.key} on={category === c.key} onClick={() => setCategory(c.key)}>{c.label}</Chip>)}
       </div>
 
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, fontSize: 14, color: 'var(--t1)', cursor: 'pointer', ...L.s.ctl }}>
+        <input type="checkbox" checked={isSop} onChange={(e) => setIsSop(e.target.checked)} style={{ width: 20, height: 20 }} /> {SOP_WORDS.box}
+      </label>
+      {isSop && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>A PDF, a photo (under 6 MB) or a text file.</div>}
       {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 12 }}>{err}</div>}
-      <button onClick={save} disabled={busy} className="btn btn-acc" style={{ width: '100%', padding: 15, marginTop: 18, fontSize: 15, fontWeight: 800, borderRadius: 14, opacity: busy ? 0.6 : 1 }}>{busy ? 'Uploading...' : 'Upload'}</button>
+      <button onClick={save} disabled={busy} className="btn btn-acc" style={{ width: '100%', padding: 15, marginTop: 18, fontSize: 15, fontWeight: 800, borderRadius: 14, opacity: busy ? 0.6 : 1 }}>{busy ? (busyWord || 'Uploading...') : 'Upload'}</button>
       {operator?.name && <div style={{ fontSize: 11, color: 'var(--t3)', textAlign: 'center', marginTop: 8, ...mono }}>Uploaded by {operator.name}</div>}
     </div>
   );

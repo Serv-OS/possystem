@@ -9,7 +9,11 @@ import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { getLocationConfig } from '../../../lib/locationTime';
 import { reportSave } from '../../../lib/saveHealth';
-import { fetchDocuments, uploadDocument, archiveDocument, restoreDocument, openDocument } from '../../../lib/ops/documents';
+import { fetchDocuments, uploadDocument, archiveDocument, restoreDocument, openDocument, setDocumentSop, downloadDocumentFile } from '../../../lib/ops/documents';
+// 5.12.62: SOPs. A document ticked as an SOP keeps its words; the AI assistant (till and Back Office)
+// answers staff from them. The words are read here before the upload (lib/ops/sopText.js).
+import { sopReadable, SOP_WORDS } from '../../../lib/ops/sopRules';
+import { readSopText } from '../../../lib/ops/sopText';
 import {
   DOC_CATEGORIES, docCategoryLabel, checkDocumentDraft, titleFromFileName, formatBytes, formatWhen,
   fileKind, fileKindWord,
@@ -42,7 +46,10 @@ export default function OpsDocuments() {
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('food_safety');
+  const [isSop, setIsSop] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [busyWord, setBusyWord] = useState('');
+  const [sopBusy, setSopBusy] = useState(null);   // document id while its SOP flag changes
   const [formErr, setFormErr] = useState('');
   const [blocked, setBlocked] = useState(null);   // { id, url } when the browser refused a new tab
   const [viewing, setViewing] = useState(null);   // { doc, url }: the in-app viewer (iOS shells, Sunmi)
@@ -74,14 +81,49 @@ export default function OpsDocuments() {
   const upload = async () => {
     const check = checkDocumentDraft({ title, category, file });
     if (!check.ok) { setFormErr(Object.values(check.errors)[0]); return; }
+    if (isSop) { const can = sopReadable(file); if (!can.ok) { setFormErr(can.error); return; } }
     setBusy(true); setFormErr('');
-    const { error } = await uploadDocument({ file, title, category, byName, source: 'back_office' }, locId);
-    setBusy(false);
+    let sopText = '';
+    if (isSop) {
+      setBusyWord(SOP_WORDS.reading);
+      const r = await readSopText(file);
+      if (r.error) { setBusy(false); setBusyWord(''); setFormErr(r.error.message); showToast?.('Document NOT saved', 'error'); return; }
+      sopText = r.text;
+    }
+    setBusyWord('Uploading...');
+    const { error } = await uploadDocument({ file, title, category, byName, source: 'back_office', isSop, sopText }, locId);
+    setBusy(false); setBusyWord('');
     reportSave('operations document', error);
     if (error) { setFormErr(error.message || 'Upload failed'); showToast?.('Document NOT saved', 'error'); return; }
-    showToast?.('Document uploaded', 'success');
-    setFile(null); setTitle('');
+    showToast?.(isSop ? 'SOP uploaded. The assistant can answer from it now.' : 'Document uploaded', 'success');
+    setFile(null); setTitle(''); setIsSop(false);
     if (fileRef.current) fileRef.current.value = '';
+    reload();
+  };
+
+  // 5.12.62: mark an existing document as an SOP (its words are read out of the stored file), or unmark it.
+  const toggleSop = async (d) => {
+    setSopBusy(d.id);
+    let error = null;
+    if (d.isSop) {
+      ({ error } = await setDocumentSop(d.id, false, locId));
+    } else {
+      const got = await downloadDocumentFile(d);
+      if (got.error) error = got.error;
+      else {
+        const can = sopReadable(got.file);
+        if (!can.ok) error = new Error(can.error);
+        else {
+          const r = await readSopText(got.file);
+          if (r.error) error = r.error;
+          else ({ error } = await setDocumentSop(d.id, true, locId, { sopText: r.text }));
+        }
+      }
+    }
+    setSopBusy(null);
+    reportSave('operations document sop', error);
+    if (error) { showToast?.(error.message || 'Not changed', 'error'); return; }
+    showToast?.(d.isSop ? 'No longer an SOP' : 'Marked as an SOP. The assistant can answer from it now.', 'success');
     reload();
   };
 
@@ -115,7 +157,7 @@ export default function OpsDocuments() {
       {viewing && <OpsDocViewer doc={viewing.doc} url={viewing.url} onClose={() => setViewing(null)} />}
       <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', color: 'var(--t1)' }}>Documents</h1>
       <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 18, maxWidth: 720 }}>
-        Food safety records, certificates and policies for this venue. Staff can open them on the Operations tablet too.
+        Food safety records, certificates and policies for this venue. Staff can open them on the Operations tablet too. Tick a document as an SOP and the AI assistant answers staff from its words.
       </div>
 
       {absent ? (
@@ -143,10 +185,14 @@ export default function OpsDocuments() {
                 </select>
               </div>
             </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: 'var(--t1)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={isSop} onChange={(e) => setIsSop(e.target.checked)} /> {SOP_WORDS.box}
+            </label>
+            {isSop && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, marginLeft: 24 }}>A PDF, a photo (under 6 MB) or a text file. Staff can then ask the assistant on the till "what is our SOP for..." and it answers in the SOP's own words.</div>}
             {formErr && <div style={{ color: 'var(--red)', fontSize: 12.5, marginTop: 10 }}>{formErr}</div>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
               <button onClick={upload} disabled={busy} className="btn btn-acc" style={{ padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: busy ? 0.6 : 1 }}>
-                {busy ? 'Uploading...' : 'Upload'}
+                {busy ? (busyWord || 'Uploading...') : 'Upload'}
               </button>
             </div>
           </div>
@@ -180,7 +226,10 @@ export default function OpsDocuments() {
                   <div key={d.id} style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 14, opacity: archived ? 0.6 : 1 }}>
                     <span style={{ width: 54, flexShrink: 0, textAlign: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: KIND_HUE[kind], border: `1px solid ${KIND_HUE[kind]}`, borderRadius: 6, padding: '4px 0' }}>{fileKindWord(kind)}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}</div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {d.title}
+                        {d.isSop && <span title="The AI assistant answers staff from this document" style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, letterSpacing: '.05em', color: 'var(--grn)', border: '1px solid var(--grn)', borderRadius: 6, padding: '2px 6px', verticalAlign: 'middle' }}>SOP</span>}
+                      </div>
                       <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>
                         {docCategoryLabel(d.category)} · {d.fileName} · {formatBytes(d.sizeBytes)} · {formatWhen(d.createdAt, tz)}{d.uploadedByName ? ` · ${d.uploadedByName}` : ''}{d.source === 'tablet' ? ' (tablet)' : ''}
                         {archived ? ` · archived ${formatWhen(d.archivedAt, tz)}${d.archivedByName ? ` by ${d.archivedByName}` : ''}` : ''}
@@ -190,6 +239,11 @@ export default function OpsDocuments() {
                       )}
                     </div>
                     <button onClick={() => open(d)} style={{ ...btn, background: 'var(--acc-d)', color: 'var(--acc)', borderColor: 'var(--acc-b, var(--bdr2))' }}>Open</button>
+                    {!archived && (
+                      <button onClick={() => toggleSop(d)} disabled={sopBusy === d.id} title={d.isSop ? 'The assistant stops answering from it' : 'The assistant reads it and answers staff from it'} style={{ ...btn, color: d.isSop ? 'var(--t2)' : 'var(--grn)' }}>
+                        {sopBusy === d.id ? 'Reading...' : (d.isSop ? 'Not an SOP' : 'Make SOP')}
+                      </button>
+                    )}
                     {archived
                       ? <button onClick={() => restore(d)} style={btn}>Restore</button>
                       : <button onClick={() => archive(d)} title="Archive" style={{ ...btn, color: 'var(--t2)', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="close" size={13} /> Archive</button>}

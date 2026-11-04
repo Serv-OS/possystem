@@ -9,6 +9,7 @@ const API_ENDPOINT = '/api/ai';
 function ToolCallBadge({ name }) {
   const labels = {
     get_sales_summary:    ['chart', 'Looking up sales…'],
+    search_sops:          ['note', 'Reading the SOPs…'],
     get_shift_summary:    ['chart', 'Pulling shift overview…'],
     get_top_items:        ['trophy', 'Checking top sellers…'],
     search_item_sales:    ['search', 'Searching item sales…'],
