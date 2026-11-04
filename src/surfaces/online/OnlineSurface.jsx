@@ -32,7 +32,7 @@ import { useMenuText, itemName as tItemName, itemDescription as tItemDescription
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
 // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
-import { withFacts, showCalories as venueShowsCalories, KCAL_NOTE_EN } from '../../lib/menuStockFacts';
+import { withFacts, showCalories as venueShowsCalories, kcalNote } from '../../lib/menuStockFacts';
 import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
@@ -73,6 +73,7 @@ import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
 // The item sheet's theme builder lives in ./sheetTheme so the guest booking
 // page's pre-order choices build exactly the same object (10 Sep 2026).
 import { isLightBackground, sheetThemeFrom } from './sheetTheme';
+import { activeCountry, activeRegionPack } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
 
 // closedInfo (v5.5.802) — set by CustomerBoot when the venue is CLOSED but the
 // customer tapped through to browse: { reopenAt: Date|null, canOrderAhead: bool }.
@@ -1269,7 +1270,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
       {/* v5.11.93 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
       {showKcal && (
-        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 20px 0', fontSize: 12, color: '#64748b', fontWeight: 600 }}>{KCAL_NOTE_EN}</div>
+        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 20px 0', fontSize: 12, color: '#64748b', fontWeight: 600 }}>{kcalNote(null, location?.currency || undefined) /* 5.12.57: FDA line at a US venue */}</div>
       )}
 
       {/* MENU body */}
@@ -1793,7 +1794,7 @@ function LoyaltyModal({ theme, cardBdr, muted, companyId, locationId, onClose, o
                     Mobile number
                   </label>
                   <input type="tel" inputMode="tel"
-                    placeholder="07700 900000"
+                    placeholder={activeCountry() === 'US' ? activeRegionPack().phoneFormat : '07700 900000'}
                     value={phone}
                     onChange={e => { setPhone(e.target.value); setErr(''); }}
                     onKeyDown={e => { if (e.key === 'Enter') sendCode(); }}

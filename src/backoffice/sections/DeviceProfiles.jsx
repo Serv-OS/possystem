@@ -6,6 +6,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { defaultOrderTypeFor, defaultOrderTypeSummary, cleanDefaultOrderType, tillOrderColumnsReady, tillOrderColumnsToKeep, DEFAULT_ORDER_TYPE_COLUMN, FLAG_PROMPT_COLUMN } from '../../lib/tillOrderType';
 import { useSyncExternalStore } from 'react';   // 30 Sep 2026: the editor watches the till order type column flag
 import { money } from '../../lib/currency';
+import { activeCountry } from '../../lib/regionPack';
 import { ServOSIcon } from '../../components/ServOSBrand';
 import { Icon } from '../../components/ServOSIcons';
 import { DISPLAY_BRAND_COLUMN, cleanDisplayBrand, displayBrandForDb, displayBrandFromKiosk, badDisplayBrandColours, hasDisplayBrandColumn, displayBrandIsSet, mergeDisplayBrand, normaliseHex, resolveDisplayBrand, EMPTY_DISPLAY_BRAND, DEFAULT_ACCENT_DARK } from '../../lib/customerDisplayBrand';
@@ -1081,7 +1082,8 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
 
           {/* Service charge */}
           {(() => {
-            const sc = form.serviceCharge || { enabled: false, rate: 12.5, applyTo: 'all', minCovers: 8 };
+            // 5.12.57: a US venue has no default service charge rate (the owner types one); UK 12.5% as before.
+            const sc = form.serviceCharge || { enabled: false, rate: activeCountry() === 'US' ? 0 : 12.5, applyTo: 'all', minCovers: 8 };
             const updSC = (k, v) => upd('serviceCharge', { ...sc, [k]: v });
             return (
               <div style={{ marginBottom:18, padding:'14px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>

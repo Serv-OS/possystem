@@ -13,15 +13,20 @@ import * as wf from '../../../staff/wfData';
 import { isHourly, avgHoursPerDay, FIXED_HOLIDAY_DAYS } from '../../../staff/labour';
 import { proposeLeaveDays } from '../../../staff/leaveDays';
 // 5.12.51: US venues call it PTO (Workforce settings, Paid time off).
-import { activeCountry } from '../../../lib/regionPack';
+import { activeRegionPack } from '../../../lib/regionPack';
+// 5.12.57: one word for paid time off (Holiday or PTO), and the UK statutory texts only under UK rules.
+import { holidayWord, holidayWordLower, ukHoliday } from '../../../staff/payLaw';
+import { ptoRules } from '../../../../supabase/functions/_shared/usPto.js';
 
-const TABS = [
+// 5.12.57: built when the screen draws, for the venue it is on. It was built once when the file
+// loaded, so the tab kept the first venue's word after a switch between a UK and a US site.
+const tabsFor = (pack) => [
   { key: 'leave', lbl: 'Leave requests', icon: 'note' },
-  { key: 'balances', lbl: activeCountry() === 'US' ? 'PTO balances' : 'Holiday balances', icon: 'sun' },
+  { key: 'balances', lbl: `${holidayWord(pack)} balances`, icon: 'sun' },
   { key: 'avail', lbl: 'Availability', icon: 'status' },
 ];
-const LEAVE_TYPES = [
-  { key: 'holiday', lbl: 'Holiday' },
+const leaveTypesFor = (pack) => [
+  { key: 'holiday', lbl: holidayWord(pack) },
   { key: 'sick', lbl: 'Sick' },
   { key: 'unpaid', lbl: 'Unpaid' },
   { key: 'parental', lbl: 'Parental' },
@@ -38,6 +43,9 @@ const fmtDate = iso => { if (!iso) return '—'; const d = new Date(iso + 'T00:0
 const daysBetween = (a, b) => { if (!a || !b) return 1; const d1 = new Date(a + 'T00:00:00'); const d2 = new Date(b + 'T00:00:00'); if (isNaN(d1) || isNaN(d2)) return 1; return Math.max(1, Math.round((d2 - d1) / 86400000) + 1); };
 
 export default function WfLeave({ ctx, staff = [], roles, sections, settings, week, showToast }) {
+  const pack = activeRegionPack();
+  // 5.12.57: a US venue with PTO switched off pays no PTO: approvals are unpaid (workforce-compute).
+  const ptoOff = !ukHoliday(pack) && !ptoRules(settings?.settings || null).on;
   const [tab, setTab] = useState('leave');
   const [loading, setLoading] = useState(true);
   const [leave, setLeave] = useState([]);
@@ -122,7 +130,9 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       if (res?.error) throw new Error(res.error);
       if (status === 'approved') {
         const balTxt = typeof res?.balance === 'number' ? ` — balance now ${res.balance}h` : '';
-        showToast?.(`Leave approved (${paid ? 'paid' : 'unpaid'})${balTxt}`, res?.balance < 0 ? 'info' : 'success');
+        // 5.12.57: the server says when PTO is off and the approval was made unpaid.
+        if (res?.note) showToast?.(`Leave approved (unpaid). ${res.note}`, 'info');
+        else showToast?.(`Leave approved (${paid ? 'paid' : 'unpaid'})${balTxt}`, res?.balance < 0 ? 'info' : 'success');
       } else {
         showToast?.('Leave denied', 'success');
       }
@@ -142,7 +152,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       const res = await wf.invokeCompute('accrual.run', { location_id: ctx?.locationId });
       setAccrual(await wf.loadAccrual(ctx?.locationId));
       // v5.11.101: a US venue has no statutory accrual; the server says so and writes nothing.
-      showToast?.(res?.off || 'Holiday accrual run complete', res?.off ? 'info' : 'success');
+      showToast?.(res?.off || `${holidayWord(pack)} accrual run complete`, res?.off ? 'info' : 'success');
     } catch (e) {
       showToast?.(e.message || 'Accrual run failed', 'error');
     } finally {
@@ -168,7 +178,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {TABS.map(t => (
+        {tabsFor(pack).map(t => (
           <button key={t.key} className={'btn btn-sm ' + (tab === t.key ? 'btn-acc' : 'btn-ghost')} onClick={() => setTab(t.key)}>
             <Icon name={t.icon} size={14} /> {t.lbl}
           </button>
@@ -176,24 +186,26 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       </div>
 
       {tab === 'leave' && (
-        <LeaveSection leave={leave} staffById={staffById} roles={roles} balances={balances} timesheets={timesheets} onRequest={() => setReqOpen(true)} onDecide={decide} splitFor={splitFor} setDayPicks={setDayPicks} />
+        <LeaveSection pack={pack} ptoOff={ptoOff} leave={leave} staffById={staffById} roles={roles} balances={balances} timesheets={timesheets} onRequest={() => setReqOpen(true)} onDecide={decide} splitFor={splitFor} setDayPicks={setDayPicks} />
       )}
       {tab === 'balances' && (
-        <BalancesSection staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
+        <BalancesSection pack={pack} settings={settings} staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
       )}
       {tab === 'avail' && (
         <AvailSection staff={staff} roles={roles} avail={avail} onSave={saveAvailRow} />
       )}
 
       {reqOpen && (
-        <RequestModal staff={staff} roles={roles} onClose={() => setReqOpen(false)} onSubmit={submitRequest} />
+        <RequestModal pack={pack} staff={staff} roles={roles} onClose={() => setReqOpen(false)} onSubmit={submitRequest} />
       )}
     </div>
   );
 }
 
 // ── Section: Leave requests ──────────────────────────────────────────────────
-function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest, onDecide, splitFor, setDayPicks }) {
+function LeaveSection({ pack, ptoOff = false, leave, staffById, roles, balances, timesheets, onRequest, onDecide, splitFor, setDayPicks }) {
+  const LEAVE_TYPES = leaveTypesFor(pack);
+  const hw = holidayWordLower(pack);
   // Preview of what approval will deduct, using the SAME statutory method the
   // server applies (avgHoursPerDay: 52 worked weeks, 104-week cap) over the
   // timesheets this screen already loads. 8h is only the new-starter fallback.
@@ -201,7 +213,7 @@ function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest
   if (!leave.length) {
     return (
       <EmptyState icon="note" title="No leave requests yet"
-        body="Holiday, sick and parental leave land here. Submit a request and managers can approve or deny it — approved holiday feeds rota coverage warnings."
+        body={ukHoliday(pack) ? 'Holiday, sick and parental leave land here. Submit a request and managers can approve or deny it — approved holiday feeds rota coverage warnings.' : 'PTO, sick and parental leave land here. Submit a request and managers can approve or deny it. Approved time off feeds rota coverage warnings.'}
         cta="Request leave" onCta={onRequest} />
     );
   }
@@ -258,7 +270,7 @@ function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest
                                   <button
                                     key={d.date}
                                     onClick={() => setDayPicks(p => ({ ...p, [l.id]: { ...(p[l.id] || {}), [d.date]: !d.leave } }))}
-                                    title={`${day.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })} — ${d.leave ? 'annual leave (deducts)' : 'normal day off (no deduction)'} · suggested from ${({ rota: 'the rota', availability: 'their availability', history: 'their usual days', contract: 'their contract', default: 'a weekday guess' })[d.reason]} · click to switch`}
+                                    title={`${day.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })} — ${d.leave ? (ukHoliday(pack) ? 'annual leave (deducts)' : 'PTO (deducts)') : 'normal day off (no deduction)'} · suggested from ${({ rota: 'the rota', availability: 'their availability', history: 'their usual days', contract: 'their contract', default: 'a weekday guess' })[d.reason]} · click to switch`}
                                     style={{
                                       display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 26,
                                       padding: '3px 4px', borderRadius: 7, cursor: 'pointer', font: 'inherit', lineHeight: 1.2,
@@ -282,7 +294,7 @@ function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest
                             </div>
                           )}
                           <div style={{ display: 'inline-flex', gap: 6 }}>
-                            <button className="btn btn-ghost btn-xs" title={isHoliday ? 'Approve — only the days marked green deduct from the holiday balance' : 'Approve as paid leave (no holiday deduction)'}
+                            <button className="btn btn-ghost btn-xs" title={ptoOff && isHoliday ? 'PTO is switched off (Workforce settings, Paid time off): approving makes this unpaid and nothing is deducted' : isHoliday ? (ukHoliday(pack) ? 'Approve — only the days marked green deduct from the holiday balance' : 'Approve: only the days marked green come off the PTO balance') : `Approve as paid leave (no ${hw} deduction)`}
                               onClick={() => onDecide(l.id, 'approved', true, isHoliday ? leaveDates : undefined)}><Icon name="check" size={12} /> Paid</button>
                             <button className="btn btn-ghost btn-xs" title="Approve without pay — nothing is deducted"
                               onClick={() => onDecide(l.id, 'approved', false, isHoliday ? leaveDates : undefined)}><Icon name="check" size={12} /> Unpaid</button>
@@ -305,14 +317,19 @@ function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest
 }
 
 // ── Section: Holiday balances ────────────────────────────────────────────────
-function BalancesSection({ staff, roles, balances, accrual, leave, timesheets, running, onRun }) {
+function BalancesSection({ pack, settings, staff, roles, balances, accrual, leave, timesheets, running, onRun }) {
+  // 5.12.57: the UK statutory texts (12.07%, 28 days, the 52 week method) only under UK holiday rules.
+  const uk = ukHoliday(pack);
+  const pto = ptoRules(settings?.settings || null);
   const action = (
     <button className="btn btn-acc btn-sm" onClick={onRun} disabled={running}>
       <Icon name="sparkle" size={14} /> {running ? 'Running…' : 'Run accrual'}
     </button>
   );
   if (!staff.length) {
-    return <EmptyState icon="sun" title="No staff to accrue holiday for" body="Add team members in Workforce › Staff. Hourly staff accrue holiday at 12.07% of hours worked; salaried staff get a fixed allowance." />;
+    return uk
+      ? <EmptyState icon="sun" title="No staff to accrue holiday for" body="Add team members in Workforce › Staff. Hourly staff accrue holiday at 12.07% of hours worked; salaried staff get a fixed allowance." />
+      : <EmptyState icon="sun" title="No staff to earn PTO" body="Add team members in Workforce, Staff. Hourly staff earn PTO from approved timesheets when PTO is on (Workforce settings, Paid time off)." />;
   }
   const rolesMap = roles?.map || {};
   const thisYear = new Date().getFullYear();
@@ -326,9 +343,11 @@ function BalancesSection({ staff, roles, balances, accrual, leave, timesheets, r
   });
   return (
     <Card>
-      <Toolbar title={activeCountry() === 'US' ? 'PTO balances' : 'Holiday balances'} sub={activeCountry() === 'US' ? 'Hourly staff earn paid time off from approved timesheets when PTO is on (Workforce settings)' : 'Hourly staff accrue 12.07%; salaried staff get a fixed allowance'} action={action} />
+      <Toolbar title={`${holidayWord(pack)} balances`} sub={uk ? 'Hourly staff accrue 12.07%; salaried staff get a fixed allowance' : 'Hourly staff earn paid time off from approved timesheets when PTO is on (Workforce settings)'} action={action} />
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, color: 'var(--t3)', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10, padding: '8px 12px', marginBottom: 14, lineHeight: 1.6 }}>
-        <Icon name="warn" size={14} /> <span>UK statutory: <b>hourly / irregular-hours</b> staff accrue 12.07% of approved hours (server-computed); <b>salaried</b> staff get {FIXED_HOLIDAY_DAYS} days/year. For variable-hours staff, “a day” = their average hours per day worked over the statutory <b>52-week reference period</b> (weeks with no work skipped, 104-week max lookback, fewer weeks if they’re newer — the post-Apr 2020 gov.uk method), so a day is worth different hours per person.</span>
+        {uk
+          ? <><Icon name="warn" size={14} /> <span>UK statutory: <b>hourly / irregular-hours</b> staff accrue 12.07% of approved hours (server-computed); <b>salaried</b> staff get {FIXED_HOLIDAY_DAYS} days/year. For variable-hours staff, “a day” = their average hours per day worked over the statutory <b>52-week reference period</b> (weeks with no work skipped, 104-week max lookback, fewer weeks if they’re newer — the post-Apr 2020 gov.uk method), so a day is worth different hours per person.</span></>
+          : <><Icon name="warn" size={14} /> <span>No US federal law requires paid time off. {pto.on ? <>Hourly staff earn <b>1 hour of PTO for every {pto.every} hours</b> worked{pto.yearCap != null ? `, up to ${pto.yearCap} hours a year` : ''}, from approved timesheets.</> : <><b>PTO is switched off</b> (Workforce settings, Paid time off): nothing is earned, and approved time off is unpaid and takes nothing from a balance.</>} Salaried staff get the days your policy sets on their record. Some states and cities require paid sick leave: check yours.</span></>}
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -348,17 +367,18 @@ function BalancesSection({ staff, roles, balances, accrual, leave, timesheets, r
                 const avg = avgHoursPerDay((timesheets || []).filter(t => t.staffId === s.id)) || 0;
                 const accruedDays = avg > 0 ? hrs / avg : 0;
                 const remDays = Math.max(0, accruedDays - taken);
-                basis = <Badge tone="blue">Hourly · 12.07%</Badge>;
+                basis = uk ? <Badge tone="blue">Hourly · 12.07%</Badge> : <Badge tone="blue">{pto.on ? `Hourly · 1 h per ${pto.every} h` : 'Hourly · PTO off'}</Badge>;
                 accruedCol = <span className="mono">{hrs.toFixed(1)}h{avg > 0 ? <span style={{ color: 'var(--t4)' }}> · ≈{accruedDays.toFixed(1)}d</span> : ''}</span>;
                 takenCol = <span className="mono" style={{ color: 'var(--t3)' }}>{taken.toFixed(1)}d</span>;
                 remainingCol = <span className="mono" style={{ fontWeight: 700 }}>{avg > 0 ? `${remDays.toFixed(1)}d` : '—'}</span>;
               } else {
-                const allowance = s.holidayEntitlementDays != null ? Number(s.holidayEntitlementDays) : FIXED_HOLIDAY_DAYS;
-                const rem = Math.max(0, allowance - taken);
-                basis = <Badge tone="grey">Salaried · fixed</Badge>;
-                accruedCol = <span className="mono">{allowance}d</span>;
+                // 5.12.57: the 28 statutory days are a UK rule; at a US venue only a policy set on the record counts.
+                const allowance = s.holidayEntitlementDays != null ? Number(s.holidayEntitlementDays) : uk ? FIXED_HOLIDAY_DAYS : null;
+                const rem = Math.max(0, (allowance ?? 0) - taken);
+                basis = <Badge tone="grey">{allowance == null ? 'Salaried · by your policy' : 'Salaried · fixed'}</Badge>;
+                accruedCol = <span className="mono">{allowance == null ? 'Not set' : `${allowance}d`}</span>;
                 takenCol = <span className="mono" style={{ color: 'var(--t3)' }}>{taken.toFixed(1)}d</span>;
-                remainingCol = <span className="mono" style={{ fontWeight: 700, color: rem <= 0 ? 'var(--red)' : 'var(--t1)' }}>{rem.toFixed(1)}d</span>;
+                remainingCol = allowance == null ? <span style={{ color: 'var(--t4)', fontSize: 12 }}>Not set</span> : <span className="mono" style={{ fontWeight: 700, color: rem <= 0 ? 'var(--red)' : 'var(--t1)' }}>{rem.toFixed(1)}d</span>;
               }
               return (
                 <tr key={s.id}>
@@ -437,7 +457,8 @@ function AvailSection({ staff, roles, avail, onSave }) {
 }
 
 // ── Request leave modal ──────────────────────────────────────────────────────
-function RequestModal({ staff, roles, onClose, onSubmit }) {
+function RequestModal({ pack, staff, roles, onClose, onSubmit }) {
+  const LEAVE_TYPES = leaveTypesFor(pack);
   const [staffId, setStaffId] = useState(staff[0]?.id || '');
   const [type, setType] = useState('holiday');
   const [startDate, setStartDate] = useState('');

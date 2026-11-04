@@ -167,6 +167,8 @@ import { registrationLines } from '../../lib/payments/adyenOrigins';
 import { isPlatformSettingsMissingWarning, rateCardProblems, SWEEP_SPEED_LABELS } from '../../lib/payments/adyenLink';
 import { cardToState, stateToCard, cardsEqual, serverKnowsDebit } from '../../lib/payments/rateCard';
 import RateCardRows from './RateCardRows';
+import { regionOf } from '../../lib/regionPack';
+import { US_STATES } from '../../../supabase/functions/_shared/adyenStorePayload.js';
 
 const CHIP = {
   ok: { bg: 'var(--grn-d, rgba(21,194,106,.14))', fg: 'var(--grn, #15C26A)', bd: 'var(--grn-b, var(--grn))' },
@@ -425,6 +427,9 @@ function savePick(id, v) {
 export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPayments = null, wallets = null, onChanged, refreshKey = 0 }) {
   const name = location?.name || 'this venue';
   const locId = location?.id || null;
+  // 5.12.57: a US venue (its currency: USD) is asked for its state, and its postcode reads ZIP
+  // code; Adyen requires the state on a US store. A UK venue's form reads exactly as before.
+  const usVenue = regionOf({ currency: location?.currency }) === 'US';
   // Every read and write carries the same identity choices: the merchant
   // account the admin picked (the live mismatch), a store or business account
   // id pasted or picked from a list, the code Adyen carries the venue under,
@@ -455,7 +460,13 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   // deleted dense panel had.
   const [codeOpen, setCodeOpen] = useState(false);
   const [codeDraft, setCodeDraft] = useState('');
-  const [form, setForm] = useState(() => ({ ...splitAddress(location?.address), phone: '' }));
+  const [form, setForm] = useState(() => {
+    const parts = splitAddress(location?.address);
+    // A US address ends "Provo, UT 84601": the state is lifted out of the ZIP code box.
+    const m = usVenue ? /^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/.exec(parts.postal_code) : null;
+    const st = m && US_STATES.some(([c]) => c === m[1].toUpperCase()) ? m[1].toUpperCase() : '';
+    return { ...parts, ...(st ? { postal_code: m[2] } : {}), phone: '', state_or_province: st };
+  });
   // The create was refused because the venue's row holds no business line:
   // the link writes it, and the link is the go live step. Offered here as a
   // small secondary so the live case (a business account with no payments
@@ -596,7 +607,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   const picker = merchants && !merchants.error ? merchantPicker(merchants, target) : null;
   // Adyen refuses a LIVE payments location without the real address and phone
   // number, so the button waits for them instead of a round trip that fails.
-  const addressDone = !!(form.line1.trim() && form.city.trim() && form.postal_code.trim() && form.phone.trim());
+  const addressDone = !!(form.line1.trim() && form.city.trim() && form.postal_code.trim() && form.phone.trim() && (!usVenue || form.state_or_province));
   const canCreate = !!reference && (target !== 'live' || addressDone);
 
   // Every action: spin on its own button, then read the venue again so the
@@ -680,7 +691,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     const r = await callAdmin('adyen_create_store_by_reference', {
       ...pick,
       ...(reference ? { reference } : {}),
-      address: { line1: form.line1.trim(), city: form.city.trim(), postal_code: form.postal_code.trim() },
+      address: { line1: form.line1.trim(), city: form.city.trim(), postal_code: form.postal_code.trim(), ...(usVenue ? { state_or_province: form.state_or_province } : {}) },
       phone: form.phone.trim(),
       ...envArg(),
     });
@@ -1613,17 +1624,25 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                     <>
                       {!mismatch && step.action === 'create_store' && (
                         <>
-                          {target === 'live' && !addressDone && <p style={S.quiet}>Adyen needs all four of these for a live venue.</p>}
+                          {target === 'live' && !addressDone && <p style={S.quiet}>{usVenue ? 'Adyen needs all five of these for a live venue.' : 'Adyen needs all four of these for a live venue.'}</p>}
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, maxWidth: 620, margin: '0 0 18px' }}>
                             {[
                               ['line1', 'Street'],
-                              ['city', 'Town or city'],
-                              ['postal_code', 'Postcode'],
+                              ['city', usVenue ? 'City' : 'Town or city'],
+                              ...(usVenue ? [['state_or_province', 'State']] : []),
+                              ['postal_code', usVenue ? 'ZIP code' : 'Postcode'],
                               ['phone', 'Phone number'],
                             ].map(([key, label]) => (
                               <label key={key} style={S.field}>
                                 <span style={S.fieldLabel}>{label}</span>
-                                <input style={S.input} value={form[key]} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} />
+                                {key === 'state_or_province' ? (
+                                  <select style={S.input} value={form.state_or_province} onChange={(e) => setForm((f) => ({ ...f, state_or_province: e.target.value }))}>
+                                    <option value="">Pick the state</option>
+                                    {US_STATES.map(([code, stateName]) => <option key={code} value={code}>{code} {stateName}</option>)}
+                                  </select>
+                                ) : (
+                                  <input style={S.input} value={form[key]} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} />
+                                )}
                               </label>
                             ))}
                           </div>

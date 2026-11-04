@@ -26,6 +26,7 @@ import { STRIP_NOTE, STRIP_NOTE_ADDED_TAX, STRIP_NOTE_INCL_TAX } from '../../../
 // report still imports computeSalesStats from here.
 export { computeSalesStats } from '../../../lib/salesStats';
 import { vatMissingLine } from '../../../lib/salesStats';
+import { getActiveCurrencyCode } from '../../../lib/currency';
 // 16 Oct 2026 (Peter: "owner app net sales 1703, business summary net sales 2112 ... I can't get
 // them to add up"): this report now reads every check by THE ONE SALES RULE the Owner app, Daily
 // trading and Xero use (src/lib/salesBreakdown.js over _shared/tradingSales.js): Net sales
@@ -179,7 +180,7 @@ function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
             {lookback.failed.length ? ' Refunds on sales from before this period could not be read, so they are not taken off here.' : ''}
           </div>
           {/* 8 Oct 2026 (the VAT audit): a sale with goods and no VAT recorded is counted 0 and named, never hidden. */}
-          {cur.vatMissing.length > 0 && <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, paddingTop:6, lineHeight:1.5 }}>{vatMissingLine(cur)}</div>}
+          {cur.vatMissing.length > 0 && <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, paddingTop:6, lineHeight:1.5 }}>{vatMissingLine(cur, currency || getActiveCurrencyCode())}</div>}
           {notes.map(n => <div key={n} style={{ fontSize:11, color:'var(--amber)', paddingTop:6, lineHeight:1.5 }}>{n}</div>)}
           {rewardsVatLine(cur, fmt) && <div style={{ fontSize:11, color:'var(--t4)', paddingTop:6, lineHeight:1.5 }}>{rewardsVatLine(cur, fmt)}</div>}
           {/* 29 Oct 2026 (Drop C): gift cards sold at the till are money in, not sales (their own ladder line). */}

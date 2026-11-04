@@ -20,6 +20,12 @@
 import { createElement as h } from 'react';
 import { t as i18nT } from '../lib/i18n.js';
 import { itemAllergenIds, orderIds, kioskAllergenLabels } from '../lib/kioskAllergens.js';
+import { getActiveCurrencyCode } from '../lib/currency.js';
+import { regionOf } from '../../supabase/functions/_shared/regionPack.js';
+
+// 5.12.57: the venue the screen is on (lib/regionPack.js activeCountry, from its two parts so the
+// node test can load this file).
+const activeCountry = () => regionOf(getActiveCurrencyCode());
 
 // A warning sign drawn as a line icon (the same triangle as Icon name="warn"), in currentColor so it
 // takes the chip's colour. Plain createElement so the node test can render it.
@@ -86,10 +92,10 @@ export function allergenChipIds(ids) {
   return orderIds(itemAllergenIds({ allergens: Array.isArray(ids) ? ids : [] }));
 }
 
-/** [{ id, label }] for a chip row, in the kiosk's wording. */
-export function allergenChipLabels(ids, translate = i18nT) {
+/** [{ id, label }] for a chip row, in the kiosk's wording (5.12.57: US words at a US venue). */
+export function allergenChipLabels(ids, translate = i18nT, country = 'UK') {
   const list = allergenChipIds(ids);
-  const labels = kioskAllergenLabels(list, translate);
+  const labels = kioskAllergenLabels(list, translate, country);
   return list.map((id, i) => ({ id, label: labels[i] || id }));
 }
 
@@ -106,9 +112,11 @@ export function allergenChipLabels(ids, translate = i18nT) {
  *   fontSize : the surface's scale (px number or any CSS size); chips size in em from it
  *   heading  : the detail heading text, or false for none (default: the translated "Allergens")
  *   translate: the i18n t function (default lib/i18n t)
+ *   country  : 5.12.57, the venue's country (default: the venue the screen is on; a customer
+ *              screen sets it from its own venue). 'US' reads Wheat/Gluten, Sulfites, Mollusks.
  */
-export default function AllergenChips({ ids, size = 'card', active = null, palette = null, fontSize = null, heading = null, style = null, translate = i18nT } = {}) {
-  const rows = allergenChipLabels(ids, translate);
+export default function AllergenChips({ ids, size = 'card', active = null, palette = null, fontSize = null, heading = null, style = null, translate = i18nT, country = activeCountry() } = {}) {
+  const rows = allergenChipLabels(ids, translate, country);
   if (!rows.length) return null;
   const pal = { ...DEFAULT_PALETTE, ...(palette || {}) };
   const detail = size === 'detail';

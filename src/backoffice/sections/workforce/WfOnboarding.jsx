@@ -16,10 +16,13 @@ import { Card, EmptyState, Badge, RoleChip, initials, inputStyle, labelStyle, Lo
 import * as wf from '../../../staff/wfData';
 import { activeRegionPack, docLabel } from '../../../lib/regionPack';
 import { inviteState } from '../../../lib/staffInvite';
+// 5.12.57: what onboarding says when a venue has no contract of its own to offer.
+import { noTemplateWords } from '../../../staff/docTemplates';
 
 export const STEPS = [
   { key: 'offer', label: 'Offer letter' },
-  { key: 'rtw', label: 'Right to Work' },
+  // 5.12.57: the work document's name follows the venue (Right to Work in the UK, Form I-9 in the US).
+  { key: 'rtw', get label() { return activeRegionPack().workDocLabel; } },
   { key: 'contract', label: 'Contract' },
   { key: 'bank', label: 'Bank details' },
   { key: 'posUser', label: 'POS access' },
@@ -112,7 +115,8 @@ export function PickTemplateModal({ kind, member, role, ctx, title, cta, onClose
       <div className="modal-box" style={{ maxWidth: 620, maxHeight: '88vh', overflowY: 'auto' }}>
         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{title}</div>
         <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 14 }}>For {member.name}. Pick a template — their details are merged in automatically. Edit templates in Workforce → Settings.</div>
-        {loading ? <div style={{ color: 'var(--t3)', fontSize: 13 }}>Loading templates…</div> : !tpls.length ? <div style={{ color: 'var(--t4)', fontSize: 13 }}>No templates available.</div> : (<>
+        {/* 5.12.57: with nothing to offer (a US venue has no built in contract) say where to add one. */}
+        {loading ? <div style={{ color: 'var(--t3)', fontSize: 13 }}>Loading templates…</div> : !tpls.length ? <div style={{ color: 'var(--amber)', fontSize: 13, lineHeight: 1.5 }}>{noTemplateWords(kind)}</div> : (<>
           <div style={{ marginBottom: 12 }}><label style={labelStyle}>Template</label><select style={inputStyle} value={selId} onChange={e => setSelId(e.target.value)}>{tpls.map(t => <option key={t.id} value={t.id}>{t.name}{t.builtin ? ' (built-in)' : ''}</option>)}</select></div>
           <label style={labelStyle}>Preview</label>
           <div style={{ maxHeight: 320, overflowY: 'auto', padding: 14, borderRadius: 10, background: 'var(--bg3)', border: '1px solid var(--bdr2)', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{merged}</div>
@@ -204,7 +208,8 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 17, fontWeight: 700 }}>New starters</div>
-          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2 }}>Take each new hire from offer to first shift — offer letter, Right to Work, signed contract, bank details and till access.</div>
+          {/* 5.12.57: the work document and the bank step follow the venue (a UK venue reads as before). */}
+          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2 }}>{activeRegionPack().country === 'US' ? `Take each new hire from offer to first shift: offer letter, ${activeRegionPack().workDocLabel}, signed contract and till access.` : 'Take each new hire from offer to first shift — offer letter, Right to Work, signed contract, bank details and till access.'}</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost btn-sm" onClick={reload} title="Refresh (e.g. after a candidate signs)"><Icon name="status" size={14} /> Refresh</button>
@@ -221,7 +226,7 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
       {shown.length === 0 ? (
         tab === 'done'
           ? <EmptyState icon="team" title="No completed onboardings yet" body="Once every step on a starter is ticked (including till access), they move here automatically." />
-          : <EmptyState icon="team" title="No one onboarding" body={candidates.length ? 'Start onboarding a new hire to email their offer, collect Right to Work, get the contract signed and capture bank details.' : 'Add a staff member first, then onboard them here.'} cta={candidates.length ? 'Start onboarding' : undefined} onCta={candidates.length ? () => setPicking(true) : undefined} />
+          : <EmptyState icon="team" title="No one onboarding" body={candidates.length ? (activeRegionPack().country === 'US' ? `Start onboarding a new hire to email their offer, collect their ${activeRegionPack().workDocLabel} and get the contract signed.` : 'Start onboarding a new hire to email their offer, collect Right to Work, get the contract signed and capture bank details.') : 'Add a staff member first, then onboard them here.'} cta={candidates.length ? 'Start onboarding' : undefined} onCta={candidates.length ? () => setPicking(true) : undefined} />
       ) : (
         <div style={{ display: 'grid', gap: 14 }}>
           {shown.map(c => <OnboardingCard key={c.id} c={c} member={nameOf(c.staffId)} rolesMap={rolesMap} ctx={ctx} showToast={showToast} markStep={markStep} patchCase={patchCase} onStaffChanged={reload} />)}

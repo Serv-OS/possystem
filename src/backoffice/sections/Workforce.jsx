@@ -12,8 +12,9 @@ import { useState, useEffect, useMemo, Fragment } from 'react';
 import { useStore } from '../../store';
 import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
-import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
-import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance, isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
+// 5.12.57: no seed numbers on any screen (the dashboard read the seed forecast and rates, so it
+// always said 0 and All clear); positions are the site's own.
+import { isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
 import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import { otherSites, linkCandidates, sitesToAdd, linkErrorWords } from '../../staff/peopleAcrossSites';
@@ -35,6 +36,9 @@ import { activeRegionPack, venueMoney } from '../../lib/regionPack';
 import { rotaStaffOf, headOfficeSwitchOn } from '../../lib/headOffice';
 import { adoptVenueRegion } from '../../lib/locationTime';
 import { getActiveCurrencyCode } from '../../lib/currency';
+import { loadPrivateDetails, HIDDEN_WORDS } from '../../staff/privateDetails';
+// 5.12.57: the words that follow the venue's law (Holiday or PTO, Tronc or Tip pool, the leaver balance).
+import { holidayWord, tipPoolName, ukHoliday, leaverBalanceWords } from '../../staff/payLaw';
 
 // v5.11.101: the venue's money and region (the region pack follows the venue's currency). A UK venue
 // reads byte for byte as before.
@@ -43,7 +47,6 @@ const rateText = (r) => `${venueMoney(r, 2)}/h`;
 const salaryText = (a) => `${activeRegionPack().currencySymbol}${Math.round(a / 1000)}k/yr`;
 const HUE = { mgmt: 250, bar: 200, floor: 150, kitchen: 38, door: 285 };
 const groupColor = grp => `oklch(var(--cat-l) var(--cat-c) ${HUE[grp] ?? 250})`;
-const GRP_SECTION = { bar: 'Bar', floor: 'Floor', kitchen: 'Kitchen', door: 'Door', mgmt: 'Management' };
 const initials = n => (n || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?';
 
 const SUBS = {
@@ -109,27 +112,38 @@ export default function Workforce({ section, orgCtx }) {
     return () => { alive = false; };
   }, [locationId]);
 
+  // 5.12.57 (US basics batch 2, Peter 3 Nov 2026): ID numbers and bank details come only through the
+  // database door, for owners, admins and logins with Can see payroll details (Team). Everyone else sees
+  // Hidden, and a save never sends a hidden value back (so it cannot be wiped).
+  const [priv, setPriv] = useState({ byId: {}, hidden: false, loaded: false });
+  const [privTick, setPrivTick] = useState(0);
+  const staffIdsKey = staff.map(s => s.id).filter(id => id && !String(id).startsWith('tmp-')).join(',');
+  useEffect(() => {
+    let alive = true;
+    const ids = staffIdsKey ? staffIdsKey.split(',') : [];
+    if (!ids.length) { setPriv({ byId: {}, hidden: false, loaded: true }); return undefined; }
+    loadPrivateDetails(ids).then(r => { if (alive) setPriv({ ...r, loaded: true }); });
+    return () => { alive = false; };
+  }, [staffIdsKey, privTick]);
+  const privateOk = priv.loaded && !priv.hidden;
+  const staffView = useMemo(() => staff.map(s => (priv.byId[s.id] ? { ...s, ...priv.byId[s.id] } : s)), [staff, priv]);
+
   const week = useMemo(() => buildWeek(), []);
   const ctx = useMemo(() => ({ locationId, orgId: orgCtx?.orgId || null, locName: orgCtx?.locationName || 'our team', actor: { id: orgCtx?.userId || null, name: orgCtx?.userName || null } }), [locationId, orgCtx]);
   // onSettingsSaved / onRolesChanged: child sections push saved state back up
   // so the rest of Workforce (staff role dropdown, rota, pay maths) sees the
   // change without a reload — deleted positions must leave dropdowns at once.
   const sectionProps = {
-    ctx, staff, roles, sections, settings, week, showToast,
+    ctx, staff: staffView, privateHidden: !privateOk, roles, sections, settings, week, showToast,
     onSettingsSaved: setSettings,
     onRolesChanged: (list) => { const map = {}; (list || []).forEach(r => { map[r.key] = r; }); setRoles({ list: list || [], map }); },
   };
   // 5.12.58: the site's own positions only. An empty site used to fall back to the built in samples
   // (Bartender, Barback, ... at 12.50), so deleted positions came back in Add staff member.
   const rolesMap = roles.map || {};
-  const [title, sub] = SUBS[section] || ['Workforce', ''];
-
-  // Rota roster: real staff grouped by their role's section.
-  const groups = useMemo(() => {
-    const by = {};
-    staff.forEach(s => { const grp = rolesMap[s.role]?.grp || 'floor'; (by[grp] = by[grp] || []).push(s); });
-    return Object.keys(by).map(grp => ({ name: GRP_SECTION[grp] || grp, staff: by[grp] }));
-  }, [staff]);
+  const [title0, sub] = SUBS[section] || ['Workforce', ''];
+  // 5.12.57: at a US venue the tip pool is called the Tip pool (UK: Tronc / tips, as before).
+  const title = section === 'wf-tronc' ? tipPoolName(activeRegionPack()) : title0;
 
   // Add or edit an HR record (incl. per-employee pay-rate override): optimistic,
   // persist to wf_staff, roll back on failure.
@@ -141,6 +155,7 @@ export default function Workforce({ section, orgCtx }) {
       try {
         const saved = await saveStaff(data, locationId, orgCtx?.orgId);
         setStaff(st => st.map(x => x.id === data.id ? { ...saved, days: x.days || {} } : x));
+        setPrivTick(t => t + 1);
       } catch (e) { setStaff(prev); showToast?.(`Couldn't save ${data.name}: ${e.message || 'error'}`, 'error'); }
       return;
     }
@@ -175,9 +190,12 @@ export default function Workforce({ section, orgCtx }) {
       // until someone remembered two separate manual toggles.
       const accessNote = '\n\nArchiving also signs them out for good: their till PIN stops working, their Back Office access to this venue is removed, and their staff app locks.';
       if (Math.abs(bal) >= 0.05) {
-        const msg = bal > 0
+        // 5.12.57: at a US venue the balance is PTO, and taking an overdrawn balance back from final pay
+        // is unlawful in several states: say the balance and check with the payroll provider. UK as before.
+        const usMsg = leaverBalanceWords({ name: person?.name || 'This person', bal, pack: activeRegionPack(), accessNote });
+        const msg = usMsg || (bal > 0
           ? `${person?.name || 'This person'} leaves with ${bal.toFixed(1)} hours of accrued holiday UNTAKEN.\n\nThat is owed to them — approve a final paid-holiday request (or add it to their final payroll) BEFORE archiving.${accessNote}\n\nArchive now?`
-          : `${person?.name || 'This person'} leaves ${Math.abs(bal).toFixed(1)} hours OVERDRAWN on holiday.\n\nThat was paid but never accrued — recover it from their final pay if their contract allows.${accessNote}\n\nArchive now?`;
+          : `${person?.name || 'This person'} leaves ${Math.abs(bal).toFixed(1)} hours OVERDRAWN on holiday.\n\nThat was paid but never accrued — recover it from their final pay if their contract allows.${accessNote}\n\nArchive now?`);
         if (!confirm(msg)) return;
       } else if (!confirm(`Archive ${person?.name || 'this person'} as a leaver?${accessNote}`)) return;
     } catch (e) { console.warn('[wf] leaver balance check:', e?.message || e); }
@@ -250,12 +268,12 @@ export default function Workforce({ section, orgCtx }) {
 
       {locationId && regionFor !== locationId && <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading {locName}…</Card>}
       {(!locationId || regionFor === locationId) && <>
-      {key === 'dashboard' && <WfDashboard groups={groups} staffCount={staff.length} />}
+      {key === 'dashboard' && <WfDashboard staff={staff} positionCount={(roles.list || []).length} />}
       {/* 5.12.56: head office staff are salaried and never clock in, so they never go on the rota (no rota cost at the site). */}
       {key === 'rota' && <WfRota {...sectionProps} staff={rotaStaffOf(staff, settings)} />}
       {key === 'staff' && (loading
         ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
-        : <WfStaff staff={staff} roles={rolesMap} holidayHours={holidayHours} headOffice={headOfficeSwitchOn(settings)} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
+        : <WfStaff staff={staffView} roles={rolesMap} holidayHours={holidayHours} headOffice={headOfficeSwitchOn(settings)} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
       {key === 'timesheets' && <WfTimesheets {...sectionProps} />}
       {key === 'payroll' && <WfPayroll {...sectionProps} />}
       {key === 'pay' && <WfPay {...sectionProps} />}
@@ -268,10 +286,10 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'settings' && <WfSettings {...sectionProps} />}
       {key === 'chat' && <WfChat ctx={{ venueOrgId: orgCtx?.venueOrgId || null }} showToast={showToast} />}
 
-      {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
+      {viewing && <StaffDetailModal staff={viewing} privateOk={privateOk} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
-      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
-      {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
+      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} privateOk={privateOk} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
+      {posFor && <PosUserModal staff={posFor} roles={rolesMap} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
       </>}
     </div>
   );
@@ -281,7 +299,7 @@ export default function Workforce({ section, orgCtx }) {
 function Card({ children, style }) {
   return <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(22px) saturate(150%)', WebkitBackdropFilter: 'blur(22px) saturate(150%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-shadow), var(--glass-hi)', borderRadius: 16, padding: 18, ...style }}>{children}</div>;
 }
-function RoleChip({ role, roles = ROLES }) {
+function RoleChip({ role, roles = {} }) {
   const r = roles[role]; if (!r) return <span style={{ color: 'var(--t3)' }}>{role || '—'}</span>; const col = groupColor(r.grp);
   return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: col }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: col }} />{r.lbl}</span>;
 }
@@ -301,36 +319,41 @@ function EmptyState({ icon = 'sparkle', title, body, cta, onCta }) {
 }
 
 // ── Dashboard ──
-function WfDashboard({ groups, staffCount }) {
-  const wage = wageByDay(groups);
-  const pct = labourPct(wage[TODAY], FORECAST[TODAY]); const over = pct > LABOUR_TARGET; const hasSales = FORECAST[TODAY] > 0;
+// 5.12.57: only figures that are real. The labour %, wage cost and needs action tiles were built
+// from the seed forecast and the seed rates, so they always read 0 and All clear: they are gone
+// and the dashboard says where labour lives instead.
+function WfDashboard({ staff = [], positionCount = 0 }) {
+  const active = staff.filter(s => s.status !== 'leaver').length;
   const stats = [
-    { k: 'Staff', v: String(staffCount), sub: staffCount === 0 ? 'Add your team' : 'on the books', col: 'var(--t1)' },
-    { k: 'Labour % today', v: hasSales ? Math.round(pct * 100) + '%' : '—', sub: hasSales ? `vs ${Math.round(LABOUR_TARGET * 100)}% target` : 'Set a sales forecast', col: hasSales ? (over ? 'var(--red)' : 'var(--grn)') : 'var(--t3)' },
-    { k: 'Wage cost today', v: money(wage[TODAY]), sub: hasSales ? `Forecast ${money(FORECAST[TODAY])}` : 'From the rota', col: 'var(--acc)' },
-    { k: 'Needs action', v: '0', sub: 'All clear', col: 'var(--amber)' },
+    { k: 'Staff', v: String(active), sub: active === 0 ? 'Add your team' : 'on the books', col: 'var(--t1)' },
+    { k: 'Positions', v: String(positionCount), sub: positionCount === 0 ? 'Add them in Positions and rates' : 'with their pay', col: 'var(--acc)' },
   ];
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
-      {stats.map(s => (
-        <Card key={s.k} style={{ position: 'relative', overflow: 'hidden' }}>
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: s.col }} />
-          <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)' }}>{s.k}</div>
-          <div className="mono" style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-.02em', marginTop: 10, color: s.col }}>{s.v}</div>
-          <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>{s.sub}</div>
-        </Card>
-      ))}
+    <div style={{ display: 'grid', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+        {stats.map(s => (
+          <Card key={s.k} style={{ position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: s.col }} />
+            <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)' }}>{s.k}</div>
+            <div className="mono" style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-.02em', marginTop: 10, color: s.col }}>{s.v}</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>{s.sub}</div>
+          </Card>
+        ))}
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>See Rota and Reports for labour: the rota shows the planned wage cost against sales, and Reports shows what was paid.</div>
     </div>
   );
 }
 
 // ── Staff (HR list + CRUD) ──
-function WfStaff({ staff, roles = ROLES, holidayHours = {}, headOffice = false, onAdd, onView, onEdit, onSetPos, onRemove }) {
+function WfStaff({ staff, roles = {}, holidayHours = {}, headOffice = false, onAdd, onView, onEdit, onSetPos, onRemove }) {
+  // 5.12.57: a US venue's column is PTO, and a salaried person has no statutory 28 days there.
+  const pack = activeRegionPack();
   if (staff.length === 0) return <EmptyState icon="team" title="No staff yet" body="Add your team here. Each person is an HR record — you can then set them as a POS user to give them till access on the Team page." cta="Add staff member" onCta={onAdd} />;
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr>{['Name', 'Position', 'Pay rate', 'Contract', 'Holiday', 'Mobile', 'POS access', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
+        <thead><tr>{['Name', 'Position', 'Pay rate', 'Contract', holidayWord(pack), 'Mobile', 'POS access', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
         <tbody>
           {staff.map(s => {
             const role = roles[s.role];
@@ -348,7 +371,9 @@ function WfStaff({ staff, roles = ROLES, holidayHours = {}, headOffice = false, 
                 <td style={{ ...td, whiteSpace: 'nowrap' }}>
                   {isHourly(s, role)
                     ? <><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{Number(holidayHours[s.id] || 0).toFixed(1)}h</span><span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 5 }}>accrued</span></>
-                    : <><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{s.holidayEntitlementDays ?? FIXED_HOLIDAY_DAYS}d</span><span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 5 }}>fixed</span></>}
+                    : ukHoliday(pack) || s.holidayEntitlementDays != null
+                      ? <><span className="mono" style={{ fontSize: 12, fontWeight: 700 }}>{s.holidayEntitlementDays ?? FIXED_HOLIDAY_DAYS}d</span><span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 5 }}>fixed</span></>
+                      : <span style={{ fontSize: 11, color: 'var(--t4)' }}>By your policy</span>}
                 </td>
                 <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t2)' }}>{s.mobile || '—'}</td>
                 <td style={td}>{s.posUserId ? <Badge tone="green">POS user ✓</Badge> : <button className="btn btn-ghost btn-xs" onClick={() => onSetPos(s)}>Set as POS user</button>}</td>
@@ -365,7 +390,7 @@ function WfStaff({ staff, roles = ROLES, holidayHours = {}, headOffice = false, 
 const inputStyle = { width: '100%', background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '10px 12px', height: 42, fontSize: 13, color: 'var(--t1)', fontFamily: 'inherit', outline: 'none' };
 const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 6 };
 
-function AddStaffModal({ locName, staff, roles = ROLES, sections = [], headOffice = false, onClose, onSave }) {
+function AddStaffModal({ locName, staff, privateOk = true, roles = {}, sections = [], headOffice = false, onClose, onSave }) {
   const isEdit = !!staff;
   const roleOpts = Object.entries(roles);
   const ec = (isEdit && staff.emergencyContact) || {};
@@ -390,6 +415,8 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], headOffic
     const emergencyContact = (ecName || ecPhone || ecRelation) ? { name: ecName || null, phone: ecPhone || null, relationship: ecRelation || null } : null;
     const payload = { ...rest, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride), emergencyContact, sectionIds: secIds };
     if (headOffice) { payload.headOffice = ho.on; payload.salaryAnnual = ho.salary === '' ? null : Number(ho.salary); }
+    // 5.12.57: a private value this login may not see is never sent back unless they typed a new one.
+    if (isEdit && !privateOk) { if (!String(f.niNumber || '').trim()) delete payload.niNumber; if (!String(f.ssnLast4 || '').trim()) delete payload.ssnLast4; }
     if (isEdit) payload.id = staff.id;
     onSave(payload);
   };
@@ -455,14 +482,14 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], headOffic
           <div><label style={labelStyle}>Email</label><input style={inputStyle} value={f.email} onChange={e => set('email', e.target.value)} placeholder="name@email.com" /></div>
           <div><label style={labelStyle}>Date of birth</label><input style={inputStyle} type="date" value={f.dob} onChange={e => set('dob', e.target.value)} /></div>
           <div><label style={labelStyle}>Start date</label><input style={inputStyle} type="date" value={f.startDate} onChange={e => set('startDate', e.target.value)} /></div>
-          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Home address</label><input style={inputStyle} value={f.address} onChange={e => set('address', e.target.value)} placeholder="House, street, town, postcode" /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Home address</label><input style={inputStyle} value={f.address} onChange={e => set('address', e.target.value)} placeholder={pack.country === 'US' ? 'Street, city, state, ZIP' : 'House, street, town, postcode'} /></div>
           {usFields ? (<>
-            <div><label style={labelStyle}>SSN (last 4 only)</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} value={f.ssnLast4} onChange={e => set('ssnLast4', e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="1234" inputMode="numeric" />
+            <div><label style={labelStyle}>SSN (last 4 only)</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} value={f.ssnLast4} onChange={e => set('ssnLast4', e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder={isEdit && !privateOk ? 'Hidden: type 4 digits to replace' : '1234'} inputMode="numeric" />
               <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Never the whole number.</div></div>
             <div><label style={labelStyle}>Payroll employee ID</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} value={f.payrollEmployeeId} onChange={e => set('payrollEmployeeId', e.target.value.slice(0, 40))} placeholder="From your payroll provider" />
               <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Included in the US payroll export.</div></div>
           </>) : (
-          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>National Insurance number</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }} value={f.niNumber} onChange={e => set('niNumber', e.target.value.toUpperCase().replace(/[^A-Z0-9 ]/g, '').slice(0, 13))} placeholder="QQ 12 34 56 C" />
+          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>National Insurance number</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }} value={f.niNumber} onChange={e => set('niNumber', e.target.value.toUpperCase().replace(/[^A-Z0-9 ]/g, '').slice(0, 13))} placeholder={isEdit && !privateOk ? 'Hidden: type a new one to replace it' : 'QQ 12 34 56 C'} />
             <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Needed by your payroll company — included in the payroll export.</div></div>
           )}
           <div style={{ gridColumn: '1 / -1', marginTop: 4 }}><div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--acc)' }}>Emergency contact</div></div>
@@ -505,7 +532,7 @@ function DetailDocView({ path }) {
 }
 
 // Staff profile — HR record + payroll bank + contract + documents + timesheets.
-function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, onEdit, onSetPos, onPatch, onPeopleChanged }) {
+function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToast, onClose, onEdit, onSetPos, onPatch, onPeopleChanged }) {
   const role = roles[s.role];
   const [data, setData] = useState({ docs: [], timesheets: [], onb: null, holidayHrs: 0, loading: true });
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -547,8 +574,9 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
     ['Address', s.address || '—'],
     ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
     // v5.11.101: the payroll fields follow the venue (UK: NI number; US: SSN last 4 and the payroll id).
-    ...(pack.payrollFields.includes('niNumber') ? [['NI number', s.niNumber || '—']] : []),
-    ...(pack.payrollFields.includes('ssnLast4') ? [['SSN (last 4)', s.ssnLast4 ? `***-**-${s.ssnLast4}` : '—'], ['Payroll employee ID', s.payrollEmployeeId || '—']] : []),
+    // 5.12.57: hidden unless this login may see ID numbers (owner, admin, Can see payroll details).
+    ...(pack.payrollFields.includes('niNumber') ? [['NI number', privateOk ? (s.niNumber || '—') : HIDDEN_WORDS]] : []),
+    ...(pack.payrollFields.includes('ssnLast4') ? [['SSN (last 4)', privateOk ? (s.ssnLast4 ? `***-**-${s.ssnLast4}` : '—') : HIDDEN_WORDS], ['Payroll employee ID', s.payrollEmployeeId || '—']] : []),
   ];
 
   return (
@@ -571,7 +599,7 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 18 }}>
           <div style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
-            <div style={labelStyle}>Holiday accrued</div>
+            <div style={labelStyle}>{holidayWord(pack)} accrued</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 800, marginTop: 4 }}>{Number(data.holidayHrs).toFixed(1)}h</div>
           </div>
           <div style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
@@ -664,7 +692,7 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
 // per site stays (the site's position, rate, rota and timesheets); the records of one person are
 // linked. Linked: their week counts across every site for US overtime, their PIN, card and own details
 // are shared. Every change goes through a database door that checks access to every site.
-function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
+function SitesPanel({ s, ctx, roles = {}, showToast, onChanged }) {
   const [state, setState] = useState({ loading: true, sites: [], records: [] });
   const [tick, setTick] = useState(0);
   // 5.12.39 (Peter: "people might work across all sites"): tick any number of sites, each with its
@@ -728,7 +756,8 @@ function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
       {linked.length > 0 ? (
         <div style={box}>
           <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 6 }}>
-            <b>Also works at</b>. Their hours at every site count toward one 40 hour week for overtime. Their PIN, card and own details are the same everywhere.
+            {/* 5.12.57: the 40 hour overtime week is a US rule: a UK site does not mention it. */}
+            <b>Also works at</b>. {activeRegionPack().country === 'US' ? 'Their hours at every site count toward one 40 hour week for overtime. ' : ''}Their PIN, card and own details are the same everywhere.
           </div>
           {linked.map(l => (
             <div key={l.staffId} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '3px 0' }}>
@@ -964,10 +993,12 @@ function ContractPanel({ s, role, onb, loading, ctx, showToast, onCase }) {
   );
 }
 
-function PosUserModal({ staff, onClose, onSave }) {
+function PosUserModal({ staff, roles = {}, onClose, onSave }) {
   const [pin, setPin] = useState('');
-  const [role, setRole] = useState(ROLES[staff.role]?.lbl || 'Server');
-  const POS_ROLES = ['Manager', 'Supervisor', 'Bartender', 'Server', 'Host', 'Chef', 'Kitchen Porter'];
+  // 5.12.57: a US kitchen calls the role Dishwasher (UK: Kitchen Porter, as before); the default is
+  // the person's own position at this site when it is a till role, never a sample position.
+  const POS_ROLES = ['Manager', 'Supervisor', 'Bartender', 'Server', 'Host', 'Chef', activeRegionPack().country === 'US' ? 'Dishwasher' : 'Kitchen Porter'];
+  const [role, setRole] = useState(() => { const lbl = roles[staff.role]?.lbl; return lbl && POS_ROLES.includes(lbl) ? lbl : 'Server'; });
   const valid = /^\d{4}$/.test(pin);
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>

@@ -455,9 +455,32 @@ export function getMessageType(type: string): MessageTypeDef | undefined {
   return MESSAGE_TYPES.find(t => t.type === type);
 }
 
-export function getDefaultTemplate(type: string, channel: 'email' | 'sms'): ChannelDefault | null {
+// 5.12.57: the default words a US venue's customer reads. A US venue's customer collects at
+// "pickup", never "collection" (src/lib/online/orderTiming.js pickupWord says Pickup for USD).
+// Only the defaults move: a venue's own saved template is never rewritten. Every other type, and
+// every UK or Irish venue, reads the defaults above exactly as before.
+const US_DEFAULTS: Record<string, { email?: ChannelDefault; sms?: ChannelDefault }> = {
+  order_ready: {
+    sms: { body: `Hi {{customer_name}}, your order #{{order_number}} is ready for pickup at {{venue_name}}!` },
+  },
+};
+
+/** The default "order ready" text for a country ('US' says pickup; anything else the UK words). */
+export function orderReadyDefaultSms(country?: string | null): string {
+  return getDefaultTemplate('order_ready', 'sms', country)?.body || '';
+}
+
+/**
+ * The default template for a type and channel. country 'US' (the venue's country, from its
+ * currency) reads the US words where there are any; anything else, or none, reads as before.
+ */
+export function getDefaultTemplate(type: string, channel: 'email' | 'sms', country?: string | null): ChannelDefault | null {
   const mt = getMessageType(type);
   if (!mt) return null;
+  if (String(country || '').toUpperCase() === 'US') {
+    const us = US_DEFAULTS[type]?.[channel];
+    if (us) return us;
+  }
   return mt.defaults[channel] || null;
 }
 

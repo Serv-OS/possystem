@@ -27,7 +27,7 @@
 // itself with the service role, and the claim columns cap sends at one per event per order.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
+import { resolveAndRender, wrapInEmailHtml, substituteTags } from '../_shared/template-resolver.ts';
 import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 import { collectionLabel } from '../_shared/collection-label.ts';
 import { isCounterCollectOrder, counterReadyText, kioskTileOn } from '../_shared/counterCollect.js';
@@ -36,6 +36,8 @@ import {
   legacyLedgerBlocks, LEGACY_LEDGER_TABLE,
 } from '../_shared/orderNotifyScope.js';
 import { mayMessageCustomer } from '../_shared/ezcaterCatering.js';
+import { toE164, regionOf } from '../_shared/regionPack.js';
+import { orderReadyDefaultSms } from '../_shared/message-types.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -57,14 +59,11 @@ const cors = {
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-function normalisePhone(raw: string): string | null {
-  if (!raw) return null;
-  const digits = String(raw).replace(/[^\d+]/g, '');
-  if (!digits) return null;
-  if (digits.startsWith('+')) return digits;
-  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-  if (digits.startsWith('44')) return '+' + digits;
-  return digits.length >= 10 ? '+' + digits : null;
+// 5.12.57: the customer's phone read with the VENUE's country (its currency: USD is the US),
+// through the one region reader. The old reader was UK only: (801) 555-1234 became +8015551234,
+// so a US venue's "confirmed" and "ready" texts went nowhere. Unknown currency reads as the UK.
+function normalisePhone(raw: string, currency?: string | null): string | null {
+  return toE164(String(raw || ''), currency || 'GBP');
 }
 
 function moneyFor(currency: string | null | undefined, amount: number): string {
@@ -216,12 +215,27 @@ Deno.serve(async (req) => {
   // Drive thru (16 Sep 2026): keyed on the literal type, so every other order reads exactly as before.
   const driveThru = String(order.type || '') === 'drive-thru';
 
+  // Venue for branding, money and the phone's country. 5.12.57: read before the phone, so the
+  // number is read with the venue's country (a failed read keeps the UK reading, as before).
+  const locationId = String(order.location_id || '');
+  let venueName = 'our venue';
+  let venueTz = 'Europe/London';
+  let currency: string | null = null;
+  try {
+    const { data: loc } = await opsAdmin.from('locations').select('name, currency, timezone').eq('id', locationId).maybeSingle();
+    venueTz = ((loc as Record<string, unknown>)?.timezone as string) || venueTz;
+    if (loc?.name) venueName = loc.name;
+    currency = (loc as Record<string, unknown>)?.currency as string | null;
+  } catch { /* name is best-effort */ }
+  // 5.12.57: a US venue's customer collects at "pickup", never "collection" (orderTiming.js pickupWord).
+  const usVenue = !!currency && regionOf(currency) === 'US';
+
   // New kiosk design: the ready text only. Nothing is claimed for the skipped event.
   // The three design lookups run only for a kiosk order that has a phone or an email: with no
   // contact there is nothing to skip or send, and the flow below is exactly today's.
   const orderContact = (order.customer || {}) as Record<string, unknown>;
   const kioskHasContact = source === 'kiosk'
-    && !!(normalisePhone(String(orderContact.phone || '')) || String(orderContact.email || '').trim());
+    && !!(normalisePhone(String(orderContact.phone || ''), currency) || String(orderContact.email || '').trim());
   const kioskProf = kioskHasContact ? await kioskProfile(order) : null;
   const kioskV2 = kioskProf?.kiosk_new_design === true;
   if (event === 'confirmed' && kioskV2) return json({ ok: true, skipped: KIOSK_READY_ONLY });
@@ -282,7 +296,7 @@ Deno.serve(async (req) => {
   if (!ledger || ledger.length === 0) return json({ ok: true, skipped: 'already notified (ledger)' });
 
   const customer = (order.customer || {}) as Record<string, unknown>;
-  const phone = normalisePhone(String(customer.phone || ''));
+  const phone = normalisePhone(String(customer.phone || ''), currency);
   const email = String(customer.email || '').trim() || null;
   if (!phone && !email) return json({ ok: true, skipped: 'no contact details' });
 
@@ -296,17 +310,6 @@ Deno.serve(async (req) => {
     .select('ref');
   if (!claimed || claimed.length === 0) return json({ ok: true, skipped: 'already notified' });
 
-  // Venue + company for branding/templates.
-  const locationId = String(order.location_id || '');
-  let venueName = 'our venue';
-  let venueTz = 'Europe/London';
-  let currency: string | null = null;
-  try {
-    const { data: loc } = await opsAdmin.from('locations').select('name, currency, timezone').eq('id', locationId).maybeSingle();
-    venueTz = ((loc as Record<string, unknown>)?.timezone as string) || venueTz;
-    if (loc?.name) venueName = loc.name;
-    currency = (loc as Record<string, unknown>)?.currency as string | null;
-  } catch { /* name is best-effort */ }
   let companyId: string | null = null;
   try {
     const { data: pl } = await platformAdmin
@@ -374,7 +377,7 @@ Deno.serve(async (req) => {
     if (!disabled) {
       let smsBody = '';
       if (companyId) {
-        const rendered = await resolveAndRender(companyId, messageType, 'sms', mergeData);
+        const rendered = await resolveAndRender(companyId, messageType, 'sms', mergeData, { country: usVenue ? 'US' : null });
         smsBody = rendered?.body || '';
       }
       if (!smsBody) {
@@ -386,7 +389,9 @@ Deno.serve(async (req) => {
             ? `Your order ${shortRef(ref)} is ready to collect at ${venueName}.`
             : driveThru
               ? `Hi ${firstName}, your order #${ref} is ready at the ${venueName} drive thru window!`
-              : `Hi ${firstName}, your order #${ref} is ready for collection at ${venueName}!`;
+              : usVenue
+                ? substituteTags(orderReadyDefaultSms('US'), mergeData)
+                : `Hi ${firstName}, your order #${ref} is ready for collection at ${venueName}!`;
       }
       result.sms = await sendSmsViaFn(phone, smsBody, locationId, messageType);
     }
@@ -399,7 +404,7 @@ Deno.serve(async (req) => {
       let subject = `Order #${ref} confirmed — ${venueName}`;
       let bodyText = '';
       if (companyId) {
-        const rendered = await resolveAndRender(companyId, messageType, 'email', mergeData);
+        const rendered = await resolveAndRender(companyId, messageType, 'email', mergeData, { country: usVenue ? 'US' : null });
         if (rendered?.body) {
           subject = rendered.subject || subject;
           bodyText = rendered.body;

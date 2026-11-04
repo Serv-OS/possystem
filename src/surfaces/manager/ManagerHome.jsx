@@ -10,6 +10,7 @@ import { onShiftNow, noShows, breaksDue } from '../../lib/manager/team';
 import { venueBreakPolicy } from '../../staff/breaks.js';
 import { belowPar, stockNeedNow } from '../../lib/manager/kitchen';
 import { money } from '../../lib/currency';
+import { taxText } from '../../lib/taxWords';   // 5.12.57: the snapshot venue's own tax words
 import { syne, mono } from './ui';
 import { useLayout } from './useLayout';
 import { cols } from './layout';
@@ -93,7 +94,7 @@ export default function ManagerHome({ ctx }) {
         <button onClick={() => setTab('reports')} className="sv-glass" style={{ width: '100%', textAlign: 'left', padding: '18px 20px', marginTop: 12, borderRadius: 18, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontFamily: 'inherit', ...(split ? (needNow.length ? L.s.homeHero : L.s.homeHeroTall) : null) }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, ...L.s.heroTop }}>
           <div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Takings today (ex-VAT)</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{taxText('Takings today (ex-VAT)', snap?.currency || m.currency)}</div>
             <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--acc)', lineHeight: 1.1, margin: '6px 0 0', ...syne, ...L.s.heroValue }}>{money(Number(m.net) || 0, m.currency)}</div>
           </div>
           {m.forecastPct != null && (

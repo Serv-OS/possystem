@@ -32,6 +32,9 @@ export async function resolveAndRender(
   messageType: string,
   channel: 'email' | 'sms',
   data: Record<string, string>,
+  // 5.12.57: the venue's country ('US' | 'UK' | 'IE'), so the DEFAULT words follow it (a US
+  // customer's order is ready for pickup). Omitted, the defaults read exactly as before.
+  opts: { country?: string | null } = {},
 ): Promise<RenderedTemplate | null> {
   // 1. Try custom template
   const { data: custom } = await platformAdmin
@@ -51,7 +54,7 @@ export async function resolveAndRender(
   }
 
   // 2. Fall back to default
-  const def = getDefaultTemplate(messageType, channel);
+  const def = getDefaultTemplate(messageType, channel, opts?.country);
   if (!def) return null;
 
   return {

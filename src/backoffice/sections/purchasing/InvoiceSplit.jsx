@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
 import { useSiteMoney } from '../stock/useSiteCurrency';
+import { stockTaxWords } from '../../../lib/stock/stockRegion';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { moneyWords } from '../../../lib/stock/purchasingRules';
 import { splitCheck } from '../../../lib/stock/purchasingWords';
@@ -16,7 +17,8 @@ export default function InvoiceSplit({ invoice, onDone, onClose }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
   // 5.12.57: the invoice's own site currency, not the signed in venue's.
-  const { symbol } = useSiteMoney(invoice?.location_id || null);
+  const { symbol, code } = useSiteMoney(invoice?.location_id || null);
+  const tw = stockTaxWords(code); // 5.12.57: 'tax' at a US site
   const [rows, setRows] = useState([]);   // [{ location_id, amount, tax, basis, note }]
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -58,7 +60,7 @@ export default function InvoiceSplit({ invoice, onDone, onClose }) {
         <Btn kind="primary" disabled={busy || !check.ok} onClick={save}>{busy ? 'Saving…' : 'Save split'}</Btn>
       </>}>
       <TableWrap>
-        <thead><tr><Th>Site</Th><Th right>Amount (inc VAT)</Th><Th right>VAT</Th><Th>Note</Th><Th> </Th></tr></thead>
+        <thead><tr><Th>Site</Th><Th right>Amount ({tw.incTax})</Th><Th right>{tw.Tax}</Th><Th>Note</Th><Th> </Th></tr></thead>
         <tbody>
           {rows.map((r, i) => (
             <tr key={i}>
@@ -69,7 +71,7 @@ export default function InvoiceSplit({ invoice, onDone, onClose }) {
                 </select>
               </Td>
               <Td right><input inputMode="decimal" value={r.amount} onChange={(e) => setRow(i, 'amount', e.target.value)} style={{ ...ui.input, width: 100, textAlign: 'right' }} aria-label="Amount" /></Td>
-              <Td right><input inputMode="decimal" value={r.tax} onChange={(e) => setRow(i, 'tax', e.target.value)} style={{ ...ui.input, width: 80, textAlign: 'right' }} aria-label="VAT" /></Td>
+              <Td right><input inputMode="decimal" value={r.tax} onChange={(e) => setRow(i, 'tax', e.target.value)} style={{ ...ui.input, width: 80, textAlign: 'right' }} aria-label={tw.Tax} /></Td>
               <Td><input value={r.note} onChange={(e) => setRow(i, 'note', e.target.value)} style={ui.input} aria-label="Note" /></Td>
               <Td right>{rows.length > 1 && <Btn small kind="link" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}>Remove</Btn>}</Td>
             </tr>

@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { money, getActiveCurrencyCode } from '../../lib/currency';  // v5.5.326: multi-currency
+import { taxWord } from '../../lib/taxWords';   // 5.12.57: the venue's own tax word
 import { denominationLabel, countedValues, countTotal } from '../../lib/cashDenominations';
 import { Icon } from '../../components/ServOSIcons';
 
@@ -272,7 +273,7 @@ export default function EODClose() {
         <Card label="Cash"     value={fmt(totals.cash)}    highlight="var(--grn)" />
         <Card label="Card"     value={fmt(totals.card)}    highlight="#3b82f6" />
         {totals.other > 0 && <Card label="Other" value={fmt(totals.other)} />}
-        <Card label="Tax"      value={fmt(totals.taxes)} sub={totals.taxMissing ? `${totals.taxMissing === 1 ? '1 sale has' : `${totals.taxMissing} sales have`} no VAT recorded: ${totals.taxMissingRefs.join(', ')}` : undefined} />
+        <Card label="Tax"      value={fmt(totals.taxes)} sub={totals.taxMissing ? `${totals.taxMissing === 1 ? '1 sale has' : `${totals.taxMissing} sales have`} no ${taxWord(getActiveCurrencyCode())} recorded: ${totals.taxMissingRefs.join(', ')}` : undefined} />
         <Card label="Tips"     value={fmt(totals.tips)} />
         <Card label="Checks"   value={String(totals.checks)} />
         <Card label="Covers"   value={String(totals.covers || 0)} />

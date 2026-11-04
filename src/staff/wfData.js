@@ -16,10 +16,11 @@
 
 import { supabase, isMock } from '../lib/supabase';
 import { aiRequestInit } from '../lib/aiRequest';
-import { toE164 as regionToE164, venueMoney } from '../lib/regionPack';
+import { toE164 as regionToE164, venueMoney, activeCountry } from '../lib/regionPack';
 import { getActiveCurrencyCode } from '../lib/currency';
 import { reportSave } from '../lib/saveHealth';
 import { ROLES as SEED_ROLES } from './seed';
+import { templatesForVenue } from './docTemplates';
 
 const orgCache = {};
 
@@ -217,20 +218,25 @@ function mapStaff(r) {
     days: {},
   };
 }
+// 5.12.57: every staff column the Back Office reads, except the private ID numbers and bank details.
+const STAFF_COLS = 'id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_account_masked,portal_user_id,portal_invite_expires,created_at';
 export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
-  const COLS = 'id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,bank_account_name,ni_number,portal_user_id,portal_invite_expires,created_at';
+  // 5.12.57 (US basics batch 2): no ID numbers or bank details here (NI, SSN last 4, sort code, account
+  // number, account name). They come only through the database door (src/staff/privateDetails.js), for
+  // owners, admins and logins with Can see payroll details; after 20261120a the table refuses them.
+  const COLS = STAFF_COLS;
   const read = (cols) => supabase.from('wf_staff').select(cols)
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
   // v5.11.101: the two US payroll columns come with 20261031a. Until it has run, read without them
   // (a missing column would otherwise empty the whole staff list).
   // 5.12.36: person_id comes with 20261111a; until it has run, read without it (same reason).
   // 5.12.56: head_office and salary_annual come with 20261119a; until it has run, read without them.
-  let { data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id,head_office,salary_annual');
-  if (error && /head_office|salary_annual|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id'));
-  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4'));
-  if (error && /payroll_employee_id|ssn_last4|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
+  let { data, error } = await read(COLS + ',location_id,payroll_employee_id,person_id,head_office,salary_annual');
+  if (error && /head_office|salary_annual|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,person_id'));
+  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id'));
+  if (error && /payroll_employee_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);
 }
@@ -282,9 +288,14 @@ export async function saveStaff(member, locationId, orgId) {
   // the Sites panel changes it (setPrimaryLocation), so a save at another site never moves it.
   else row.primary_venue_id = locationId;
   const q = real ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' }) : supabase.from('wf_staff').insert(row);
-  const { data, error } = await q.select().single();
+  // 5.12.57: read back named columns only (a select of every column is refused once 20261120a hides the
+  // private ones). The private ones the form sent are kept on the answer so the screen still shows them.
+  const { data, error } = await q.select(`${STAFF_COLS},location_id,payroll_employee_id,person_id,head_office,salary_annual`).single();
   if (error) { console.warn('[wf] saveStaff:', error.message); throw new Error(error.message); }
-  return mapStaff(data);
+  const out = mapStaff(data);
+  if (member.niNumber !== undefined) out.niNumber = row.ni_number ?? null;
+  if (member.ssnLast4 !== undefined) out.ssnLast4 = row.ssn_last4 ?? null;
+  return out;
 }
 export async function softDeleteStaff(id) {
   if (isMock || !supabase) return lsDelete('staff', id);
@@ -931,44 +942,8 @@ export async function saveOnboarding(onb, locationId, orgId) {
 // ============================================================================
 const mapTemplate = r => ({ id: r.id, kind: r.kind, name: r.name, body: r.body || '', contractType: r.contract_type || null, isDefault: !!r.is_default, active: r.active !== false });
 
-// Built-in starting templates so there's always something to send. Editable copies
-// are created in wf_doc_templates the first time the operator saves a change.
-export const DEFAULT_TEMPLATES = [
-  { id: 'builtin-offer', kind: 'offer', name: 'Standard offer letter', contractType: null, isDefault: true, builtin: true,
-    body: `Dear {{first_name}},
-
-We're delighted to offer you the position of {{position}} at {{business_name}}.
-
-• Rate of pay: {{rate}}
-• Employment type: {{contract_type}}
-• Proposed start date: {{start_date}}
-
-We're really pleased to have you joining the team. Please reply to this email to accept, and we'll send your contract to sign and get you set up.
-
-Warm regards,
-{{business_name}}` },
-  { id: 'builtin-contract', kind: 'contract', name: 'Statement of main terms (UK)', contractType: null, isDefault: true, builtin: true,
-    body: `STATEMENT OF MAIN TERMS OF EMPLOYMENT
-
-This statement sets out the main terms of your employment with {{business_name}} ("the Employer").
-
-Employee: {{full_name}}
-Position: {{position}}
-Employment type: {{contract_type}}
-Start date: {{start_date}}
-Rate of pay: {{rate}}
-Average weekly hours: {{weekly_hours}}
-Place of work: {{business_name}}
-
-1. Pay is calculated and paid in line with the Employer's normal payroll schedule.
-2. Holiday accrues in line with statutory entitlement (5.6 weeks per year, pro rata).
-3. Either party may end this employment by giving the statutory minimum notice.
-4. You agree to follow the Employer's policies and procedures while employed.
-
-By signing below you confirm you have read, understood and agree to these terms of employment.
-
-Signed: {{full_name}}     Date: {{today}}` },
-];
+// 5.12.57: the built in templates live in docTemplates.js (pure), each with a country.
+export { DEFAULT_TEMPLATES } from './docTemplates';
 
 /** Replace {{token}} placeholders in a template body. Unknown tokens → blank. */
 export function mergeTemplate(body, vars) {
@@ -994,7 +969,9 @@ export function templateVars(staff, role, businessName) {
   };
 }
 
-/** Load templates (merges built-in defaults with saved ones; saved override built-ins by kind+name). */
+/** Load templates (merges built-in defaults with saved ones; saved override built-ins by kind+name).
+ *  5.12.57: the built ins follow the venue's country and a non UK venue's own come first
+ *  (docTemplates.js templatesForVenue); a UK venue's list is exactly as before. */
 export async function loadTemplates(locationId, kind) {
   let saved = [];
   if (isMock || !supabase) saved = lsGet('templates');
@@ -1002,8 +979,7 @@ export async function loadTemplates(locationId, kind) {
     const { data, error } = await supabase.from('wf_doc_templates').select('*').eq('location_id', locationId).eq('active', true).order('created_at');
     if (!error) saved = (data || []).map(mapTemplate);
   }
-  const all = [...DEFAULT_TEMPLATES, ...saved];
-  return kind ? all.filter(t => t.kind === kind) : all;
+  return templatesForVenue(saved, { kind: kind || null, country: activeCountry() });
 }
 export async function saveTemplate(tpl, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('templates', { ...tpl, builtin: false });

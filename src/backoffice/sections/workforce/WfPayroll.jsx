@@ -17,17 +17,23 @@ import { activeCountry, activeRegionPack, venueMoney } from '../../../lib/region
 import { Card, EmptyState, Badge, th, td, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { payPeriod, payCfgFrom, shiftPayPeriod } from '../../../staff/wfWeek';
+// 5.12.57: the words that follow the venue's law (Holiday or PTO, Tronc or Tip pool), and a closed
+// run's wages as Total minus tips, so every wage part the server pays is in them.
+import { holidayWord, holidayWordLower, tipPoolName, wagesOf } from '../../../staff/payLaw';
 
 // v5.11.101: the venue's money (a UK venue reads exactly as before).
 const money = (n, dp = 2) => venueMoney(n, dp);
 const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
-export default function WfPayroll({ ctx, staff = [], roles, sections, settings, week, showToast }) {
+export default function WfPayroll({ ctx, staff = [], privateHidden = false, roles, sections, settings, week, showToast }) {
   const payCfg = useMemo(() => payCfgFrom(settings, activeCountry()), [settings]);
   // v5.11.101: the export and the columns follow the venue (BACS for the UK; the US payroll
   // provider's columns, no bank details, for a US venue).
   const pack = activeRegionPack();
   const usExport = pack.payrollExport === 'us_payroll';
+  const hw = holidayWord(pack);           // 'Holiday' (UK, as before) or 'PTO' (US)
+  const poolName = tipPoolName(pack);     // 'Tronc / tips' (UK, as before) or 'Tip pool' (US)
+  const runWord = pack.country === 'US' ? 'tip pool run' : 'tronc run';
 
   const [period, setPeriod] = useState(() => payPeriod(payCfg));
   const [run, setRun] = useState(null);     // { staff, totals, tronc } | null
@@ -110,7 +116,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
       return [parts.slice(0, -1).join(' ') || parts[0] || '', parts.length > 1 ? parts[parts.length - 1] : ''];
     };
     const rows = [
-      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Hours at other sites', 'Regular rate (blended)', 'Overtime premium', 'Double time hours', 'Meal break premium', 'Tip credit top up', 'Gross wages', ...(withSalary ? ['Salary (head office)'] : []), ...(withPrem ? ['Premium pay'] : []), 'Holiday hours', 'Holiday pay', 'Tips (direct)', 'Tips (pooled)', 'Cash tips (declared)', 'Total'],
+      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Hours at other sites', 'Regular rate (blended)', 'Overtime premium', 'Double time hours', 'Meal break premium', 'Tip credit top up', 'Gross wages', ...(withSalary ? ['Salary (head office)'] : []), ...(withPrem ? ['Premium pay'] : []), `${hw} hours`, `${hw} pay`, 'Tips (direct)', 'Tips (pooled)', 'Cash tips (declared)', 'Total'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
         const [first, last] = names(r.staff_id);
@@ -184,11 +190,17 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* 5.12.57: ID numbers and bank details are only for owners, admins and Can see payroll details. */}
+      {privateHidden && (
+        <div style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid var(--bdr2)', background: 'var(--bg2)', fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.5 }}>
+          ID numbers and bank details are hidden for your login, so the export leaves them blank. The owner can give you Can see payroll details in Team.
+        </div>
+      )}
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }}>Run payroll</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Base pay from approved timesheets + tips from tronc runs, locked to the pay period. Set the period in Workforce settings.</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>Base pay from approved timesheets + tips from {runWord}s, locked to the pay period. Set the period in Workforce settings.</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn btn-ghost btn-xs" onClick={() => gotoPeriod(-1)} disabled={computing} title="Previous period"><Icon name="chevron" size={13} style={{ transform: 'rotate(180deg)' }} /></button>
@@ -225,21 +237,24 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'rgba(245,166,35,.10)', border: '1px solid var(--amber)', marginBottom: 14 }}>
             <span style={{ color: 'var(--amber)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
             <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
-              <b>Tips missing for {missing.length} week{missing.length === 1 ? '' : 's'}</b> — no tronc run yet for {missing.map(w => `w/c ${fmtDay(w)}`).join(', ')}.
-              Run them under <b>Tronc / tips</b>, then run payroll again so tips land in this period.
+              <b>Tips missing for {missing.length} week{missing.length === 1 ? '' : 's'}</b> — no {runWord} yet for {missing.map(w => `w/c ${fmtDay(w)}`).join(', ')}.
+              Run them under <b>{poolName}</b>, then run payroll again so tips land in this period.
             </div>
           </div>
         )}
         {run && troncRuns.length > 0 && missing.length === 0 && (
           <div style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 12 }}>
-            Pooled tips from {troncRuns.length} tronc run{troncRuns.length === 1 ? '' : 's'} ({troncRuns.map(r => `w/c ${fmtDay(r.week_start)}`).join(', ')}) — all weeks in this period covered.
+            Pooled tips from {troncRuns.length} {runWord}{troncRuns.length === 1 ? '' : 's'} ({troncRuns.map(r => `w/c ${fmtDay(r.week_start)}`).join(', ')}) — all weeks in this period covered.
           </div>
         )}
         {run && Number(run.unattributedTips) > 0 && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--red-d)', border: '1px solid var(--red-b)', marginBottom: 14 }}>
             <span style={{ color: 'var(--red)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
             <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
-              <b>{money(run.unattributedTips)} of direct tips couldn't be matched to a staff member</b> — checks with no or unknown server. The Tipping Act requires 100% of tips to reach staff: link till users to staff records (Staff → Set as POS user), or add this amount to the tronc pool.
+              {/* 5.12.57: the Tipping Act is UK law; a US venue reads the FLSA rule. */}
+              {pack.country === 'US'
+                ? <><b>{money(run.unattributedTips)} of direct tips couldn't be matched to a staff member</b>: checks with no or unknown server. Tips belong to the staff who earned them (FLSA): link till users to staff records (Staff, Set as POS user), or add this amount to the tip pool.</>
+                : <><b>{money(run.unattributedTips)} of direct tips couldn't be matched to a staff member</b> — checks with no or unknown server. The Tipping Act requires 100% of tips to reach staff: link till users to staff records (Staff → Set as POS user), or add this amount to the tronc pool.</>}
             </div>
           </div>
         )}
@@ -258,7 +273,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
           <EmptyState
             icon="status"
             title="Run this pay period"
-            body="Computes each person's base pay from approved timesheets and adds their tronc tip share — all server-side. Export the result as CSV with bank details to pay them."
+            body={usExport ? "Computes each person's pay from approved timesheets and adds their tip pool share, all on the server. Export the result as CSV for your payroll provider." : "Computes each person's base pay from approved timesheets and adds their tronc tip share — all server-side. Export the result as CSV with bank details to pay them."}
             cta="Run payroll"
             onCta={() => compute()}
           />
@@ -266,7 +281,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
           <EmptyState
             icon="clock"
             title="Nothing to pay in this period"
-            body="No approved timesheets and no tronc runs fall inside these dates. Approve timesheets under Timesheets, run tips under Tronc / tips, then run again."
+            body={`No approved timesheets and no ${runWord}s fall inside these dates. Approve timesheets under Timesheets, run tips under ${poolName}, then run again.`}
           />
         ) : (
           <>
@@ -284,7 +299,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <th style={{ ...th, textAlign: 'right' }}>Base pay</th>
                     {withSalary && <th style={{ ...th, textAlign: 'right' }} title="Head office staff: the annual salary for this pay period, with no timesheets. Not in this site's labour">Salary</th>}
                     {withPrem && <th style={{ ...th, textAlign: 'right' }}>Premiums</th>}
-                    <th style={{ ...th, textAlign: 'right' }}>Holiday</th>
+                    <th style={{ ...th, textAlign: 'right' }}>{hw}</th>
                     <th style={{ ...th, textAlign: 'right' }}>Tips (direct)</th>
                     <th style={{ ...th, textAlign: 'right' }}>Tips (pooled)</th>
                     {withCashTips && <th style={{ ...th, textAlign: 'right' }} title="Cash tips staff declared at clock out. Reported to payroll as tips; not added to the total you pay">Cash tips (declared)</th>}
@@ -319,7 +334,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{money(r.pay)}</td>
                       {withSalary && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.salary_basis === 'part' ? `Part period: ${r.salary_days} days employed` : r.salary_basis === 'days' ? `${r.salary_days} days at the salary over 365` : undefined}>{r.salary ? money(r.salary) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>}
                       {withPrem && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.premium_hours ? `${Number(r.premium_hours).toFixed(1)}h at a premium` : undefined}>{r.premium_pay ? money(r.premium_pay) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>}
-                      <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.holiday_hours ? `${Number(r.holiday_hours).toFixed(1)}h paid holiday` : undefined}>
+                      <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.holiday_hours ? `${Number(r.holiday_hours).toFixed(1)}h paid ${holidayWordLower(pack)}` : undefined}>
                         {r.holiday_pay ? money(r.holiday_pay) : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{r.tips_direct ? money(r.tips_direct) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
@@ -381,7 +396,9 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12 }}>{fmtDay(h.periodStart)} – {fmtDay(h.periodEnd)}</td>
                     <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t3)' }}>{h.payDate ? fmtDay(h.payDate) : '—'}</td>
                     <td style={{ ...td, textAlign: 'right' }} className="mono">{h.lines.length}</td>
-                    <td style={{ ...td, textAlign: 'right' }} className="mono">{money(h.totals.pay)}</td>
+                    {/* 5.12.57: wages are Total minus tips (overtime premium, tip top up, meal premium, holiday,
+                        premiums and head office salary included), so Wages + Tips = Total on every row. */}
+                    <td style={{ ...td, textAlign: 'right' }} className="mono">{money(wagesOf(h.totals))}</td>
                     <td style={{ ...td, textAlign: 'right' }} className="mono">{money(h.totals.tips ?? ((h.totals.tips_direct || 0) + (h.totals.tips_tronc || 0)))}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="mono">{money(h.totals.total)}</td>
                     <td style={{ ...td, fontSize: 12, color: 'var(--t3)' }}>{new Date(h.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</td>

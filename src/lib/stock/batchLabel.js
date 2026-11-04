@@ -42,10 +42,17 @@ export const ALLERGEN_ORDER = Object.freeze([
 const MAX_COPIES = 50;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
-/** 'milk' gives 'Milk'; an id ServOS does not know is shown as typed, first letter up. */
-export function allergenLabel(id) {
+// 5.12.57: a US venue's labels use US spelling and the FDA names (ids unchanged; wheat is
+// declared on the gluten id, see lib/foodLaw.js).
+export const US_ALLERGEN_LABELS = Object.freeze({
+  gluten: 'Wheat/Gluten', crustaceans: 'Crustacean shellfish', soy: 'Soybeans', molluscs: 'Mollusks', sulphites: 'Sulfites',
+});
+
+/** 'milk' gives 'Milk'; an id ServOS does not know is shown as typed, first letter up. country 'US': US words. */
+export function allergenLabel(id, country = 'UK') {
   const key = String(id ?? '').trim().toLowerCase();
   if (!key) return '';
+  if (country === 'US' && US_ALLERGEN_LABELS[key]) return US_ALLERGEN_LABELS[key];
   if (ALLERGEN_LABELS[key]) return ALLERGEN_LABELS[key];
   return key.charAt(0).toUpperCase() + key.slice(1);
 }
@@ -66,8 +73,8 @@ export function orderAllergens(ids) {
 }
 
 /** 'Allergens: Milk, Gluten' or 'Allergens: none'. */
-export function allergenWords(ids) {
-  const list = orderAllergens(ids).map(allergenLabel);
+export function allergenWords(ids, country = 'UK') {
+  const list = orderAllergens(ids).map((id) => allergenLabel(id, country));
   return list.length ? `Allergens: ${list.join(', ')}` : 'Allergens: none';
 }
 
@@ -211,7 +218,7 @@ const plainLines = (b, text, cols) => printSegLines(b, wrapSegments([{ s: text, 
  * <labels>' or 'Allergens: none', 'Made by <name>', 'Lot <code>', '<qty> <unit>', a cut. A line
  * with nothing to say is left off (no 'Made by' with no name). Never cost.
  */
-export function batchLabelDoc({ name, madeAt, useBy, allergens, madeBy, lot, qty, unit, venueTz } = {}, { cols = 32 } = {}) {
+export function batchLabelDoc({ name, madeAt, useBy, allergens, madeBy, lot, qty, unit, venueTz, country = 'UK' } = {}, { cols = 32 } = {}) {
   const width = labelCols({ cols });
   const b = new DocBuilder(width);
   b.init().left();
@@ -222,7 +229,7 @@ export function batchLabelDoc({ name, madeAt, useBy, allergens, madeBy, lot, qty
   if (made) plainLines(b, made, width);
   const use = expiryLine(useBy, venueTz);
   if (use) { b.bold(true); plainLines(b, use, width); b.bold(false); }
-  plainLines(b, allergenWords(allergens), width);
+  plainLines(b, allergenWords(allergens, country), width);
   const who = String(madeBy || '').trim();
   if (who) plainLines(b, `Made by ${who}`, width);
   const lotCode = String(lot || '').trim();
@@ -234,11 +241,11 @@ export function batchLabelDoc({ name, madeAt, useBy, allergens, madeBy, lot, qty
 }
 
 /**
- * The PPDS label (Natasha's Law, design 2.11): name, 'Ingredients: ' with every *allergen* in
+ * The PPDS label (Natasha's Law, design 2.11; a "Food label" at a US venue, 5.12.57): name, 'Ingredients: ' with every *allergen* in
  * bold, 'Allergens: <labels>', 'Use by <day>', 'Made <day time>', a cut. Refused with the 1.9 words
  * ({ error }) until the recipe's facts are checked at this site (signedOff).
  */
-export function ppdsLabelDoc({ name, ingredientsText, allergens, madeAt, useBy, venueTz, signedOff } = {}, { cols = 32 } = {}) {
+export function ppdsLabelDoc({ name, ingredientsText, allergens, madeAt, useBy, venueTz, signedOff, country = 'UK' } = {}, { cols = 32 } = {}) {
   if (signedOff !== true) return { error: PPDS_NOT_SIGNED_OFF };
   const width = labelCols({ cols });
   const b = new DocBuilder(width);
@@ -249,7 +256,7 @@ export function ppdsLabelDoc({ name, ingredientsText, allergens, madeAt, useBy, 
   const declaration = String(ingredientsText || '').trim();
   const segs = [{ s: 'Ingredients: ', bold: false }, ...(declaration ? declarationSegments(declaration) : [{ s: 'none listed', bold: false }])];
   printSegLines(b, wrapSegments(segs, width));
-  plainLines(b, allergenWords(allergens), width);
+  plainLines(b, allergenWords(allergens, country), width);
   const use = expiryLine(useBy, venueTz);
   if (use) { b.bold(true); plainLines(b, use, width); b.bold(false); }
   const made = madeWords(madeAt, venueTz);

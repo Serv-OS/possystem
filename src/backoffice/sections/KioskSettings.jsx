@@ -23,6 +23,7 @@ import { Icon } from '../../components/ServOSIcons';
 import MenuTranslations from './MenuTranslations';
 import { terminalProcessor } from '../../lib/payments/terminalProcessor.js';
 import { COUNTER_DEFAULT_LABEL, COUNTER_LABEL_MAX, counterLabel, counterLabelToSave } from '../../lib/counterOrder';
+import { foodLawWords } from '../../lib/foodLaw';
 
 // v5.8.76 (Peter, 15 Sep 2026): one eat in mode per kiosk, in plain words, the same for both kiosk
 // designs. The stored values are unchanged (lib/kioskFlow.js kioskStartModel explains each).
@@ -622,7 +623,7 @@ export default function KioskSettings({ kioskId, onBack }) {
                   checked={!!draft.kiosk_allergen_required}
                   onChange={v => setField('kiosk_allergen_required', v)}
                   title="Force allergen acknowledgement"
-                  desc="Customer must confirm allergen warning when adding flagged items (UK Natasha's Law)"
+                  desc={foodLawWords().kioskAllergenConfirmDesc /* 5.12.57: the law named only at a UK venue */}
                 />
               </>
             )}

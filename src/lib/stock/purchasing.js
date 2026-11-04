@@ -21,6 +21,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
+import { getLocationConfig } from '../locationTime';
 import { convert } from './conversion.js';
 import { fetchTaxRateMap } from './data.js';
 import { fetchReceivingArea } from './areas.js';
@@ -485,9 +486,14 @@ export const fetchInvoices = async (locationId = null, limit = 100) => {
  * session's access token (Authorization: Bearer) and the venue it scans for; the server refuses a
  * request with no sign in, and a venue the login does not reach.
  */
-export const scanInvoice = async (imageBase64, mediaType, locationId = null) => {
+// 5.12.57 (US basics batch 7): the reader is told the site's country, currency and date order
+// (api/stock-invoice-scan.js). currency: the site's, else read from the site's own config; none
+// at all reads as a UK invoice, as before.
+export const scanInvoice = async (imageBase64, mediaType, locationId = null, { currency = null } = {}) => {
   try {
     const loc = await ensureLoc(locationId).catch(() => null);
+    let cur = currency || null;
+    if (!cur && loc) { try { cur = (await getLocationConfig(loc))?.currency || null; } catch { cur = null; } }
     let token = null;
     if (!isMock && supabase) {
       try { token = (await supabase.auth.getSession())?.data?.session?.access_token || null; } catch { token = null; }
@@ -496,7 +502,7 @@ export const scanInvoice = async (imageBase64, mediaType, locationId = null) => 
     if (token) headers.authorization = `Bearer ${token}`;
     const res = await fetch('/api/stock-invoice-scan', {
       method: 'POST', headers,
-      body: JSON.stringify({ image: imageBase64, media_type: mediaType || 'image/jpeg', location_id: loc || null }),
+      body: JSON.stringify({ image: imageBase64, media_type: mediaType || 'image/jpeg', location_id: loc || null, ...(cur ? { currency: cur } : {}) }),
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) return { error: j.error || `Scan failed (${res.status})` };

@@ -14,6 +14,8 @@ import { useState, useEffect, useMemo, Fragment } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { activeCountry } from '../../../lib/regionPack';
 import { parseCashTips } from '../../../../supabase/functions/_shared/cashTips.js';
+// 5.12.57: a US venue's break words are its state's rule, never the UK Working Time Regulations.
+import { usBreakWords } from '../../../../supabase/functions/_shared/usBreaks.js';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { hoursOf, resolveRate, breakShortfall, venueBreakPolicy, grossFromNet } from '../../../staff/labour';
@@ -440,7 +442,9 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
           <span style={{ color: breakFlags.statutory ? 'var(--red)' : 'var(--amber)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
           <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
             {breakFlags.statutory > 0 && (
-              <><b>{breakFlags.statutory} short of the legal break</b> (UK Working Time Regs: 20 minutes over 6 hours, 30 for under-18s over 4.5). </>
+              breakPolicy.law === 'uk'
+                ? <><b>{breakFlags.statutory} short of the legal break</b> (UK Working Time Regs: 20 minutes over 6 hours, 30 for under-18s over 4.5). </>
+                : <><b>{breakFlags.statutory} short of the state meal break</b> ({usBreakWords(breakPolicy.law)}) </>
             )}
             {breakFlags.policy > 0 && (
               <><b>{breakFlags.policy} short of the break {breakFlags.statutory ? 'they were ' : ''}rostered or expected.</b> </>
@@ -582,7 +586,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       {adding && (
         <AddTimesheetModal
           staff={staff} paidDefault={paidBreaksDefault}
-          breakDefault={breakPolicy.defaultMins}
+          breakDefault={breakPolicy.defaultMins} breakLaw={breakPolicy.law}
           onClose={() => setAdding(false)}
           onSave={async (form) => {
             const breakMins = Number(form.breakMins) || 0;
@@ -651,7 +655,7 @@ function BreakCell({ r, staffMap, tz, policy }) {
       <div>
         <span style={{ color: 'var(--t4)' }}>{r.breakMins ? `${r.breakMins}m planned` : '—'}</span>
         {sf.level === 'statutory' && (
-          <div style={{ marginTop: 3 }}><Badge tone="red">{sf.statutory}m due (WTR)</Badge></div>
+          <div style={{ marginTop: 3 }}><Badge tone="red">{sf.statutory}m due ({policy?.law === 'uk' ? 'WTR' : 'state rule'})</Badge></div>
         )}
       </div>
     );
@@ -670,7 +674,7 @@ function BreakCell({ r, staffMap, tz, policy }) {
       </div>
       {segs.length > 0 && <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{segs.join(' · ')}</div>}
       {sf.level === 'statutory' && (
-        <div style={{ marginTop: 3 }}><Badge tone="red">{sf.shortStatutory}m under the {sf.statutory}m due (WTR)</Badge></div>
+        <div style={{ marginTop: 3 }}><Badge tone="red">{sf.shortStatutory}m under the {sf.statutory}m due ({policy?.law === 'uk' ? 'WTR' : 'state rule'})</Badge></div>
       )}
       {sf.level === 'policy' && (
         <div style={{ marginTop: 3 }}>
@@ -682,7 +686,7 @@ function BreakCell({ r, staffMap, tz, policy }) {
 }
 
 // Free-standing manual timesheet — for hours worked off-rota (no shift).
-function AddTimesheetModal({ staff, paidDefault = false, breakDefault = 0, onClose, onSave }) {
+function AddTimesheetModal({ staff, paidDefault = false, breakDefault = 0, breakLaw = 'uk', onClose, onSave }) {
   const today = new Date();
   const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   // v5.5.969: manual timesheets start from the venue's default break policy
@@ -711,7 +715,7 @@ function AddTimesheetModal({ staff, paidDefault = false, breakDefault = 0, onClo
         </div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, fontSize: 13, color: 'var(--t2)', cursor: 'pointer' }}>
           <input type="checkbox" checked={form.breakPaid} onChange={e => set('breakPaid', e.target.checked)} />
-          Break is paid <span style={{ fontSize: 11, color: 'var(--t4)' }}>(UK law: 20 mins due over 6h — doesn’t have to be paid; this is your policy)</span>
+          Break is paid <span style={{ fontSize: 11, color: 'var(--t4)' }}>{breakLaw === 'uk' ? '(UK law: 20 mins due over 6h — doesn’t have to be paid; this is your policy)' : `(${usBreakWords(breakLaw)} Paying a meal break is your policy.)`}</span>
         </label>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>

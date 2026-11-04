@@ -36,6 +36,7 @@ import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as cal
 import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { Icon } from '../../components/ServOSIcons';
+import { activeCountry, activeRegionPack } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
 
 // vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
 // tax rates are in) and the way to load them again. Payment never opens while it is shut.
@@ -832,7 +833,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           <SectionTitle>Your details</SectionTitle>
           <Field label="Name" value={name} onChange={setName} placeholder="Your name (so we know whose order this is)" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <Field label="Phone" value={phone} onChange={setPhone} placeholder="07700 900000" type="tel" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+            <Field label="Phone" value={phone} onChange={setPhone} placeholder={activeCountry() === 'US' ? activeRegionPack().phoneFormat : '07700 900000'} type="tel" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
             <Field label="Email (optional)" value={email} onChange={setEmail} placeholder="for receipt" type="email" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           </div>
           <Field label="Notes for the kitchen (optional)" value={notes} onChange={setNotes} placeholder="Allergies, preferences, etc." theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>

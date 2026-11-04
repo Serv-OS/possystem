@@ -45,7 +45,9 @@ test('StockItemsSplit is main\'s StockItems.jsx moved whole: undo the three edit
   const body = moved.slice(moved.search(/^import /m));
   assert.equal(count(body, EDIT_SIG[0]), 1, 'edit 3: the name and the siteId prop, once');
   assert.equal(count(body, EDIT_LOC[0]), 1, 'edit 4: start from siteId, once');
-  assert.equal(count(body, EDIT_PATH[0]), 16, 'edit 2: the 16 import paths, one folder deeper');
+  // 5.12.57 (US basics batch 7): one more lib import (lib/stock/stockRegion, the site's words and
+  // units), one folder deeper like the rest; usStockEdits.js puts it back for the hash
+  assert.equal(count(body, EDIT_PATH[0]), 17, 'edit 2: the 17 import paths, one folder deeper');
   assert.equal(count(body, "'../../../../"), count(body, EDIT_PATH[0]), 'no other path changed');
   const sha = crypto.createHash('sha256').update(mainText(moved)).digest('hex');
   assert.equal(sha, PIN, 'everything after the first import line is main\'s text byte for byte');
@@ -56,7 +58,7 @@ test('the moved file imports nothing new: no picker, no stock API, no company sc
   const head = moved.slice(0, moved.search(/^import /m));
   assert.doesNotMatch(head, /[\u2013\u2014]/, 'the rewritten top comment has no long dash');
   const imports = [...moved.matchAll(/^(?:import [^;]*?from|\} from) '([^']+)';$/gm)].map((m) => m[1]);
-  assert.equal(imports.length, 17);
+  assert.equal(imports.length, 18); // 5.12.57 batch 7: lib/stock/stockRegion (pure words and units)
   for (const p of imports) assert.ok(p === 'react' || p.startsWith('../../../../'), p);
   assert.doesNotMatch(moved.slice(head.length), /StockScope|stockApi|itemListRules|siteScope|CompanyItemList|ItemPage/);
 });

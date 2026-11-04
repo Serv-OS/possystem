@@ -26,6 +26,7 @@
 import { normDay } from './purchasingRules.js';
 import { normaliseAllergenId, isUkAllergen } from '../kioskAllergens.js';
 import { globalFactor, isKnownUnit, normUnit } from './units.js';
+import { isUsSite, stockTaxWords } from './stockRegion.js';
 
 // -- reading the file --------------------------------------------------------------------------
 
@@ -142,9 +143,21 @@ export const FIELD_WORDS = Object.freeze({
   yield_qty: 'Yield', yield_unit: 'Yield unit', made_item: 'Made item', till_product: 'Till product',
 });
 
+/**
+ * 5.12.57: the field words of a site: a UK site reads FIELD_WORDS exactly; a US site reads 'tax'
+ * for VAT and 'POS item' for Till product.
+ */
+export function fieldWordsFor(currency = null) {
+  if (!isUsSite(currency)) return FIELD_WORDS;
+  return Object.freeze({
+    ...FIELD_WORDS, purchase_vat: 'Purchase tax', price_with_vat: 'Price with tax', includes_vat: 'Price includes tax', till_product: 'POS item',
+  });
+}
+
 /** 'These columns are missing: Supplier, Price.' ('' when none). oneOf groups read 'Par or Reorder at or Min'. */
-export function missingWords(missing) {
-  const list = (missing || []).map((m) => (Array.isArray(m) ? m.map((x) => FIELD_WORDS[x] || x).join(' or ') : FIELD_WORDS[m] || m));
+export function missingWords(missing, currency = null) {
+  const words = fieldWordsFor(currency);
+  const list = (missing || []).map((m) => (Array.isArray(m) ? m.map((x) => words[x] || x).join(' or ') : words[m] || m));
   return list.length ? `These columns are missing: ${list.join(', ')}.` : '';
 }
 
@@ -589,10 +602,33 @@ const UNIT_WORDS = {
 };
 const UNIT_BY_WORD = new Map(Object.entries(UNIT_WORDS).flatMap(([code, words]) => words.map((w) => [w.replace(/\s+/g, ''), code])));
 
-/** A unit as typed ('KG', 'Litre', 'EA', 'btl') to our code ('kg', 'l', 'each'); null for none; undefined when not a unit. */
-export function unitOf(text) {
+// 5.12.57 (US basics batch 7): at a US site a gallon, a pint and a fl oz are the US ones, and a
+// quart, a cup and '#' (pounds) are read too. The UK imperial ones stay readable by name.
+const US_UNIT_WORDS = {
+  floz_us: ['floz', 'fl oz', 'fl. oz', 'fluid ounce', 'fluid ounces', 'us fl oz'],
+  cup_us: ['cup', 'cups'],
+  pt_us: ['pt', 'pts', 'pint', 'pints', 'us pint'],
+  qt_us: ['qt', 'qts', 'quart', 'quarts'],
+  gal_us: ['gal', 'gals', 'gallon', 'gallons', 'us gallon'],
+  lb: ['#'],
+  floz: ['uk fl oz', 'imperial fl oz'],
+  pt: ['uk pint', 'imperial pint'],
+  gal: ['uk gallon', 'imperial gallon'],
+};
+const US_UNIT_BY_WORD = new Map(Object.entries(US_UNIT_WORDS).flatMap(([code, words]) => words.map((w) => [w.replace(/[\s.]+/g, ''), code])));
+
+/**
+ * A unit as typed ('KG', 'Litre', 'EA', 'btl') to our code ('kg', 'l', 'each'); null for none; undefined when not a unit.
+ * currency: the site's (5.12.57): a USD site reads 'gallon' as the US gallon (gal_us); any other
+ * site reads exactly as before.
+ */
+export function unitOf(text, currency = null) {
   const t = String(text ?? '').trim().toLowerCase().replace(/\.$/, '').replace(/\s+/g, '');
   if (!t) return null;
+  if (isUsSite(currency)) {
+    const us = US_UNIT_BY_WORD.get(t.replace(/\./g, ''));
+    if (us) return us;
+  }
   const code = UNIT_BY_WORD.get(t) || (isKnownUnit(t) ? normUnit(t) : null);
   return code || undefined;
 }
@@ -697,23 +733,27 @@ export function daysOf(text) {
  * { pack_qty, inner_qty, inner_unit } (inner_unit null when not written); null for empty;
  * undefined when it cannot be read.
  */
-export function packOf(text) {
-  const t = String(text ?? '').trim().toLowerCase().replace(/\u00d7/g, 'x');
+export function packOf(text, currency = null) {
+  const us = isUsSite(currency);
+  // 5.12.57: a US site also writes '4/1 gal', 'cs of 12', 'cs 12' and '50#' (pounds)
+  let t = String(text ?? '').trim().toLowerCase().replace(/\u00d7/g, 'x');
+  if (us) t = t.replace(/^(\d+(?:\.\d+)?)\s*\/\s*(?=\d)/, '$1 x ');
   if (!t) return null;
   const n = '(\\d+(?:\\.\\d+)?)';
-  let m = t.match(new RegExp(`^${n}\\s*[x*]\\s*${n}\\s*([a-z][a-z .]*)?$`));
+  const w = us ? '([a-z#][a-z .#]*)' : '([a-z][a-z .]*)';
+  let m = t.match(new RegExp(`^${n}\\s*[x*]\\s*${n}\\s*${w}?$`));
   if (m) {
-    const u = m[3] ? unitOf(m[3]) : null;
+    const u = m[3] ? unitOf(m[3], currency) : null;
     return u === undefined ? undefined : { pack_qty: Number(m[1]), inner_qty: Number(m[2]), inner_unit: u };
   }
-  m = t.match(new RegExp(`^(?:case|pack|box|tray|crate) of ${n}(?:\\s*([a-z][a-z .]*))?$`));
+  m = t.match(new RegExp(us ? `^(?:case|cs|pack|box|tray|crate)(?: of)? ${n}(?:\\s*${w})?$` : `^(?:case|pack|box|tray|crate) of ${n}(?:\\s*${w})?$`));
   if (m) {
-    const u = m[2] ? unitOf(m[2]) : null;
+    const u = m[2] ? unitOf(m[2], currency) : null;
     return u === undefined ? undefined : { pack_qty: Number(m[1]), inner_qty: 1, inner_unit: u };
   }
-  m = t.match(new RegExp(`^${n}\\s*([a-z][a-z .]*)?$`));
+  m = t.match(new RegExp(`^${n}\\s*${w}?$`));
   if (m) {
-    const u = m[2] ? unitOf(m[2]) : null;
+    const u = m[2] ? unitOf(m[2], currency) : null;
     return u === undefined ? undefined : { pack_qty: 1, inner_qty: Number(m[1]), inner_unit: u };
   }
   return undefined;
@@ -841,19 +881,21 @@ function amount(r, f, problems, kind, label) {
   return v;
 }
 
-function itemData(r, problems) {
-  const unit = unitOf(r.base_unit);
+// 5.12.57: cur is the site's currency: a US site reads US units and says 'tax' for VAT.
+function itemData(r, problems, cur = null) {
+  const tw = stockTaxWords(cur);
+  const unit = unitOf(r.base_unit, cur);
   if (unit === undefined) say(problems, r._row, 'item', `"${r.base_unit}" is not a unit we know (each, g, kg, ml, l and so on). Left empty.`);
   const type = typeOf(r.type);
   if (type === undefined) say(problems, r._row, 'item', `type "${r.type}" is not Food, Drink or Other. Left empty.`);
   const vat = vatRateOf(r.purchase_vat);
-  if (Number.isNaN(vat)) say(problems, r._row, 'item', `"${r.purchase_vat}" is not a VAT rate. Left empty.`);
+  if (Number.isNaN(vat)) say(problems, r._row, 'item', `"${r.purchase_vat}" is not a ${tw.tax} rate. Left empty.`);
   const al = allergensOf(r.allergens);
   if (al.bad.length) say(problems, r._row, 'item', `${al.bad.map((b) => `"${b}"`).join(', ')} ${al.bad.length === 1 ? 'is' : 'are'} not one of the 14 allergens. Left out.`);
   const shelf = amount(r, 'shelf_life_days', problems, 'item', 'number of days');
   let countPack = null;
   if (r.count_pack || r.count_pack_size) {
-    const p = packOf(r.count_pack_size);
+    const p = packOf(r.count_pack_size, cur);
     let qty = null;
     if (p) {
       const factor = p.inner_unit && unit ? globalFactor(p.inner_unit, unit) : 1;
@@ -885,17 +927,18 @@ function supplierData(r, problems) {
   };
 }
 
-function supplierItemData(r, problems) {
+function supplierItemData(r, problems, cur = null) {
   const kind = 'supplier_item';
+  const tw = stockTaxWords(cur);
   // the pack: its own columns win, then a pack size ('6 x 1L'), then the item's unit
-  const pack = packOf(r.pack_size);
+  const pack = packOf(r.pack_size, cur);
   if (pack === undefined) say(problems, r._row, kind, `could not read the pack size "${r.pack_size}".`);
   const packQty = amount(r, 'pack_qty', problems, kind, 'number') ?? pack?.pack_qty ?? 1;
   const innerQty = amount(r, 'inner_qty', problems, kind, 'number') ?? pack?.inner_qty ?? 1;
-  let unit = r.inner_unit ? unitOf(r.inner_unit) : null;
+  let unit = r.inner_unit ? unitOf(r.inner_unit, cur) : null;
   if (unit === undefined) { say(problems, r._row, kind, `"${r.inner_unit}" is not a unit we know. Left empty.`); unit = null; }
   if (!unit) unit = pack?.inner_unit || null;
-  if (!unit) { const b = unitOf(r.base_unit); unit = b || null; }
+  if (!unit) { const b = unitOf(r.base_unit, cur); unit = b || null; }
   // the price: ex VAT when written so, else the price with VAT
   let price = moneyOf(r.pack_price);
   let inc = yesNoOf(r.includes_vat);
@@ -903,10 +946,10 @@ function supplierItemData(r, problems) {
   if (price.amount === null && str(r.price_with_vat)) { price = moneyOf(r.price_with_vat); inc = true; }
   if (Number.isNaN(price.amount)) say(problems, r._row, kind, `"${r.pack_price ?? r.price_with_vat}" is not a price.`);
   const vat = vatRateOf(r.purchase_vat);
-  if (Number.isNaN(vat)) say(problems, r._row, kind, `"${r.purchase_vat}" is not a VAT rate. Left empty.`);
-  const cur = str(r.currency);
-  const currency = cur && /^[A-Za-z]{3}$/.test(cur) ? cur.toUpperCase() : price.currency;
-  if (cur && !/^[A-Za-z]{3}$/.test(cur)) say(problems, r._row, kind, `"${cur}" is not a currency such as GBP. Left empty.`);
+  if (Number.isNaN(vat)) say(problems, r._row, kind, `"${r.purchase_vat}" is not a ${tw.tax} rate. Left empty.`);
+  const own = str(r.currency);
+  const currency = own && /^[A-Za-z]{3}$/.test(own) ? own.toUpperCase() : price.currency;
+  if (own && !/^[A-Za-z]{3}$/.test(own)) say(problems, r._row, kind, `"${own}" is not a currency such as ${isUsSite(cur) ? 'USD' : 'GBP'}. Left empty.`);
   const described = str(r.pack_description) || str(r.pack_size) || `${packQty} x ${innerQty}${unit ? ` ${unit}` : ''}`;
   return {
     supplier: str(r.supplier), item: str(r.item), item_sku: str(r.item_sku), supplier_sku: str(r.supplier_sku),
@@ -928,14 +971,14 @@ function parData(r, problems) {
 
 // One recipe line from one file row: { item, item_sku, qty, unit, usable_pct, order_types }, or null
 // when the row has no ingredient (a row that only carries the recipe's own fields).
-function recipeLine(r, problems) {
+function recipeLine(r, problems, cur = null) {
   if (!str(r.ingredient)) return null;
   const qty = numberOf(r.qty);
   if (qty === null) say(problems, r._row, 'recipe', `${r.ingredient} has no amount. Left empty.`);
   else if (!Number.isFinite(qty) || qty < 0) say(problems, r._row, 'recipe', `"${r.qty}" is not an amount. Left empty.`);
   // a unit ServOS knows becomes its code; anything else goes as typed, so the database can say
   // 'a unit ServOS does not know' or match it to a pack name
-  const u = unitOf(r.unit);
+  const u = unitOf(r.unit, cur);
   const usable = pctOf(r.usable_pct);
   if (Number.isNaN(usable)) say(problems, r._row, 'recipe', `"${r.usable_pct}" is not a percent from 0 to 100. Left empty.`);
   return {
@@ -948,7 +991,7 @@ function recipeLine(r, problems) {
 }
 
 // The recipe's own fields, from the first row of its group that carries each one.
-function recipeHead(rows, problems) {
+function recipeHead(rows, problems, cur = null) {
   const first = (f) => rows.find((r) => str(r[f]))?.[f] ?? null;
   const firstRow = (f) => rows.find((r) => str(r[f]))?._row ?? rows[0]._row;
   let kind = recipeKindOf(first('kind'));
@@ -959,7 +1002,7 @@ function recipeHead(rows, problems) {
   if (type === undefined) { say(problems, firstRow('type'), 'recipe', `type "${first('type')}" is not Food, Drink or Meal deal. Left empty.`); type = null; }
   const y = numberOf(first('yield_qty'));
   if (Number.isNaN(y) || (y != null && y <= 0)) say(problems, firstRow('yield_qty'), 'recipe', `"${first('yield_qty')}" is not a yield. Left empty.`);
-  const yu = unitOf(first('yield_unit'));
+  const yu = unitOf(first('yield_unit'), cur);
   return {
     name: str(first('name')),
     kind: kind || 'dish',
@@ -972,7 +1015,7 @@ function recipeHead(rows, problems) {
 }
 
 /** One staged recipe per name: its lines in file order, the contract 1.5 `data` shape, and the sites it names. */
-function recipeRows(rows, { lookup, problems, rowBase }) {
+function recipeRows(rows, { lookup, problems, rowBase, currency = null }) {
   const groups = new Map();
   for (const r of rows) {
     const key = low(r.name);
@@ -982,8 +1025,8 @@ function recipeRows(rows, { lookup, problems, rowBase }) {
   }
   const out = [];
   for (const group of groups.values()) {
-    const head = recipeHead(group, problems);
-    const lines = group.map((r) => recipeLine(r, problems)).filter(Boolean);
+    const head = recipeHead(group, problems, currency);
+    const lines = group.map((r) => recipeLine(r, problems, currency)).filter(Boolean);
     if (!lines.length) say(problems, group[0]._row, 'recipe', `${head.name} has no ingredient lines.`);
     const names = [...new Set(group.flatMap((r) => String(r.sites ?? '').split(/[;|]+/)).map((x) => x.trim()).filter(Boolean))];
     const s = names.length ? sitesOf(names, lookup) : { ids: null, unknown: [] };
@@ -1008,25 +1051,27 @@ function recipeRows(rows, { lookup, problems, rowBase }) {
  *     ({ row, kind, words }); the row still stages, with that value left empty, and the database
  *     says whether it can be imported
  *   rowBase: added to each file line (KIND_BLOCK when one file stages several kinds)
+ *   currency: the site's (5.12.57): a USD site reads 'gallon', 'pint' and 'fl oz' as the US units,
+ *     'qt', 'cup', 'cs' (case) and '#' (pounds) too; any other site reads exactly as before
  * data has the contract shapes (item, supplier, supplier_item, par, recipe). sites is null when the
  * row names none (the job's ticked sites apply), or the ids it names.
  * Recipes (Drop 2): the ingredient lines of one recipe name become ONE staged row with the contract
  * 1.5 shape { name, kind, food_kind, yield_qty, yield_unit, output_item, lines: [{ item, item_sku,
  * qty, unit, usable_pct, order_types }], sites: [names], till_product }; row_no is its first line.
  */
-export function toStageRows(kind, rows, { siteIdByName = null, problems = null, rowBase = 0 } = {}) {
+export function toStageRows(kind, rows, { siteIdByName = null, problems = null, rowBase = 0, currency = null } = {}) {
   const k = fileKind(kind);
   const stageKind = STAGE_KIND[k];
   if (!stageKind) return [];
   const lookup = siteLookup(siteIdByName);
   const numbered = (rows || []).map((r, i) => ({ ...r, _row: Number.isFinite(Number(r?._row)) ? Number(r._row) : i + 2 }));
-  if (k === 'recipes') return recipeRows(numbered, { lookup, problems, rowBase });
+  if (k === 'recipes') return recipeRows(numbered, { lookup, problems, rowBase, currency });
   const out = [];
   numbered.forEach((row) => {
     let data;
-    if (k === 'items') data = itemData(row, problems);
+    if (k === 'items') data = itemData(row, problems, currency);
     else if (k === 'suppliers') data = supplierData(row, problems);
-    else if (k === 'supplier_items') data = supplierItemData(row, problems);
+    else if (k === 'supplier_items') data = supplierItemData(row, problems, currency);
     else data = parData(row, problems);
     // where it goes: the sites column, else (items, suppliers) the sites its rows named
     let cell = row.sites;
@@ -1046,14 +1091,14 @@ export function toStageRows(kind, rows, { siteIdByName = null, problems = null, 
  * A whole file's staged rows (mapFile's answer), every kind in its block: items, then suppliers,
  * supplier items, pars, recipes. Answer { rows, problems, counts: { item: n, ... } }.
  */
-export function stageFile(mapped, { siteIdByName = null } = {}) {
+export function stageFile(mapped, { siteIdByName = null, currency = null } = {}) {
   const problems = [];
   const rows = [];
   const counts = {};
   for (const k of ['items', 'suppliers', 'supplier_items', 'pars', 'recipes']) {
     const part = mapped?.kinds?.[k];
     if (!part || !part.rows?.length) continue;
-    const staged = toStageRows(k, part.rows, { siteIdByName, problems, rowBase: KIND_BLOCK[STAGE_KIND[k]] });
+    const staged = toStageRows(k, part.rows, { siteIdByName, problems, rowBase: KIND_BLOCK[STAGE_KIND[k]], currency });
     counts[STAGE_KIND[k]] = staged.length;
     rows.push(...staged);
   }

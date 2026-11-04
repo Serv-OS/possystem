@@ -29,6 +29,8 @@ import { xeroStatus, xeroPushBill } from '../../../lib/xero';
 import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag } from '../reports/reportKit';
 import { Money } from '../stock/SiteMoney';
 import { useSiteStockContext } from '../../../lib/stock/siteContext';
+import { stockTaxWords, purchaseRateDec } from '../../../lib/stock/stockRegion';
+import { knownCode } from '../../../lib/stock/siteMoney';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -53,10 +55,18 @@ export default function InvoicesSite({ siteId = null } = {}) {
   // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the imports.
   const { money, currencySymbol, code: cur } = useSiteMoney(siteId);
   const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
-  const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
+  // 5.12.57 (US basics batch 7): a US site's words ('tax', 'before tax'), and no purchase rate there:
+  // the tax on a line is a plain percent (taxPct) that stays IN the cost (a US venue usually cannot
+  // claim it back), never one of the site's sales tax rates. A UK site works exactly as before.
+  const tw = stockTaxWords(cur);
+  const lineRateDec = useCallback((l) => purchaseRateDec(cur, ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById, cur]);
   const rawLineOf = (l) => (l.lineTotal != null ? Number(l.lineTotal) : Number(l.qty) * Number(l.unitPrice));
   // NET line total: strip VAT only when the operator flagged the line inc-VAT.
   const netLineOf = useCallback((l) => purchaseNet(rawLineOf(l), l.priceIncludesTax === true, lineRateDec(l)) ?? 0, [lineRateDec]);
+  const usPctOf = (l) => (tw.keptInCost && Number(l.taxPct) > 0 ? Number(l.taxPct) / 100 : 0);
+  const lineTaxDec = (l) => (tw.keptInCost ? usPctOf(l) : lineRateDec(l));
+  // the line's cost: the net line, plus a US line's tax (which stays in the cost)
+  const costLineOf = (l) => netLineOf(l) * (1 + usPctOf(l));
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [suppliers, setSuppliers] = useState([]);
   const [items, setItems] = useState([]);
@@ -111,7 +121,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
     reader.onload = async () => {
       const b64 = String(reader.result).split(',')[1];
       setScanning(true);
-      const { data, error } = await scanInvoice(b64, f.type, locId);
+      const { data, error } = await scanInvoice(b64, f.type, locId, { currency: cur }); // 5.12.57: read as this site's country, currency and dates
       setScanning(false);
       // v5.11.65: scanInvoice answers { error: '<text>' }; reading .message off a string gave an empty toast
       if (error) { showToast?.(typeof error === 'string' ? error : (error.message || 'Could not read the invoice'), 'error'); return; }
@@ -122,7 +132,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
         header: { clientId: newUuid(), supplierId: sup?.id || '', supplierName: data.supplier_name, invoiceNumber: data.invoice_number || '', invoiceDate: data.invoice_date || '', subtotal: data.subtotal, tax: data.tax, total: data.total, ocrConfidence: data.confidence != null ? Math.round(Number(data.confidence) * 100) : null, rawJson: data },
         lines: (data.lines || []).map(l => {
           const m = guessMatch(l, cands);
-          return { matchedItemId: m?.id || '', description: l.description || '', qty: Number(l.qty) || 0, unit: l.unit || (m?.baseUnit) || 'each', unitPrice: Number(l.unit_price) || 0, lineTotal: l.line_total != null ? Number(l.line_total) : null, purchaseTaxRateId: m?.purchaseTaxRateId || '', priceIncludesTax: false };
+          return { matchedItemId: m?.id || '', description: l.description || '', qty: Number(l.qty) || 0, unit: l.unit || (m?.baseUnit) || 'each', unitPrice: Number(l.unit_price) || 0, lineTotal: l.line_total != null ? Number(l.line_total) : null, purchaseTaxRateId: tw.keptInCost ? '' : (m?.purchaseTaxRateId || ''), priceIncludesTax: false, ...(tw.keptInCost ? { taxPct: '' } : {}) };
         }),
       });
     };
@@ -142,7 +152,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
     let qtyBase;
     try { qtyBase = convert(Number(l.qty), l.unit || it.baseUnit, it.baseUnit, { itemConversions: (it.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })) }); }
     catch { return { newCost: null, flag: 'UNIT?' }; }
-    const total = netLineOf(l);   // NET (VAT stripped if the line is inc-VAT)
+    const total = costLineOf(l);   // NET (VAT stripped if the line is inc-VAT); a US line's tax stays in
     const newCost = qtyBase > 0 ? total / qtyBase : null;
     let flag = null;
     if (newCost != null && it.currentCost != null && it.currentCost > 0) {
@@ -186,12 +196,14 @@ export default function InvoicesSite({ siteId = null } = {}) {
     }
     // Store the VAT computed from the (reviewed) lines, net of any inc-VAT entries.
     const net = review.lines.reduce((s, l) => s + netLineOf(l), 0);
-    const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineRateDec(l), 0);
+    const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineTaxDec(l), 0);
+    // 5.12.57: a US line goes with its tax in its total (the cost), and no rate
+    const sent = (l) => (tw.keptInCost ? { ...l, lineTotal: Math.round(costLineOf(l) * 100) / 100, purchaseTaxRateId: null, priceIncludesTax: false } : l);
     const { error, text } = await postInvoice({
       ...review.header, imagePath, poId,
       subtotal: Math.round(net * 100) / 100, tax: Math.round(vat * 100) / 100, total: Math.round((net + vat) * 100) / 100,
       flags: undefined,
-    }, review.lines.map(l => ({ ...l, flags: lineInfo(l).flag ? [lineInfo(l).flag] : [] })), locId, { areaId: landArea || null });
+    }, review.lines.map(l => ({ ...sent(l), flags: lineInfo(l).flag ? [lineInfo(l).flag] : [] })), locId, { areaId: landArea || null });
     setPosting(false);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.(text || `Posted invoice — ${matched.length} line${matched.length === 1 ? '' : 's'} received`, 'success');
@@ -252,6 +264,11 @@ export default function InvoicesSite({ siteId = null } = {}) {
             <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--t1)', letterSpacing: '-.2px' }}>Review invoice {review.header.ocrConfidence != null && <span style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 500 }}>· {review.header.ocrConfidence}% confidence</span>}</div>
             <button onClick={() => setReview(null)} style={{ background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 9, padding: '5px 11px', color: 'var(--t3)', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit' }}>Discard</button>
           </div>
+          {(() => {
+            // 5.12.57: the reader says the invoice is in another currency than this site's
+            const read = knownCode(review.header.rawJson?.currency);
+            return read && read !== cur ? <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--amber)', marginBottom: 12 }}><Icon name="warn" size={13} />This invoice reads in {read}, but this site is in {cur}. Check every amount before posting.</div> : null;
+          })()}
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
             <div><label style={lbl}>Supplier {review.header.supplierName ? `(read: ${review.header.supplierName})` : ''}</label>
               <select value={review.header.supplierId} onChange={e => updHeader('supplierId', e.target.value)} style={field}>
@@ -268,7 +285,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
           <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
             <thead><tr style={{ textAlign: 'left' }}>
-              {['On invoice', 'Match to stock item', 'Qty', 'Unit', 'Line total', 'VAT', 'New unit cost (ex VAT)', ''].map(h => <th key={h} style={{ padding: '10px 10px', background: 'var(--bg2)', borderBottom: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>)}
+              {['On invoice', 'Match to stock item', 'Qty', 'Unit', 'Line total', tw.Tax, tw.keptInCost ? 'New unit cost (tax in)' : 'New unit cost (ex VAT)', ''].map(h => <th key={h} style={{ padding: '10px 10px', background: 'var(--bg2)', borderBottom: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>)}
             </tr></thead>
             <tbody>
               {review.lines.map((l, i) => {
@@ -286,6 +303,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 64 }} /></td>
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><NumberField width={112} value={l.lineTotal ?? ''} onChange={v => updLine(i, 'lineTotal', v === '' ? null : v)} placeholder={money(Number(l.qty) * Number(l.unitPrice))} /></td>
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)', whiteSpace: 'nowrap' }}>
+                      {tw.keptInCost ? <NumberField width={78} unit="%" value={l.taxPct ?? ''} onChange={v => updLine(i, 'taxPct', v)} placeholder="0" title="Sales tax on this line, as a percent. It stays in the cost." /> : <>
                       <select value={l.purchaseTaxRateId || ''} onChange={e => updLine(i, 'purchaseTaxRateId', e.target.value)} style={{ ...field, width: 78, display: 'inline-block' }}>
                         <option value="">No VAT</option>
                         {taxRates.filter(r => r.active !== false).map(r => <option key={r.id} value={r.id}>{Math.round(Number(r.rate) * 100)}%</option>)}
@@ -295,6 +313,7 @@ export default function InvoicesSite({ siteId = null } = {}) {
                           <input type="checkbox" checked={l.priceIncludesTax === true} onChange={e => updLine(i, 'priceIncludesTax', e.target.checked)} /> inc
                         </label>
                       )}
+                      </>}
                     </td>
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)', whiteSpace: 'nowrap' }}>
                       {info.newCost == null ? '—' : currencySymbol() + info.newCost.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}
@@ -311,15 +330,15 @@ export default function InvoicesSite({ siteId = null } = {}) {
 
           {(() => {
             const net = review.lines.reduce((s, l) => s + netLineOf(l), 0);
-            const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineRateDec(l), 0);
+            const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineTaxDec(l), 0);
             const gross = net + vat;
             const read = review.header.total;
             const mismatch = read != null && Math.abs(gross - Number(read)) > 0.01;
             return (
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
                 <div style={{ fontSize: 13, color: 'var(--t1)', marginRight: 'auto' }}>
-                  Subtotal (ex VAT): <b>{money(net)}</b> · VAT: <b>{money(vat)}</b> · Total: <b>{money(gross)}</b>
-                  {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amber)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="warn" size={12} />read total {money(read)} — check VAT/lines</span> : `✓ matches read total`}</span>}
+                  Subtotal ({tw.exTax}): <b>{money(net)}</b> · {tw.Tax}: <b>{money(vat)}</b>{tw.keptInCost ? ' (stays in the cost)' : ''} · Total: <b>{money(gross)}</b>
+                  {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amber)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="warn" size={12} />read total {money(read)} — check {tw.tax}/lines</span> : `✓ matches read total`}</span>}
                 </div>
                 {areas.length > 0 && (
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>

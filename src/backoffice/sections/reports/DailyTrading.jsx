@@ -19,6 +19,8 @@ import { DEMO_NOTE } from '../../../../supabase/functions/_shared/demoHistory.js
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { loadSettings as loadWfSettings } from '../../../staff/wfData';
 import { money as venueMoneyText } from '../../../lib/currency';
+// 5.12.57 (US basics, batch 6): the venue's own tax words (VAT and HMRC at a UK venue, as before).
+import { activeTaxWords } from '../../../lib/taxWords';
 import { fmtSymbol } from './_fmtSymbol';
 
 const dow = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short' });
@@ -62,6 +64,7 @@ const S = {
 export default function DailyTrading({ fromDay, toDay, fmt }) {
   // 5.12.57: no fmt falls back to the venue's own money, never a typed pound.
   const money = fmt || ((n) => venueMoneyText(n));
+  const tw = activeTaxWords();
   const [locId, setLocId] = useState(null);
   const [data, setData] = useState(null);   // { rows, totals, settings }
   const [loading, setLoading] = useState(true);
@@ -147,17 +150,17 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
       {/* P&L ladder — full breakdown incl. VAT (this period, actual) */}
       <div style={S.ladder}>
         <div style={S.lTitle}>Period P&amp;L · actual</div>
-        <div style={S.lRow}><span>Takings before refunds <span style={{ color: 'var(--t4)' }}>(inc VAT)</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
-        <div style={S.lRow}><span style={S.lLess}>less Refunds <span style={S.lHint}>(inc VAT) money given back{totals.refund_count ? `, ${totals.refund_count} refund${totals.refund_count === 1 ? '' : 's'}` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.refunds || 0)}</span></div>
-        <div style={S.lRow}><span style={S.lLess}>less VAT <span style={S.lHint}>— collected for HMRC, not income{totals.refund_vat ? ', after refunds' : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
+        <div style={S.lRow}><span>Takings before refunds <span style={{ color: 'var(--t4)' }}>({tw.incTax})</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less Refunds <span style={S.lHint}>({tw.incTax}) money given back{totals.refund_count ? `, ${totals.refund_count} refund${totals.refund_count === 1 ? '' : 's'}` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.refunds || 0)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less {tw.tax} <span style={S.lHint}>{tw.uk ? '— collected for HMRC, not income' : 'collected for the tax authority, not income'}{totals.refund_vat ? ', after refunds' : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
         {/* 8 Oct 2026: a sale with no VAT recorded is counted 0 and named here, never hidden. */}
         {totals.no_vat > 0 && (
-          <div style={{ ...S.lRow, color: 'var(--red)', fontWeight: 700 }}><span>{totals.no_vat === 1 ? '1 sale has' : `${totals.no_vat} sales have`} no VAT recorded: {(totals.no_vat_refs || []).join(', ')}</span><span/></div>
+          <div style={{ ...S.lRow, color: 'var(--red)', fontWeight: 700 }}><span>{totals.no_vat === 1 ? '1 sale has' : `${totals.no_vat} sales have`} no {tw.tax} recorded: {(totals.no_vat_refs || []).join(', ')}</span><span/></div>
         )}
-        <div style={{ ...S.lRow, ...S.lSub }}><span>Net sales (ex-VAT)</span><span style={S.mono}>{money(totals.actual_sales)}</span></div>
+        <div style={{ ...S.lRow, ...S.lSub }}><span>{tw.us ? 'Net sales (before tax)' : 'Net sales (ex-VAT)'}</span><span style={S.mono}>{money(totals.actual_sales)}</span></div>
         {/* 29 Oct 2026 (Drop C): gift cards sold at the till are money in, not sales: outside the lines above and the VAT, shown beside them. */}
         {totals.gift_sold > 0 && (
-          <div style={S.lRow}><span style={{ color: 'var(--t3)' }}>Gift cards sold <span style={S.lHint}>— money in, not sales: outside Net sales and VAT (VAT is charged when a card is spent)</span></span><span style={{ ...S.mono, color: 'var(--t3)' }}>{money(totals.gift_sold)}</span></div>
+          <div style={S.lRow}><span style={{ color: 'var(--t3)' }}>Gift cards sold <span style={S.lHint}>{tw.us ? 'money in, not sales: outside Net sales and tax (tax is charged when a card is spent)' : `— money in, not sales: outside Net sales and ${tw.tax} (${tw.Tax} is charged when a card is spent)`}</span></span><span style={{ ...S.mono, color: 'var(--t3)' }}>{money(totals.gift_sold)}</span></div>
         )}
         <div style={S.lRow}><span style={S.lLess}>less COGS <span style={S.lHint}>— {basis === 'recipe' ? 'recipe cost' : 'estimate'}{totals.actual_sales > 0 ? ` ${Math.round(totals.cogs_actual / totals.actual_sales * 100)}%` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.cogs_actual)}</span></div>
         {basis === 'estimate' && totals.cogs_recipe > 0 && (
@@ -178,7 +181,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
         <div style={S.kpi}><div style={S.kLab}>Forecast (net)</div><div style={S.kVal}>{money(totals.forecast)}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Net sales</div><div style={S.kVal}>{money(totals.actual_sales)}</div>
           <div style={{ fontSize: 12, fontWeight: 700, ...sign(totals.actual_sales - totals.forecast) }}>{totals.actual_sales - totals.forecast >= 0 ? '+' : ''}{money(totals.actual_sales - totals.forecast)} vs forecast{vsFc(totals.actual_sales, totals.forecast) != null ? ` (${vsFcText(vsFc(totals.actual_sales, totals.forecast))})` : ''}</div></div>
-        <div style={S.kpi}><div style={S.kLab}>VAT (to HMRC)</div><div style={S.kVal}>{money(totals.vat)}</div>
+        <div style={S.kpi}><div style={S.kLab}>{tw.uk ? 'VAT (to HMRC)' : tw.Sales}</div><div style={S.kVal}>{money(totals.vat)}</div>
           <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>takings before refunds {money(totals.gross_sales)}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Labour target</div><div style={S.kVal}>{tgt != null ? `${tgt}%` : '—'}</div>
           <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{tgt != null && totals.forecast > 0 ? `budget ${money(totals.forecast * tgt / 100)} on forecast` : 'set in Workforce settings'}</div></div>
@@ -195,8 +198,8 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
         <table style={S.table}>
           <thead><tr>
             <th style={{ ...S.th, ...S.thL }}>Day</th>
-            <th style={S.th}>Forecast</th><th style={S.th}>Takings before refunds (inc VAT)</th><th style={S.th}>Refunds</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th><th style={S.th}>vs forecast</th>
-            {totals.gift_sold > 0 && <th style={S.th} title="Money in, not sales: outside Net sales and VAT">Gift cards sold</th>}
+            <th style={S.th}>Forecast</th><th style={S.th}>Takings before refunds ({tw.incTax})</th><th style={S.th}>Refunds</th><th style={S.th}>{tw.Tax}</th><th style={S.th}>Net sales</th><th style={S.th}>vs forecast</th>
+            {totals.gift_sold > 0 && <th style={S.th} title={`Money in, not sales: outside Net sales and ${tw.tax}`}>Gift cards sold</th>}
             <th style={S.th}>Labour (act / pred)</th><th style={S.th}>Labour % pred</th><th style={S.th}>Labour % act</th>
             <th style={S.th}>COGS</th><th style={S.th}>Waste</th><th style={S.th}>Op. profit</th>
           </tr></thead>
@@ -212,7 +215,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
                 </td>
                 <td style={S.td}>{money(r.gross_sales)}</td>
                 <td style={{ ...S.td, color: r.refunds > 0 ? 'var(--red)' : 'var(--t3)' }}
-                  title={r.refund_count ? `${r.refund_count} refund${r.refund_count === 1 ? '' : 's'} made this day (inc VAT)` : undefined}>
+                  title={r.refund_count ? `${r.refund_count} refund${r.refund_count === 1 ? '' : 's'} made this day (${tw.incTax})` : undefined}>
                   {r.refunds > 0 ? `−${money(r.refunds)}` : money(0)}</td>
                 <td style={{ ...S.td, color: 'var(--t3)' }}>{money(r.vat)}</td>
                 <td style={S.td}>{money(r.actual_sales)}</td>
@@ -247,7 +250,9 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>{dayStart ? <>Each day runs from <b>{dayStart}</b> to {dayStart} the next morning (the venue’s business day, the same as Sales summary and Xero), so sales after midnight count on the night they belong to. </> : null}VAT is shown separately because it’s collected for HMRC, it’s never profit. Net sales (ex-VAT) are the P&amp;L basis: takings before refunds, less refunds, less VAT. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Gift cards sold at the till are money in, not sales: outside net sales and VAT until the card is spent. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away, valued at cost, from the stock ledger: the same figure as the Wastage log and Stock and GP, refunded food included once. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b>. change it above.</div>
+      <div style={S.note}>{dayStart ? <>Each day runs from <b>{dayStart}</b> to {dayStart} the next morning (the venue’s business day, the same as Sales summary and Xero), so sales after midnight count on the night they belong to. </> : null}{tw.uk
+          ? "VAT is shown separately because it’s collected for HMRC, it’s never profit. Net sales (ex-VAT) are the P&L basis: takings before refunds, less refunds, less VAT. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Gift cards sold at the till are money in, not sales: outside net sales and VAT until the card is spent. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away, valued at cost, from the stock ledger: the same figure as the Wastage log and Stock and GP, refunded food included once. "
+          : `${tw.Tax} is shown separately because it’s collected for the tax authority, it’s never profit. Net sales (${tw.exTax}) are the P&L basis: takings before refunds, less refunds, less ${tw.tax}. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Gift cards sold at the till are money in, not sales: outside net sales and ${tw.tax} until the card is spent. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away, valued at cost, from the stock ledger: the same figure as the Wastage log and Stock and GP, refunded food included once. `}COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b>. change it above.</div>
     </div>
   );
 }

@@ -160,7 +160,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
       <EmptyState
         icon="team"
         title="No staff to track yet"
-        body="Add team members in the Staff section first. Compliance documents — Right to Work, SIA, food hygiene — appear here per person once you have a team."
+        body={activeRegionPack().country === 'US' ? 'Add team members in the Staff section first. Compliance documents (Form I-9, Form W-4, food handler permits) appear here per person once you have a team.' : 'Add team members in the Staff section first. Compliance documents — Right to Work, SIA, food hygiene — appear here per person once you have a team.'}
       />
     );
   }
@@ -170,7 +170,8 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 17, fontWeight: 700 }}>Compliance vault</div>
-          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2 }}>Right to Work, licences and training records — one row per document.</div>
+          {/* 5.12.57: the work document follows the venue (Right to Work in the UK, Form I-9 in the US). */}
+          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2 }}>{activeRegionPack().country === 'US' ? `${activeRegionPack().workDocLabel}, W-4, permits and training records: one row per document.` : 'Right to Work, licences and training records — one row per document.'}</div>
         </div>
         <button className="btn btn-acc" onClick={() => setAdding(true)}>
           <Icon name="plus" size={14} /> Add document

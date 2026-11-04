@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { activeCountry } from '../../../lib/regionPack';
 import EmailBuilder from './EmailBuilder';
 import { Icon } from '../../../components/ServOSIcons';
 import { compileEmail, SAMPLE_MERGE, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
@@ -381,7 +382,7 @@ export default function Campaigns() {
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 8 }}>Send a test (uses sample data; nothing sends to your customers)</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               {(editing.channel === 'email' || editing.channel === 'both') && <input style={{ ...S.input, maxWidth: 220 }} value={test.email} onChange={(e) => setTest({ ...test, email: e.target.value })} placeholder="you@example.com" />}
-              {(editing.channel === 'sms' || editing.channel === 'both') && <input style={{ ...S.input, maxWidth: 180 }} value={test.phone} onChange={(e) => setTest({ ...test, phone: e.target.value })} placeholder="+447…" />}
+              {(editing.channel === 'sms' || editing.channel === 'both') && <input style={{ ...S.input, maxWidth: 180 }} value={test.phone} onChange={(e) => setTest({ ...test, phone: e.target.value })} placeholder={activeCountry() === 'US' ? '+1801…' : '+447…'} />}
               <button style={S.ghost} onClick={sendTest} disabled={test.msg?.busy}>{test.msg?.busy ? 'Sending…' : 'Send test'}</button>
               {test.msg?.ok && <span style={S.ok}>{test.msg.ok}</span>}
               {test.msg?.err && <span style={S.err}>{test.msg.err}</span>}

@@ -1,5 +1,6 @@
 import { ALLERGENS } from '../data/seed';
 import { Icon } from './ServOSIcons';
+import { foodLawWords } from '../lib/foodLaw';
 
 /**
  * Shown before checkout when any items on the order have allergens.
@@ -71,7 +72,8 @@ export default function AllergenCheckoutModal({ items, onConfirm, onCancel }) {
 
           {/* Legal note */}
           <div style={{ fontSize:11, color:'var(--t4)', lineHeight:1.5, padding:'8px 12px', background:'var(--bg3)', borderRadius:8 }}>
-            EU/UK Food Information for Consumers Regulation requires all 14 allergens to be declared. This confirmation is recorded on the order audit trail.
+            {/* 5.12.57: the UK regulation at a UK venue; the 9 major food allergens at a US venue. */}
+            {foodLawWords().allergenCheckoutLegal}
           </div>
         </div>
 

@@ -10,7 +10,7 @@ import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
 import { useSiteMoney } from './stock/useSiteCurrency';
 import { fmtVenueDateTime, daysAgoYmd, venueRangeIso } from '../../lib/venueDate';
-import { UNITS, DIMENSIONS } from '../../lib/stock/units';
+import UnitOptions from './stock/UnitOptions';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import PosWasteModal from '../../components/PosWasteModal';
 import { logWaste, fetchWaste, fetchWasteLedger, WASTE_REASONS } from '../../lib/stock/waste';
@@ -26,8 +26,6 @@ import { useStockScope } from '../StockScope'; // d3 multi
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
-const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
-const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function Wastage({ siteId = null } = {}) {
@@ -144,7 +142,7 @@ export default function Wastage({ siteId = null } = {}) {
             <div><label style={lbl}>Qty</label><input type="number" min="0" step="any" value={row.qty} onChange={e => setRow(r => ({ ...r, qty: e.target.value }))} style={{ ...field, width: 90 }} /></div>
             <div><label style={lbl}>Unit</label>
               <select value={row.unit} onChange={e => setRow(r => ({ ...r, unit: e.target.value }))} style={{ ...field, width: 120 }}>
-                {DIM_ORDER.map(dim => <optgroup key={dim} label={dim[0] + dim.slice(1).toLowerCase()}>{UNIT_OPTS.filter(u => u.dimension === dim).map(u => <option key={u.code} value={u.code}>{u.code}</option>)}</optgroup>)}
+                <UnitOptions siteId={locId} show="code" />{/* 5.12.57: the site's units (a US site: US volume units first) */}
               </select>
             </div>
             <div><label style={lbl}>Reason</label>

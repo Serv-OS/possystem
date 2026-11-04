@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { readAllPagesResult } from '../../lib/pagedRead';
+import { maskIdNumber } from '../../lib/foodLaw';
 
 function isoDateInput(d) {
   return new Date(d).toISOString().slice(0, 10);
@@ -84,7 +85,8 @@ export default function Challenge21Report({ locationId }) {
         csv(r.customer_first_name),
         csv(r.customer_last_name_initial),
         csv(r.id_type),
-        csv(r.id_document_number),
+        // 5.12.57: never the whole ID number (old rows hold it): 'ending 1234' only.
+        csv(maskIdNumber(r.id_document_number)),
         r.cancelled ? 'cancelled' : 'completed',
         r.trigger_count ?? '',
       ].join(','));
@@ -176,7 +178,7 @@ export default function Challenge21Report({ locationId }) {
             <span>{r.staff_name || '—'}</span>
             <span style={{ fontWeight: 600 }}>{r.customer_first_name || '—'} {r.customer_last_name_initial || ''}{r.customer_last_name_initial ? '.' : ''}</span>
             <span style={{ fontSize: 12, color:'var(--t2)' }}>{r.id_type || '—'}</span>
-            <span style={{ fontFamily:'var(--font-mono)', fontSize: 12, color:'var(--t2)' }}>{r.id_document_number || '—'}</span>
+            <span style={{ fontFamily:'var(--font-mono)', fontSize: 12, color:'var(--t2)' }}>{maskIdNumber(r.id_document_number) || '—'}</span>
             <span style={{ textAlign:'right' }}>
               {r.cancelled ? (
                 <span style={{ fontSize: 10, fontWeight: 800, padding:'3px 8px', borderRadius: 6,

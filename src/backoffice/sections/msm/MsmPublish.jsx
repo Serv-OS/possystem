@@ -48,6 +48,8 @@ import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
 import { useConfirm } from './useConfirm';
 import { draftCount, siteCount } from '../../../lib/msm/msmStatus';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
+import { activeTaxText as tt } from '../../../lib/taxWords';
 
 const LEADS = [
   { value: 0, label: 'Exactly at that time' },
@@ -552,7 +554,7 @@ function HealthPanel({ preview, siteNames, categories = [], canEdit = false, onP
         {block.length > 0 && <Pill tone="bad">{block.length} to fix</Pill>}
         {warn.length > 0 && <Pill tone="warn">{warn.length} to look at</Pill>}
       </div>
-      {!block.length && !warn.length && <div style={ui.sub}>Every product has a category, a price and a VAT rate at every site, and every new category prints somewhere.</div>}
+      {!block.length && !warn.length && <div style={ui.sub}>{tt('Every product has a category, a price and a VAT rate at every site, and every new category prints somewhere.')}</div>}
       {block.map((p, i) => (
         <div key={`b${i}`} style={{ display: 'flex', gap: 8, padding: '6px 0', borderTop: i ? '1px solid var(--bdr)' : 'none', fontSize: 12.5, flexWrap: 'wrap' }}>
           <span style={{ color: 'var(--red)', fontWeight: 800 }}>●</span>

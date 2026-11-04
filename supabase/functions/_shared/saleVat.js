@@ -27,7 +27,12 @@
 //      sent none or a wrong one (source 'server', booked 'server'), a figure with no record of
 //      the rate, or a record that does not add up to the figure booked.
 // Accepts a closed_checks row (snake_case, as the edge functions read it) or the store's copy
-// (camelCase, as the Back Office reports read it). PURE: imports nothing; node --test loads it.
+// (camelCase, as the Back Office reports read it). PURE: imports only the tax words (taxWords.js,
+// itself pure); node --test loads it.
+
+// 5.12.57 (US basics, batch 6): the report lines name the venue's own tax (VAT, or tax at a US
+// venue) through the one helper. Called with no venue they read exactly as before (VAT).
+import { taxWords, taxText } from './taxWords.js';
 
 export const SALE_VAT_FLAGS = Object.freeze({
   NO_VAT: 'no-vat',           // goods above 0, tax_amount null: nothing was booked
@@ -38,14 +43,14 @@ export const SALE_VAT_FLAGS = Object.freeze({
   MISMATCH: 'mismatch',       // the record's total does not match the figure booked (over 1p)
 });
 
-/** Plain words, short, for a report line. */
-export const SALE_VAT_FLAG_WORDS = Object.freeze({
+/** Plain words, short, for a report line. The UK words; flaggedLines reads them through taxText. */
+export const SALE_VAT_FLAG_WORDS = Object.freeze({   // uk only: read through taxText (flaggedLines)
   'no-vat': 'no VAT recorded',
   'no-record': 'no record of the rate',
   'fallback': 'a line took the venue default rate',
-  'repair': 'VAT filled in when the sale was saved',
-  'server': 'VAT booked by the server, not the page',
-  'mismatch': 'the rate record does not add up to the VAT booked',
+  'repair': 'VAT filled in when the sale was saved',            // taxText: flaggedLines
+  'server': 'VAT booked by the server, not the page',           // taxText: flaggedLines
+  'mismatch': 'the rate record does not add up to the VAT booked',   // taxText: flaggedLines
 });
 
 // ── reading a row of either shape ────────────────────────────────────────────
@@ -288,13 +293,13 @@ export function saleVatLedger(rows, { range = null, hasRates = true, refundRows 
   return out;
 }
 
-/** "3 sales have no VAT recorded: QR-4OGI7, R12" (refs capped), or '' when none. */
-export function noVatLine(ledger) {
+/** "3 sales have no VAT recorded: QR-4OGI7, R12" (refs capped), or '' when none. 5.12.57: "no tax recorded" at a US venue. */
+export function noVatLine(ledger, venue = null) {
   const n = ledger?.noVatCount || 0;
   if (!n) return '';
   const refs = (ledger.noVat || []).map((x) => x.ref || x.id).filter(Boolean);
   const more = n > refs.length ? ` and ${n - refs.length} more` : '';
-  return `${n === 1 ? '1 sale has' : `${n} sales have`} no VAT recorded: ${refs.join(', ')}${more}`;
+  return `${n === 1 ? '1 sale has' : `${n} sales have`} no ${taxWords(venue).tax} recorded: ${refs.join(', ')}${more}`;
 }
 
 /** "2 sales have no record of the rate: R1, R2", or ''. */
@@ -307,17 +312,21 @@ export function noRecordLine(ledger) {
 }
 
 /** One line per flagged sale: "R4082: a line took the venue default rate (custom-item, Coffee beans)". */
-export function flaggedLines(ledger) {
+export function flaggedLines(ledger, venue = null) {
   return (ledger?.flagged || []).map((f) => {
     const why = [f.reason, f.name].filter(Boolean).join(', ');
-    return `${f.ref || f.id}: ${f.words}${why ? ` (${why})` : ''}`;
+    return `${f.ref || f.id}: ${taxText(f.words, venue)}${why ? ` (${why})` : ''}`;
   });
 }
 
-/** 8 Oct 2026 (D1): the plain line under the Back Office Tax summary until the owner decides with his accountant. */
-export const LOYALTY_VAT_LINE = 'Includes VAT on loyalty rewards (the till\'s rule).';
+/** 8 Oct 2026 (D1): the plain line under the Back Office Tax summary until the owner decides with his accountant. 5.12.57: in the venue's tax word. */
+export const loyaltyVatLine = (venue = null) => `Includes ${taxWords(venue).tax} on loyalty rewards (the till's rule).`;
+/** The UK line, as it always read. */
+export const LOYALTY_VAT_LINE = loyaltyVatLine('GBP');
 /** The same question, as the Xero preview says it: the invoice takes that VAT off on the Loyalty rewards line. */
-export const LOYALTY_VAT_XERO_LINE = 'VAT on loyalty rewards: the Back Office Tax summary includes it (the till\'s rule); this invoice takes it off on the Loyalty rewards line. One rule follows once the accountant decides.';
+// 5.12.57: in the venue's tax word too; the constant is the UK line the Xero plan reads today.
+export const loyaltyVatXeroLine = (venue = null) => `${taxWords(venue).Tax} on loyalty rewards: the Back Office Tax summary includes it (the till's rule); this invoice takes it off on the Loyalty rewards line. One rule follows once the accountant decides.`;
+export const LOYALTY_VAT_XERO_LINE = loyaltyVatXeroLine('GBP');
 
 /**
  * A store copy of a closed check (camelCase) as the accounting layer reads a row (snake_case),

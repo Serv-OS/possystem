@@ -23,6 +23,30 @@ export const ALLERGEN_CHECK_KEY = 'product.allergenCheck';
 
 /** The English words of the four keys, for surfaces with no language picker (boards, print). */
 export const KCAL_NOTE_EN = 'Adults need around 2,000 kcal a day';
+// 5.12.57: a US venue prints the FDA statement and 'Cal' (21 CFR 101.11) instead of the UK line.
+export const KCAL_NOTE_US = '2,000 calories a day is used for general nutrition advice, but calorie needs vary.';
+
+// A string may be a currency ('USD') or a country ('US'); a row is read as regionPack.js regionOf
+// reads it (a country first, else the currency). Kept here so this file imports only the alias table.
+const US_WORDS = new Set(['US', 'USA', 'UNITED STATES', 'USD']);
+const COUNTRY_WORDS = new Set(['US', 'USA', 'UNITED STATES', 'UK', 'GB', 'UNITED KINGDOM', 'IE', 'IRL', 'IRELAND']);
+const isUs = (venue) => {
+  if (venue == null || venue === '') return false;
+  const up = (v) => String(v ?? '').trim().toUpperCase();
+  if (typeof venue === 'string') return US_WORDS.has(up(venue));
+  if (COUNTRY_WORDS.has(up(venue.country))) return US_WORDS.has(up(venue.country));
+  return up(venue.currency) === 'USD';
+};
+
+/**
+ * 5.12.57: the calorie line for a venue (a currency code, a country or a row): the FDA statement
+ * at a US venue, else the UK line (through product.kcalNote when `t` is given, as before).
+ */
+export function kcalNoteFor(venue = null, t = null) {
+  if (isUs(venue)) return KCAL_NOTE_US;
+  const v = typeof t === 'function' ? t(KCAL_NOTE_KEY) : null;
+  return typeof v === 'string' && v && v !== KCAL_NOTE_KEY ? v : KCAL_NOTE_EN;
+}
 export const ALLERGEN_CHECK_EN = 'Allergens being checked, ask staff';
 
 const list = (v) => (Array.isArray(v) ? v.filter((x) => x != null && String(x).trim() !== '').map(String) : []);
@@ -98,10 +122,11 @@ export function showCalories(posSettings) {
  * '146 kcal' through the i18n key product.kcal ('{n} kcal'). `t` is the i18n t function; with
  * none, or a t that does not know the key, the English words. '' when there is no figure.
  */
-export function kcalWords(kcal, t = null) {
+export function kcalWords(kcal, t = null, venue = null) {
   const n = numberOrNull(kcal);
   if (n === null || n < 0) return '';
   const shown = String(Math.round(n));
+  if (isUs(venue)) return `${shown} Cal`;   // 5.12.57: the FDA's word on a US menu
   const tpl = typeof t === 'function' ? t(KCAL_KEY) : null;
   if (typeof tpl === 'string' && tpl.includes('{n}')) return tpl.replace('{n}', shown);
   return `${shown} kcal`;

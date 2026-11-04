@@ -18,8 +18,10 @@ import {
 } from '../lib/ops/data';
 import { fetchTodayChecklists, openRun, completeTask, signOffRun, uploadChecklistPhoto } from '../lib/ops/checklists';
 import {
-  displayTemp, toStoredC, breach, typeDefault, hhmmToMin, windowStatus, summarize,
+  displayTemp, toStoredC, breach, typeDefault, hhmmToMin, windowStatus, summarize, defaultTempUnit, fToC,
 } from '../lib/ops/temp';
+import { activeCountry, regionOf } from '../lib/regionPack';
+import { foodLawWords } from '../lib/foodLaw';
 import { getLocationConfig, buildScheduleCtx, minutesInTz, venueDayBoundsIso } from '../lib/locationTime';
 import { Icon } from '../components/ServOSIcons';
 import { ensureAuthToken } from '../lib/supabase';
@@ -253,6 +255,19 @@ function useTodayStatus(loc) {
   return { ...state, reload };
 }
 
+// 5.12.57: the venue's own country, read from ITS currency (this tablet may not be on the Back
+// Office venue), so a US venue reads and types °F and sees the FDA Food Code words. Starts from
+// the active venue and settles on the venue's row; a failed read keeps the start.
+function useVenueCountry(loc) {
+  const [country, setCountry] = useState(() => activeCountry());
+  useEffect(() => {
+    let live = true;
+    getLocationConfig(loc).then(c => { if (live && c?.currency) setCountry(regionOf(c.currency)); }).catch(() => { /* keep the start */ });
+    return () => { live = false; };
+  }, [loc]);
+  return country;
+}
+
 // classify a checklist into a home-tile "kind" by its area/name keywords
 const CL_KINDS = [
   { test: s => s.includes('clean'),                        key: 'cleaning', label: 'Cleaning',      icon: 'sparkle',   hue: 285, order: 2 },
@@ -362,8 +377,13 @@ function AreaTile({ label, icon, sub, state, hue, onClick }) {
 function Temperature({ loc, onBack, onPick }) {
   const L = useLayout();
   const { units, byUnit, summary, loading, reload } = useTodayStatus(loc);
-  const [unit, setUnit] = useState(localStorage.getItem('ops-temp-unit') || 'C');
-  useEffect(() => { localStorage.setItem('ops-temp-unit', unit); }, [unit]);
+  // 5.12.57: a US venue starts in °F. A unit tapped on this tablet is kept (ops-temp-unit-picked);
+  // a UK tablet still reads its old choice (ops-temp-unit, which every tablet wrote as C on open).
+  const country = useVenueCountry(loc);
+  const [picked, setPicked] = useState(() => { try { return localStorage.getItem('ops-temp-unit-picked'); } catch { return null; } });
+  const legacy = (() => { try { return localStorage.getItem('ops-temp-unit'); } catch { return null; } })();
+  const unit = picked || (country === 'US' ? defaultTempUnit(country) : (legacy || 'C'));
+  const setUnit = (u) => { setPicked(u); try { localStorage.setItem('ops-temp-unit-picked', u); localStorage.setItem('ops-temp-unit', u); } catch { /* private mode */ } };
   useEffect(() => { reload(); }, []);   // refresh on open
   const h = new Date().getHours();
   const roundName = h < 12 ? 'AM round' : h < 17 ? 'PM round' : 'Evening round';
@@ -402,7 +422,7 @@ function Temperature({ loc, onBack, onPick }) {
           );
         })}
       </div>
-      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 14, lineHeight: 1.5, ...mono }}>✓ FSA: chilled ≤8°C (target 1–4); frozen ≤−18°C; hot holding ≥63°C.</div>
+      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 14, lineHeight: 1.5, ...mono }}>{foodLawWords(country).tempFloorNote}</div>
     </div>
   );
 }
@@ -413,13 +433,15 @@ function Temperature({ loc, onBack, onPick }) {
 // while onDone stays the plain back/close signal for every existing caller.
 function LogUnit({ loc, unit, operator, onDone, onSaved }) {
   const L = useLayout();
-  const dUnit = unit._displayUnit || 'C';
+  const country = useVenueCountry(loc);
+  // 5.12.57: a checklist's probe task has no picked unit: the venue's own (°F at a US venue).
+  const dUnit = unit._displayUnit || defaultTempUnit(country);
   const [raw, setRaw] = useState('');
   const [phase, setPhase] = useState('enter');   // enter | corrective
   const [corrective, setCorrective] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const def = typeDefault(unit.type);
+  const def = typeDefault(unit.type, country);
   const readingC = toStoredC(raw, dUnit);
   const b = readingC == null ? null : breach(readingC, unit.targetMinC ?? def.min, unit.targetMaxC ?? def.max);
 
@@ -472,7 +494,7 @@ function LogUnit({ loc, unit, operator, onDone, onSaved }) {
 
   return (
     <div style={L.s.capKeypad}>
-      <Header title={unit.name} sub={typeDefault(unit.type).label} onBack={onDone} />
+      <Header title={unit.name} sub={def.label} onBack={onDone} />
       <div className="sv-glass" style={{ padding: 20, marginBottom: 14, textAlign: 'center' }}>
         <div style={{ fontSize: 48, fontWeight: 800, minHeight: 58, color: b && !b.inRange ? 'var(--red)' : b ? 'var(--grn)' : 'var(--t2)', ...mono }}>{raw ? `${raw}°${dUnit}` : <span style={{ color: 'var(--t4)' }}>—</span>}</div>
         <div style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>target {displayTemp(unit.targetMinC ?? def.min, dUnit).value}–{displayTemp(unit.targetMaxC ?? def.max, dUnit).value}°{dUnit}</div>
@@ -527,9 +549,16 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
   const [raw, setRaw] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const tempC = toStoredC(raw, 'C');
+  // 5.12.57: a US venue types °F: chilled at 41°F or below, reject above 45°F (the Food Code lets
+  // some foods in at 45°F, so 41 to 45 asks for a check). The reading is still stored in °C.
+  const country = useVenueCountry(loc);
+  const us = country === 'US';
+  const dUnit = defaultTempUnit(country);
+  const tempC = toStoredC(raw, dUnit);
   const ACCEPT_MAX = 8;   // chilled delivery threshold (FSA)
-  const overTemp = tempC != null && tempC > ACCEPT_MAX;
+  const rejectAboveC = us ? fToC(45) : ACCEPT_MAX;
+  const overTemp = tempC != null && tempC > rejectAboveC;
+  const checkBand = us && tempC != null && !overTemp && tempC > fToC(41);
   const decide = async (accept) => {
     if (tempC == null) { setErr('Enter the delivery temperature'); return; }
     setBusy(true); setErr('');
@@ -537,7 +566,7 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
       poId: po.id, supplierId: po.supplierId, deliveryUnitId: null,   // no probe unit needed; gate by threshold
       temperatureC: tempC, accept, operatorId: operator?.id, operatorName: operator?.name,
       corrective: accept ? null : { action: 'rejected_delivery', description: 'Delivery over temperature' },
-      rejectionReason: accept ? null : `Over ${ACCEPT_MAX}°C on arrival`,
+      rejectionReason: accept ? null : (us ? 'Over 45°F on arrival' : `Over ${ACCEPT_MAX}°C on arrival`),
     }, loc);
     setBusy(false);
     reportSave('delivery check', error);
@@ -548,10 +577,10 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
     <div style={L.s.capKeypad}>
       <Header title={po.reference || 'Delivery'} sub="Goods-in check" onBack={onDone} />
       <div className="sv-glass" style={{ padding: 18, marginBottom: 14, textAlign: 'center' }}>
-        <div style={{ fontSize: 44, fontWeight: 800, color: overTemp ? 'var(--red)' : tempC != null ? 'var(--grn)' : 'var(--t2)', ...mono }}>{raw ? `${raw}°C` : <span style={{ color: 'var(--t4)' }}>—</span>}</div>
-        <div style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>accept chilled ≤ {ACCEPT_MAX}°C</div>
+        <div style={{ fontSize: 44, fontWeight: 800, color: overTemp ? 'var(--red)' : checkBand ? 'var(--orn)' : tempC != null ? 'var(--grn)' : 'var(--t2)', ...mono }}>{raw ? `${raw}°${dUnit}` : <span style={{ color: 'var(--t4)' }}>—</span>}</div>
+        <div style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>{us ? 'accept chilled at 41°F or below, reject above 45°F' : `accept chilled ≤ ${ACCEPT_MAX}°C`}</div>
       </div>
-      {tempC != null && <div style={{ textAlign: 'center', fontSize: 13, fontWeight: 700, color: overTemp ? 'var(--red)' : 'var(--grn)', marginBottom: 12 }}>{overTemp ? 'Recommend REJECT — over temperature' : 'OK to accept'}</div>}
+      {tempC != null && <div style={{ textAlign: 'center', fontSize: 13, fontWeight: 700, color: overTemp ? 'var(--red)' : checkBand ? 'var(--orn)' : 'var(--grn)', marginBottom: 12 }}>{overTemp ? 'Recommend REJECT — over temperature' : checkBand ? 'Above 41°F: accept only foods the Food Code allows at 45°F' : 'OK to accept'}</div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
         {['1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '0', '.'].map(k => (
           <button key={k} onClick={() => setRaw(r => (k === '.' && r.includes('.') ? r : k === '-' ? (r.startsWith('-') ? r.slice(1) : '-' + r) : (r + k)).slice(0, 6))}
@@ -610,6 +639,7 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   // ops_submit_reading chain (breach → corrective → maintenance → alert) and
   // the task only completes once the reading exists.
   const [tempTask, setTempTask] = useState(null);   // { task, unit }
+  const venueCountry = useVenueCountry(loc);
   const showToast = useStore(s => s.showToast);
   const unitsRef = useRef(null);
   const fileRef = useRef(null);
@@ -703,7 +733,8 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     const task = tempTask?.task;
     setTempTask(null);
     if (!task || !run) return;
-    const valueText = `${readingC}°C`;
+    // 5.12.57: a US venue's checklist shows the reading in °F (the reading itself is stored in °C).
+    const valueText = venueCountry === 'US' ? displayTemp(readingC, 'F').label : `${readingC}°C`;
     setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString(), valueText } }));
     const { error } = await completeTask(run.id, task.id, { done: true, valueText, by: operator?.name, byId: operator?.id }, loc);
     reportSave('checklist temperature task', error);

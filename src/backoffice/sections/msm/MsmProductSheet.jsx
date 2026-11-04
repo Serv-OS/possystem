@@ -49,6 +49,8 @@ import { draftCount } from '../../../lib/msm/msmStatus';
 import { useConfirm } from './useConfirm';
 import MsmPhotoField from './MsmPhotoField';
 import MenuItemFactsPanel from '../stock/MenuItemFactsPanel';   // v5.11.93 (multi site stock Drop 2)
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
+import { activeTaxWords as tw, activeTaxText as tt } from '../../../lib/taxWords';
 
 const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)));
@@ -309,7 +311,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     // type says what it becomes, and asks first.
     const vat = riskChecks([change], eff, null, null, { siteNames: siteName, ratesByLoc }).filter((r) => r.code === 'vat');
     if (vat.length) {
-      const yes = await confirm({ title: `Use the group's VAT at ${siteName.get(loc)}?`, words: vat.map((r) => r.words).join('\n\n'), yes: 'Yes, I have checked', no: 'Keep the site\'s' });
+      const yes = await confirm({ title: tt(`Use the group's VAT at ${siteName.get(loc)}?`), words: vat.map((r) => r.words).join('\n\n'), yes: 'Yes, I have checked', no: 'Keep the site\'s' });
       if (!yes) return;
     }
     await stage([{ ...change, before: { kept: liveS?.kept ?? {} } }],
@@ -460,11 +462,11 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             {!priceOk.ok && <div style={{ ...ui.err, marginTop: 4 }}>{priceOk.words}</div>}
           </Field>
           )}
-          <Field label="VAT" hint="Each site uses its own VAT rate with this name.">
+          <Field label={tt('VAT')} hint={tt('Each site uses its own VAT rate with this name.')}>
             <select style={ui.input} value={productRate ? rateToChoice(productRate) : ''}
               onChange={(e) => { const r = choiceToRate(e.target.value); setForm((f) => ({ ...f, tax_rate_name: r?.name ?? null, tax_rate_percent: r?.percent ?? null })); }}>
-              <option value="">No VAT rate</option>
-              {productRate && !rateChoices.some((t) => t.value === rateToChoice(productRate)) && <option value={rateToChoice(productRate)}>{productRate.name || 'VAT'} ({pctText(productRate.percent)})</option>}
+              <option value="">{tt('No VAT rate')}</option>
+              {productRate && !rateChoices.some((t) => t.value === rateToChoice(productRate)) && <option value={rateToChoice(productRate)}>{productRate.name || tw().Tax} ({pctText(productRate.percent)})</option>}
               {rateChoices.map((t) => <option key={t.value} value={t.value}>{t.label}{t.sites != null && t.sites < sites.length ? ` (at ${t.sites} of ${sites.length} sites)` : ''}</option>)}
             </select>
             {productRate && missingFor(productRate).length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{missingFor(productRate).join(', ')} {missingFor(productRate).length === 1 ? 'has' : 'have'} no rate like this. Add it in Settings, Tax, or {missingFor(productRate).length === 1 ? 'that site' : 'those sites'} cannot be published.</div>}
@@ -548,7 +550,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                         </span>
                       ))}
                       {ownTypeKeys.length > 0 && tbt.takeaway && (
-                        <span style={{ ...ui.sub, fontSize: 11.5 }}>{s.name} has its own {ownTypeKeys.map((k) => (k === 'drive-thru' ? 'Drive thru' : 'Collection')).join(' and ')} VAT on this, so the group Takeaway VAT will not reach {ownTypeKeys.length === 1 ? 'it' : 'them'} there.</span>
+                        <span style={{ ...ui.sub, fontSize: 11.5 }}>{s.name} has its own {ownTypeKeys.map((k) => (k === 'drive-thru' ? 'Drive thru' : 'Collection')).join(' and ')} {tw().tax} on this, so the group Takeaway {tw().tax} will not reach {ownTypeKeys.length === 1 ? 'it' : 'them'} there.</span>
                       )}
                     </div>
                   )}
@@ -576,7 +578,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                   <div style={{ width: 120, fontSize: 13, fontWeight: 700 }}>{PRICE_TYPE_WORDS[k]}</div>
                   <input aria-label={`Group ${PRICE_TYPE_WORDS[k]} price`} inputMode="decimal" style={{ ...ui.input, width: 110, textAlign: 'right', borderColor: r.ok ? 'var(--bdr2)' : 'var(--red)' }}
                     placeholder={fb.value != null ? price2(fb.value) : ''} value={form.default_channels?.[k] ?? ''} onChange={(e) => set('default_channels', { ...(form.default_channels || {}), [k]: e.target.value })} />
-                  <div style={{ ...ui.sub, fontSize: 11.5, flex: 1 }}>{PRICE_TYPE_HELP[k]}</div>
+                  <div style={{ ...ui.sub, fontSize: 11.5, flex: 1 }}>{tt(PRICE_TYPE_HELP[k])}</div>
                 </div>
               );
             })}
@@ -586,7 +588,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         {/* VAT by order type (a size uses its product's: it is never written on a size) */}
         {!optionOnly && isSizeForm && (
           <div style={{ ...ui.card, boxShadow: 'none', padding: 14, marginBottom: 14 }}>
-            <div style={{ ...ui.h2, marginBottom: 4 }}>VAT by order type</div>
+            <div style={{ ...ui.h2, marginBottom: 4 }}>{tt('VAT by order type')}</div>
             <div style={{ ...ui.sub, fontSize: 12.5 }}>
               {sizeVatWords({ size: true, product: parentOfForm ? (parentOfForm.menu_name || parentOfForm.name) : 'its product', taxByType: parentOfForm?.tax_by_type || null })}
               {parentOfForm && openProduct && <> <Btn small kind="link" onClick={() => openProduct(parentOfForm.id)}>Open {parentOfForm.menu_name || parentOfForm.name}</Btn></>}
@@ -596,8 +598,8 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         )}
         {!optionOnly && !isSizeForm && (
           <div style={{ ...ui.card, boxShadow: 'none', padding: 14, marginBottom: 14 }}>
-            <div style={{ ...ui.h2, marginBottom: 4 }}>VAT by order type</div>
-            <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: 10 }}>Most products use their VAT for everything. Set one only where it differs, for example cold food taken away.{sizesOfThis.length ? ` ${sizeVatWords({ size: false, sizes: sizesOfThis.length })}` : ''}</div>
+            <div style={{ ...ui.h2, marginBottom: 4 }}>{tt('VAT by order type')}</div>
+            <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: 10 }}>Most products use their {tw().tax} for everything. Set one only where it differs, for example cold food taken away.{sizesOfThis.length ? ` ${sizeVatWords({ size: false, sizes: sizesOfThis.length })}` : ''}</div>
             {taxTypes.map((k) => {
               const v = tbt[k] || null;
               const miss = v ? missingFor(v) : [];
@@ -608,14 +610,14 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                       <div style={{ fontSize: 13, fontWeight: 700 }}>{TAX_TYPE_WORDS[k]}</div>
                       <div style={{ ...ui.sub, fontSize: 11 }}>{TAX_TYPE_HELP[k]}</div>
                     </div>
-                    <select aria-label={`${TAX_TYPE_WORDS[k]} VAT`} style={{ ...ui.input, width: 'auto', minWidth: 240, flex: 1 }} value={v ? rateToChoice(v) : ''}
+                    <select aria-label={`${TAX_TYPE_WORDS[k]} ${tw().tax}`} style={{ ...ui.input, width: 'auto', minWidth: 240, flex: 1 }} value={v ? rateToChoice(v) : ''}
                       onChange={(e) => { const r = choiceToRate(e.target.value); const next = { ...tbt }; if (r) next[k] = r; else delete next[k]; set('tax_by_type', next); }}>
-                      <option value="">Same as the product's VAT{productRate ? ` (${productRate.name || 'VAT'} ${pctText(productRate.percent)})` : ''}</option>
+                      <option value="">Same as the product's {tw().tax}{productRate ? ` (${productRate.name || tw().Tax} ${pctText(productRate.percent)})` : ''}</option>
                       {v && !rateChoices.some((t) => t.value === rateToChoice(v)) && <option value={rateToChoice(v)}>{v.name} ({pctText(v.percent)})</option>}
                       {rateChoices.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                     </select>
                   </div>
-                  {miss.length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{miss.join(', ')} {miss.length === 1 ? 'does' : 'do'} not have {v.name}. Add it in {miss.length === 1 ? `${miss[0]}'s` : "each site's"} Settings, Tax, or {miss.length === 1 ? 'that site' : 'those sites'} cannot be published. Or pick "Same as the product's VAT".</div>}
+                  {miss.length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{miss.join(', ')} {miss.length === 1 ? 'does' : 'do'} not have {v.name}. Add it in {miss.length === 1 ? `${miss[0]}'s` : "each site's"} Settings, Tax, or {miss.length === 1 ? 'that site' : 'those sites'} cannot be published. Or pick "Same as the product's {tw().tax}".</div>}
                 </div>
               );
             })}
@@ -633,7 +635,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                   )}
                 </div>
                 <div data-testid="msm-vat-example" style={{ fontSize: 13, fontWeight: 650, color: ex.ok ? 'var(--t1)' : 'var(--red)' }}>{ex.words}</div>
-                <div style={{ ...ui.sub, fontSize: 11 }}>Worked out by the same VAT rules the tills use. Collection and Drive thru use Takeaway.</div>
+                <div style={{ ...ui.sub, fontSize: 11 }}>Worked out by the same {tw().tax} rules the tills use. Collection and Drive thru use Takeaway.</div>
               </div>
             )}
           </div>

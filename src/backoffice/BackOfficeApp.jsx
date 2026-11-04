@@ -205,7 +205,7 @@ const NAV = [
   { id:'eod',        label:'Close day',        icon:'lock',  group:'Analytics' },
   { id:'pettycash',  label:'Petty cash',        icon:'money', group:'Analytics' },
   { id:'customers',  label:'Customers',         icon:'users', group:'Analytics' },
-  { id:'tax',        label:'Tax & VAT',          icon:'percent',   group:'Analytics' },
+  { id:'tax',        label:'Tax & VAT',          icon:'percent',   group:'Analytics' },   // uk only: boSections routeLabel says Tax at a US venue (TAX_LABEL_WHEN_US)
   { id:'ai',         label:'AI Assistant',      icon:'ai',   group:'Analytics' },
   { id:'network',    label:'Network & Sync',     icon:'radio',  group:'Analytics' },
   { id:'location',   label:'Location settings', icon:'settings',  group:'Analytics' },

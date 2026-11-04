@@ -254,6 +254,20 @@ Deno.serve(async (req) => {
       }));
     const ratesMinor: Record<string, number> = {};
     for (const t of tsRows) if (t.effective_rate != null) ratesMinor[t.staff_id] = Math.round(Number(t.effective_rate) * 100);
+    // 5.12.57 (US basics batch 2, private data): the live labour figure is worked out HERE and only the
+    // total leaves the server: the labour so far and what the people clocked in now cost an hour, which
+    // the app runs forward. Everyone's hourly rate used to be sent to any login on a manager device (a
+    // staff PIN included); the screen only hid it. The rates stay on the server.
+    const nowLabourMs = now.getTime();
+    let labourSoFarMinor = 0, labourBurnMinorPerHour = 0;
+    for (const p of punches) {
+      if (p.inMs == null) continue;
+      const r = ratesMinor[p.staffId] || 0;
+      const end = p.outMs != null ? p.outMs : nowLabourMs;
+      labourSoFarMinor += Math.round((Math.max(0, (end - p.inMs) / 60000 - (p.breakMins || 0)) / 60) * r);
+      if (p.outMs == null && !p.breakOpen) labourBurnMinorPerHour += r;
+    }
+    const labourLive = { soFarMinor: labourSoFarMinor, burnMinorPerHour: labourBurnMinorPerHour, atMs: nowLabourMs };
 
     // ── Approvals inbox (pending) — completed-but-unapproved timesheets (last 14d) + pending time-off.
     //    Surfaced for the Team tab's approvals (the UI gates display on the team_approvals flag; writes
@@ -673,7 +687,7 @@ Deno.serve(async (req) => {
       scope: full ? 'all' : 'stock', currency,
       money: full ? money : null,
       floor: full ? floor : null,
-      team: full ? { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, pendingSwaps, breakPolicy } : null,
+      team: full ? { punches, shifts: teamShifts, labourLive, pendingTimesheets, pendingTimeOff, pendingSwaps, breakPolicy } : null,
       kitchen: { items: kitchenItems, deliveries: kitchenDeliveries.map((d: any) => (internalSup.has(String(d.supplierId)) ? { ...d, internal: true } : d)), batches: kitchenBatches, trackedItems, recipes: kitchenRecipes,
         orderBy: kitchenOrderBy, approvals: kitchenApprovals, transfers: kitchenTransfers, closedown: kitchenClosedown, ordersIn: kitchenOrdersIn },
       stock: { alerts: stockAlerts },

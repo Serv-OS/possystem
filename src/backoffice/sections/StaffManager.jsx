@@ -124,7 +124,15 @@ async function readLogins(ids) {
     hasSections = false;
     ({ data } = await read('id, email'));
   }
+  // 5.12.57: Can see payroll details (20261120a), its own read so a database without the column (before
+  // 20261120a) still lists every login; undefined = not known, and no tick is offered.
+  let payroll = null;
+  try {
+    const pr = await supabase.from('user_profiles').select('id, payroll_details').in('id', ids);
+    if (!pr?.error) payroll = Object.fromEntries((pr.data || []).map(r => [r.id, r.payroll_details === true]));
+  } catch { payroll = null; }
   return (data || []).map(p => ({
+    payrollDetails: payroll ? (payroll[p.id] ?? false) : undefined,
     authUserId: p.id, email: p.email, boAccess: p.bo_access !== false, role: p.role ?? null,
     // null = everything, a list = only those, undefined = could not be read (never shown as everything).
     sections: hasSections ? sectionsFromAnswer(p.bo_sections) : null,
@@ -159,6 +167,7 @@ export default function StaffManager({ orgCtx = null } = {}) {
   const stockMulti = !isMock && stockScope.ready && stockScope.multi;
   const stockCompanyId = orgCtx?.venueOrgId || stockScope.orgId || null;
   const [editStock, setEditStock] = useState(null); // { staffId, level } | null
+  const [payrollBusy, setPayrollBusy] = useState(null); // staffId while saving Can see payroll details
   const [stockBusy, setStockBusy] = useState(false);
 
   // v5.5.17: BO-access state. Each staff member can optionally be linked to
@@ -680,6 +689,44 @@ export default function StaffManager({ orgCtx = null } = {}) {
     showToast(savedWords(level), 'success', 5000);
   };
 
+  // 5.12.57 (Peter, 3 Nov 2026): Can see payroll details, the tick that lets a login see staff ID numbers
+  // and bank details (owners and admins always can). The ONLY way to change it is the database function
+  // set_payroll_details (the owner of the company, never your own login, never an owner's); the database
+  // refuses everyone else, whatever this screen shows. The screen believes its answer.
+  const savePayrollDetails = async (staffId, link, on) => {
+    setPayrollBusy(staffId);
+    try {
+      const { data, error } = await supabase.rpc('set_payroll_details', { p_user: link.authUserId, p_on: on });
+      if (error) { showToast(isMissingRpc(error) ? 'Not saved. This needs a database update first.' : `Not saved. ${error.message}`, 'error', 9000); return; }
+      if (data?.ok !== true || data?.payroll_details !== on) { showToast('Not saved. Reload the page and check.', 'error', 9000); return; }
+      setAuthLinks(prev => (prev[staffId] ? { ...prev, [staffId]: { ...prev[staffId], payrollDetails: on } } : prev));
+      showToast(on ? 'Saved. They can now see staff ID numbers and bank details.' : 'Saved. They no longer see staff ID numbers or bank details.', 'success', 5000);
+    } catch (e) {
+      showToast(`Not saved. ${e?.message || 'Try again.'}`, 'error', 9000);
+    } finally { setPayrollBusy(null); }
+  };
+  const payrollDetailsAccess = (staffId, link) => {
+    if (link.payrollDetails === undefined) return null;
+    const ownerLike = isEverythingRole(link.role);
+    const canChange = !ownerLike && link.authUserId !== myId && (myRole === 'owner' || myRole === 'super_admin');
+    const words = ownerLike ? 'Yes, owners always can' : link.payrollDetails ? 'Yes' : 'No';
+    return (
+      <div data-testid="bo-payroll-details" style={{ borderTop:'1px solid var(--bdr)', paddingTop:10, marginBottom:8, display:'flex', alignItems:'flex-start', gap:10 }}>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Can see payroll details</div>
+          <div style={{ fontSize:12, color:'var(--t2)', fontWeight:600 }}>{words}</div>
+          <div style={{ fontSize:10, color:'var(--t3)', marginTop:3 }}>Staff ID numbers (NI number, SSN last 4, tax reference) and bank details, in Workforce and the payroll exports.{!canChange && !ownerLike ? ' Only the owner can change this.' : ''}</div>
+        </div>
+        {canChange && (
+          <button onClick={()=>savePayrollDetails(staffId, link, !link.payrollDetails)} disabled={payrollBusy === staffId}
+            style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>
+            {payrollBusy === staffId ? 'Saving…' : link.payrollDetails ? 'Turn off' : 'Turn on'}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   // The Stock control line of a login (multi site companies only), under What can they open?
   const stockControlAccess = (staffId, link) => {
     const target = { id: link.authUserId, role: link.role, org_id: link.orgId, stock_control: link.stockControl };
@@ -925,6 +972,7 @@ export default function StaffManager({ orgCtx = null } = {}) {
                     </div>
                     {sectionAccess(sel.id, link)}
                     {stockMulti && stockControlAccess(sel.id, link)}
+                    {payrollDetailsAccess(sel.id, link)}
                     <div style={{ display:'flex', gap:6, justifyContent:'flex-end' }}>
                       <button
                         onClick={()=>unlinkBOAccess(sel.id)}

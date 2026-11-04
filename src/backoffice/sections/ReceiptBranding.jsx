@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { invalidateBrandingCache } from '../../lib/receiptBranding';
 import { money } from '../../lib/currency';
+import { activeCountry, activeRegionPack } from '../../lib/regionPack';
 
 const ASSET_BUCKET = 'receipt-assets';
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB
@@ -224,8 +225,9 @@ export default function ReceiptBranding() {
           <NumberRow label="Logo width (dots)" hint="80mm paper = 576 dots max. 384 is a safe default." value={branding.header.logo_width_dots} min={96} max={576} step={8} onChange={v => updH('logo_width_dots', v)}/>
           <TextRow label="Business name" value={branding.header.business_name} onChange={v => updH('business_name', v)} placeholder="Your business name"/>
           <TextAreaRow label="Address (one line per row)" rows={3} value={(branding.header.address_lines || []).join('\n')} onChange={v => updH('address_lines', v.split('\n'))} placeholder={'Street\nCity, State'}/>
-          <TextRow label="Phone" value={branding.header.phone} onChange={v => updH('phone', v)} placeholder="+44 20 7123 4567"/>
-          <TextRow label="VAT / Tax ID" value={branding.header.tax_id} onChange={v => updH('tax_id', v)} placeholder="VAT GB123456789"/>
+          <TextRow label="Phone" value={branding.header.phone} onChange={v => updH('phone', v)} placeholder={activeCountry() === 'US' ? activeRegionPack().phoneFormat : '+44 20 7123 4567'}/>
+          {/* 5.12.57: a US venue has no VAT number; its tax ID is optional. A UK venue reads as before. */}
+          <TextRow label={activeCountry() === 'US' ? 'Sales tax ID (optional)' : 'VAT / Tax ID'} value={branding.header.tax_id} onChange={v => updH('tax_id', v)} placeholder={activeCountry() === 'US' ? '' : 'VAT GB123456789'}/>
           <ToggleRow label="Show server name" desc="Prints 'Server: Jane' under the check ref" checked={branding.header.show_server_name !== false} onChange={v => updH('show_server_name', v)}/>
           <ToggleRow label="Show covers count" desc="Prints 'N covers' on dine-in receipts with >1 guest" checked={branding.header.show_covers !== false} onChange={v => updH('show_covers', v)}/>
         </Section>
@@ -494,7 +496,9 @@ function ReceiptPreview({ branding }) {
     { qty: 1, name: 'Sticky toffee',  price: 7.00  },
   ];
   const subtotal = sampleItems.reduce((s, i) => s + i.qty * i.price, 0);
-  const service = subtotal * 0.125;
+  // 5.12.57: a US venue has no default service charge, so its sample receipt shows none; UK 12.5% as before.
+  const usVenue = activeCountry() === 'US';
+  const service = usVenue ? 0 : subtotal * 0.125;
   const total = subtotal + service;
 
   return (
@@ -565,7 +569,7 @@ function ReceiptPreview({ branding }) {
           <div style={{ borderTop: '1px dashed #000', margin: '10px 0' }}/>
 
           <Row left="Subtotal" right={`${money(subtotal)}`}/>
-          <Row left="Service (12.5%)" right={`${money(service)}`}/>
+          {!usVenue && <Row left="Service (12.5%)" right={`${money(service)}`}/>}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: 14, marginTop: 4 }}>
             <span>TOTAL</span><span>{money(total)}</span>
           </div>

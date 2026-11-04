@@ -18,7 +18,8 @@ import { getActiveLocationSync } from '../../lib/supabase';
 import { getVenueUberConfig, setVenueUberConfig, setStuartCreds, testStuart, disconnectStuart } from '../../lib/delivery/deliveryConfig';
 import { computeSurcharge } from '../../lib/delivery/surcharge';
 // 5.12.57: the delivery money labels use the venue's own symbol, never a typed pound.
-import { money, currencySymbol } from '../../lib/currency';
+import { money, currencySymbol, getActiveCurrencyCode } from '../../lib/currency';
+import { postcodeLabel, addressCountry } from '../../lib/online/deliveryCoverage';
 import MoneyField from '../../components/MoneyField';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { Icon } from '../../components/ServOSIcons';
@@ -73,6 +74,9 @@ export default function UberDirect() {
   const setAddr = (k, v) => setForm((f) => ({ ...f, pickup_address: { ...f.pickup_address, [k]: v } }));
   const setContact = (k, v) => setForm((f) => ({ ...f, pickup_contact: { ...f.pickup_contact, [k]: v } }));
   const setPolicy = (k, v) => setForm((f) => ({ ...f, surcharge_policy: { ...f.surcharge_policy, [k]: v } }));
+  // 5.12.57: the address search and the postcode label follow the venue (its currency: USD is the
+  // US). The search was always Great Britain, so a US venue could not find its own address.
+  const venueCcy = { currency: getActiveCurrencyCode() };
 
   const isCourier = form.delivery_mode === 'uber';
 
@@ -243,6 +247,7 @@ export default function UberDirect() {
             <label style={S.label}>Address line 1</label>
             <AddressAutocomplete
               value={form.pickup_address.line1 || ''} inputStyle={S.input}
+              country={addressCountry(venueCcy)}
               placeholder="Start typing the venue address…"
               onChangeText={(v) => setAddr('line1', v)}
               onSelect={(a) => setForm((f) => ({ ...f, pickup_address: {
@@ -258,7 +263,7 @@ export default function UberDirect() {
         </div>
         <div style={{ ...S.infoNote, marginTop: 8 }}>Pick your address from the suggestions so the courier gets exact coordinates — this matches how customers enter their delivery address (no mismatch).</div>
         <div style={{ ...S.row, marginTop: 10 }}>
-          <div style={S.col}><label style={S.label}>Postcode</label><input style={S.input} value={form.pickup_address.postcode || ''} onChange={(e) => setAddr('postcode', e.target.value)} /></div>
+          <div style={S.col}><label style={S.label}>{postcodeLabel(venueCcy)}</label><input style={S.input} value={form.pickup_address.postcode || ''} onChange={(e) => setAddr('postcode', e.target.value)} /></div>
           <div style={S.col}><label style={S.label}>Latitude (optional)</label><input style={S.input} value={form.pickup_address.lat ?? ''} onChange={(e) => setAddr('lat', e.target.value === '' ? null : Number(e.target.value))} /></div>
           <div style={S.col}><label style={S.label}>Longitude (optional)</label><input style={S.input} value={form.pickup_address.lng ?? ''} onChange={(e) => setAddr('lng', e.target.value === '' ? null : Number(e.target.value))} /></div>
         </div>

@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { activeCountry, activeRegionPack } from '../../lib/regionPack';
 
 const missingColumn = (e) => /42703|PGRST204|does not exist|schema cache/i.test(`${e?.code || ''} ${e?.message || ''}`);
 
@@ -82,7 +83,7 @@ export default function GuestManageSettings({ rules, patch, ui, showToast }) {
           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Phone number guests call</div>
           <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2, lineHeight: 1.4 }}>Shown in every booking message and on the guest's page. Empty uses the phone on your receipts.</div>
         </div>
-        <input value={phoneValue} disabled={!ready} placeholder="e.g. 01484 000000" inputMode="tel"
+        <input value={phoneValue} disabled={!ready} placeholder={activeCountry() === 'US' ? `e.g. ${activeRegionPack().phoneFormat}` : 'e.g. 01484 000000'} inputMode="tel"
           onChange={(e) => setPhone(e.target.value)}
           onBlur={async () => {
             if (!ready || phone === null || phone.trim() === (extra.phone || '')) return;

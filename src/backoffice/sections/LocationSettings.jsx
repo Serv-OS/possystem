@@ -402,7 +402,7 @@ export default function LocationSettings() {
         </div>
         <input style={{ ...S.input, width:'100%', maxWidth:460, boxSizing:'border-box', marginBottom:18 }}
           value={venueAddress} onChange={e => setVenueAddress(e.target.value)}
-          placeholder="e.g. 12 High Street, Provo, PR1 2AB"/>
+          placeholder={currency === 'USD' ? 'e.g. 120 N University Ave, Provo, UT 84601' : 'e.g. 12 High Street, Provo, PR1 2AB'}/>
 
         <div style={S.desc}>
           The time a new reporting day begins. Checks closed before this time are attributed to the previous day.

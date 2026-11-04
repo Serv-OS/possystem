@@ -192,7 +192,8 @@ export const PAD_WORDS = Object.freeze({
   repeatLast: 'Repeat last order',
 });
 // 5.12.57: the money heading is in the site's own symbol ('Line $ (ex VAT)' at a US site).
-export const HEADERS_MULTI_OF = (deliveryDow, symbol = currencySymbol()) => ['Item', 'On hand', 'Forecast use', `Par (${deliveryDow == null ? 'next' : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][deliveryDow]})`, 'Suggested', 'Order', 'Supplier', `Line ${symbol} (ex VAT)`];
+// 5.12.57: exTax is the site's words ('before tax' at a US site)
+export const HEADERS_MULTI_OF = (deliveryDow, symbol = currencySymbol(), exTax = 'ex VAT') => ['Item', 'On hand', 'Forecast use', `Par (${deliveryDow == null ? 'next' : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][deliveryDow]})`, 'Suggested', 'Order', 'Supplier', `Line ${symbol} (${exTax})`];
 export const noRulesWords = (supplier) => `No delivery days set for ${supplier || 'this supplier'}.`;
 export const sendBackToast = (name) => `Sent back to ${name || 'the person who raised it'} to change.`;
 export const manyOrdersWords = (orders, suppliers) => `${orders} order${orders === 1 ? '' : 's'} to ${suppliers} supplier${suppliers === 1 ? '' : 's'}`;

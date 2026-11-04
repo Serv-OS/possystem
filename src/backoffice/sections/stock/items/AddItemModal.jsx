@@ -15,26 +15,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { ALLERGENS } from '../../../../data/seed';
-import { UNITS, DIMENSIONS } from '../../../../lib/stock/units';
 import { stockApi } from '../../../../lib/stock/stockApi';
 import { ITEM_TYPES, MAX_ROWS, addItemPlan, addItemSavedWords, checklistGroups, queuedWords, siteList, sortSites } from '../../../../lib/stock/itemListRules';
 import { KIND_CHOICES } from '../../../../lib/stock/itemPageRules';
 import { useStockScope } from '../../../StockScope';
 import { Btn, Modal, SiteChecklist, Field, ui } from '../stockUi';
+import UnitOptions from '../UnitOptions';
+import { useSiteTaxWords } from '../useSiteRegion';
 
-const UNIT_GROUPS = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME].map((dim) => ({
-  dim, label: dim[0] + dim.slice(1).toLowerCase(),
-  units: Object.entries(UNITS).filter(([, u]) => u.dimension === dim).map(([code, u]) => ({ code, label: u.label })),
-}));
-
-function UnitPick({ value, onChange, label }) {
+// 5.12.57: the units of the site the item is for (a US site: US volume units first)
+function UnitPick({ value, onChange, label, siteId = null }) {
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} style={{ ...ui.input, width: 'auto', minWidth: 120 }}>
-      {UNIT_GROUPS.map((g) => (
-        <optgroup key={g.dim} label={g.label}>
-          {g.units.map((u) => <option key={u.code} value={u.code}>{u.label} ({u.code})</option>)}
-        </optgroup>
-      ))}
+      <UnitOptions siteId={siteId} />
     </select>
   );
 }
@@ -55,6 +48,9 @@ export default function AddItemModal({ orgCtx = null, local = false, presetSites
   const localName = localSiteId ? sc.siteName(localSiteId) : '';
   const [form, setForm] = useState(BLANK);
   const [chosen, setChosen] = useState(() => (presetSites || []).filter((id) => sites.some((s) => s.id === id)));
+  // 5.12.57: the words and units follow the site it is for (a local item), else the signed in venue
+  const unitSite = localSiteId || chosen[0] || null;
+  const tw = useSiteTaxWords(unitSite);
   const [cats, setCats] = useState([]);
   const [sups, setSups] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -134,7 +130,7 @@ export default function AddItemModal({ orgCtx = null, local = false, presetSites
           </select>
         </Field>
         <Field label="Base unit" hint="What stock is counted and costed in underneath.">
-          <UnitPick value={form.baseUnit} onChange={(v) => setForm((f) => ({ ...f, baseUnit: v, innerUnit: f.innerQty ? f.innerUnit : v }))} label="Base unit" />
+          <UnitPick value={form.baseUnit} onChange={(v) => setForm((f) => ({ ...f, baseUnit: v, innerUnit: f.innerQty ? f.innerUnit : v }))} label="Base unit" siteId={unitSite} />
         </Field>
         <Field label="Purchased or made" hint={form.kind === 'MADE' ? 'Made here from other items, such as a batch or a prep. Its recipe goes on Recipes.' : 'Bought from a supplier.'}>
           <select value={form.kind} onChange={(e) => set('kind', e.target.value)} aria-label="Purchased or made" style={ui.input}>
@@ -171,10 +167,10 @@ export default function AddItemModal({ orgCtx = null, local = false, presetSites
               <input type="number" min="1" step="any" value={form.packQty} onChange={(e) => set('packQty', e.target.value)} aria-label="Packs in the supplier pack" style={{ ...ui.input, width: 80 }} />
               <span style={ui.sub}>x</span>
               <input type="number" min="0" step="any" value={form.innerQty} onChange={(e) => set('innerQty', e.target.value)} placeholder="2" aria-label="Each pack holds" style={{ ...ui.input, width: 90 }} />
-              <UnitPick value={form.innerUnit} onChange={(v) => set('innerUnit', v)} label="Unit of each pack" />
+              <UnitPick value={form.innerUnit} onChange={(v) => set('innerUnit', v)} label="Unit of each pack" siteId={unitSite} />
             </div>
           </Field>
-          <Field label="Price" hint="What the supplier charges for that pack, before VAT.">
+          <Field label="Price" hint={`What the supplier charges for that pack, before ${tw.tax}.`}>
             <input type="number" min="0" step="any" value={form.price} onChange={(e) => set('price', e.target.value)} aria-label="Price" style={{ ...ui.input, width: 140 }} />
           </Field>
         </>

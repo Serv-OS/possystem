@@ -83,7 +83,7 @@ export const CATEGORIES = [
     reports: [
       { id:'servers', label:'Server scorecard', desc:'Full perf — tip %, discount rate, void rate, peer rank' },
       { id:'tips',    label:'Tips & pooling',   desc:'Per-server tips + configurable tip-pool calculator' },
-      { id:'payroll', label:'Payroll',          desc:'Closed pay runs — wages + tips per period, per-staff breakdown and BACS CSV' },
+      { id:'payroll', label:'Payroll',          desc:'Closed pay runs: wages + tips per period, per-staff breakdown and the bank payment CSV' },   // 5.12.57: country neutral (BACS is UK only)
       { id:'shifts',  label:'Shifts',           desc:'Business-day shifts with per-server sessions' },
     ],
   },

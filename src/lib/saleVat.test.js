@@ -270,7 +270,10 @@ test('PIN: the Tax report reads the older refund bearing checks of each site, an
   const tax = fs.readFileSync(new URL('../backoffice/sections/reports/Tax.jsx', import.meta.url), 'utf8');
   assert.match(tax, /import \{ fetchRefundChecksBefore \} from '\.\.\/\.\.\/\.\.\/lib\/db';/);
   assert.match(tax, /const lookback = useRefundLookback\(siteId \? \[siteId\] : \[\], rangeFrom\);/);
-  assert.match(tax, /taxAnalysisOf\(checks, taxOf, \{ range, hasRates: taxRates\.length > 0, refundRows \}\)/);
+  // 5.12.57 (batch 6): this pinned hasRates as taxRates.length > 0, which read a US venue set up with
+  // tax profiles only as "no tax set up" (blank summary, red no tax lines hidden). Tax profiles count now.
+  assert.match(tax, /taxAnalysisOf\(checks, taxOf, \{ range, hasRates, refundRows \}\)/);
+  assert.match(tax, /taxIsSetUp\(\{ taxRates, taxProfiles: store\.taxProfiles, defaultProfileId: store\.venueDefaultTaxProfileId, taxCtx \}\)/);
   assert.match(tax, /const lookback = useRefundLookback\(parts\.map\(p => p\.id\), rangeFrom\);/);
   assert.match(tax, /siteTaxAnalysis\(p\.rows, menus\[p\.id\] \|\| null, \{ range, refundRows: lookback\.rows\[String\(p\.id\)\] \|\| NONE \}\)/);
   const bo = fs.readFileSync(new URL('../backoffice/sections/BOReports.jsx', import.meta.url), 'utf8');

@@ -19,6 +19,7 @@ import { seedVenueTaxRates, seedWords } from '../lib/venueTaxRates';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
 import TimezoneOptions from '../components/TimezoneOptions';
+import { defaultTimezoneFor } from '../lib/timezones';
 
 // v5.11.75: loaded only when a company is opened here, so the Multi site menu code never rides in
 // the bundle every till downloads.
@@ -397,10 +398,11 @@ function AdminPanel({ authUser }) {
   // ── Create location ──────────────────────────────────────────────────────────
   const createLocation = async () => {
     if (!form.locName?.trim()) return err('Name required');
+    if (!(form.locTz || defaultTimezoneFor(form.locCurrency))) return err('Pick the time zone. US sites span several zones.');
     setWorking(true); setMsg({ type:'', text:'' });
     const { data, error:e } = await sbFetch('locations', { method:'POST', body:{
       org_id: selectedOrg.id, name: form.locName.trim(),
-      address: form.locAddress || '', timezone: form.locTz || 'Europe/London',
+      address: form.locAddress || '', timezone: form.locTz || defaultTimezoneFor(form.locCurrency),
       currency: form.locCurrency || 'GBP', status: 'active',
     }});
     const loc = Array.isArray(data) ? data[0] : data;
@@ -777,8 +779,9 @@ function AdminPanel({ authUser }) {
                 </div>
                 <div style={S.row3}>
                   <div><label style={S.label}>Timezone</label>
-                    <select style={S.input} value={form.locTz||'Europe/London'} onChange={e=>f('locTz',e.target.value)}>
-                      <TimezoneOptions value={form.locTz||'Europe/London'} />
+                    <select style={S.input} value={form.locTz||defaultTimezoneFor(form.locCurrency)} onChange={e=>f('locTz',e.target.value)}>
+                      {!(form.locTz||defaultTimezoneFor(form.locCurrency)) && <option value="">Pick the time zone</option>}
+                      <TimezoneOptions value={form.locTz||defaultTimezoneFor(form.locCurrency)} />
                     </select>
                   </div>
                   <div><label style={S.label}>Currency</label>

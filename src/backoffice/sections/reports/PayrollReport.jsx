@@ -6,11 +6,19 @@
 // pooled tronc) → total, with the period's timesheets marked paid. Self-fetching
 // (reads loadPayrollRuns + loadStaff for names). Payroll is period-based, so this
 // shows the full recent history rather than the report's date filter.
+//
+// 5.12.57: every row adds up to Total. Wages are Total minus tips, and a run's breakdown and its CSV
+// carry each wage part the server put in Total (overtime premium, tip credit top up, meal break
+// premium, pay premiums, holiday or PTO pay, head office salary) as its own column when the run has
+// it. Before, they showed base pay only, so a US run with overtime or a top up did not add up, nor
+// did a UK run with holiday pay. The report follows the site the Reports screen is on.
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { getActiveLocationSync } from '../../../lib/supabase';
 import * as wf from '../../../staff/wfData';
 import { Icon } from '../../../components/ServOSIcons';
+import { activeRegionPack, venueMoney } from '../../../lib/regionPack';
+import { payrollParts, payrollWageColumns, wagesOf } from '../../../staff/payLaw';
 
 const fmtDay = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return iso; } };
 const fmtShort = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); } catch { return iso; } };
@@ -38,8 +46,20 @@ const S = {
 
 const tipsOf = (t = {}) => (t.tips != null ? Number(t.tips) : (Number(t.tips_direct || 0) + Number(t.tips_tronc || 0)));
 
-export default function PayrollReport({ fmt }) {
-  const money = fmt || ((n) => `£${(Number(n) || 0).toFixed(2)}`);
+export default function PayrollReport({ fmt, sites }) {
+  // 5.12.57: the fallback is the venue's own money (it was always pounds).
+  const money = fmt || ((n) => venueMoney(n, 2));
+  const pack = activeRegionPack();
+  // 5.12.57: the site this report is for. One site picked on the Reports screen wins; otherwise the
+  // Back Office's site, followed when it changes (it was read once, so a switch kept the old site).
+  const pickedSite = Array.isArray(sites) && sites.length === 1 ? (sites[0]?.id || null) : null;
+  const [boSite, setBoSite] = useState(() => getActiveLocationSync());
+  useEffect(() => {
+    const onChange = () => setBoSite(getActiveLocationSync());
+    try { window.addEventListener('rpos-location-changed', onChange); window.addEventListener('rpos-region-changed', onChange); } catch { /* no window */ }
+    return () => { try { window.removeEventListener('rpos-location-changed', onChange); window.removeEventListener('rpos-region-changed', onChange); } catch { /* no window */ } };
+  }, []);
+  const siteId = pickedSite || boSite || null;
   const [runs, setRuns] = useState([]);
   const [names, setNames] = useState({});   // staff_id -> name
   const [loading, setLoading] = useState(true);
@@ -51,8 +71,8 @@ export default function PayrollReport({ fmt }) {
     (async () => {
       setLoading(true); setErr('');
       try {
-        const id = await getActiveLocationSync();
-        if (!id) { if (alive) { setLoading(false); } return; }
+        const id = siteId;
+        if (!id) { if (alive) { setRuns([]); setLoading(false); } return; }
         const [r, staff] = await Promise.all([wf.loadPayrollRuns(id), wf.loadStaff(id).catch(() => [])]);
         if (!alive) return;
         const nm = {}; (staff || []).forEach(s => { nm[s.id] = s.name; });
@@ -61,10 +81,10 @@ export default function PayrollReport({ fmt }) {
       finally { if (alive) setLoading(false); }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [siteId]);
 
   const totals = useMemo(() => runs.reduce((a, h) => ({
-    pay: a.pay + Number(h.totals?.pay || 0),
+    pay: a.pay + wagesOf(h.totals || {}),
     tips: a.tips + tipsOf(h.totals),
     total: a.total + Number(h.totals?.total || 0),
     headOffice: a.headOffice + Number(h.totals?.head_office_salary || 0),
@@ -75,12 +95,17 @@ export default function PayrollReport({ fmt }) {
   const lineName = (l) => l.head_office ? `${nameOf(l.staff_id)} (head office)` : nameOf(l.staff_id);
   const basePay = (l) => Number(l.pay || 0) + Number(l.salary || 0);
 
+  // 5.12.57: the wage parts this run has besides base pay, so each line adds up to its Total.
+  const colsOf = (h) => payrollWageColumns(h.lines || [], pack);
+  const sumOf = (h, key) => (h.lines || []).reduce((a, l) => a + payrollParts(l)[key], 0);
+
   const exportCsv = (h) => {
     const esc = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
+    const cols = colsOf(h);
     const rows = [
-      ['Staff', 'Hours', 'Base pay', 'Tips (direct)', 'Tips (pooled)', 'Total'],
-      ...(h.lines || []).map(l => [lineName(l), Number(l.hours || 0).toFixed(2), basePay(l).toFixed(2), Number(l.tips_direct || 0).toFixed(2), Number(l.tips_tronc || 0).toFixed(2), Number(l.total || 0).toFixed(2)]),
-      ['TOTAL', '', (Number(h.totals?.pay || 0) + Number(h.totals?.head_office_salary || 0)).toFixed(2), Number(h.totals?.tips_direct || 0).toFixed(2), Number(h.totals?.tips_tronc || 0).toFixed(2), Number(h.totals?.total || 0).toFixed(2)],
+      ['Staff', 'Hours', 'Base pay', ...cols.map(c => c.label), 'Tips (direct)', 'Tips (pooled)', 'Total'],
+      ...(h.lines || []).map(l => { const p = payrollParts(l); return [lineName(l), Number(l.hours || 0).toFixed(2), basePay(l).toFixed(2), ...cols.map(c => p[c.key].toFixed(2)), Number(l.tips_direct || 0).toFixed(2), Number(l.tips_tronc || 0).toFixed(2), Number(l.total || 0).toFixed(2)]; }),
+      ['TOTAL', '', (Number(h.totals?.pay || 0) + Number(h.totals?.head_office_salary || 0)).toFixed(2), ...cols.map(c => sumOf(h, c.key).toFixed(2)), Number(h.totals?.tips_direct || 0).toFixed(2), Number(h.totals?.tips_tronc || 0).toFixed(2), Number(h.totals?.total || 0).toFixed(2)],
     ];
     const blob = new Blob([rows.map(r => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -94,7 +119,7 @@ export default function PayrollReport({ fmt }) {
   if (err) return <div style={{ ...S.empty, color: 'var(--red)' }}>{err}</div>;
   if (!runs.length) return (
     <div style={S.empty}>
-      <Icon name="pound" size={34} style={{ margin: '0 auto 8px' }} />
+      <Icon name="money" size={34} style={{ margin: '0 auto 8px' }} />
       No closed pay runs yet.
       <div style={{ ...S.note, marginTop: 8 }}>Close a pay period under Workforce → Payroll and it’ll appear here.</div>
     </div>
@@ -122,13 +147,14 @@ export default function PayrollReport({ fmt }) {
           <tbody>
             {runs.map(h => {
               const isOpen = !!open[h.id];
+              const cols = colsOf(h);
               return (
                 <Fragment key={h.id}>
                   <tr style={S.runRow} onClick={() => setOpen(o => ({ ...o, [h.id]: !o[h.id] }))}>
                     <td style={{ ...S.td, ...S.tdL, fontWeight: 700 }}>{isOpen ? '▾' : '▸'} {fmtShort(h.periodStart)} – {fmtShort(h.periodEnd)}</td>
                     <td style={{ ...S.td, color: 'var(--t3)' }}>{h.payDate ? fmtShort(h.payDate) : '—'}</td>
                     <td style={S.td}>{(h.lines || []).length}</td>
-                    <td style={S.td}>{money(h.totals?.pay || 0)}</td>
+                    <td style={S.td}>{money(wagesOf(h.totals || {}))}</td>
                     <td style={S.td}>{tipsOf(h.totals) ? money(tipsOf(h.totals)) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
                     <td style={{ ...S.td, fontWeight: 700 }}>{money(h.totals?.total || 0)}</td>
                     <td style={{ ...S.td, color: 'var(--t3)' }}>{h.createdAt ? fmtDay(String(h.createdAt).slice(0, 10)) : '—'}</td>
@@ -141,19 +167,21 @@ export default function PayrollReport({ fmt }) {
                           <thead><tr>
                             <th style={{ ...S.subTh, textAlign: 'left' }}>Staff</th>
                             <th style={S.subTh}>Hours</th><th style={S.subTh}>Base pay</th>
+                            {cols.map(c => <th key={c.key} style={S.subTh}>{c.label}</th>)}
                             <th style={S.subTh}>Tips (direct)</th><th style={S.subTh}>Tips (pooled)</th><th style={S.subTh}>Total</th>
                           </tr></thead>
                           <tbody>
-                            {(h.lines || []).map((l, i) => (
+                            {(h.lines || []).map((l, i) => { const p = payrollParts(l); return (
                               <tr key={l.staff_id || i}>
                                 <td style={{ ...S.subTd, textAlign: 'left' }}>{lineName(l)}</td>
                                 <td style={S.subTd}>{Number(l.hours || 0).toFixed(2)}</td>
                                 <td style={S.subTd}>{money(basePay(l))}</td>
+                                {cols.map(c => <td key={c.key} style={S.subTd}>{p[c.key] ? money(p[c.key]) : ''}</td>)}
                                 <td style={S.subTd}>{l.tips_direct ? money(l.tips_direct) : '—'}</td>
                                 <td style={S.subTd}>{l.tips_tronc ? money(l.tips_tronc) : '—'}</td>
                                 <td style={{ ...S.subTd, fontWeight: 700 }}>{money(l.total || 0)}</td>
                               </tr>
-                            ))}
+                            ); })}
                           </tbody>
                         </table>
                       </td>
@@ -165,7 +193,10 @@ export default function PayrollReport({ fmt }) {
           </tbody>
         </table>
       </div>
-      <div style={S.note}>Closed pay runs are immutable records — each marked its period’s approved timesheets as paid. Tips are shown separately from wages (UK Tipping Act): pooled tips are tronc-allocated, direct tips go to the seller. Click a run to see the per-person breakdown, or “CSV” to export it.</div>
+      {/* 5.12.57: the Tipping Act and tronc are UK words; a US venue reads the FLSA rule. */}
+      <div style={S.note}>{pack.country === 'US'
+        ? 'Closed pay runs are permanent records: each marked its period’s approved timesheets as paid. Wages are Total minus tips, so overtime premium, tip credit top up and every other wage part are in them. Tips are shown separately from wages: tips belong to staff (FLSA), pooled tips are shared by the tip pool run and direct tips go to the seller. Click a run to see the per-person breakdown, or “CSV” to export it.'
+        : 'Closed pay runs are immutable records — each marked its period’s approved timesheets as paid. Tips are shown separately from wages (UK Tipping Act): pooled tips are tronc-allocated, direct tips go to the seller. Click a run to see the per-person breakdown, or “CSV” to export it.'}</div>
     </div>
   );
 }

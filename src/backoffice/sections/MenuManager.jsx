@@ -38,7 +38,8 @@ import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches,
 // PIZZA_* are used by PizzaBuilder below in unconditional JSX — without them the
 // pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
 // swaps the WHOLE app (POS shell included) for the red error page.
-import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
+import { PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
+import { allergenOptionsFor, foodLawWords } from '../../lib/foodLaw';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { uploadProductImage, deleteProductImage, saveQuickScreenIds, readQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks, listSharedMastersMissingAt, pullSharedProductsTo, masterTaxRatesForCopies } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
@@ -55,6 +56,7 @@ import CategoryPhotoField from '../components/CategoryPhotoField';
 import { CATEGORY_PHOTO_COPY, categoryPhotoUrl } from '../../lib/categoryPhoto';
 // 5.12.57: price boxes show the venue's own symbol ($ for a US venue), never a typed pound.
 import { money, getActiveCurrencyCode, currencySymbol } from '../../lib/currency';
+import { activeTaxWords } from '../../lib/taxWords';
 import { orderOptionFlow } from '../../lib/optionFlow';
 // v5.5.813: recipe-derived cost + GP% on the Items list. Same engine + same
 // ex-VAT net-price basis as Inventory → Reports → Recipe GP, so the two screens
@@ -320,6 +322,9 @@ function useItemCodes() {
 
 function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverrides = false }) {
   const { taxRates: allTaxRates, taxProfiles } = useStore();
+  // 5.12.57: a US venue's tax words (its menu is called Tax; it has no VAT). UK words unchanged.
+  const tw = activeTaxWords();
+  const taxMenu = tw.us ? 'Tax' : 'Tax & VAT';
   const taxRates = liveVenueRatesOf(allTaxRates);
 
   const setTaxRate = (id) => {
@@ -344,7 +349,7 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
   if (!taxRates?.length) return (
     <div style={{ padding:'20px 0', color:'var(--t4)', fontSize:12, textAlign:'center' }}>
       {NO_VENUE_RATES}.<br/>
-      Go to <strong style={{ color:'var(--t2)' }}>Tax & VAT</strong> to set up this venue's rates first.
+      Go to <strong style={{ color:'var(--t2)' }}>{taxMenu}</strong> to set up this venue's rates first.
     </div>
   );
 
@@ -369,7 +374,7 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
   // keeps its own VAT by order type (Leeds and its 3 donuts) can still change it here (design 3.2).
   return (
     <div>
-      <MsmLocked on={lockRate} label="VAT">
+      <MsmLocked on={lockRate} label={tw.Tax}>
       {/* v5.7.33: tax PROFILE override — setup only, nothing charges with it yet */}
       {activeProfiles.length > 0 && (
         <div style={{ marginBottom:16 }}>
@@ -380,7 +385,7 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
             {activeProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <div style={{ fontSize:11, color:'var(--t4)', marginTop:5, lineHeight:1.6 }}>
-            Profiles are the new way to set up tax (Tax &amp; VAT → Tax profiles). Until the calculation switchover, the legacy rate below is what actually charges.
+            Profiles are the new way to set up tax ({taxMenu} → Tax profiles). Until the calculation switchover, the legacy rate below is what actually charges.
           </div>
         </div>
       )}
@@ -412,11 +417,11 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
           Per-order-type overrides
         </span>
         <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.6 }}>
-          Override the tax rate for specific order types. Common UK use: set takeaway to Zero Rate for food items.
+          Override the tax rate for specific order types. {tw.us ? 'For example, set packaged food to go to Tax Exempt.' : 'Common UK use: set takeaway to Zero Rate for food items.'}{' '}
           Drive thru, collection and online collection use the takeaway override unless they have their own.
         </div>
         {ORDER_TYPES_TAX.map(ot => (
-          <MsmLocked key={ot} on={lockOverrides && OWNED_TAX_KEYS.includes(ot)} label={`${ORDER_TYPE_TAX_LABEL[ot] || 'Order type'} VAT`}>
+          <MsmLocked key={ot} on={lockOverrides && OWNED_TAX_KEYS.includes(ot)} label={`${ORDER_TYPE_TAX_LABEL[ot] || 'Order type'} ${tw.tax}`}>
           <div style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
             <span style={{ fontSize:12, color:'var(--t2)', fontWeight:600 }}>{ORDER_TYPE_TAX_LABEL[ot] || ot}</span>
             <select value={item.taxOverrides?.[ot] || ''}
@@ -498,7 +503,7 @@ export default function MenuManager({ setSection = null, canOpen = null } = {}) 
     <div className="bo-workspace" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
       {msmManaged > 0 && (
         <div role="status" style={{ padding:'8px 16px', background:'var(--blu-d, var(--bg2))', borderBottom:'1px solid var(--bdr)', fontSize:12.5, color:'var(--t2)', flexShrink:0 }}>
-          <Icon name="lock" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Their names, prices, categories, VAT, photos and option groups are set there and show read only here. Button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes stay yours.
+          <Icon name="lock" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Their names, prices, categories, {activeTaxWords().tax}, photos and option groups are set there and show read only here. Button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes stay yours.
           {openMsm && <> <button type="button" onClick={openMsm} style={{ background:'none', border:'none', padding:0, color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:700, textDecoration:'underline' }}>Open the Multi site menu</button></>}
         </div>
       )}
@@ -1988,6 +1993,9 @@ function ItemsLibrary() {
           // seeded with rates on purpose), so "no rates" is not a fault there.
           const hasProfiles = (taxProfiles || []).length > 0 || !!venueDefaultTaxProfileId;
           const ukVenue = String(getActiveCurrencyCode() || 'GBP').toUpperCase() === 'GBP';
+          // 5.12.57: each country is pointed at its own seed (US: type the rate, then Seed US rates).
+          const tw = activeTaxWords();
+          const taxMenu = tw.us ? 'Tax' : 'Tax & VAT';
           if (!taggedOwn.length && hasProfiles && !bulkTaxResult) return null;
           if (noRate.all.length === 0 && noRate.foreignOverride.length === 0 && !bulkTaxResult) return null;
           const overrideNote = noRate.foreignOverride.length > 0 && (
@@ -2008,7 +2016,7 @@ function ItemsLibrary() {
           if (noRate.all.length && !taggedOwn.length) {
             return (
               <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'var(--red-d)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
-                <span style={{ fontSize:12, fontWeight:800, color:'var(--red)' }}><Icon name="warn" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{NO_VENUE_RATES}, so {noRate.all.length} product{noRate.all.length === 1 ? '' : 's'} record no {ukVenue ? 'VAT' : 'sales tax'}. Open Tax &amp; VAT and {ukVenue ? 'press Seed UK rates' : 'set up tax profiles or press Seed US rates'}.</span>
+                <span style={{ fontSize:12, fontWeight:800, color:'var(--red)' }}><Icon name="warn" size={13} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />{NO_VENUE_RATES}, so {noRate.all.length} product{noRate.all.length === 1 ? '' : 's'} record no {ukVenue ? 'VAT' : tw.sales}. Open {taxMenu} and {ukVenue ? 'press Seed UK rates' : tw.us ? 'set up tax profiles, or type the rate under US Sales Tax and press Seed US rates' : 'add its rates'}.</span>
                 {listNames}
               </div>
             );
@@ -2029,7 +2037,7 @@ function ItemsLibrary() {
             ? 'This venue also has tax profiles: until a rate is set, they charge through those. A rate set here comes before the category and venue profiles.'
             : defaultRate
               ? `Until set, they are charged the venue default (${defaultRate.name}).`
-              : `No rate here is set as the default, so until set they record NO ${ukVenue ? 'VAT' : 'sales tax'}. Set a default in Tax & VAT.`;
+              : `No rate here is set as the default, so until set they record NO ${ukVenue ? 'VAT' : tw.sales}. Set a default in ${taxMenu}.`;
           const go = async () => {
             if (!chosen || running || menuLoading) return;
             // This tab's copy of the menu can be hours old, and another tab, device, Tax & VAT or a
@@ -2134,8 +2142,12 @@ function ItemsLibrary() {
                 // 27 Sep 2026: a copy maps its tax rate to this venue's by name as it arrives; with
                 // no rates here it arrives with none (Leeds, Preston, Headingly, Huddersfield). Say so
                 // first. Seeding rates later maps them (Tax & VAT, lib/db.js mapCopiesTaxFromMasters).
+                // 5.12.57: a US venue is pointed at its own seed, in its own words.
+                const tw = activeTaxWords();
                 const noRatesWords = !isMock && !ownTaxRates.length
-                  ? ' WARNING: this venue has no tax rates yet, so the copies arrive with none and record no VAT until you press Seed UK rates in Tax & VAT (they then take their master\'s rate).'
+                  ? ' WARNING: this venue has no tax rates yet, so the copies arrive with none and record no '
+                    + (tw.us ? 'sales tax until you type the rate under US Sales Tax and press Seed US rates in Tax' : 'VAT until you press Seed UK rates in Tax & VAT')
+                    + ' (they then take their master\'s rate).'
                   : '';
                 if (!loc || !window.confirm(`Copy ${missingShared.length} shared product${missingShared.length===1?'':'s'} into this venue, with their categories and modifier groups? Runs one product at a time.${noRatesWords}`)) return;
                 setPullRun({ done: 0, total: missingShared.length });
@@ -2271,7 +2283,7 @@ function ItemsLibrary() {
           <div style={hdrSt}>Type</div>
           <div style={{ ...hdrSt, textAlign:'right' }}>Price</div>
           {showMoney && <div style={{ ...hdrSt, textAlign:'right' }}>Cost</div>}
-          {showMoney && <div style={{ ...hdrSt, textAlign:'right' }} title="Gross profit % — auto-calculated from the linked recipe, on the ex-VAT price">GP %</div>}
+          {showMoney && <div style={{ ...hdrSt, textAlign:'right' }} title={activeTaxWords().us ? 'Gross profit %, worked out from the linked recipe on the price before tax' : 'Gross profit % — auto-calculated from the linked recipe, on the ex-VAT price'}>GP %</div>}
           <div style={{ ...hdrSt, textAlign:'center' }}>Mods</div>
           <div style={{ ...hdrSt, textAlign:'center' }} title="Allergens"><Icon name="warn" size={11} style={{ display:'inline-block' }} /></div>
         </div>
@@ -2720,6 +2732,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const subCats  = allCategories.filter(c =>  c.parentId);
 
   const [sec, setSec]             = useState('details');  // always open on Details (was 'flow' for products)
+  // 5.12.57: the allergen tick boxes and their heading follow the venue's country (FDA 9 at a US venue).
+  const allergenOpts = allergenOptionsFor();
+  const allergenWordsNow = foodLawWords();
   const [modSearch, setModSearch] = useState('');
   const [instSearch, setInstSearch] = useState('');
   const [showAllCats, setShowAllCats] = useState(false);  // v5.5.813 — "Also in" chip cap
@@ -3639,9 +3654,11 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 );
               })}
             </div>
-            <span style={lbl}>Declared allergens — EU 14 mandatory</span>
+            {/* 5.12.57: the venue's own allergen list: the UK 14 as before; at a US venue the 9
+                major food allergens, then the other five (stored ids never change). */}
+            <span style={lbl}>{allergenWordsNow.allergenEditorHeading}</span>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
-              {ALLERGENS.map(a=>{
+              {allergenOpts.major.map(a=>{
                 const on=(item.allergens||[]).includes(a.id);
                 return (
                   <button key={a.id} onClick={()=>onUpdate({allergens:on?(item.allergens||[]).filter(x=>x!==a.id):[...(item.allergens||[]),a.id]})} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 9px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?'var(--red)':'var(--bdr)'}`, background:on?'var(--red-d)':'var(--bg3)', transition:'all .1s' }}>
@@ -3653,6 +3670,22 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 );
               })}
             </div>
+            {allergenOpts.extra.length>0 && <>
+            <span style={{ ...lbl, marginTop:12 }}>{allergenWordsNow.allergenEditorExtraHeading}</span>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
+              {allergenOpts.extra.map(a=>{
+                const on=(item.allergens||[]).includes(a.id);
+                return (
+                  <button key={a.id} onClick={()=>onUpdate({allergens:on?(item.allergens||[]).filter(x=>x!==a.id):[...(item.allergens||[]),a.id]})} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 9px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?'var(--red)':'var(--bdr)'}`, background:on?'var(--red-d)':'var(--bg3)', transition:'all .1s' }}>
+                    <div style={{ width:16,height:16,borderRadius:3,border:`2px solid ${on?'var(--red)':'var(--bdr2)'}`,background:on?'var(--red)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+                      {on&&<div style={{ width:6,height:6,borderRadius:1,background:'#fff' }}/>}
+                    </div>
+                    <span style={{ fontSize:11, fontWeight:on?700:400, color:on?'var(--red)':'var(--t1)' }}>{a.icon} {a.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            </>}
             {/* v5.11.93 (multi site stock Drop 2): read only, what the stock recipe linked at this
                 venue adds (menu_item_stock_facts). Never written by a menu save. */}
             <MenuItemFactsPanel locationId={tabVenue()} menuItemId={item.id} />

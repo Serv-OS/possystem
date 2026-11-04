@@ -33,6 +33,7 @@ import {
 import { substituteTags, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { ensureVenueService, recordVenueResult } from '../_shared/otpService.ts';
 import { recordable } from '../_shared/otpServiceRules.js';
+import { regionOf } from '../_shared/regionPack.js';
 
 const STAFF_ACTIONS = new Set(['save', 'reset', 'service_status', 'fix_service']);
 
@@ -126,12 +127,20 @@ async function handleList(companyId: string, locationId: string) {
     customMap.set(`${c.message_type}:${c.channel}`, c);
   }
 
+  // 5.12.57: the defaults shown are the ones this venue's customers get (a US venue: "ready for
+  // pickup"). Its country follows its currency; a failed read shows the UK defaults, as before.
+  let country: string | null = null;
+  try {
+    const { data: loc } = await opsAdmin.from('locations').select('currency').eq('id', locationId).maybeSingle();
+    if (loc?.currency) country = regionOf(String(loc.currency));
+  } catch { /* UK defaults */ }
+
   const result = MESSAGE_TYPES.map(mt => {
     const templates: Record<string, any> = {};
 
     for (const ch of mt.channels) {
       const custom = customMap.get(`${mt.type}:${ch}`);
-      const def = getDefaultTemplate(mt.type, ch);
+      const def = getDefaultTemplate(mt.type, ch, country);
 
       if (custom) {
         templates[ch] = {

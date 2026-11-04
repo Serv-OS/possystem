@@ -37,6 +37,7 @@ import { resolveTaxRate, netOf } from '../../lib/tax';
 import { useSiteStockContext } from '../../lib/stock/siteContext';
 import { useSiteMoney, useSiteMoneyHere, SiteCurrencyContext } from './stock/useSiteCurrency';
 import { Money } from './stock/SiteMoney';
+import { stockTaxWords } from '../../lib/stock/stockRegion';
 import {
   Signed, Tag, BarCell, RankChip, GradedChip, gradeOf,
   KpiBand, Callout, Chips, SegToggle, SearchField, PeriodControl, Tabs,
@@ -334,7 +335,8 @@ const plateCostOf = (pc, r, ctx) => {
   return pc.data.get(String(r.menuItemId)) ?? null;
 };
 function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null }) {
-  const { symbol } = useSiteMoneyHere();
+  const { symbol, code: siteCode } = useSiteMoneyHere();
+  const tw = stockTaxWords(siteCode); // 5.12.57: 'before tax' at a US site
   const [filter, setFilter] = useState('all');
   const [sort, onSort] = useSort('gpPct');
   const byId = useMemo(() => { const m = {}; menuItems.forEach(mi => { m[String(mi.id)] = mi; }); return m; }, [menuItems]);
@@ -408,7 +410,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null })
         <span style={{ color:'var(--t1)', fontWeight:500 }}>{r.dish}</span>
         {r.unpriced && <Tag label="Unpriced" tone="warn"/>}
       </span>) },
-    { key:'price', label:'Price (ex VAT)', align:'right', sortable:true, render:r => <Money v={r.price}/> },
+    { key:'price', label:`Price (${tw.exTax})`, align:'right', sortable:true, render:r => <Money v={r.price}/> },
     { key:'cost',  label:'Plate cost', align:'right', sortable:true, render:r => <Money v={r.cost}/> },
     { key:'foodPct', label:'Food %', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color:'var(--t3)' }}>{r.foodPct == null ? '—' : `${r.foodPct}%`}</span> },
     { key:'gp', label:`GP ${symbol}`, align:'right', sortable:true, render:r => <Money v={r.gp}/> },
@@ -421,7 +423,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null })
   return (
     <div>
       {/* v5.11.99 (Reports align): the basis, so this GP is never read as the period's GP */}
-      <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 8 }}>This venue only. GP here is each dish's menu price excluding VAT less its plate cost at today's costs: what a dish would make, not what was sold. GP over what was really sold, after refunds, is in Reports &gt; Stock and GP &gt; Product GP for a company with two or more sites.</div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 8 }}>This venue only. GP here is each dish's menu price excluding {tw.tax} less its plate cost at today's costs: what a dish would make, not what was sold. GP over what was really sold, after refunds, is in Reports &gt; Stock and GP &gt; Product GP for a company with two or more sites.</div>
       {plateCosts?.error && !plateCosts.needsUpdate && <Callout>Could not read plate costs from the database ({plateCosts.error.message}). Reload to try again.</Callout>}
       <KpiBand items={[
         { label:'Average GP %', value: avg == null ? '—' : `${avg.toFixed(1)}%`, sub:`across ${priced.length} priced dish${priced.length===1?'':'es'}` },
@@ -432,7 +434,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null })
         <Chips value={filter} onChange={setFilter} options={[{id:'all',label:'All'},{id:'below',label:'Below target'}]}/>
         <span style={{ marginLeft:'auto' }}/>
         <ExportBtn rows={csv} name="recipe-gp" headers={[
-          {label:'Dish',key:'dish'},{label:'Price (ex VAT)',key:'price'},{label:'Plate cost',key:'cost'},
+          {label:'Dish',key:'dish'},{label:`Price (${tw.exTax})`,key:'price'},{label:'Plate cost',key:'cost'},
           {label:'Food %',key:'foodPct'},{label:`GP ${symbol}`,key:'gp'},{label:'GP %',key:'gpPct'},{label:'GP target %',key:'target'}]}/>
       </SubToolbar>
       <ReportTable columns={columns} rows={sorted} sort={sort} onSort={onSort} empty="No dish recipes yet."/>

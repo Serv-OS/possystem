@@ -17,6 +17,8 @@
 import { siteDrift, keepVenueChanges, bringOptionIn } from '../../../supabase/functions/_shared/msmDiff.js';
 import { money2 } from '../../../supabase/functions/_shared/msmModel.js';
 import { colWord, PRICE_TYPE_WORDS, TAX_TYPE_WORDS, CHOICE_WORDS, keptValueWords } from './msmWords.js';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, as before).
+import { activeTaxWords } from '../taxWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const has = (o, k) => !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);
@@ -60,7 +62,7 @@ export function driftWords(d, siteName, names = {}) {
   }
   if (d.kept && String(d.column).startsWith('tax_overrides.')) {
     const k = d.column.slice(14);
-    return `${who}: ${TAX_TYPE_WORDS[k] || 'order type'} VAT was changed again at ${site}; ${site} was keeping its own`;
+    return `${who}: ${TAX_TYPE_WORDS[k] || 'order type'} ${activeTaxWords().tax} was changed again at ${site}; ${site} was keeping its own`;
   }
   if (d.kept) return `${who}: ${colWord(d.column)} was changed again at ${site}; ${site} was keeping ${show(d.group, d.column)}, now ${show(d.venue, d.column)}`;
   // A name: say both, so the person sees what the site calls it (17 Oct verification).
@@ -73,7 +75,7 @@ export function driftWords(d, siteName, names = {}) {
   }
   if (String(d.column).startsWith('tax_overrides.')) {
     const k = d.column.slice(14);
-    return `${who}: ${TAX_TYPE_WORDS[k] || 'order type'} VAT was changed at ${site}`;
+    return `${who}: ${TAX_TYPE_WORDS[k] || 'order type'} ${activeTaxWords().tax} was changed at ${site}`;
   }
   return `${who}: ${colWord(d.column)} was changed at ${site}`;
 }

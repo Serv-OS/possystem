@@ -3,7 +3,7 @@
 // (device authorised for the venue + the PIN'd operator is approval-capable) and append to wf_audit.
 // Pure flags come from timesheets.js; the approvals inbox comes from the shared snapshot.
 import { useState } from 'react';
-import { onShiftNow, noShows, breaksDue, liveLabourMinor, canClockOut } from '../../lib/manager/team';
+import { onShiftNow, noShows, breaksDue, liveLabourMinor, liveLabourFromSnapshot, canClockOut } from '../../lib/manager/team';
 import { venueBreakPolicy } from '../../staff/breaks.js';
 import { timesheetWorkedMins, timesheetBreakShortfall } from '../../lib/manager/timesheets';
 import { managerApprove } from '../../lib/manager/data';
@@ -75,7 +75,8 @@ export default function ManagerTeam({ ctx }) {
   // 5.12.52: a US venue checks its state's meal break rule (snapshot currency says the country).
   const breakOpts = { policy: team?.breakPolicy ? venueBreakPolicy(team.breakPolicy, snap?.currency === 'USD' ? 'US' : null) : null };
   const breaks = team ? breaksDue(team.punches, breakOpts) : [];
-  const labourMinor = team ? liveLabourMinor(team.punches, team.ratesMinor) : 0;
+  // 5.12.57: the server's total (no rates sent); an older server's per person rates still work.
+  const labourMinor = team ? (team.labourLive ? liveLabourFromSnapshot(team.labourLive) : liveLabourMinor(team.punches, team.ratesMinor)) : 0;
   const nameOf = {}; (team?.punches || []).forEach((p) => { nameOf[p.staffId] = p.name; }); (team?.shifts || []).forEach((s) => { nameOf[s.staffId] = s.name; });
 
   const pendingTs = (team?.pendingTimesheets || []).filter((t) => !done[t.id]);

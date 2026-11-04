@@ -39,6 +39,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { PageHeader, PrimaryBtn, Tag, SearchField } from '../reports/reportKit';
 import { useSiteStockContext } from '../../../lib/stock/siteContext';
 import { useSiteMoney } from '../stock/useSiteCurrency';
+import { stockTaxWords, purchaseRateDec } from '../../../lib/stock/stockRegion';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -54,6 +55,8 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
   const { taxRates } = useSiteStockContext(siteId);
   // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the imports.
   const { money, currencySymbol, code: cur } = useSiteMoney(siteId);
+  // 5.12.57: the site's tax words ('before tax' at a US site), and no purchase rate there (the tax paid stays in the cost)
+  const tw = stockTaxWords(cur);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [pos, setPos] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -118,7 +121,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
   }), [pos, tab, q, supName]);
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '', [items]);
   const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
-  const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
+  const lineRateDec = useCallback((l) => purchaseRateDec(cur, ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById, cur]);
 
   // ── the supplier's item table (new and draft orders): search and filter state ──────────────
   const [itemQ, setItemQ] = useState('');
@@ -313,7 +316,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
     const it = unlisted.it;
     // The unit must convert to the item's unit now: receiving refuses the whole order otherwise,
     // after it has been sent and its lines can no longer be edited.
-    const chk = unlistedLineCheck(unlisted, { baseUnit: it.baseUnit, conversions: it.conversions || [], itemName: it.name });
+    const chk = unlistedLineCheck(unlisted, { baseUnit: it.baseUnit, conversions: it.conversions || [], itemName: it.name, exTax: tw.exTax });
     if (!chk.ok) { showToast?.(chk.reason, 'error'); return; }
     setDraft(d => ({ ...d, lines: [...d.lines, {
       inventoryItemId: it.id, description: it.name, qtyPacks: '1',
@@ -440,7 +443,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
                   <div style={{ marginTop: 10, border: '1px solid var(--bdr)', borderRadius: 10, padding: 14, background: 'var(--bg1)', maxWidth: 720 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 4 }}>{unlisted.it.name}</div>
                     <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 10 }}>
-                      {supName(draft.supplierId)} has no pack on file for this item, so there is no pack size or price to order it by. Enter the pack and the price of one pack (ex VAT) and it joins the order.
+                      {supName(draft.supplierId)} has no pack on file for this item, so there is no pack size or price to order it by. Enter the pack and the price of one pack ({tw.exTax}) and it joins the order.
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 12, color: 'var(--t3)' }}>Pack of</span>
@@ -449,7 +452,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
                       <NumberField width={88} value={unlisted.innerQty} onChange={v => setUnlisted(u => ({ ...u, innerQty: v }))} title="how much each inner unit holds" />
                       <input value={unlisted.innerUnit} onChange={e => setUnlisted(u => ({ ...u, innerUnit: e.target.value }))} placeholder={unlisted.it.baseUnit || 'each'} style={{ ...field, width: 80 }} title="the unit (each, kg, l)" />
                       <span style={{ fontSize: 12, color: 'var(--t3)' }}>at {currencySymbol()}</span>
-                      <NumberField width={112} unit="a pack" value={unlisted.unitPrice} onChange={v => setUnlisted(u => ({ ...u, unitPrice: v }))} title="price of one pack, ex VAT" />
+                      <NumberField width={112} unit="a pack" value={unlisted.unitPrice} onChange={v => setUnlisted(u => ({ ...u, unitPrice: v }))} title={`price of one pack, ${tw.exTax}`} />
                       <PrimaryBtn onClick={addUnlisted}>Add to order</PrimaryBtn>
                       <button onClick={() => setUnlisted(null)} style={{ padding: '9px 14px', borderRadius: 8, background: 'transparent', border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
                     </div>
@@ -467,8 +470,8 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
                       {/* v5.11.65: the shared NumberField (wide enough for 125.50, unit inside, no spinner); the pack reads as words, not a formula */}
                       <NumberField disabled width={104} unit="packs" value={l.qtyPacks} onChange={v => updLine(i, 'qtyPacks', v)} title="packs ordered" />
                       <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>of {l.packQty} x {l.innerQty} {l.innerUnit} at {currencySymbol()}</span>
-                      <NumberField disabled width={112} unit="a pack" value={l.unitPrice} onChange={v => updLine(i, 'unitPrice', v)} title="price per pack, ex VAT" />
-                      {lineRateDec(l) > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)' }} title="purchase VAT">+{Math.round(lineRateDec(l) * 100)}%</span>}
+                      <NumberField disabled width={112} unit="a pack" value={l.unitPrice} onChange={v => updLine(i, 'unitPrice', v)} title={`price per pack, ${tw.exTax}`} />
+                      {lineRateDec(l) > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)' }} title={`purchase ${tw.tax}`}>+{Math.round(lineRateDec(l) * 100)}%</span>}
                       {draft.status === 'RECEIVED' && Number(l.qtyReceived) !== Number(l.qtyPacks) && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }} title="short: the remainder is on the balance order">rec {Number(l.qtyReceived) || 0}</span>}
                       <span style={{ width: 70, textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{money(qtyFor(l) * (Number(l.unitPrice) || 0))}</span>
                       {editable && <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>}
@@ -480,8 +483,8 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 14, color: 'var(--t1)', marginRight: 'auto' }}>
-                Subtotal (ex VAT): <b>{money(total)}</b>
-                {vatTotal > 0.005 && <span style={{ color: 'var(--t3)' }}> · VAT {money(vatTotal)} · <b style={{ color: 'var(--t1)' }}>pay {money(total + vatTotal)}</b></span>}
+                Subtotal ({tw.exTax}): <b>{money(total)}</b>
+                {vatTotal > 0.005 && <span style={{ color: 'var(--t3)' }}> · {tw.Tax} {money(vatTotal)} · <b style={{ color: 'var(--t1)' }}>pay {money(total + vatTotal)}</b></span>}
               </div>
               {editable && <button onClick={() => save('DRAFT')} disabled={busy} style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer' }}>Save draft</button>}
               {editable && supplierEmail && <PrimaryBtn onClick={sendToSupplier} disabled={busy || !liveLines}>Send to supplier</PrimaryBtn>}
@@ -528,7 +531,7 @@ export default function PurchaseOrdersSite({ siteId = null } = {}) {
                       <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>ordered {l.qtyPacks}</span>
                       <NumberField width={104} unit="packs" value={r.qtyPacks ?? ''} onChange={v => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], qtyPacks: v } }))} tone={short ? 'warn' : undefined} title="packs received" />
                       <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>at {currencySymbol()}</span>
-                      <NumberField width={112} unit="a pack" value={r.unitPrice ?? ''} onChange={v => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], unitPrice: v } }))} tone={priceChanged ? 'warn' : undefined} title="pack price on the delivery note, ex VAT" />
+                      <NumberField width={112} unit="a pack" value={r.unitPrice ?? ''} onChange={v => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], unitPrice: v } }))} tone={priceChanged ? 'warn' : undefined} title={`pack price on the delivery note, ${tw.exTax}`} />
                       {short && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }}>short</span>}
                     </div>
                   );
@@ -621,7 +624,7 @@ function SupplierItemTable({ rows, onQty, onQtyBlur, onPrice, lineRateDec, cur =
         <colgroup>
           <col />{FIXED_COLS.map((w, i) => <col key={i} style={{ width: w }} />)}
         </colgroup>
-        <thead><tr>{COLS.map(([h, align]) => <th key={h} style={{ ...th, textAlign: align }}>{h}</th>)}</tr></thead>
+        <thead><tr>{COLS.map(([h, align]) => <th key={h} style={{ ...th, textAlign: align }}>{h === 'Line (ex VAT)' ? `Line (${stockTaxWords(cur).exTax})` : h}</th>)}</tr></thead>
         <tbody>
           {rows.length === 0 && <tr><td colSpan={COLS.length} style={{ ...td, textAlign: 'center', color: 'var(--t4)', height: 88, borderBottom: 'none' }}>No items match.</td></tr>}
           {topPad > 0 && <tr aria-hidden="true"><td colSpan={COLS.length} style={{ height: topPad, padding: 0, border: 0 }} /></tr>}
@@ -641,6 +644,7 @@ function ItemRow({ r, last, onQty, onQtyBlur, onPrice, lineRateDec, cur = null }
   const cell = last ? { borderBottom: 'none' } : null;
   const qty = r.line ? String(r.line.qtyPacks ?? '') : '';
   const rate = r.line ? lineRateDec(r.line) : 0;
+  const tw = stockTaxWords(cur); // 5.12.57: the site's tax words
   const codes = [r.sku, r.supplierSku].filter(Boolean).join(' · ');
   return (
     <tr style={{ background: r.line ? 'color-mix(in srgb, var(--acc) 7%, transparent)' : 'transparent' }}>
@@ -653,9 +657,9 @@ function ItemRow({ r, last, onQty, onQtyBlur, onPrice, lineRateDec, cur = null }
       <td style={{ ...td, ...cell, color: 'var(--t3)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.sp?.packDescription || ''}>{r.packQty} x {fmtQty(r.innerQty)} {r.innerUnit}</td>
       <td style={{ ...num, ...cell }}>
         {r.line
-          ? <NumberField width={88} value={String(r.line.unitPrice ?? '')} onChange={v => onPrice(r, v)} title="price of one pack, ex VAT" inputStyle={{ fontSize: 13, padding: '5px 0' }} />
-          : <span title="net price of one pack, ex VAT">{money(r.netPrice, cur)}</span>}
-        {rate > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)', marginLeft: 4 }} title="purchase VAT">+{Math.round(rate * 100)}%</span>}
+          ? <NumberField width={88} value={String(r.line.unitPrice ?? '')} onChange={v => onPrice(r, v)} title={`price of one pack, ${tw.exTax}`} inputStyle={{ fontSize: 13, padding: '5px 0' }} />
+          : <span title={`net price of one pack, ${tw.exTax}`}>{money(r.netPrice, cur)}</span>}
+        {rate > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)', marginLeft: 4 }} title={`purchase ${tw.tax}`}>+{Math.round(rate * 100)}%</span>}
       </td>
       <td style={{ ...num, ...cell, color: r.belowPar ? 'var(--red)' : 'var(--t1)' }}>{show(r.onHand)}</td>
       <td style={{ ...num, ...cell, color: 'var(--t3)' }} title="Outstanding on open orders">{r.onOrder > 0 ? show(r.onOrder) : ''}</td>

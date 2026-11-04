@@ -16,6 +16,9 @@
 //   contracted or target weekly hours not exceeded.
 // Standard shifts: when the venue has any, a proposed shift is snapped to the closest one.
 
+// 5.12.57: 11 hours of rest is the UK Working Time Regulations daily rest. US federal law has no
+// rest rule (some states and cities set one), so 11 stays the default there too, as the more
+// careful choice; Workforce settings says so in the venue's own words and a venue can change it.
 export const DEFAULT_RULES = { maxDaysInRow: 5, minRestHours: 11, openGraceMins: 60 };
 
 const toMins = (hhmm) => { const [h, m] = String(hhmm || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); };

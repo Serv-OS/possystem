@@ -43,10 +43,5 @@ export const TRONC_POOL = 0;   // card tips + service charge (POS)
 export const TRONC_HOURS = []; // tronc participants
 export const COMPLIANCE = [];  // document vault
 
-// Pay & rates card — derived from the editable ROLES config.
-export const PAYROWS = Object.values(ROLES).map(r => ({
-  role: r.lbl, grp: r.grp,
-  type: r.salary ? 'Salaried' : r.band ? 'Hourly · age-banded' : 'Hourly · role rate',
-  rate: r.rate != null ? `£${r.rate.toFixed(2)}` : `£${(r.salary / 1000)}k/yr`,
-  note: r.band ? `NMW ${r.band} band` : r.salary ? '~£15.38/h equiv' : r.requiresSIA ? 'SIA licensed' : '',
-}));
+// 5.12.57: the sample Pay & rates rows (PAYROWS: pounds and UK minimum wage bands) were read by
+// nothing and are gone; positions and rates are each venue's own (Workforce, Positions and rates).

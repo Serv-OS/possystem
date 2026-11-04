@@ -1,13 +1,14 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
-import { UK_DEFAULT_RATES, US_DEFAULT_RATES } from '../../lib/tax';
+import { UK_DEFAULT_RATES, usSeedRates, newRateDefaults } from '../../lib/tax';
+import { activeTaxWords } from '../../lib/taxWords';
 import { reportSave } from '../../lib/saveHealth';
 import { useStore, loadVenueMenu } from '../../store';
 import { assembleTaxProfiles, mapTaxRateRow } from '../../lib/rowMapping';
 import { holdsOwnRates } from '../../lib/venueTaxRates';
 import { Icon } from '../../components/ServOSIcons';
 import { mapCopiesTaxFromMasters } from '../../lib/db';
-import { getActiveCurrencyCode } from '../../lib/currency';
+import { getActiveCurrencyCode, money } from '../../lib/currency';
 // v5.7.33: the REAL engine powers the builder's live preview. This is UI-only
 // maths on a sample item; no till or customer page computes with the engine yet.
 import { computeTax, validateProfile, lineBasisSettings, isAddedOnRateLine } from '../../lib/taxEngine';
@@ -20,7 +21,8 @@ const ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter', 'drive
 // profile, a line tagged 'takeaway' applies to drive thru too (src/lib/taxEngine.js).
 const PROFILE_ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'collection', 'bar', 'counter', 'drive-thru'];
 
-const EMPTY = { name:'', code:'', rate:'', type:'inclusive', applies_to:['all'], is_default:false, active:true };
+// 5.12.57: a new rate's starting values follow the venue's country (lib/tax.js newRateDefaults):
+// inclusive VAT at a UK venue as before, exclusive (added on top) at a US venue.
 
 const S = {
   page:   { padding:'32px 40px', maxWidth:980 },
@@ -49,6 +51,7 @@ const genId = () => (typeof crypto !== 'undefined' && crypto.randomUUID)
 
 // ── Line editor ──────────────────────────────────────────────────────────────
 function LineEditor({ line, index, count, onChange, onRemove, onMove }) {
+  const tw = activeTaxWords();   // 5.12.57: the examples follow the venue's country
   const set = (k, v) => onChange({ ...line, [k]: v });
   const pctValue = line.rate === '' ? '' : String(+(Number(line.rate) * 100).toFixed(4));
 
@@ -97,11 +100,11 @@ function LineEditor({ line, index, count, onChange, onRemove, onMove }) {
       <div style={S.row}>
         <div>
           <label style={S.label}>Name *</label>
-          <input style={S.input} value={line.name} onChange={e => set('name', e.target.value)} placeholder="e.g. VAT, State sales tax"/>
+          <input style={S.input} value={line.name} onChange={e => set('name', e.target.value)} placeholder={tw.us ? 'e.g. State sales tax, City tax' : 'e.g. VAT, State sales tax'}/>
         </div>
         <div>
           <label style={S.label}>Jurisdiction</label>
-          <input style={S.input} value={line.jurisdiction || ''} onChange={e => set('jurisdiction', e.target.value)} placeholder="e.g. HMRC, City of Chicago"/>
+          <input style={S.input} value={line.jurisdiction || ''} onChange={e => set('jurisdiction', e.target.value)} placeholder={tw.uk ? 'e.g. HMRC, City of Chicago' : tw.us ? 'e.g. State of Utah, City of Provo' : 'e.g. Revenue'}/>
         </div>
       </div>
 
@@ -141,7 +144,7 @@ function LineEditor({ line, index, count, onChange, onRemove, onMove }) {
         <div>
           <label style={S.label}>Inclusive or exclusive</label>
           <select style={S.select} value={line.mode === 'inclusive' ? 'inclusive' : 'exclusive'} onChange={e => set('mode', e.target.value)}>
-            <option value="inclusive">Inclusive: already inside the price (UK VAT)</option>
+            <option value="inclusive">{tw.us ? 'Inclusive: already inside the price' : 'Inclusive: already inside the price (UK VAT)'}</option>
             <option value="exclusive">Exclusive: added on top at checkout (US sales tax)</option>
           </select>
         </div>
@@ -229,6 +232,7 @@ function draftToProfile(draft) {
 
 // ── Live preview (real engine, sample item, UI only) ─────────────────────────
 function ProfilePreview({ draft }) {
+  const tw = activeTaxWords();
   const [orderType, setOrderType] = useState('dine-in');
 
   const preview = useMemo(() => {
@@ -257,7 +261,7 @@ function ProfilePreview({ draft }) {
     <div style={{ border:'1px solid var(--bdr)', borderRadius:12, padding:16, background:'var(--bg)', position:'sticky', top:0 }}>
       <div style={{ fontSize:12, fontWeight:800, color:'var(--t1)', marginBottom:2 }}>Live preview</div>
       <div style={{ fontSize:11, color:'var(--t4)', marginBottom:12, lineHeight:1.6 }}>
-        A sample 10.00 item (£10.00 / $10.00), computed with the real tax engine. Preview only, no till uses this yet.
+        A sample 10.00 item ({tw.uk ? '£10.00 / $10.00' : money(10)}), computed with the real tax engine. Preview only, no till uses this yet.
       </div>
 
       <label style={S.label}>Preview order type</label>
@@ -748,7 +752,8 @@ function RateBadge({ rate }) {
 }
 
 function RateForm({ rate, onSave, onCancel }) {
-  const [form, setForm] = useState({ ...EMPTY, ...rate });
+  const tw = activeTaxWords();
+  const [form, setForm] = useState({ ...newRateDefaults(tw.country), ...rate });
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
 
@@ -783,7 +788,7 @@ function RateForm({ rate, onSave, onCancel }) {
         </div>
         <div>
           <label style={S.label}>Code</label>
-          <input style={S.input} value={form.code} onChange={e => f('code', e.target.value)} placeholder="e.g. VAT20"/>
+          <input style={S.input} value={form.code} onChange={e => f('code', e.target.value)} placeholder={tw.us ? 'e.g. US_SALES' : 'e.g. VAT20'}/>
         </div>
       </div>
 
@@ -798,7 +803,7 @@ function RateForm({ rate, onSave, onCancel }) {
         <div>
           <label style={S.label}>Tax model</label>
           <select style={S.select} value={form.type} onChange={e => f('type', e.target.value)}>
-            <option value="inclusive">Inclusive — tax is in the price (UK VAT)</option>
+            <option value="inclusive">{tw.us ? 'Inclusive: tax is in the price' : 'Inclusive — tax is in the price (UK VAT)'}</option>
             <option value="exclusive">Exclusive — tax added on top (US Sales Tax)</option>
           </select>
         </div>
@@ -849,6 +854,11 @@ function LegacyRatesSection() {
   const heldDefaultProfile = useStore(st => st.venueDefaultTaxProfileId);
   const noRatesIsFine = (heldProfiles || []).length > 0 || !!heldDefaultProfile;
   const ukVenue = String(getActiveCurrencyCode() || 'GBP').toUpperCase() === 'GBP';
+  // 5.12.57: only the venue's own country's seed is offered, and a US seed asks for the rate.
+  const tw = activeTaxWords();
+  const [usRate, setUsRate] = useState('');
+  const [usName, setUsName] = useState('Sales tax');
+  const [usSeedError, setUsSeedError] = useState('');
   const [rates, setRates]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [editId, setEditId]   = useState(null);   // null | 'new' | uuid
@@ -1015,6 +1025,13 @@ function LegacyRatesSection() {
     setSeeding(false);
     flash(`✓ ${defaults.length} rates added.${copyWords}`);
   };
+  // 5.12.57: the US seed is the rate the owner typed (lib/tax.js usSeedRates), never a fixed one.
+  const seedUs = () => {
+    const r = usSeedRates(usRate, usName);
+    if (!r.ok) { setUsSeedError(r.error); return; }
+    setUsSeedError('');
+    seedRates(r.rates);
+  };
 
   return (
     <div>
@@ -1025,23 +1042,27 @@ function LegacyRatesSection() {
         These legacy rates still work and are what every till and customer page charges with today, so keep them correct.
       </div>
 
-      {/* Info panels */}
+      {/* Info panels. 5.12.57: only the venue's own country's panel and seed (a US venue is never
+          offered UK rates, a UK venue never US ones); an Irish venue sees the VAT panel, no seed. */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:24 }}>
+        {!tw.us && (
         <div style={{ padding:'14px 16px', borderRadius:12, background:'var(--bg1)', border:'1px solid var(--bdr)' }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}><Icon name="pound" size={14} />UK VAT (Inclusive)</div>
-          <div style={{ fontSize:12, color:'var(--t4)', lineHeight:1.7 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}><Icon name="pound" size={14} />UK VAT (Inclusive)</div>{/* uk only: !tw.us above */}
+          <div style={{ fontSize:12, color:'var(--t4)', lineHeight:1.7 }}>{/* uk only: !tw.us above */}
             Price shown on POS includes tax. VAT is extracted at checkout. Standard 20%, Reduced 5%, Zero 0%.
             Items can be zero-rated for takeaway but standard-rated for dine-in.
           </div>
           {/* Only offered when we KNOW the table is empty — after a failed read it would seed a
               duplicate set on top of rates that are already there. */}
-          {!rates.length && !loading && !loadFailed && (
+          {tw.uk && !rates.length && !loading && !loadFailed && (
             <button onClick={() => seedRates(UK_DEFAULT_RATES)} disabled={seeding}
               style={{ ...S.btn, background:'var(--acc)', color:'#fff', marginTop:10, padding:'7px 14px', fontSize:12, opacity: seeding ? .6 : 1 }}>
               {seeding ? 'Adding…' : 'Seed UK rates'}
             </button>
           )}
         </div>
+        )}
+        {tw.us && (
         <div style={{ padding:'14px 16px', borderRadius:12, background:'var(--bg1)', border:'1px solid var(--bdr)' }}>
           <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}><Icon name="money" size={14} />US Sales Tax (Exclusive)</div>
           <div style={{ fontSize:12, color:'var(--t4)', lineHeight:1.7 }}>
@@ -1049,12 +1070,28 @@ function LegacyRatesSection() {
             The customer-facing total is subtotal + tax.
           </div>
           {!rates.length && !loading && !loadFailed && (
-            <button onClick={() => seedRates(US_DEFAULT_RATES)} disabled={seeding}
-              style={{ ...S.btn, background:'var(--acc)', color:'#fff', marginTop:10, padding:'7px 14px', fontSize:12, opacity: seeding ? .6 : 1 }}>
-              {seeding ? 'Adding…' : 'Seed US rates'}
-            </button>
+            <div style={{ marginTop:10 }}>
+              <div style={S.row}>
+                <div>
+                  <label style={S.label}>This venue's rate % *</label>
+                  <input style={S.input} type="number" min="0" max="20" step="0.001" value={usRate}
+                    onChange={e => { setUsRate(e.target.value); setUsSeedError(''); }} placeholder="e.g. 7.45"/>
+                </div>
+                <div>
+                  <label style={S.label}>Name on receipts</label>
+                  <input style={S.input} value={usName} onChange={e => setUsName(e.target.value)} placeholder="Sales tax"/>
+                </div>
+              </div>
+              <div style={{ fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>Your combined state, county and city rate (Provo, Utah is about 7.45%). Check it with your state's tax office.</div>
+              {usSeedError && <div style={{ fontSize:12, color:'var(--red)', fontWeight:700, marginTop:6 }}>{usSeedError}</div>}
+              <button onClick={seedUs} disabled={seeding || usRate === ''}
+                style={{ ...S.btn, background:'var(--acc)', color:'#fff', marginTop:10, padding:'7px 14px', fontSize:12, opacity: seeding || usRate === '' ? .6 : 1 }}>
+                {seeding ? 'Adding…' : 'Seed US rates'}
+              </button>
+            </div>
           )}
         </div>
+        )}
       </div>
 
       {/* 27 Sep 2026: a venue with no rates records NO VAT on any sale. Say so, not just offer a button.
@@ -1062,9 +1099,12 @@ function LegacyRatesSection() {
           venue's own words: a US venue is never told to seed UK rates. */}
       {!rates.length && !loading && !loadFailed && !noRatesIsFine && (
         <div style={{ padding:'10px 14px', borderRadius:8, background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:13, fontWeight:700, marginBottom:12 }}>
+          {/* 5.12.57: each country is pointed at its own seed (an Irish venue has none: add rates). */}
           {ukVenue
             ? 'This venue has no tax rates, so its sales record no VAT. Press Seed UK rates (Standard 20% becomes the default), then check Menu, Items for products with no rate.'
-            : 'This venue has no tax rates, so its sales record no sales tax. Set up its tax profiles, or press Seed US rates, then check Menu, Items.'}
+            : tw.us
+              ? 'This venue has no tax rates, so its sales record no sales tax. Set up its tax profiles, or type the rate under US Sales Tax and press Seed US rates, then check Menu, Items.'
+              : 'This venue has no tax rates, so its sales record no VAT. Add its rates with + Add tax rate, then check Menu, Items.'}
         </div>
       )}
 
@@ -1120,7 +1160,7 @@ function LegacyRatesSection() {
           {rates.length > 0 && (
             <div style={{ marginTop:20, padding:'12px 16px', borderRadius:10, background:'var(--bg3)', border:'1px solid var(--bdr)', fontSize:12, color:'var(--t4)', lineHeight:1.8 }}>
               <strong style={{ color:'var(--t2)' }}>Next steps:</strong> Go to Menu Manager → select an item → assign a tax rate.
-              You can set different rates per order type (e.g. a burger is 20% dine-in but 0% takeaway).
+              You can set different rates per order type {tw.us ? '(e.g. packaged food to go can use Tax Exempt).' : '(e.g. a burger is 20% dine-in but 0% takeaway).'}
             </div>
           )}
         </>
@@ -1135,9 +1175,10 @@ function LegacyRatesSection() {
 // ═════════════════════════════════════════════════════════════════════════════
 export default function TaxManager() {
   const [tab, setTab] = useState('profiles');
+  const tw = activeTaxWords();   // 5.12.57: a US venue's menu name is Tax (it has no VAT)
   return (
     <div style={S.page}>
-      <div style={S.h1}>Tax & VAT</div>
+      <div style={S.h1}>{tw.us ? 'Tax' : 'Tax & VAT'}</div>
       <div style={S.sub}>Set up tax profiles for this location, assign them to categories and items, and manage the legacy rates that currently charge.</div>
 
       <div style={{ display:'flex', gap:0, borderBottom:'1px solid var(--bdr)', marginBottom:20 }}>

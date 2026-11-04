@@ -6,7 +6,9 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchTempUnits, upsertTempUnit, archiveTempUnit, fetchSchedules, upsertSchedule, deleteSchedule } from '../../../lib/ops/data';
-import { TYPE_DEFAULTS, typeDefault, displayTemp, toStoredC } from '../../../lib/ops/temp';
+import { TYPE_DEFAULTS, typeDefault, typeDefaultsFor, defaultTempUnit, displayTemp, toStoredC } from '../../../lib/ops/temp';
+import { activeCountry } from '../../../lib/regionPack';
+import { foodLawWords } from '../../../lib/foodLaw';
 import { reportSave } from '../../../lib/saveHealth';
 import { Icon } from '../../../components/ServOSIcons';
 
@@ -26,7 +28,9 @@ export default function OpsTemperature() {
   const [units, setUnits] = useState([]);
   const [scheds, setScheds] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [dispUnit, setDispUnit] = useState('C');
+  // 5.12.57: a US venue reads and types °F and gets the FDA Food Code defaults; the UK as before.
+  const country = activeCountry();
+  const [dispUnit, setDispUnit] = useState(() => defaultTempUnit(country));
   const [editing, setEditing] = useState(null);   // unit being edited in the modal (or 'new')
 
   const reload = useCallback(async () => {
@@ -94,16 +98,18 @@ export default function OpsTemperature() {
           </table>
         </div>
       )}
-      <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 12 }}>Defaults follow FSA / Safer Food Better Business: chilled ≤8°C (target 1–4); frozen ≤−18°C; hot holding ≥63°C. Editable per unit.</div>
+      <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 12 }}>{foodLawWords(country).tempDefaultsNote}</div>
 
-      {editing && <UnitEditor locId={locId} unit={editing === 'new' ? null : editing} schedules={editing === 'new' ? [] : (schedByUnit[editing.id] || [])} dispUnit={dispUnit}
+      {editing && <UnitEditor locId={locId} country={country} unit={editing === 'new' ? null : editing} schedules={editing === 'new' ? [] : (schedByUnit[editing.id] || [])} dispUnit={dispUnit}
         onClose={() => setEditing(null)} onSaved={() => { setEditing(null); reload(); }} showToast={showToast} />}
     </div>
   );
 }
 
-function UnitEditor({ locId, unit, schedules, dispUnit, onClose, onSaved, showToast }) {
-  const [d, setD] = useState(() => unit ? { ...unit } : { name: '', type: 'fridge', area: '', targetMinC: TYPE_DEFAULTS.fridge.min, targetMaxC: TYPE_DEFAULTS.fridge.max, displayUnit: 'C', guidance: '', active: true });
+function UnitEditor({ locId, country, unit, schedules, dispUnit, onClose, onSaved, showToast }) {
+  // 5.12.57: a new unit starts from the venue's own defaults (FDA at a US venue); a saved unit keeps its own limits.
+  const defs = typeDefaultsFor(country);
+  const [d, setD] = useState(() => unit ? { ...unit } : { name: '', type: 'fridge', area: '', targetMinC: defs.fridge.min, targetMaxC: defs.fridge.max, displayUnit: defaultTempUnit(country), guidance: '', active: true });
   // New units start with one daily check so they immediately appear (and are due) on the floor app.
   const [rows, setRows] = useState(() => schedules.length ? schedules.map(s => ({ ...s })) : (unit ? [] : [{ label: 'Daily check', timeOfDay: '09:00', daysOfWeek: [], graceMinutes: 120 }]));
   const [busy, setBusy] = useState(false);
@@ -114,7 +120,7 @@ function UnitEditor({ locId, unit, schedules, dispUnit, onClose, onSaved, showTo
   // silently left the unit alarming at 1–5°C instead of −25 to −18. Picking a type
   // means "use this type's profile"; hand-tuned ranges are still editable below,
   // and this only fires when the type actually changes.
-  const pickType = (t) => { const def = typeDefault(t); setD(x => ({ ...x, type: t, targetMinC: def.min, targetMaxC: def.max, guidance: def.guidance })); };
+  const pickType = (t) => { const def = typeDefault(t, country); setD(x => ({ ...x, type: t, targetMinC: def.min, targetMaxC: def.max, guidance: def.guidance })); };
   // edit ranges in the chosen display unit, store °C
   const minDisp = d.targetMinC == null ? '' : displayTemp(d.targetMinC, dispUnit).value;
   const maxDisp = d.targetMaxC == null ? '' : displayTemp(d.targetMaxC, dispUnit).value;

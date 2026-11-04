@@ -31,7 +31,7 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 // written by _shared/poSend.ts with the same file; here it dates the invoice on a credit request).
 import { fmtYmd } from '../_shared/venueDate.js';
 // v5.11.96: the send path itself (one copy for po-send, po-cutoff-run and manager-approve).
-import { sendPurchaseOrder, receiptBody, ccList, esc } from '../_shared/poSend.ts';
+import { sendPurchaseOrder, receiptBody, ccList, esc, poEmailWords } from '../_shared/poSend.ts';
 import { officeReachesVenue, stockOfficeReachesVenue, readReachProfile } from '../_shared/stockOfficeReach.js';
 
 // CORS is inlined per-function in this codebase — there is no shared cors module.
@@ -120,13 +120,22 @@ async function sendCreditRequest(cr: any): Promise<Response> {
       : Promise.resolve({ data: null }),
     admin.from('locations').select('name,address').eq('id', cr.location_id).maybeSingle(),
   ]);
+  // 5.12.57 (US basics batch 7): the venue's money, tax word and date order ('$', 'before tax', 'Nov 3, 2026'
+  // at a US venue). A read that fails is today's UK email, byte for byte.
+  let currency: string | null = null;
+  try {
+    const { data: cur, error: curErr } = await admin.from('locations').select('currency').eq('id', cr.location_id).maybeSingle();
+    currency = !curErr && cur?.currency ? String(cur.currency) : null;
+  } catch { currency = null; }
+  const w = poEmailWords(currency);
+  const amt = (v: unknown) => (w.us ? w.money(v) : Number(v || 0).toFixed(2));
   if (!supplier?.email) return json({ error: 'supplier_has_no_email' }, 422);
   let invoiceNo = '';
   let invoiceDay = '';
   if (cr.invoice_id) {
     const { data: inv } = await admin.from('supplier_invoices').select('invoice_number, invoice_date').eq('location_id', cr.location_id).eq('id', cr.invoice_id).maybeSingle();
     invoiceNo = inv?.invoice_number ? String(inv.invoice_number) : '';
-    invoiceDay = inv?.invoice_date ? fmtYmd(inv.invoice_date) : '';
+    invoiceDay = inv?.invoice_date ? (w.us ? w.plainDay(inv.invoice_date) : fmtYmd(inv.invoice_date)) : '';
   }
   const venue = locRow?.name || 'Our venue';
   const reasonWords: Record<string, string> = {
@@ -136,9 +145,9 @@ async function sendCreditRequest(cr: any): Promise<Response> {
   const cell = 'padding:6px 10px;border-bottom:1px solid #ddd';
   const rows = (lines ?? []).map((l: any) => `
     <tr><td style="${cell}">${esc(l.description)}</td><td style="${cell};text-align:right">${Number(l.qty)}</td>
-      <td style="${cell};text-align:right">${l.unit_price_charged == null ? '' : Number(l.unit_price_charged).toFixed(2)}</td>
-      <td style="${cell};text-align:right">${l.unit_price_agreed == null ? '' : Number(l.unit_price_agreed).toFixed(2)}</td>
-      <td style="${cell};text-align:right">${Number(l.amount || 0).toFixed(2)}</td></tr>`).join('');
+      <td style="${cell};text-align:right">${l.unit_price_charged == null ? '' : amt(l.unit_price_charged)}</td>
+      <td style="${cell};text-align:right">${l.unit_price_agreed == null ? '' : amt(l.unit_price_agreed)}</td>
+      <td style="${cell};text-align:right">${amt(l.amount)}</td></tr>`).join('');
   const html = `
   <div style="font-family:Arial,sans-serif;max-width:640px">
     <h2 style="margin:0 0 4px">Credit request from ${esc(venue)}</h2>
@@ -154,7 +163,7 @@ async function sendCreditRequest(cr: any): Promise<Response> {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <p style="margin:14px 0 0;font-size:14px"><b>Credit asked for (ex VAT): ${Number(cr.amount || 0).toFixed(2)}</b></p>
+    <p style="margin:14px 0 0;font-size:14px"><b>Credit asked for (${w.exTax}): ${amt(cr.amount)}</b></p>
     ${cr.note ? `<p style="margin:10px 0 0;font-size:14px">${esc(cr.note)}</p>` : ''}
     <p style="margin:14px 0 0;color:#555;font-size:12px">Please reply with a credit note.</p>
   </div>`;

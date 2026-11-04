@@ -15,7 +15,7 @@ import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { useSiteMoney } from './stock/useSiteCurrency';
 import { fetchInventoryItems, fetchSuppliers } from '../../lib/stock/data';
 import { areasReady, fetchAreas, saveArea, archiveArea, setReceivingArea, reorderAreas, addUsualSix, fetchAreaHoldings, bulkAssignItemArea } from '../../lib/stock/areas';
-import { AREA_KINDS, kindLabel, RECEIVING_HELP, archiveRefusal, bulkAssignText, areasBelowZero } from '../../lib/stock/areaRules';
+import { AREA_KINDS, kindLabel, RECEIVING_HELP, archiveRefusal, bulkAssignText, areasBelowZero, usualSixFor } from '../../lib/stock/areaRules';
 import { lineValue } from '../../lib/stock/valuation';
 import { reportSave } from '../../lib/saveHealth';
 import StockItemPicker from '../../components/StockItemPicker';
@@ -32,7 +32,8 @@ export const NEEDS_UPDATE_TEXT = 'Stock areas need the 16 Oct database update. A
 export default function StockAreas({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
   // 5.12.57: this site's money (its own currency, not the signed in venue's), in place of the import.
-  const { money } = useSiteMoney(siteId);
+  const { money, code: siteCode } = useSiteMoney(siteId);
+  const six = usualSixFor(siteCode); // 5.12.57: US words at a US site ('Walk-in', 'Dry storage')
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [ready, setReady] = useState(null);
   const [areas, setAreas] = useState([]);
@@ -128,7 +129,7 @@ export default function StockAreas({ orgCtx = null, siteId = null }) {
   };
   const usualSix = async () => {
     setBusy(true);
-    const { data: n, error } = await addUsualSix(locId);
+    const { data: n, error } = await addUsualSix(locId, { currency: siteCode });
     setBusy(false);
     reportSave('stock areas', error);
     if (error) { showToast?.(error.message || 'Add the usual six failed', 'error'); return; }
@@ -241,7 +242,7 @@ export default function StockAreas({ orgCtx = null, siteId = null }) {
               {AREA_KINDS.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
             </select>
             <button onClick={add} disabled={busy} style={accBtn}>Add</button>
-            {areas.length > 0 && areas.length < 6 && <button onClick={usualSix} disabled={busy} style={btn} title="Adds any of Cellar, Walk in fridge, Freezer, Dry store, Bar, Kitchen that are missing">Add the usual six</button>}
+            {areas.length > 0 && areas.length < 6 && <button onClick={usualSix} disabled={busy} style={btn} title={`Adds any of ${six.map(a => a.name).join(', ')} that are missing`}>Add the usual six</button>}
           </div>
         </div>
 

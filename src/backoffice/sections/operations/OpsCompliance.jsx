@@ -1,4 +1,4 @@
-// OpsCompliance — the EHO-ready compliance history: a month coloured by status on the
+// OpsCompliance — the EHO-ready (inspection ready, at a US venue) compliance history: a month coloured by status on the
 // left, a day-detail event TIMELINE on the right (every temperature round, checklist
 // sign-off, breach/corrective action + maintenance raised), and a CSV export of the
 // audit trail. (Back Office → Operations → Compliance.)
@@ -7,7 +7,8 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { getActiveLocationSync, getLocationId, getAvailableLocations } from '../../../lib/supabase';
 import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance } from '../../../lib/ops/data';
 import { fetchRunsRange, fetchChecklists, fetchRunCompletions } from '../../../lib/ops/checklists';
-import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
+import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp, defaultTempUnit } from '../../../lib/ops/temp';
+import { activeCountry } from '../../../lib/regionPack';
 import { getLocationConfig, buildScheduleCtx, minutesInTz, ymdInTz } from '../../../lib/locationTime';
 const mono = { fontFamily: 'var(--font-mono)' };
 const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
@@ -105,11 +106,13 @@ export default function OpsCompliance() {
     setSelDay(ymd(new Date(month.y, month.m, days)));
   }, [month, selDay]);
 
+  // 5.12.57: a US venue reads its log in °F (readings stay stored in °C); the UK as before.
+  const tUnit = defaultTempUnit(activeCountry());
   const exportCsv = () => {
-    const rows = [['Date', 'Time', 'Unit', 'Reading°C', 'In range', 'Severity', 'By', 'Source']];
+    const rows = [['Date', 'Time', 'Unit', `Reading°${tUnit}`, 'In range', 'Severity', 'By', 'Source']];
     data.readings.slice().reverse().forEach(r => {
       const u = data.units.find(x => x.id === r.tempUnitId);
-      rows.push([ymd(r.recordedAt), new Date(r.recordedAt).toLocaleTimeString('en-GB'), u?.name || r.tempUnitId, r.readingC, r.inRange ? 'yes' : 'NO', r.severity, r.operatorName || '', r.source]);
+      rows.push([ymd(r.recordedAt), new Date(r.recordedAt).toLocaleTimeString('en-GB'), u?.name || r.tempUnitId, tUnit === 'C' ? r.readingC : displayTemp(r.readingC, tUnit).value, r.inRange ? 'yes' : 'NO', r.severity, r.operatorName || '', r.source]);
     });
     const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -117,12 +120,12 @@ export default function OpsCompliance() {
     a.download = `compliance-${month.y}-${String(month.m + 1).padStart(2, '0')}.csv`; a.click();
   };
 
-  // EHO-ready PDF: opens a self-contained branded report window → user saves as PDF.
+  // EHO-ready (inspection ready) PDF: opens a self-contained branded report window → user saves as PDF.
   const exportPdf = () => {
     const html = buildEhoHtml({
       siteName, monthLabel, generatedAt: new Date(),
       units: data.units, readings: data.readings, corr: data.corr,
-      runs: data.runs, maint: data.maint, checklists: data.checklists, dayStatus,
+      runs: data.runs, maint: data.maint, checklists: data.checklists, dayStatus, tUnit,
     });
     const w = window.open('', '_blank', 'width=920,height=1000');
     if (!w) { alert('Allow pop-ups for this site to export the PDF.'); return; }
@@ -187,6 +190,7 @@ export default function OpsCompliance() {
             runs={data.runs.filter(r => r.runDate === selDay)}
             maint={data.maint.filter(m => ymdInTz(m.createdAt, data.tz) === selDay)}
             checklists={data.checklists}
+            tUnit={tUnit}
           />
         )}
       </div>
@@ -196,7 +200,7 @@ export default function OpsCompliance() {
 
 // ── EHO PDF report (self-contained branded print document) ─────────────────────
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr, runs, maint, checklists, dayStatus }) {
+function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr, runs, maint, checklists, dayStatus, tUnit = 'C' }) {
   const uName = (id) => (units.find(u => u.id === id)?.name) || '—';
   const clName = (id) => (checklists.find(c => c.id === id)?.name) || 'Checklist';
   const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
@@ -216,7 +220,7 @@ function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr
   const kpi = (v, l, warn) => `<div class="kpi"><div class="kv" style="${warn ? 'color:#c0392b' : ''}">${v}</div><div class="kl">${l}</div></div>`;
 
   const tempRows = [...readings].sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt))
-    .map(r => `<tr class="${r.inRange ? '' : 'br'}"><td>${dDate(r.recordedAt)}</td><td>${dTime(r.recordedAt)}</td><td>${esc(uName(r.tempUnitId))}</td><td class="n">${esc(r.readingC)}&deg;C</td><td>${r.inRange ? 'In range' : 'BREACH'}</td><td>${esc(r.operatorName || '')}</td></tr>`).join('');
+    .map(r => `<tr class="${r.inRange ? '' : 'br'}"><td>${dDate(r.recordedAt)}</td><td>${dTime(r.recordedAt)}</td><td>${esc(uName(r.tempUnitId))}</td><td class="n">${esc(tUnit === 'C' ? r.readingC : displayTemp(r.readingC, tUnit).value)}&deg;${tUnit}</td><td>${r.inRange ? 'In range' : 'BREACH'}</td><td>${esc(r.operatorName || '')}</td></tr>`).join('');
   const corrRows = [...corr].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
     .map(c => `<tr><td>${dDate(c.createdAt)} ${dTime(c.createdAt)}</td><td>${esc((c.action || '').replace(/_/g, ' '))}</td><td>${esc(c.severity || '')}</td><td>${esc(c.operatorName || '')}</td><td>${c.maintenanceRequestId ? 'Yes' : '—'}</td></tr>`).join('');
   const runRows = [...runs].sort((a, b) => String(a.runDate).localeCompare(String(b.runDate)))
@@ -282,7 +286,7 @@ const ghostBtn = { padding: '9px 14px', borderRadius: 8, background: 'transparen
 // ── the day timeline ──────────────────────────────────────────────────────────
 // Builds one time-sorted list of event cards from temperature rounds (rolled up per
 // AM/PM round), checklist sign-offs, corrective actions and maintenance raised.
-function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
+function DayDetail({ day, units, readings, corr, runs, maint, checklists, tUnit = 'C' }) {
   const uName = (id) => units.find(u => u.id === id)?.name || '—';
   const clName = (id) => checklists.find(c => c.id === id)?.name || 'Checklist';
   const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
@@ -344,7 +348,7 @@ function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
     corr.forEach(c => {
       const reading = readings.find(r => r.id === c.sourceId);
       const unit = reading ? uName(reading.tempUnitId) : (c.sourceType === 'reading' ? 'Reading' : (c.sourceType || 'Unit'));
-      const temp = reading ? displayTemp(reading.readingC, 'C').label : '';
+      const temp = reading ? displayTemp(reading.readingC, tUnit).label : '';
       out.push({
         at: c.createdAt,
         tone: 'coral',

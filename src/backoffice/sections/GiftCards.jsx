@@ -9,6 +9,7 @@ import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
 import { currencySymbol, getActiveCurrencyCode } from '../../lib/currency';
+import { activeCountry } from '../../lib/regionPack';
 const ASSET_BUCKET = 'receipt-assets';
 
 const BLANK_BRANDING = {
@@ -437,7 +438,7 @@ function IssuePanel({ businessName, brandConfig }) {
         </div>
         <div>
           <label style={S.label}>Recipient phone (optional)</label>
-          <input type="tel" value={recipientPhone} onChange={e => setRecipientPhone(e.target.value)} placeholder="+44 7700 900000" style={S.input}/>
+          <input type="tel" value={recipientPhone} onChange={e => setRecipientPhone(e.target.value)} placeholder={activeCountry() === 'US' ? '+1 801 555 1234' : '+44 7700 900000'} style={S.input}/>
         </div>
         <div>
           <label style={S.label}>Expiry date (optional)</label>
@@ -824,7 +825,7 @@ function ImportPanel() {
           <textarea
             value={csvText}
             onChange={e => setCsvText(e.target.value)}
-            placeholder={"25.00, Jane Smith, jane@email.com, 07700900123, VIP customer, OLD-CODE-123\n50.00, Bob Jones, , , , OLD-456"}
+            placeholder={`25.00, Jane Smith, jane@email.com, ${activeCountry() === 'US' ? '8015551234' : '07700900123'}, VIP customer, OLD-CODE-123\n50.00, Bob Jones, , , , OLD-456`}
             rows={6}
             style={{ ...S.input, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 11 }}
           />

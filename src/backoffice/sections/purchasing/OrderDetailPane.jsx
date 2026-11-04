@@ -8,6 +8,7 @@ import { useStore } from '../../../store';
 import { supabase } from '../../../lib/supabase';
 import { useStockScope } from '../../StockScope';
 import { useSiteMoney } from '../stock/useSiteCurrency';
+import { stockTaxWords } from '../../../lib/stock/stockRegion';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { dayWords, moneyWords } from '../../../lib/stock/purchasingRules';
 import { orderStatusPill, approvalPill, sendBackToast, atWords, PILLS } from '../../../lib/stock/purchasingWords';
@@ -17,7 +18,8 @@ import { sendOrderEmail } from './orderActions';
 export default function OrderDetailPane({ order, onChanged, onClose = null, tz = null }) {
   const sc = useStockScope();
   // 5.12.57: the order's own site currency, not the signed in venue's.
-  const { symbol } = useSiteMoney(order?.location_id || null);
+  const { symbol, code } = useSiteMoney(order?.location_id || null);
+  const tw = stockTaxWords(code); // 5.12.57: 'before tax' at a US site
   const showToast = useStore((s) => s.showToast);
   const [lines, setLines] = useState(null);
   const [error, setError] = useState(null);
@@ -100,7 +102,7 @@ export default function OrderDetailPane({ order, onChanged, onClose = null, tz =
         </TableWrap>
       )}
       <div style={{ marginTop: 10, fontSize: 13, textAlign: 'right' }}>
-        Goods {moneyWords(order.subtotal, symbol)}{Number(order.delivery_fee) > 0 ? ` + delivery ${moneyWords(order.delivery_fee, symbol)}` : ''} = <b>{moneyWords(total, symbol)}</b> ex VAT
+        Goods {moneyWords(order.subtotal, symbol)}{Number(order.delivery_fee) > 0 ? ` + delivery ${moneyWords(order.delivery_fee, symbol)}` : ''} = <b>{moneyWords(total, symbol)}</b> {tw.exTax}
       </div>
     </Sheet>
   );

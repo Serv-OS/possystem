@@ -281,7 +281,8 @@ export function dropEmptyLines(lines) {
  * must also convert to the item's unit: receiving refuses the WHOLE order otherwise, and by
  * then the order has been sent and its lines cannot be edited. Returns { ok, reason }.
  */
-export function unlistedLineCheck({ packQty, innerQty, innerUnit, unitPrice }, { baseUnit = null, conversions = [], itemName = 'the item' } = {}) {
+// 5.12.57: exTax is the site's words ('before tax' at a US site)
+export function unlistedLineCheck({ packQty, innerQty, innerUnit, unitPrice }, { baseUnit = null, conversions = [], itemName = 'the item', exTax = 'ex VAT' } = {}) {
   const pq = Number(packQty), iq = Number(innerQty), price = Number(unitPrice);
   const unit = String(innerUnit || '').trim();
   if (!(pq > 0) || !(iq > 0)) return { ok: false, reason: 'Enter the pack: how many inner units in a pack and how much each holds (for example 6 x 2 l).' };
@@ -289,7 +290,7 @@ export function unlistedLineCheck({ packQty, innerQty, innerUnit, unitPrice }, {
   if (baseUnit && packContentInBase({ packQty: pq, innerQty: iq, innerUnit: unit }, baseUnit, conversions || []) == null) {
     return { ok: false, reason: `${unit} cannot be converted to ${itemName}'s unit (${baseUnit}). Use ${baseUnit}, or add a conversion on the item's Units tab first.` };
   }
-  if (!(price > 0)) return { ok: false, reason: 'Enter the price of one pack, ex VAT. A line at no price would book stock at no cost.' };
+  if (!(price > 0)) return { ok: false, reason: `Enter the price of one pack, ${exTax}. A line at no price would book stock at no cost.` };
   return { ok: true, reason: null };
 }
 

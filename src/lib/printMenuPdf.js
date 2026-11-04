@@ -13,7 +13,8 @@
 import { jsPDF } from 'jspdf';
 import { PAPER, DEFAULT_PRINT_CONFIG, PRINT_FONTS, priceOf } from './printMenu.js';
 // v5.11.93 (multi site stock Drop 2): '<n> kcal' per item and the 2,000 kcal line once, where the venue shows calories.
-import { kcalWords, KCAL_NOTE_EN } from '../../supabase/functions/_shared/menuStockFacts.js';
+// 5.12.57: the browser wrapper, so a US venue prints 'Cal' and the FDA calorie line.
+import { kcalWords, kcalNote } from './menuStockFacts.js';
 
 export { PAPER, DEFAULT_PRINT_CONFIG, PRINT_FONTS, priceOf };
 
@@ -221,7 +222,7 @@ export function buildMenuPdf(cfg, data) {
   // ── disclaimers + footer (full width, after the last content) ────────────────
   const notes = [];
   if (c.allergenNote.show && c.allergenNote.text) notes.push({ t: c.allergenNote.text, footer: false });
-  if (c.showCalories) notes.push({ t: KCAL_NOTE_EN, footer: false });   // v5.11.93: once, in the footer
+  if (c.showCalories) notes.push({ t: kcalNote(), footer: false });   // v5.11.93: once, in the footer
   if (c.serviceNote.show && c.serviceNote.text) notes.push({ t: c.serviceNote.text, footer: false });
   if (c.footer) notes.push({ t: c.footer, footer: true });
   if (notes.length) {

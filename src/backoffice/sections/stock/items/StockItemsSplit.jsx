@@ -21,17 +21,18 @@ import { useStore } from '../../../../store';
 import { ALLERGENS } from '../../../../data/seed';
 import { getActiveLocationSync, getLocationId } from '../../../../lib/supabase';
 import { getLocationConfig } from '../../../../lib/locationTime';
-import { money, currencySymbol, signedMoney } from '../../../../lib/currency';
+import { money, currencySymbol, signedMoney, getActiveCurrencyCode } from '../../../../lib/currency';
 import { fmtVenueDateTime } from '../../../../lib/venueDate';
 import { formatRateLabel, purchaseNet } from '../../../../lib/tax';
-import { UNITS, DIMENSIONS } from '../../../../lib/stock/units';
+import { UNITS, US_UNITS, ALL_UNITS, unitDimension } from '../../../../lib/stock/units';
+import { unitPickList, purchaseRateDec, purchaseTaxHint, stockPlaceholders, stockTaxWords, isUsSite, US_UNITS_PENDING } from '../../../../lib/stock/stockRegion';
 import {
   fetchInventoryItems, upsertInventoryItem, setInventoryItemArchived,
   fetchSuppliers, upsertSupplier,
   upsertSupplierProduct, deleteSupplierProduct,
   upsertItemConversion, deleteItemConversion,
   upsertPackagingFormat, deletePackagingFormat, setUnitDefault,
-  setInventoryOnHand, fetchItemMovements, movementLabel,
+  setInventoryOnHand, fetchItemMovements, movementLabel, fetchStockUnits,
 } from '../../../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../../../lib/stock/counts';
 import { areasReady, fetchAreas, fetchAreaHoldings, assignItemArea } from '../../../../lib/stock/areas';
@@ -54,7 +55,27 @@ const FILTERS = [
 const TABS = ['General', 'Units', 'Stock', 'Suppliers', 'Dimension & Measure'];
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
-const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
+// 5.12.57: an item counted in a US unit offers the US units and metric beside it
+const US_UNIT_OPTS = unitPickList('USD', Object.keys(ALL_UNITS)).list;
+const DIM_ORDER = ['COUNT', 'WEIGHT', 'VOLUME'];
+// 5.12.57 (US basics batch 7): a one site company's site IS the signed in venue, so its words and
+// units follow the active currency. A US venue reads 'tax' and offers the US units once the
+// database's stock_units holds them (read once); a UK venue reads and offers exactly as before.
+const venueWords = () => stockTaxWords(getActiveCurrencyCode());
+let venueUnitRead = null;
+function useVenueUnitPicks() {
+  const code = getActiveCurrencyCode();
+  const us = isUsSite(code);
+  const [codes, setCodes] = useState(null);
+  useEffect(() => {
+    if (!us) return undefined;
+    let live = true;
+    if (!venueUnitRead) venueUnitRead = Promise.resolve().then(() => fetchStockUnits()).then(r => new Set((r?.data || []).map(u => String(u.code || '').toLowerCase()))).catch(() => { venueUnitRead = null; return new Set(); });
+    venueUnitRead.then(c => { if (live) setCodes(c); });
+    return () => { live = false; };
+  }, [us]);
+  return unitPickList(code, codes);
+}
 
 const blankItem = () => ({
   name: '', kind: 'PURCHASED', baseUnit: 'each', category: '', accountingGroup: '',
@@ -68,17 +89,20 @@ function fmtUnitCost(v) {
   return currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 }
 
+// 5.12.57: the venue's units (a US venue: US volume units first, once the database has them)
 function UnitSelect({ value, onChange, style }) {
+  const picks = useVenueUnitPicks();
   return (
     <select value={value || ''} onChange={e => onChange(e.target.value)}
       style={{ background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '7px 8px', fontSize: 13, ...style }}>
       {DIM_ORDER.map(dim => (
         <optgroup key={dim} label={dim[0] + dim.slice(1).toLowerCase()}>
-          {UNIT_OPTS.filter(u => u.dimension === dim).map(u => (
+          {picks.list.filter(u => u.dimension === dim).map(u => (
             <option key={u.code} value={u.code}>{u.label} ({u.code})</option>
           ))}
         </optgroup>
       ))}
+      {picks.usPending && <option value="" disabled>{US_UNITS_PENDING}</option>}
     </select>
   );
 }
@@ -362,6 +386,11 @@ export default function StockItemsSplit({ orgCtx = null, siteId = null }) {
 // ── General tab ───────────────────────────────────────────────────────────────
 function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = null, holdings = {} }) {
   const taxRates = useStore(s => s.taxRates) || [];
+  // 5.12.57: a US venue's sales tax paid stays in the cost; its sales tax rates are never offered
+  // as purchase rates (only the one already set, so it can be cleared)
+  const tw = venueWords();
+  const ph = stockPlaceholders(getActiveCurrencyCode());
+  const purchaseRates = tw.keptInCost ? taxRates.filter(r => r.id === draft.purchaseTaxRateId) : taxRates.filter(r => r.active !== false);
   // 16 Oct 2026: with the migration run, "Storage location" is a dropdown of the venue's areas
   // (one area per item). The legacy text is kept and shown read only when it matches no area,
   // so nothing anybody typed is lost. Changing the area offers to move the old area's holding.
@@ -408,18 +437,18 @@ function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = nu
             )}
           </Field>
         ) : (
-          <Field label="Storage location"><input value={draft.storageLocation || ''} onChange={e => upd('storageLocation', e.target.value)} style={fieldStyle} placeholder="e.g. Dry store" /></Field>
+          <Field label="Storage location"><input value={draft.storageLocation || ''} onChange={e => upd('storageLocation', e.target.value)} style={fieldStyle} placeholder={`e.g. ${ph.dryStore}`} /></Field>
         )}
         <Field label="Shelf life (days)"><input type="number" min="0" value={draft.shelfLifeDays ?? ''} onChange={e => upd('shelfLifeDays', e.target.value)} style={fieldStyle} /></Field>
         <Field label="SKU / code"><input value={draft.sku || ''} onChange={e => upd('sku', e.target.value)} style={fieldStyle} /></Field>
-        <Field label="Purchase VAT (input tax)">
+        <Field label={tw.purchaseTaxLong}>
           <select value={draft.purchaseTaxRateId || ''} onChange={e => upd('purchaseTaxRateId', e.target.value || null)} style={fieldStyle}>
-            <option value="">No VAT / zero-rated</option>
-            {taxRates.filter(r => r.active !== false).map(r => <option key={r.id} value={r.id}>{formatRateLabel(r)}</option>)}
+            <option value="">{tw.noPurchaseTax}</option>
+            {purchaseRates.map(r => <option key={r.id} value={r.id}>{formatRateLabel(r)}</option>)}
           </select>
         </Field>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--t4)', margin: '-6px 0 14px' }}>The VAT you pay on this item when you buy it (e.g. 20% on alcohol). Cost &amp; GP always use the ex-VAT price; this drives VAT on POs/invoices and your input-VAT reclaim.</div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', margin: '-6px 0 14px' }}>{purchaseTaxHint(getActiveCurrencyCode(), { long: true })}</div>
 
       <Field label="Tracking">
         <div style={{ display: 'flex', gap: 18 }}>
@@ -653,7 +682,7 @@ function StockTab({ draft, locId, onChanged, showToast, areas = null, holdings =
 function DimensionTab({ draft, locId, onChanged, showToast }) {
   const [row, setRow] = useState({ fromQty: 1, fromUnit: draft.baseUnit, toQty: '', toUnit: 'g' });
   if (!draft.id) return <NeedSaveFirst />;
-  const dim = UNITS[draft.baseUnit]?.dimension;
+  const dim = unitDimension(draft.baseUnit);
 
   const add = async () => {
     if (!(Number(row.fromQty) > 0) || !(Number(row.toQty) > 0)) { showToast?.('Enter both quantities', 'error'); return; }
@@ -704,6 +733,7 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
 
 // ── Packaging tab (pack-of-packs) ─────────────────────────────────────────────
 function UnitsTab({ draft, locId, onChanged, showToast }) {
+  const glass = stockPlaceholders(getActiveCurrencyCode()).glass; // 5.12.57: '6 fl oz glass' at a US venue
   // Both useStates must sit above the `!draft.id` early return below, or the hook
   // order changes the first time an unsaved item gets an id.
   const [row, setRow] = useState({ name: '', qty: '', of: draft.baseUnit });
@@ -761,7 +791,7 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
   return (
     <div style={{ maxWidth: 680 }}>
       <p style={{ fontSize: 13, color: 'var(--t2)', marginTop: 0 }}>
-        Define the units your staff actually use — <b>Keg</b>, <b>Case</b>, <b>Bottle</b>, <b>175ml glass</b>. You then
+        Define the units your staff actually use — <b>Keg</b>, <b>Case</b>, <b>Bottle</b>, <b>{glass}</b>. You then
         <b> buy, count and sell</b> in these; the maths happens in the background in {draft.baseUnit} (which staff never see).
         A unit can be made of another (e.g. <b>Case = 6 × Bottle</b>).
       </p>
@@ -783,7 +813,7 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
 
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, padding: 14 }}>
         <span style={{ fontSize: 13, color: 'var(--t3)', paddingBottom: 8 }}>1</span>
-        <input value={row.name} onChange={e => setRow(r => ({ ...r, name: e.target.value }))} placeholder="Keg / Case / Bottle / 175ml glass" style={{ ...fieldStyle, width: 200 }} />
+        <input value={row.name} onChange={e => setRow(r => ({ ...r, name: e.target.value }))} placeholder={`Keg / Case / Bottle / ${glass}`} style={{ ...fieldStyle, width: 200 }} />
         <span style={{ fontSize: 13, color: 'var(--t3)', paddingBottom: 8 }}>=</span>
         <input type="number" min="0" step="any" value={row.qty} onChange={e => setRow(r => ({ ...r, qty: e.target.value }))} placeholder="50" style={{ ...fieldStyle, width: 80 }} />
         <select value={row.of} onChange={e => setRow(r => ({ ...r, of: e.target.value }))} style={{ ...fieldStyle, width: 150 }}>
@@ -805,10 +835,12 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   const [newSupplier, setNewSupplier] = useState('');
   const taxRates = useStore(s => s.taxRates) || [];
   const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
+  const tw = venueWords();
   if (!draft.id) return <NeedSaveFirst />;
   // Effective purchase VAT for a row: its override → the item default → none.
   const rateObjFor = (r) => ratesById[(r && r.purchaseTaxRateId) || draft.purchaseTaxRateId] || null;
-  const rateDecFor = (r) => Number(rateObjFor(r)?.rate || 0);
+  // 5.12.57: 0 at a US venue (the tax paid stays in the cost)
+  const rateDecFor = (r) => purchaseRateDec(getActiveCurrencyCode(), rateObjFor(r)?.rate || 0);
 
   const uomItem = {
     baseUnit: draft.baseUnit,
@@ -902,7 +934,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>{supName(sp.supplierId)} {sp.supplierSku ? <span style={{ color: 'var(--t3)', fontWeight: 400 }}>· {sp.supplierSku}</span> : null}</div>
               <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
-{sp.packDescription || `${sp.innerQty} ${sp.innerUnit}`} for {money(sp.packPrice)}{sp.priceIncludesTax ? ' inc VAT' : ''} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>{sp.vatRate > 0 ? <span style={{ color: 'var(--t4)' }}> ex VAT</span> : null}
+{sp.packDescription || `${sp.innerQty} ${sp.innerUnit}`} for {money(sp.packPrice)}{sp.priceIncludesTax ? ` ${tw.incTax}` : ''} → <b style={{ color: 'var(--t1)' }}>{fmtUnitCost(sp.baseUnitCost)}/{draft.baseUnit}</b>{sp.vatRate > 0 ? <span style={{ color: 'var(--t4)' }}> {tw.exTax}</span> : null}
               </div>
             </div>
             {sp.isPreferred
@@ -946,12 +978,14 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
                 This price <b>includes {formatRateLabel(rateObjFor(row))}</b> — strip it to get the net cost
               </label>
             ) : (
-              <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>No purchase VAT set for this item — set it on the <b>General</b> tab to handle inc-VAT prices.</div>
+              tw.keptInCost
+                ? <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>Enter the price you pay, tax included: the sales tax stays in the cost.</div>
+                : <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>No purchase VAT set for this item — set it on the <b>General</b> tab to handle inc-VAT prices.</div>
             )}
           </Field>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 14, color: 'var(--t1)' }}>
-              Works out at: <b>{unitBad(row) ? '—' : fmtUnitCost(preview(row))}</b> /{draft.baseUnit} <span style={{ color: 'var(--t4)', fontSize: 12 }}>ex VAT</span>
+              Works out at: <b>{unitBad(row) ? '—' : fmtUnitCost(preview(row))}</b> /{draft.baseUnit} <span style={{ color: 'var(--t4)', fontSize: 12 }}>{tw.keptInCost ? 'tax in' : 'ex VAT'}</span>
               {!unitBad(row) && rateDecFor(row) > 0 && (
                 <span style={{ color: 'var(--t3)', fontSize: 12, marginLeft: 8 }}>
                   {row.priceIncludesTax
@@ -983,7 +1017,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
 // soup wastage 5 to 0 and potato usable 85 to 100; units are picked from a list the engine
 // understands, not typed; and the toast says when the cost roll up failed instead of
 // "cost updated" over an unchanged cost.
-const sameDimUnits = (baseUnit) => { const dim = UNITS[baseUnit]?.dimension; return UNIT_OPTS.filter(u => u.dimension === dim).map(u => u.code); };
+const sameDimUnits = (baseUnit) => { const dim = unitDimension(baseUnit); return (US_UNITS[baseUnit] ? US_UNIT_OPTS : UNIT_OPTS).filter(u => u.dimension === dim).map(u => u.code); };
 function RecipeTab({ draft, items, locId, showToast, onChanged }) {
   const [recipe, setRecipe] = useState(null);   // null = loading, {} = none yet
   const [lines, setLines] = useState([]);

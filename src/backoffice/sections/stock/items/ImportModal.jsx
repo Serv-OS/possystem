@@ -27,6 +27,7 @@ import {
   importCountWords, importKey, importKindsWords, importProblems, importProgressWords, stageWithSupplier,
 } from '../../../../lib/stock/itemListRules';
 import { useStockScope } from '../../../StockScope';
+import { useUnitPicks } from '../useSiteRegion';
 import { Btn, Modal, Segmented, SiteChecklist, Field, Notice, Pill, WindowedList, ErrorLine, ui } from '../stockUi';
 
 const STAGE_ROWS = 2000;
@@ -38,6 +39,8 @@ const rowName = (d) => d?.name || d?.item || d?.supplier_product_name || d?.supp
 
 export default function ImportModal({ orgId, sites, kind = null, source = null, supplier = null, onClose }) {
   const sc = useStockScope();
+  // 5.12.57: the company's own venue decides how units and tax read (a US venue: US gallons, 'tax')
+  const unitPicks = useUnitPicks(sc.homeSite || null);
   const showToast = useStore((s) => s.showToast);
   const [from, setFrom] = useState(source === 'csv' || source === 'nory_marketman' ? source : (source ? 'nory_marketman' : 'csv'));
   const [file, setFile] = useState(null);
@@ -107,10 +110,10 @@ export default function ImportModal({ orgId, sites, kind = null, source = null, 
     const order = (mapped.order || []).filter((k) => mapped.kinds?.[k]);
     const missing = order.flatMap((k) => mapped.kinds[k].missing || []);
     if (!order.length) { fail('Nothing in this file can be imported. It needs at least a Name column.'); return; }
-    if (wanted && missing.length) { fail(missingWords(missing)); return; }
+    if (wanted && missing.length) { fail(missingWords(missing, unitPicks.code)); return; }
     setFound(importKindsWords(order));
     setUnknown(mapped.unknown || []);
-    const read = stageFile(mapped, { siteIdByName: sc.sites });
+    const read = stageFile(mapped, { siteIdByName: sc.sites, currency: unitPicks.code });
     setReadProblems(read.problems || []);
     setFileCounts(read.counts || {});
     const rows = stageWithSupplier(read.rows, supplier);
@@ -165,6 +168,7 @@ export default function ImportModal({ orgId, sites, kind = null, source = null, 
     <Modal title={title} onClose={onClose} width={820} dirty={step === 'check' && !busy} dirtyWords="The checked rows are thrown away. Nothing was imported." footer={footer}>
       {error && <div style={{ marginBottom: 10 }}><ErrorLine error={error} /></div>}
       {note && <div style={{ marginBottom: 10 }}><Notice tone="info">{note}</Notice></div>}
+      {unitPicks.usPending && <div style={{ marginBottom: 10 }}><Notice tone="info">US units need a database update. Rows in US gallons, quarts, pints, cups or fl oz will not import until then.</Notice></div>}
 
       {step === 'pick' && (
         <>

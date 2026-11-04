@@ -6,10 +6,13 @@ import { useState } from 'react';
 import { Modal, Btn, Field, ui } from '../stock/stockUi';
 import { FORECAST_REASONS } from '../../../lib/stock/purchasingWords';
 import { dayWords } from '../../../lib/stock/purchasingRules';
+import { stockPlaceholders } from '../../../lib/stock/stockRegion';
+import { useSiteCurrency } from '../stock/useSiteCurrency';
 
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 
-export default function ForecastDayModal({ day, amount = null, suggested = null, reason = null, note = '', hours = [], onSave, onClose }) {
+export default function ForecastDayModal({ day, amount = null, suggested = null, reason = null, note = '', hours = [], onSave, onClose, siteId = null }) {
+  const ph = stockPlaceholders(useSiteCurrency(siteId)); // 5.12.57: 'Big game on TV' at a US site
   const [amt, setAmt] = useState(amount != null ? String(amount) : (suggested != null ? String(suggested) : ''));
   const [why, setWhy] = useState(reason || '');
   const [text, setText] = useState(note || '');
@@ -42,7 +45,7 @@ export default function ForecastDayModal({ day, amount = null, suggested = null,
         </select>
       </Field>
       <Field label="Note">
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Football on the big screen" style={ui.input} aria-label="Note" />
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder={ph.bigEvent} style={ui.input} aria-label="Note" />
       </Field>
       <Btn kind="link" small onClick={() => setShowHours((v) => !v)}>{showHours ? 'Hide hours' : 'Edit by hour'}</Btn>
       {showHours && (

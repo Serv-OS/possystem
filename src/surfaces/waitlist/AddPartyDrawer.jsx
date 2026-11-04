@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { estimate, bandFor, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView, waitingForEstimate } from '../../lib/waitlist/waitlist';
 import { Icon } from '../../components/ServOSIcons';
+import { activeCountry } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
 
 const mono = { fontFamily: 'var(--font-mono)' };
 
@@ -114,7 +115,7 @@ export default function AddPartyDrawer({ loc, operator, onClose }) {
           value={phone}
           onChange={e => setPhone(e.target.value)}
           inputMode="tel"
-          placeholder="07… or +44…"
+          placeholder={activeCountry() === 'US' ? '(801) … or +1…' : '07… or +44…'}
           className="input"
           style={{ fontSize: 17, letterSpacing: '.04em', ...mono }}
           autoFocus

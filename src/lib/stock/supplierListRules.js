@@ -461,14 +461,15 @@ export function changeValueText(value, field) {
  * The Items tab rows as a CSV table: `{ headers, rows }` for reports/_csv.js toCsv. priceFor is
  * 'company' or a site id (then a "Price at <site>" column, empty when off there).
  */
-export function exportPriceRows(rows, { priceFor = 'company', siteName = (id) => id } = {}) {
+// 5.12.57: taxLabel is the site's word for the tax column ('Tax' at a US site)
+export function exportPriceRows(rows, { priceFor = 'company', siteName = (id) => id, taxLabel = 'VAT' } = {}) {
   const site = priceFor && priceFor !== 'company' ? priceFor : null;
   const headers = [
     { label: 'Item', key: 'item' }, { label: 'Their name', key: 'their_name' }, { label: 'SKU', key: 'sku' },
     { label: 'Pack', key: 'pack' }, { label: 'Company price', key: 'company_price' },
     ...(site ? [{ label: `Price at ${siteName(site)}`, key: 'site_price' }] : []),
     { label: 'Currency', key: 'currency' }, { label: 'Next price', key: 'next_price' }, { label: 'Next price from', key: 'next_from' },
-    { label: 'VAT', key: 'vat' }, { label: 'Sites on', key: 'sites_on' }, { label: 'Lowest price', key: 'low' }, { label: 'Highest price', key: 'high' },
+    { label: taxLabel, key: 'vat' }, { label: 'Sites on', key: 'sites_on' }, { label: 'Lowest price', key: 'low' }, { label: 'Highest price', key: 'high' },
     { label: 'Paused', key: 'paused' },
   ];
   const fix = (v) => (num(v) === null ? '' : num(v).toFixed(2));

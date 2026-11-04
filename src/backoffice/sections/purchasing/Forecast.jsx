@@ -122,7 +122,7 @@ export default function Forecast({ orgCtx = null, siteId }) {
       )}
       {hist?.borrowed && <div style={{ ...ui.sub, marginTop: 10 }}>Suggestions use {hist.borrowed.from_name}'s sales times {hist.borrowed.scale} until this site has 4 weeks of its own.</div>}
       {editor && hist && Number(hist.own_days) < 28 && <ForecastSourceCard siteId={siteId} borrowed={hist.borrowed} onSaved={() => setAgain((n) => n + 1)} />}
-      {open && <ForecastDayModal day={open.day} amount={open.row.amount ?? null} suggested={suggested[open.day]?.amount ?? null} reason={open.row.reason || null} note={open.row.reason_note || ''} hours={open.row.hours || []} onSave={saveDay} onClose={() => setOpen(null)} />}
+      {open && <ForecastDayModal day={open.day} amount={open.row.amount ?? null} suggested={suggested[open.day]?.amount ?? null} reason={open.row.reason || null} note={open.row.reason_note || ''} hours={open.row.hours || []} onSave={saveDay} onClose={() => setOpen(null)} siteId={siteId} />}
     </div>
   );
 }

@@ -10,7 +10,8 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { money } from '../../lib/currency';
 import { dietaryBadges } from '../../lib/dietary';
-import { kcalWords, KCAL_NOTE_EN } from '../../lib/menuStockFacts';   // v5.11.93 (multi site stock Drop 2)
+import { kcalWords, kcalNote } from '../../lib/menuStockFacts';   // v5.11.93 (multi site stock Drop 2)
+import { foodLawWords } from '../../lib/foodLaw';
 import { productImage } from '../../lib/productImage';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { boardSizes, boardColors, sizeRuns, sizeName, packBoard, fitFont, scaledFont, boardSpacing } from '../../lib/menuBoardSections';
@@ -102,7 +103,8 @@ export function BoardFooter({ theme = {}, live = false, pages = 1, page = 0, bas
   const c = boardColors(theme);
   return (
     <div style={{ ...(basePx > 0 ? { fontSize: `${basePx * 0.32}px` } : {}), flex: '0 0 auto', borderTop: `0.04em solid ${c.muted}33`, marginTop: '0.5em', paddingTop: '0.4em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', ...(basePx > 0 ? {} : { fontSize: '0.32em' }), color: c.muted }}>
-      <span>{theme.footerNote || 'Please ask staff about the 14 allergens.'}{theme.kcalNote === true ? ` · ${KCAL_NOTE_EN}` : ''}</span>
+      {/* 5.12.57: the default line and the calorie line follow the venue's country (FDA words at a US venue). */}
+      <span>{theme.footerNote || foodLawWords().boardFooterDefault}{theme.kcalNote === true ? ` · ${kcalNote()}` : ''}</span>
       {pages > 1 && (
         <span style={{ display: 'flex', gap: '.5em', alignItems: 'center' }} aria-label={`Page ${page + 1} of ${pages}`}>
           {Array.from({ length: pages }, (_, k) => <span key={k} style={{ width: '.6em', height: '.6em', borderRadius: '50%', background: k === page ? c.heading : `${c.muted}66`, display: 'inline-block' }} />)}

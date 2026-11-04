@@ -28,7 +28,7 @@ import { useMenuText, itemName as tItemName, itemDescription as tItemDescription
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
 // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
-import { withFacts, showCalories as venueShowsCalories, kcalWords, KCAL_NOTE_EN } from '../../lib/menuStockFacts';
+import { withFacts, showCalories as venueShowsCalories, kcalWords, kcalNote } from '../../lib/menuStockFacts';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
@@ -443,7 +443,7 @@ export default function CateringSurface({ location }) {
           </div>
         )}
         {/* v5.11.93 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
-        {showKcal && <div style={{ marginBottom: 10, fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{KCAL_NOTE_EN}</div>}
+        {showKcal && <div style={{ marginBottom: 10, fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{kcalNote(null, cur) /* 5.12.57: the venue's own currency: FDA line at a US venue */}</div>}
         {/* Allergy filter — only when the menu carries allergen tags */}
         {knownAllergens.length > 0 && (
           <div style={{ marginBottom: 16 }}>
@@ -489,7 +489,7 @@ export default function CateringSurface({ location }) {
                         {tItemDescription(item) && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{tItemDescription(item)}</div>}
                         {/* v5.11.108: the shared allergen chip row; the ones the guest asked to avoid stand out. */}
                         <AllergenChips ids={[...itemAllergenIds(item), ...unsafe]} size="card" active={unsafe} palette={allergenPaletteFromTheme(theme)} style={{ marginTop: 6 }} />
-                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}{!sold && showKcal && item.kcal != null && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{kcalWords(item.kcal)}</span>}</div>
+                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}{!sold && showKcal && item.kcal != null && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{kcalWords(item.kcal, null, cur)}</span>}</div>
                       </div>
                     </button>
                   );

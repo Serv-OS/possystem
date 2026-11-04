@@ -10,6 +10,8 @@
 // against the 5.12.57 base and checked to give that base byte for byte. Characters outside plain
 // ASCII, and every '<', are written as \u escapes, so the table never reads as a JSX tag.
 
+import { US_STOCK_EDITS } from './usStockEdits.js';
+
 export const SITE_MONEY_EDITS = Object.freeze({
   "backoffice/sections/purchasing/InvoicesSite.jsx": [
     ["import { useSiteMoney } from '../stock/useSiteCurrency';\n",
@@ -204,8 +206,30 @@ const keyOf = (file) => {
   return Object.keys(SITE_MONEY_EDITS).find((k) => f === k || f.endsWith(`/src/${k}`) || f.endsWith(`/${k}`)) || null;
 };
 
-/** The file's text with its 5.12.57 site money edits put back (unchanged for a file not listed). */
+const usKeyOf = (file) => {
+  const f = String(file instanceof URL ? file.pathname : file).replace(/\\/g, '/');
+  return Object.keys(US_STOCK_EDITS).find((k) => f === k || f.endsWith(`/src/${k}`) || f.endsWith(`/${k}`)) || null;
+};
+
+/** The file's text with its 5.12.57 batch 7 edits put back (fixtures/usStockEdits.js; unchanged for a file not listed). */
+export function undoUsStock(file, text) {
+  const key = usKeyOf(file);
+  if (!key) return text;
+  let t = String(text);
+  for (const [now, was] of US_STOCK_EDITS[key]) {
+    const n = t.split(now).length - 1;
+    if (n !== 1) throw new Error(`${key}: a 5.12.57 batch 7 edit is there ${n} times, not once: ${now.slice(0, 80)}`);
+    t = t.replace(now, () => was);
+  }
+  return t;
+}
+
+/**
+ * The file's text with its 5.12.57 site money edits put back (unchanged for a file not listed).
+ * The batch 7 edits (usStockEdits.js) go back first, so the batch 1 table finds its text.
+ */
 export function undoSiteMoney(file, text) {
+  text = undoUsStock(file, text);
   const key = keyOf(file);
   if (!key) return text;
   let t = String(text);

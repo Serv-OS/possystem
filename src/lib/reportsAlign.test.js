@@ -416,7 +416,8 @@ test('pin: the Wastage log values waste from the ledger; one Gross; the menu eng
   assert.doesNotMatch(dtr, />Gross takings |Gross \(inc VAT\)<\/th>/, 'Daily trading no longer says Gross for takings before refunds');
   assert.match(dtr, /Takings before refunds/);
   assert.match(read('../backoffice/sections/reports/MenuEngineering.jsx'), /Margin here is the average price per unit/);
-  assert.match(read('../backoffice/sections/StockReports.jsx'), /GP here is each dish's menu price excluding VAT less its plate cost at today's costs/);
+  // 5.12.57 (US basics batch 7): the tax word is the site's ({tw.tax}: VAT at a UK site, tax at a US one)
+  assert.match(read('../backoffice/sections/StockReports.jsx'), /GP here is each dish's menu price excluding \{tw\.tax\} less its plate cost at today's costs/);
 });
 
 test('pin: the SQL release puts the rules where this test holds them (20261029a)', () => {

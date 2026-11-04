@@ -11,6 +11,7 @@
 import { getAccessToken, createDelivery, parseDeliveryResp, mapUberStatus } from './uber.ts';
 import { createOrder as createHubriseOrder } from './hubrise.ts';
 import { mayBookOurCourier } from './ezcaterCatering.js';
+import { toE164 } from './regionPack.js';
 import { getStuartToken, buildStuartJob, createStuartJob, parseStuartJob, mapStuartStatus, classifyStuartError } from './stuart.ts';
 
 const ENV = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
@@ -21,13 +22,13 @@ const STUART_ID = Deno.env.get('STUART_CLIENT_ID') ?? '';
 const STUART_SECRET = Deno.env.get('STUART_CLIENT_SECRET') ?? '';
 const STUART_ENV = (Deno.env.get('STUART_ENV') ?? ENV) as 'sandbox' | 'prod';
 
-function e164(raw: string): string {
+// 5.12.57: read with the venue's country (its currency, off the quote: USD is the US) through the
+// one region reader, as src/lib/delivery/manifest.js does. The old reader was UK only, so a US
+// (801) 555-1234 went to the courier as 8015551234. No currency reads as the UK, as before.
+function e164(raw: string, currency = 'GBP'): string {
   const s = String(raw || '').replace(/[\s()-]/g, '');
   if (!s) return '';
-  if (s.startsWith('+')) return s;
-  if (s.startsWith('0')) return '+44' + s.slice(1);
-  if (s.startsWith('44')) return '+' + s;
-  return s;
+  return toE164(s, currency || 'GBP') || s;
 }
 const addrObj = (a: any) => (typeof a === 'string' ? { line1: a } : (a || {}));
 const addrStr = (a: any) => { const o = addrObj(a); return [o.line1, o.line2, o.city, o.postcode, o.country || 'GB'].filter(Boolean).join(', '); };
@@ -44,7 +45,7 @@ export function buildHubriseOrderServer(order: any, quote: any, currency = 'GBP'
     status: 'new', service_type: 'delivery', private_ref: order?.ref || null,
     customer: {
       first_name: full[0] || 'Customer', last_name: full.slice(1).join(' '),
-      phone: e164(cust.phone), address_1: a.line1 || '', address_2: a.line2 || '',
+      phone: e164(cust.phone, currency), address_1: a.line1 || '', address_2: a.line2 || '',
       city: a.city || '', postal_code: a.postcode || '', country: a.country || 'GB',
     },
     items: items.map((i: any) => ({ product_name: i.name || 'Item', sku_name: i.name || 'Item', sku_ref: i.itemId || null, price: hrMoney(i.price, currency), quantity: Number(i.qty) || 1 })),
@@ -59,13 +60,14 @@ export function buildHubriseOrderServer(order: any, quote: any, currency = 'GBP'
 export function buildManifestServer(order: any, quote: any, cfg: any) {
   const items = (order?.items || []).filter((i: any) => !i.voided);
   const cust = order?.customer || {};
+  const currency = quote?.currency || 'GBP';
   return {
     quote_id: quote?.quoteId || null,
     manifest_reference: order?.ref || null,
     manifest_total_value: items.reduce((s: number, i: any) => s + Math.round((Number(i.price) || 0) * (Number(i.qty) || 1) * 100), 0),
-    currency: quote?.currency || 'GBP',
-    pickup: { name: cfg?.pickup_contact?.name || 'Restaurant', phone: e164(cfg?.pickup_contact?.phone || ''), address: cfg?.pickup_address || null, instructions: cfg?.pickup_contact?.instructions || '' },
-    dropoff: { name: cust.name || 'Customer', phone: e164(cust.phone), address: addrObj(quote?.dropoff || cust.address), instructions: cust.notes || '' },
+    currency,
+    pickup: { name: cfg?.pickup_contact?.name || 'Restaurant', phone: e164(cfg?.pickup_contact?.phone || '', currency), address: cfg?.pickup_address || null, instructions: cfg?.pickup_contact?.instructions || '' },
+    dropoff: { name: cust.name || 'Customer', phone: e164(cust.phone, currency), address: addrObj(quote?.dropoff || cust.address), instructions: cust.notes || '' },
     items: items.map((i: any) => ({ name: i.name || 'Item', quantity: Number(i.qty) || 1 })),
   };
 }

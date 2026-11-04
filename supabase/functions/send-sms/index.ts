@@ -81,7 +81,8 @@ Deno.serve(async (req) => {
   // Validate E.164 format
   const phone = body.to.replace(/\s/g, '');
   if (!/^\+[1-9]\d{6,14}$/.test(phone)) {
-    return json({ error: 'invalid phone number — must be E.164 format (e.g. +447700900123)' }, 400);
+    // 5.12.57: no UK example in the words: a US venue reads the same refusal.
+    return json({ error: 'invalid phone number: it must be E.164, a + then the country code and the number, no spaces' }, 400);
   }
 
   // Truncate message to Twilio max (1600 chars)

@@ -8,6 +8,7 @@ import { newVenueSubscription } from '../../lib/saasNewVenue';
 import { seedVenueTaxRates, seedWords } from '../../lib/venueTaxRates';
 import { Icon } from '../../components/ServOSIcons';
 import TimezoneOptions from '../../components/TimezoneOptions';
+import { defaultTimezoneFor } from '../../lib/timezones';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -98,12 +99,13 @@ export default function CompanyAdmin() {
 
   const createLocation = async () => {
     if (!form.locName?.trim()) return setError('Location name is required');
+    if (!(form.locTz || defaultTimezoneFor(form.locCurrency))) return setError('Pick the time zone. US sites span several zones.');
     setWorking(true); setError('');
     const { data: loc, error: err } = await supabase.from('locations').insert({
       org_id: selectedOrg.id,
       name: form.locName.trim(),
       address: form.locAddress?.trim() || '',
-      timezone: form.locTz || 'Europe/London',
+      timezone: form.locTz || defaultTimezoneFor(form.locCurrency),
       currency: form.locCurrency || 'GBP',
       status: 'active',
     }).select().single();
@@ -351,8 +353,9 @@ export default function CompanyAdmin() {
           <div style={S.row}>
             <div>
               <label style={S.label}>Timezone</label>
-              <select style={S.input} value={form.locTz || 'Europe/London'} onChange={e => f('locTz', e.target.value)}>
-                <TimezoneOptions value={form.locTz || 'Europe/London'} />
+              <select style={S.input} value={form.locTz || defaultTimezoneFor(form.locCurrency)} onChange={e => f('locTz', e.target.value)}>
+                {!(form.locTz || defaultTimezoneFor(form.locCurrency)) && <option value="">Pick the time zone</option>}
+                <TimezoneOptions value={form.locTz || defaultTimezoneFor(form.locCurrency)} />
               </select>
             </div>
             <div>

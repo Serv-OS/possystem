@@ -39,6 +39,24 @@ const lower = (v) => String(v ?? '').trim().toLowerCase();
 const masterOf = (row) => row?.master_id ?? row?.masterId ?? null;
 
 /**
+ * 5.12.57 (US basics, batch 6): is tax set up at this site? Legacy rates, OR tax profiles (a US
+ * venue is set up with profiles and may hold no legacy rate at all), OR a venue default profile.
+ * Before this a venue with profiles only read as "No tax rates configured" in the Tax summary and
+ * its red "no tax recorded" lines were hidden. `taxCtx` is the engine context (the store's for
+ * the signed in site): a profile there that is not a legacy mirror ('legacy:<rateId>') counts.
+ */
+export function taxIsSetUp({ taxRates = [], taxProfiles = [], defaultProfileId = null, taxCtx = null } = {}) {
+  if ((taxRates || []).length > 0) return true;
+  if ((taxProfiles || []).some((p) => p && p.id && p.active !== false)) return true;
+  if (defaultProfileId) return true;
+  if (taxCtx && typeof taxCtx === 'object') {
+    if (taxCtx.venueDefaultProfileId || taxCtx.defaultProfileId) return true;
+    if (Object.keys(taxCtx.profilesById || {}).some((k) => !String(k).startsWith('legacy:'))) return true;
+  }
+  return false;
+}
+
+/**
  * One site's menu as the reports read it. Rows may be raw snake rows or the store's camel
  * rows (both casings are read). `taxCtx` is given for the signed in site (the store's own,
  * so its figures are the ones the till books); for another site it is built from the rows
@@ -69,7 +87,8 @@ export function buildSiteMenu({ id, items = [], categories = [], taxRates = [], 
     taxCtx: ctx,
     // false = the rates could not be read: tax comes from what each check stored
     taxLoaded: !!ctx,
-    hasRates: (taxRates || []).length > 0,
+    // 5.12.57: tax rates OR tax profiles (taxIsSetUp); the name is kept for its readers.
+    hasRates: taxIsSetUp({ taxRates, taxProfiles, defaultProfileId, taxCtx: ctx }),
   };
 }
 

@@ -26,6 +26,7 @@ import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
 import { useRefundLookback } from './_refundLookback';
 import { tradingDays } from '../../../../supabase/functions/_shared/tradingSales.js';
+import { activeTaxWords } from '../../../lib/taxWords';   // 5.12.57: the venue's own tax word
 import { toAccountingRow } from '../../../../supabase/functions/_shared/saleVat.js';
 
 const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -209,7 +210,7 @@ function DailyTrendOne({ checks, prevChecks = [], fmt, fmtN, range, sites, locat
 
       {/* Charts grid */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(420px, 1fr))', gap:14 }}>
-        <ChartCard title="Daily net sales" sub={`orange = net sales (excluding VAT, tips and service, after refunds) · faint = ${(range?.compare?.label || 'vs previous period').replace(/^vs /, '')} · dotted = 7d rolling avg`}
+        <ChartCard title="Daily net sales" sub={`orange = net sales (excluding ${activeTaxWords().tax}, tips and service, after refunds) · faint = ${(range?.compare?.label || 'vs previous period').replace(/^vs /, '')} · dotted = 7d rolling avg`}
           values={series.revenue} prev={series.prevRevenue} rolling={series.rolling}
           format={fmt} days={days}/>
         <ChartCard title="Covers per day" sub="seated guests"

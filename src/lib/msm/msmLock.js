@@ -15,6 +15,9 @@
 // It stays a SCREEN lock, not a database lock (design 8): publish is the guard. When the managed
 // lists cannot be read, nothing is locked and the site works as it does today.
 
+// 5.12.57 (US basics, batch 6): the lock note names the venue's own tax (VAT at a UK venue, as before).
+import { activeTaxText as tt } from '../taxWords.js';
+
 const has = (o, k) => !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
@@ -56,12 +59,12 @@ export const OWNED_OPTION_KEYS = Object.freeze(['name', 'price', 'itemId', 'item
 // Plain words for each owned column (shown in the lock note).
 const WORDS = {
   name: 'name', menu_name: 'name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
-  cat: 'category', cats: 'extra categories', tax_rate_id: 'VAT', tax_overrides: 'VAT by order type', allergens: 'allergens',
+  cat: 'category', cats: 'extra categories', tax_rate_id: 'VAT', tax_overrides: 'VAT by order type', allergens: 'allergens',   // taxText: lockWord
   tags: 'dietary tags', image: 'photo', assigned_modifier_groups: 'option groups', visibility: 'channels it shows on',
   sold_alone: 'sold on its own setting', type: 'type', item_code: 'item code', parent_id: 'size link', pricing: 'prices',
   min: 'rules', max: 'rules', selection_type: 'kind of choice', options: 'options',
 };
-export const lockWord = (col) => WORDS[col] || 'this setting';
+export const lockWord = (col) => tt(WORDS[col] || 'this setting', { mid: true });
 
 /** The words every lock note uses. */
 export const LOCK_WORDS = Object.freeze({

@@ -26,7 +26,8 @@
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { xeroHistory, xeroHistoryDetail, xeroGaps, xeroSyncSales } from '../../../lib/xero';
-import { money } from '../../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../../lib/currency';
+import { taxWords } from '../../../lib/taxWords';   // 5.12.57: the venue's own tax word
 import { offerForRow } from '../../../../supabase/functions/_shared/xeroReplacePlan.js';
 import { markGaps } from '../../../../supabase/functions/_shared/xeroGaps.js';
 import { S, STATUS_LABEL, STATUS_COLOUR, historyRefundNote, historyFeeNote, showsGap } from './xeroUi';
@@ -153,7 +154,7 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
             <thead>
               <tr>
                 <th style={S.th}>Day</th>{multi && <th style={S.th}>Site</th>}<th style={S.th}>Posted as</th><th style={S.th}>Status</th><th style={S.th}>In Xero</th>
-                <th style={{ ...S.th, textAlign: 'right' }}>Sales</th><th style={{ ...S.th, textAlign: 'right' }}>Refunds</th><th style={{ ...S.th, textAlign: 'right' }}>VAT</th><th style={S.th}>Warnings</th>
+                <th style={{ ...S.th, textAlign: 'right' }}>Sales</th><th style={{ ...S.th, textAlign: 'right' }}>Refunds</th><th style={{ ...S.th, textAlign: 'right' }}>{taxWords(currency || getActiveCurrencyCode()).Tax}</th><th style={S.th}>Warnings</th>
               </tr>
             </thead>
             <tbody>

@@ -29,6 +29,7 @@ import { photoInputProps, photoButtonLabel } from '../../lib/cameraCapture';
 import { recordPrep } from '../../lib/prep';
 import { managerRaisePO, managerReceivePO } from '../../lib/manager/data';
 import { money } from '../../lib/currency';
+import { taxWords } from '../../lib/taxWords';   // 5.12.57: the snapshot venue's own tax words
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
@@ -86,6 +87,7 @@ export default function ManagerKitchen({ ctx }) {
   const [sheet, setSheet] = useState(null);       // v5.11.96: 'transfers' | 'shop' | 'closedown' | 'forecast' | 'orders' | 'plan' | 'pick'
 
   const today = venueDay(snap);
+  const exTax = taxWords(snap?.currency || snap?.money?.currency).exTax;   // 'ex VAT' (UK, as before) or 'before tax'
   const unlockPin = (fail) => { if (poEntry.length >= 4) setPoPin(poEntry); else fail?.('Enter your 4 to 6 digit PIN'); };
 
   // ── Raise order ──────────────────────────────────────────────────────────────
@@ -355,7 +357,7 @@ export default function ManagerKitchen({ ctx }) {
                     <Icon name="check" size={15} style={{ color: 'var(--grn)', flexShrink: 0 }} />
                     <div style={{ fontSize: 12.5, color: 'var(--grn)', fontWeight: 700 }}>
                       {poDone[sup].words || `Order ${poDone[sup].reference} raised.`}
-                      <div style={{ fontWeight: 500, marginTop: 2 }}>{[poDone[sup].subtotal != null ? `${money(poDone[sup].subtotal)} ex VAT` : '', poDone[sup].expectedDate ? `expected ${shortDate(poDone[sup].expectedDate)}` : '', poDone[sup].waiting ? '' : 'under On order · incoming'].filter(Boolean).join(' · ')}</div>
+                      <div style={{ fontWeight: 500, marginTop: 2 }}>{[poDone[sup].subtotal != null ? `${money(poDone[sup].subtotal)} ${exTax}` : '', poDone[sup].expectedDate ? `expected ${shortDate(poDone[sup].expectedDate)}` : '', poDone[sup].waiting ? '' : 'under On order · incoming'].filter(Boolean).join(' · ')}</div>
                     </div>
                   </div>
                 ) : poFor === sup ? (
@@ -387,7 +389,7 @@ export default function ManagerKitchen({ ctx }) {
                       })}
                     </div>
                     <div style={{ marginTop: 12, fontSize: 12.5, fontWeight: 700, color: 'var(--t2)', ...mono }}>
-                      Order value {money(sheetValue)} ex VAT{expected ? ` · expected ${shortDate(expected)}` : ''}
+                      Order value {money(sheetValue)} {exTax}{expected ? ` · expected ${shortDate(expected)}` : ''}
                     </div>
                     {pinBox(setPoErr)}
                     {poErr && <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{poErr}</div>}
@@ -449,7 +451,7 @@ export default function ManagerKitchen({ ctx }) {
                       <div className="sv-glass" style={{ padding: 14, borderRadius: 14, border: '1px solid var(--acc-b, var(--bdr))', ...L.s.orderSheet }}>
                         <div style={{ fontSize: 13, fontWeight: 800 }}>Order {d.reference || ''} from {d.supplier || 'the supplier'}</div>
                         <div style={{ fontSize: 11, color: key === 'overdue' ? 'var(--red)' : 'var(--t3)', marginTop: 2, ...mono }}>
-                          {key === 'overdue' ? `Overdue since ${shortDate(d.expectedDate)}` : d.expectedDate ? `Expected ${shortDate(d.expectedDate)}` : 'No expected date set'}{d.value ? ` · ordered ${money(d.value)} ex VAT` : ''}
+                          {key === 'overdue' ? `Overdue since ${shortDate(d.expectedDate)}` : d.expectedDate ? `Expected ${shortDate(d.expectedDate)}` : 'No expected date set'}{d.value ? ` · ordered ${money(d.value)} ${exTax}` : ''}
                         </div>
 
                         {(!d.orderLines || d.orderLines.length === 0) && (

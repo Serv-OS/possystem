@@ -11,6 +11,8 @@
 import { money2, toPence, has, PUBLISHED_CHANNELS, pctText, newItemId, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 import { fieldWord, colWord, PRICE_TYPE_WORDS, CHOICE_WORDS } from './msmWords.js';
+// 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, as before).
+import { activeTaxWords } from '../taxWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const TAX_WORDS = { 'dine-in': 'eat in', takeaway: 'takeaway', delivery: 'delivery', bar: 'bar tab' };
@@ -122,11 +124,11 @@ export function summarise(changes, central, opts = {}) {
       for (const k of Object.keys(TAX_WORDS)) {
         const x = before[k], y = after[k];
         if (JSON.stringify(x ?? null) === JSON.stringify(y ?? null)) continue;
-        out.push(`${pName(ch.entity_id)}: ${TAX_WORDS[k]} VAT ${y ? `becomes ${y.name}` : "goes back to the product's own VAT"} at every site.`);
+        out.push(`${pName(ch.entity_id)}: ${TAX_WORDS[k]} ${activeTaxWords().tax} ${y ? `becomes ${y.name}` : `goes back to the product's own ${activeTaxWords().tax}`} at every site.`);
       }
     }
     if (ch.target === 'product' && ('tax_rate_name' in a || 'tax_rate_percent' in a)) {
-      out.push(`${pName(ch.entity_id)}: VAT becomes ${a.tax_rate_name ?? 'another rate'}${a.tax_rate_percent != null ? ` (${pctText(a.tax_rate_percent)})` : ''} at every site.`);
+      out.push(`${pName(ch.entity_id)}: ${activeTaxWords().Tax} becomes ${a.tax_rate_name ?? 'another rate'}${a.tax_rate_percent != null ? ` (${pctText(a.tax_rate_percent)})` : ''} at every site.`);
     }
     // Options.
     if (ch.target === 'modifier_option' && 'price' in a && ch.op !== 'create') {

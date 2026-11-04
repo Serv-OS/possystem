@@ -11,6 +11,7 @@ import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { sortTables } from '../lib/sortTables';
 import { money } from '../lib/currency';
+import { activeCountry } from '../lib/regionPack';
 import { Icon, hasIcon } from './ServOSIcons';
 
 const TYPES = [
@@ -252,7 +253,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
               {takeawayMode !== 'name' && (
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Phone (optional)</div>
-                <input style={inp} type="tel" value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder="+44 7700 000000" />
+                <input style={inp} type="tel" value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder={activeCountry() === 'US' ? '+1 801 555 1234' : '+44 7700 000000'} />
               </div>
               )}
               <div>
@@ -295,7 +296,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
               </div>
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Phone</div>
-                <input style={inp} type="tel" value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder="+44 7700 000000" />
+                <input style={inp} type="tel" value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder={activeCountry() === 'US' ? '+1 801 555 1234' : '+44 7700 000000'} />
               </div>
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Delivery address</div>

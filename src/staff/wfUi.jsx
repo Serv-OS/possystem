@@ -5,7 +5,6 @@
 // truth for cards, badges, table styles, colours and empty states.
 
 import { Icon } from '../components/ServOSIcons';
-import { ROLES } from './seed';
 import { venueMoney } from '../lib/regionPack';
 
 // v5.11.101: the venue's money (the region pack follows the venue's currency). A UK venue reads
@@ -26,7 +25,8 @@ export function Card({ children, style }) {
   return <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(22px) saturate(150%)', WebkitBackdropFilter: 'blur(22px) saturate(150%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-shadow), var(--glass-hi)', borderRadius: 16, padding: 18, ...style }}>{children}</div>;
 }
 
-export function RoleChip({ role, roles = ROLES }) {
+// 5.12.57: no sample positions as a fallback: a chip with no positions given shows the key as text.
+export function RoleChip({ role, roles = {} }) {
   const r = roles[role];
   if (!r) return <span style={{ color: 'var(--t3)' }}>{role || '—'}</span>;
   const col = groupColor(r.grp);

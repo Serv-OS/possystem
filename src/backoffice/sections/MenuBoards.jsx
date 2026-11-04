@@ -19,6 +19,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../../lib/db';
 import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
+import { foodLawWords } from '../../lib/foodLaw';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
 import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, headerBasePx, LINE_SPACING_OPTS, LINE_SPACING_DEFAULT, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
@@ -607,7 +608,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                   <ColorRow label="Accent (size lines)" val={board.theme.accent} on={v => setTheme({ accent: v })} />
                 </div>
                 <Field label="Font"><select style={S.inp} value={board.theme.font} onChange={e => setTheme({ font: e.target.value })}>{FONTS.map(f => <option key={f} value={f}>{f || 'Default (Jakarta)'}</option>)}</select></Field>
-                <Field label="Footer note"><input style={S.inp} value={board.theme.footerNote} onChange={e => setTheme({ footerNote: e.target.value })} placeholder="e.g. Please ask staff about the 14 allergens." /></Field>
+                <Field label="Footer note"><input style={S.inp} value={board.theme.footerNote} onChange={e => setTheme({ footerNote: e.target.value })} placeholder={foodLawWords().boardFooterPlaceholder} /></Field>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button style={S.btn} onClick={() => pickFile('bg', 'image/*', url => setTheme({ bgImageUrl: url }))}>{busy === 'upload-bg' ? 'Uploading…' : board.theme.bgImageUrl ? 'Replace background image' : 'Upload background image'}</button>
                   {board.theme.bgImageUrl && <button style={S.btnGhost} onClick={() => setTheme({ bgImageUrl: '' })}>Clear bg</button>}

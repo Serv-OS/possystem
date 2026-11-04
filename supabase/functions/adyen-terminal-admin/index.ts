@@ -276,6 +276,7 @@ import { rulesFromRateCard, preservedLogicFrom, annotateRules, describeRules, ru
 import { resellerRateFor, resellerRateLine } from '../_shared/resellerRate.ts';
 import { buildPaymentBreakdown, paymentCardLabel, ruleForTier, ruleRate, venueRateLine } from '../_shared/paymentBreakdown.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { buildStorePayload } from '../_shared/adyenStorePayload.js';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -4312,27 +4313,14 @@ Deno.serve(async (req) => {
         }
         if (found.errors.length) return json({ ok: false, error: found.errors.join(' ') }, 200);
       }
-      const a = (body.address || {}) as Record<string, string>;
-      const phone = String(body.phone || '').replace(/[^\d+]/g, '');
-      // The store is the record Adyen keeps for the venue (compliance,
-      // receipts, terminal settings). On TEST a placeholder address is fine;
-      // on LIVE the real address and phone are required (8 Sep 2026: the
-      // panel used to create live stores at "1 High Street, London" with a
-      // made up phone number).
-      if (storeCfg.live && (!a.line1 || !a.city || !a.postal_code || !phone)) {
-        return json({ ok: false, error: 'A live store needs the venue address (street, town, postcode) and a phone number.' }, 200);
-      }
-      const payload: Record<string, unknown> = {
-        description: String(body.description || loc.name || 'ServOS venue').slice(0, 100),
-        shopperStatement: String(body.shopper_statement || loc.name || 'ServOS').replace(/[^a-zA-Z0-9 .,'-]/g, '').slice(0, 22) || 'ServOS',
-        phoneNumber: phone || '+441234567890',
-        address: {
-          country: String(a.country || venueCountry),
-          line1: String(a.line1 || '1 High Street'),
-          city: String(a.city || 'London'),
-          postalCode: String(a.postal_code || 'EC1A 1AA'),
-        },
-      };
+      // 5.12.57: the store body is built in _shared/adyenStorePayload.js (pure, pinned by
+      // src/lib/phonesAddressesBatch3.test.js). A US store sends address.stateOrProvince (Adyen
+      // requires it) and the phone as E.164 with +1; a US venue with no address, state, ZIP code or
+      // readable phone is refused in words, never sent a made up London address. A UK store is
+      // built exactly as before (the live refusal and the test placeholder unchanged).
+      const built = buildStorePayload({ body, locName: String(loc.name || ''), venueCountry, live: !!storeCfg.live });
+      if (!built.ok) return json({ ok: false, error: built.error }, 200);
+      const payload: Record<string, unknown> = built.payload;
       // The venue's short code as the store reference: the pull by
       // reference actions and adyen-onboard list_stores match a store to
       // its venue on it.

@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { classifyFloor } from '../../lib/manager/floor';
 import { sendNudge } from '../../lib/nudge';
 import { money } from '../../lib/currency';
+import { taxText } from '../../lib/taxWords';   // 5.12.57: the snapshot venue's own tax words
 import { Header, Hero, Stat, SectionTitle, mono } from './ui';
 import { useLayout } from './useLayout';
 
@@ -30,7 +31,7 @@ export default function ManagerReports({ ctx }) {
       {m && (
         <div style={L.s.pane}>
           <div style={{ marginTop: 12 }}>
-            <Hero label="Net sales today (ex-VAT)" value={cur(m.net)}
+            <Hero label={taxText('Net sales today (ex-VAT)', snap?.currency || m.currency)} value={cur(m.net)}
               sub={m.forecastPct != null ? `${m.forecastPct}% of ${cur(m.forecast)} forecast` : `${m.orders} orders`} />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10, ...L.s.statGrid }}>
@@ -77,7 +78,7 @@ export default function ManagerReports({ ctx }) {
         </div>
       )}
       <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 16, lineHeight: 1.5, ...mono, ...L.s.span }}>
-        Net sales are ex-VAT. This venue only — multi-site reporting lives in Back Office.
+        {taxText('Net sales are ex-VAT.', snap?.currency || m?.currency)} This venue only — multi-site reporting lives in Back Office.
       </div>
     </div>
   );

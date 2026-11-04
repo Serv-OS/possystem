@@ -4,8 +4,9 @@
 // configured threshold. Captures:
 //   • Customer first name
 //   • Customer last-name initial (A-Z dropdown)
-//   • ID type (Passport / Driving License / PASS card / Other)
-//   • ID document number
+//   • ID type (Passport / Driving License / PASS card / Other; at a US venue Driver's license /
+//     State ID / Passport / Military ID, 5.12.57)
+//   • ID document number (5.12.57: only its last 4 characters are stored, at every venue)
 //
 // Submission writes to ops.challenge_21_checks and resets the counter.
 // Cancellation is permitted but logged (cancelled=true + reason) — staff
@@ -18,15 +19,7 @@ import { resetChallenge21 } from '../lib/challenge21Counter';
 import { reportSave } from '../lib/saveHealth';
 import { useStore } from '../store';
 import { Icon } from './ServOSIcons';
-
-const ID_TYPES = [
-  { id: 'passport',         label: 'Passport' },
-  { id: 'driving_license',  label: 'Driving License' },
-  { id: 'pass_card',        label: 'PASS Card' },
-  { id: 'national_id',      label: 'National ID' },
-  { id: 'military_id',      label: 'Military ID' },
-  { id: 'other',            label: 'Other' },
-];
+import { idTypesFor, idLast4, foodLawWords } from '../lib/foodLaw';
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
@@ -42,6 +35,10 @@ export default function Challenge21Modal({ open, onClose, opsLocationId, trigger
   const [cancelReason, setCancelReason] = useState('');
 
   if (!open) return null;
+
+  // 5.12.57: the venue's own ID types and words (US: Driver's license, State ID, legal age 21).
+  const ID_TYPES = idTypesFor();
+  const words = foodLawWords();
 
   // v5.5.972: the counter lives on platform.locations, which the till no longer
   // has write access to — the reset goes via the challenge21-counter edge function.
@@ -61,7 +58,7 @@ export default function Challenge21Modal({ open, onClose, opsLocationId, trigger
   const submit = async () => {
     if (!firstName.trim()) { setError('First name is required'); return; }
     if (!lastInitial)       { setError('Last initial is required'); return; }
-    if (!idNumber.trim())   { setError('ID number is required'); return; }
+    if (!idLast4(idNumber)) { setError('ID number is required'); return; }
     if (!opsLocationId)     { setError('Cannot save — location not resolved'); return; }
     setWorking(true); setError('');
     try {
@@ -72,7 +69,8 @@ export default function Challenge21Modal({ open, onClose, opsLocationId, trigger
         customer_first_name: firstName.trim(),
         customer_last_name_initial: lastInitial,
         id_type: idType,
-        id_document_number: idNumber.trim(),
+        // 5.12.57 (every venue, the owner's call): never the whole ID number, only its last 4.
+        id_document_number: idLast4(idNumber),
         trigger_count: triggerCount || null,
         cancelled: false,
       });
@@ -139,7 +137,7 @@ export default function Challenge21Modal({ open, onClose, opsLocationId, trigger
             <div style={{ fontSize: 32, display: 'flex' }}><Icon name="idCard" size={32}/></div>
             <div>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing:'0.1em', textTransform:'uppercase' }}>
-                UK Licensing · Challenge ID
+                {words.idCheckBadge}
               </div>
               <div style={{ fontSize: 20, fontWeight: 900 }}>ID check required</div>
             </div>
@@ -180,6 +178,7 @@ export default function Challenge21Modal({ open, onClose, opsLocationId, trigger
                 <input type="text" value={idNumber} onChange={e => setIdNumber(e.target.value)}
                   placeholder="Number / reference on the ID"
                   style={{ ...inputStyle, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }}/>
+                <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 6 }}>Only the last 4 characters are kept.</div>
               </Field>
 
               {error && <div style={errorStyle}>{error}</div>}

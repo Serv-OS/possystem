@@ -25,10 +25,12 @@ import { printLabel, labelPrinter, isNoPrinter } from '../../../lib/labelPrint';
 // useByFrom is the contract's name (3.3); it is not a hook, so it is imported under a name the hooks
 // lint rule does not read as one.
 import {
-  ALLERGEN_LABELS, ALLERGEN_ORDER, LABEL_ROLE_WORDS, NO_LABEL_PRINTER, PPDS_NOT_SIGNED_OFF,
+  ALLERGEN_ORDER, LABEL_ROLE_WORDS, NO_LABEL_PRINTER, PPDS_NOT_SIGNED_OFF, allergenLabel,
   batchLabelDoc, declarationSegments, labelCols, labelLines, ppdsLabelDoc, repeatDoc, useByFrom as labelUseBy,
 } from '../../../lib/stock/batchLabel';
 import { useStockScope } from '../../StockScope';
+import { activeCountry } from '../../../lib/regionPack';
+import { foodLawWords } from '../../../lib/foodLaw';
 import { Btn, Modal, Notice, Segmented, Field, ErrorLine, ui } from '../stock/stockUi';
 
 const preview = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.45, background: 'var(--bg2)', border: '1px dashed var(--bdr2)', borderRadius: 10, padding: '12px 14px', color: 'var(--t1)', whiteSpace: 'pre', overflowX: 'auto' };
@@ -146,10 +148,13 @@ export default function BatchLabels({ siteId, mode = 'batch', batch = null, menu
     setFactsNote(row.needs_check ? `Check again: ${row.check_words || 'the recipe facts changed'}.` : 'Allergens from the recipe at this site.');
   };
 
+  // 5.12.57: a US venue prints US allergen words and calls the PPDS label a food label.
+  const country = activeCountry();
+  const words = foodLawWords(country);
   const batchArgs = useMemo(() => ({
     name: form.name, madeAt: toIso(form.madeAt), useBy: form.useBy || null, allergens: form.allergens, madeBy: form.madeBy,
-    lot: form.lot, qty: form.qty, unit: form.unit, venueTz: tz,
-  }), [form, tz]);
+    lot: form.lot, qty: form.qty, unit: form.unit, venueTz: tz, country,
+  }), [form, tz, country]);
 
   const signedOff = !!ppds.row && !!ppds.row.checked_at && !ppds.row.needs_check;
   const ppdsMadeAt = useMemo(() => new Date().toISOString(), []);
@@ -161,7 +166,8 @@ export default function BatchLabels({ siteId, mode = 'batch', batch = null, menu
     useBy: labelUseBy(ppdsMadeAt, ppds.recipe?.shelf_life_days, tz),
     venueTz: tz,
     signedOff,
-  }), [ppds, ppdsMadeAt, tz, signedOff]);
+    country,
+  }), [ppds, ppdsMadeAt, tz, signedOff, country]);
 
   const buildAt = useCallback((c) => (tab === 'batch' ? batchLabelDoc(batchArgs, { cols: c }) : ppdsLabelDoc(ppdsArgs, { cols: c })), [tab, batchArgs, ppdsArgs]);
   const shown = useMemo(() => buildAt(cols), [buildAt, cols]);
@@ -172,7 +178,7 @@ export default function BatchLabels({ siteId, mode = 'batch', batch = null, menu
     setBusy(true); setError(null);
     const name = tab === 'batch' ? form.name.trim() : ppdsArgs.name;
     const r = await printLabel((p, spec) => repeatDoc(buildAt(labelCols({ ...p, cols: spec?.cols })), copies), {
-      label: `${tab === 'ppds' ? 'PPDS label' : 'Batch label'}: ${name}`,
+      label: `${tab === 'ppds' ? words.foodLabelName : 'Batch label'}: ${name}`,
       metadata: { kind: tab, location_id: siteId, recipe_id: recipeId || null, copies: Number(copies) || 1 },
     });
     setBusy(false);
@@ -194,7 +200,7 @@ export default function BatchLabels({ siteId, mode = 'batch', batch = null, menu
         <Btn kind="primary" disabled={!canPrint || busy} onClick={print}>{busy ? 'Printing…' : 'Print'}</Btn>
       </>}>
       <div style={{ marginBottom: 12 }}>
-        <Segmented value={tab} onChange={setTab} options={[{ value: 'batch', label: 'Batch' }, { value: 'ppds', label: 'PPDS' }]} />
+        <Segmented value={tab} onChange={setTab} options={[{ value: 'batch', label: 'Batch' }, { value: 'ppds', label: words.foodLabelTab }]} />
       </div>
 
       {noPrinter && <div style={{ marginBottom: 12 }}><Notice tone="warn">{NO_LABEL_PRINTER}</Notice></div>}
@@ -225,7 +231,7 @@ export default function BatchLabels({ siteId, mode = 'batch', batch = null, menu
                     return (
                       <label key={id} style={chip(on)}>
                         <input type="checkbox" checked={on} onChange={() => toggleAllergen(id)} style={{ margin: 0 }} />
-                        {ALLERGEN_LABELS[id]}
+                        {allergenLabel(id, country)}
                       </label>
                     );
                   })}
@@ -243,7 +249,7 @@ export default function BatchLabels({ siteId, mode = 'batch', batch = null, menu
           )}
 
           {tab === 'ppds' && !recipeId && (
-            <Notice tone="info">A PPDS label belongs to one product. Open the recipe, go to Allergens and nutrition, and press Print PPDS label for this site.</Notice>
+            <Notice tone="info">{words.foodLabelOneProduct}</Notice>
           )}
           {tab === 'ppds' && recipeId && (
             <>

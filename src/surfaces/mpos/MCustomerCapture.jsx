@@ -15,6 +15,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { Sx } from './MShellStyles';
 import { Icon } from '../../components/ServOSIcons';
+import { activeCountry, activeRegionPack } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
 
 export default function MCustomerCapture({ orderType, onContinue, onSkip: skipProp, onBack: backProp }) {
   const { customer, setCustomer, searchCustomers, searchCustomersLive, autoJoinCustomerByEmail, showToast, showDelayedToast } = useStore();
@@ -148,7 +149,7 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip: skipPr
           <Field label="Phone" required={needsCustomer && !isDriveThru} error={errors.phone}>
             <input
               value={phone} onChange={(e) => { setPhone(e.target.value); setSearchActive(true); }}
-              placeholder="07700 900 123" type="tel" inputMode="tel" autoComplete="tel"
+              placeholder={activeCountry() === 'US' ? activeRegionPack().phoneFormat : '07700 900 123'} type="tel" inputMode="tel" autoComplete="tel"
               style={inputStyle}/>
           </Field>
 

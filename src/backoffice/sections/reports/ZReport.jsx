@@ -32,6 +32,7 @@ import { venueZone } from '../../../../supabase/functions/_shared/businessDay.js
 import { venueZoneLabel } from '../../../lib/payments/venueTime';
 import { computeSalesStats } from './SalesSummary';
 import { vatMissingLine } from '../../../lib/salesStats';
+import { getActiveCurrencyCode } from '../../../lib/currency';
 import { breakdownLines, rewardsVatLine } from '../../../lib/salesBreakdown';
 import { summariseShift } from '../../../lib/shiftReport';
 import { applyFilters } from './_filters';
@@ -201,7 +202,7 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         ))}
         {taxByRate.length > 0 && <div style={{ ...ROW, ...BOLD, marginTop:4 }}><span>Total tax</span><span>{fmt(stats.tax)}</span></div>}
         {/* 8 Oct 2026: a sale with no VAT recorded is counted 0 and named, never hidden. */}
-        {stats.vatMissingCount > 0 && <div style={{ ...ROW, color:'var(--red)', fontWeight:700 }}><span>{vatMissingLine(stats)}</span><span/></div>}
+        {stats.vatMissingCount > 0 && <div style={{ ...ROW, color:'var(--red)', fontWeight:700 }}><span>{vatMissingLine(stats, currency || getActiveCurrencyCode())}</span><span/></div>}
         {/* 16 Oct 2026: this block includes the VAT on free loyalty rewards, the SALES VAT does not (Peter's open question, D1). */}
         {sales.rewardsTax >= 0.005 && <div style={{ ...ROW, paddingLeft:10 }}><span>of which on loyalty rewards</span><span>{fmt(sales.rewardsTax)}</span></div>}
 
