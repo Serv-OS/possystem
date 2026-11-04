@@ -45,6 +45,9 @@ import { asksCashTips } from '../_shared/cashTips.js';
 import { pickClockTarget } from '../_shared/shiftClockTarget.js';
 import { primaryRecord } from '../_shared/primaryLocation.js';
 import { isHeadOffice, HEAD_OFFICE_CLOCK_WORDS } from '../_shared/headOffice.js';
+// 5.12.61: blocked periods for time off (no holiday requests over Christmas). The staff app reads
+// them in the snapshot and a request inside one is refused in words.
+import { blockFor, blockWords, upcomingBlocks } from '../_shared/leaveBlocks.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -701,6 +704,20 @@ Deno.serve(async (req) => {
       // and my weekly availability. Isolated: a failure here never takes the rest of the app down.
       const venue = await venueFacts(admin, staff.location_id);
       const pack = regionPack({ currency: venue.currency });
+      // 5.12.61: blocked periods at the site a request lands at (the primary location, 5.12.55),
+      // from today on, each with the words the refusal would read. Isolated: never takes the app down.
+      let blocks: any[] = [];
+      try {
+        let blockLoc = staff.location_id;
+        if (staff.person_id) {
+          const { data: lr } = await admin.from('wf_staff').select('id, location_id, primary_venue_id, created_at, status').eq('org_id', staff.org_id).eq('person_id', staff.person_id);
+          blockLoc = primaryRecord(lr ?? [])?.location_id || blockLoc;
+        }
+        const { data: vsBlock } = await admin.from('wf_venue_settings').select('settings').eq('location_id', blockLoc).maybeSingle();
+        const bv = blockLoc === staff.location_id ? venue : await venueFacts(admin, blockLoc);
+        blocks = upcomingBlocks((vsBlock as any)?.settings ?? null, bv.todayIso)
+          .map((b: any) => ({ from: b.from, to: b.to, note: b.note, words: blockWords(b, bv.country === 'US' ? 'PTO' : 'holiday', bv.currency) }));
+      } catch (e) { console.error('[staff-portal] leave blocks:', (e as Error).message); }
       let swapPart: any = { swaps: null, availability: { perDay: [] } };
       try { swapPart = await swapsSnapshot(admin, staff, venue); }
       catch (e) { console.error('[staff-portal] swaps snapshot:', (e as Error).message); }
@@ -787,6 +804,7 @@ Deno.serve(async (req) => {
         leave: {
           accruedHours: Math.round(accruedHours * 100) / 100,
           requests: (leave ?? []).map((l: any) => ({ id: l.id, type: l.type, from: l.start_date, to: l.end_date, days: l.days != null ? Number(l.days) : null, note: l.note, status: l.status, at: l.created_at })),
+          blocks,
         },
         payRate,
         region: regionForApp(venue),
@@ -881,6 +899,15 @@ Deno.serve(async (req) => {
         const { data: lr } = await admin.from('wf_staff').select('id, location_id, primary_venue_id, created_at, status')
           .eq('org_id', staff.org_id).eq('person_id', staff.person_id);
         homeRec = primaryRecord(lr ?? []) || homeRec;
+      }
+      // 5.12.61: a blocked period at the site the request lands at refuses planned leave in words.
+      {
+        const { data: vsHome } = await admin.from('wf_venue_settings').select('settings').eq('location_id', homeRec.location_id).maybeSingle();
+        const block = blockFor((vsHome as any)?.settings ?? null, from, to, type);
+        if (block) {
+          const home = await venueFacts(admin, homeRec.location_id);
+          return json({ error: blockWords(block, home.country === 'US' ? 'PTO' : 'holiday', home.currency), code: 'blocked' }, 400);
+        }
       }
       const { error } = await admin.from('wf_time_off').insert({
         location_id: homeRec.location_id, org_id: staff.org_id, staff_id: homeRec.id,

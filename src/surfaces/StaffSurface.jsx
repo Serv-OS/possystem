@@ -26,6 +26,7 @@ import { dayText, timeText } from '../staff/staffDates';
 import { wfMoneyText, DOC_INFO } from '../lib/regionPack';
 // 5.12.57: paid time off is Holiday (UK) or PTO (US), from the venue's region in the snapshot.
 import { holidayWord } from '../staff/payLaw';
+import { blockFor } from '../../supabase/functions/_shared/leaveBlocks.js';   // 5.12.61: blocked periods (the server refuses too)
 // MARKER 5.11.102 staff app chat tab
 import { ChatTab } from '../staff/StaffChat';
 import { useTeamChat } from '../staff/useTeamChat';
@@ -404,6 +405,7 @@ function ShiftsTab({ snap, onChanged }) {
   const [swapMsg, setSwapMsg] = useState('');
   const upIds = new Set(snap?.swaps?.upShiftIds || []);
   const leave = snap?.leave || { accruedHours: 0, requests: [] };
+  const blocks = leave.blocks || [];   // 5.12.61: [{ from, to, note, words }] from the snapshot
   const [requesting, setRequesting] = useState(false);
   const [form, setForm] = useState({ type: 'holiday', from: '', to: '', note: '' });
   const [busy, setBusy] = useState(false);
@@ -452,6 +454,11 @@ function ShiftsTab({ snap, onChanged }) {
         <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: requesting || leave.requests.length ? 10 : 0 }}>
           {holidayWord(snap?.region)} accrued so far: <b className="mono" style={{ color: 'var(--t1)' }}>{hm(leave.accruedHours)}</b>
         </div>
+        {requesting && blocks.length > 0 && (
+          <div style={{ fontSize: 12, color: 'var(--amber)', fontWeight: 700, lineHeight: 1.5, marginBottom: 10 }}>
+            {blocks.map((b, i) => <div key={i}>{b.words}</div>)}
+          </div>
+        )}
         {requesting && (
           <div>
             <label style={{ display: 'block', marginBottom: 12 }}>
@@ -467,6 +474,9 @@ function ShiftsTab({ snap, onChanged }) {
             <Primary disabled={busy || !form.from} onClick={async () => {
               setBusy(true); setErr('');
               try {
+                // 5.12.61: a blocked period is refused here in the same words the server uses.
+                const blocked = blockFor({ leaveBlocks: blocks }, form.from, form.to || form.from, form.type);
+                if (blocked) throw new Error(blocks.find(b => b.from === blocked.from && b.to === blocked.to)?.words || 'No requests in this period. Talk to your manager.');
                 await withJwt({ action: 'timeoff_request', type: form.type, from: form.from, to: form.to || form.from, note: form.note });
                 setRequesting(false); setForm({ type: 'holiday', from: '', to: '', note: '' });
                 await onChanged();

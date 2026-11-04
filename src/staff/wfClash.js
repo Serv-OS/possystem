@@ -8,6 +8,11 @@
 //       (wf_time_off) or is marked unavailable that weekday (wf_availability).
 //       These never block: the UI shows "⚠ …" and lets the manager place the
 //       shift anyway.
+//
+// 5.12.61: availability rows are versioned (week_start null = base pattern, dated = a change from
+// that week), so the row in effect on the date is picked by availabilityWhen.js, shared with the
+// staff portal.
+import { availabilityInEffect, availabilityRowsOf } from '../../supabase/functions/_shared/availabilityWhen.js';
 
 // ── time helpers ────────────────────────────────────────────────────────────
 export const toMins = hhmm => { const [h, m] = String(hhmm || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
@@ -41,7 +46,8 @@ export function approvedLeaveOn(timeOff, staffId, dateIso) {
 
 /** Availability state for that weekday: 'available' | 'unavailable' | 'preferred'. */
 export function availabilityOn(availability, staffId, dateIso) {
-  const row = (availability || []).find(a => a.staffId === staffId);
+  // 5.12.61: the row in effect on that date (a change filed for the next rota period starts then).
+  const row = availabilityInEffect(availabilityRowsOf(availability, staffId), dateIso);
   const p = row?.perDay?.find(x => x.day === dayIdx(dateIso));
   return p?.state || 'available';
 }

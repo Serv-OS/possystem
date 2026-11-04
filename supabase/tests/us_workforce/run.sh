@@ -13,6 +13,12 @@
 #            timesheets (UK GBP 5,000), 15 of 30 days for a mid month start, nothing with the switch off or
 #            before 20261119a; the till and the staff app refuse clock in in words; a cover shift at a
 #            normal linked record lands there; an open shift claim is refused.
+#   leaveblock (5.12.61): blocked periods (UK and US): a holiday or PTO request inside a block is refused in
+#            words ("No PTO requests from Dec 20, 2026 to Jan 3, 2027 (Christmas)"), sick goes through, a
+#            request outside the block goes through, the snapshot lists the upcoming blocks (past left out).
+#   availability (5.12.61): a staff app availability change is filed for the next rota period (the Monday
+#            after this week, or after the last published week), the base pattern is untouched, the snapshot
+#            shows today's pattern and the pending one, a second change updates the same pending row (UK and US).
 #   zsh supabase/tests/us_workforce/run.sh
 # Bundles workforce-clock and workforce-compute with rolldown, points supabase-js at mockdb.mjs, then:
 #   clock:   US asks and keeps cash tips; setting off, UK venue, older app keep nothing; a bad amount is
@@ -80,4 +86,15 @@ want ho-till-off "$(h tillOff)" '{"sc":"tillOff","headOffice":false,"posLoginClo
 want ho-app      "$(h appHo)"   '{"sc":"appHo","headOffice":true,"statusSite":null,"refused":true,"reason":"Head office staff do not clock in. Your salary is paid each pay period.","landed":null,"sheets":""}'
 want ho-cover    "$(h appCover)" '{"sc":"appCover","headOffice":false,"statusSite":"Daybreak","refused":false,"reason":null,"landed":"Daybreak","sheets":"rd:open"}'
 want ho-claim    "$(h appClaim)" '{"sc":"appClaim","error":"Head office staff do not take shifts. Your salary is paid each pay period.","code":"head_office"}'
-echo "us_workforce: 38 checks pass"
+lb() { node "$HERE/leaveblock.mjs" "$1" 2>/dev/null | tail -1; }
+want lb-us       "$(lb us)"       '{"sc":"us","status":400,"error":"No PTO requests from Dec 20, 2026 to Jan 3, 2027 (Christmas). Talk to your manager.","code":"blocked","filed":0}'
+want lb-uk       "$(lb uk)"       '{"sc":"uk","status":400,"error":"No holiday requests from 20 Dec 2026 to 3 Jan 2027 (Christmas). Talk to your manager.","code":"blocked","filed":0}'
+want lb-sick     "$(lb sick)"     '{"sc":"sick","status":200,"error":null,"code":null,"filed":1}'
+want lb-outside  "$(lb outside)"  '{"sc":"outside","status":200,"error":null,"code":null,"filed":1}'
+want lb-snapshot "$(lb snapshot)" '{"sc":"snapshot","status":200,"blocks":["2026-12-20..2027-01-03|No PTO requests from Dec 20, 2026 to Jan 3, 2027 (Christmas). Talk to your manager.","2027-07-04..2027-07-04|No PTO requests on Jul 4, 2027. Talk to your manager."]}'
+av() { node "$HERE/availability.mjs" "$1" 2>/dev/null | tail -1; }
+want av-next      "$(av next)"      '{"sc":"next","status":200,"changesFromOk":true,"words":"ok","rows":"NEXT:3=unavailable,base:1=unavailable","nowPattern":"1=unavailable","pending":"NEXT:3=unavailable"}'
+want av-published "$(av published)" '{"sc":"published","status":200,"changesFromOk":true,"words":"ok","rows":"NEXT:3=unavailable,base:1=unavailable","nowPattern":"1=unavailable","pending":"NEXT:3=unavailable"}'
+want av-again     "$(av again)"     '{"sc":"again","status":200,"changesFromOk":true,"words":"ok","rows":"NEXT:3=preferred,base:1=unavailable","nowPattern":"1=unavailable","pending":"NEXT:3=preferred"}'
+want av-uk        "$(av uk)"        '{"sc":"uk","status":200,"changesFromOk":true,"words":"ok","rows":"NEXT:3=unavailable,base:1=unavailable","nowPattern":"1=unavailable","pending":"NEXT:3=unavailable"}'
+echo "us_workforce: 47 checks pass"

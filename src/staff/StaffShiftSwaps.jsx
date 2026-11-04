@@ -154,18 +154,24 @@ export function SwapsSection({ swaps, locale, call, onChanged }) {
 
 /** My weekly availability (Monday to Sunday). */
 export function AvailabilityCard({ availability, call, onChanged }) {
-  const fromSnap = () => DAYS.map((_, i) => (availability?.perDay || []).find(d => Number(d.day) === i)?.state || 'available');
+  // 5.12.61: the editor opens on the change already filed for the next rota period, if any, else today's pattern.
+  const fromSnap = () => DAYS.map((_, i) => ((availability?.pending?.perDay || availability?.perDay) || []).find(d => Number(d.day) === i)?.state || 'available');
   const [editing, setEditing] = useState(false);
   const [days, setDays] = useState(fromSnap);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [saved, setSaved] = useState('');
   const current = fromSnap();
+  // 5.12.61: a change applies from the next rota period (availability.changesFrom, words from the
+  // server); a change already filed for then shows as "From ...".
+  const pending = availability?.pending || null;
+  const pendingDays = DAYS.map((_, i) => (pending?.perDay || []).find(d => Number(d.day) === i)?.state || 'available');
+  const fromWords = (ymd) => dayText(ymd, { weekday: true });
   const save = async () => {
     setBusy(true); setErr(''); setSaved('');
     try {
-      await call({ action: 'availability_set', per_day: days.map((state, day) => ({ day, state })) });
-      setEditing(false); setSaved('Saved. Your manager sees it on the rota.');
+      const r = await call({ action: 'availability_set', per_day: days.map((state, day) => ({ day, state })) });
+      setEditing(false); setSaved(r?.changesFrom ? `Saved. Applies from ${fromWords(r.changesFrom)}. Your manager sees it on the rota.` : 'Saved. Your manager sees it on the rota.');
       await onChanged();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
@@ -179,9 +185,16 @@ export function AvailabilityCard({ availability, call, onChanged }) {
       {!editing ? (
         <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.7 }}>
           {current.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (current[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: current[i] === 'unavailable' ? 'var(--red)' : 'var(--grn)' }}>{current[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
+          {pending && (
+            <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--bdr)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)' }}>From {fromWords(pending.from)}</div>
+              {pendingDays.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (pendingDays[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: pendingDays[i] === 'unavailable' ? 'var(--red)' : 'var(--grn)' }}>{pendingDays[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
+            </div>
+          )}
         </div>
       ) : (
         <div>
+          {availability?.words && <div style={{ fontSize: 11.5, color: 'var(--amber)', fontWeight: 700, lineHeight: 1.5, marginBottom: 6 }}>{availability.words}</div>}
           {DAYS.map((d, i) => (
             <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderTop: i ? '1px solid var(--bdr)' : 'none' }}>
               <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{d}</span>
