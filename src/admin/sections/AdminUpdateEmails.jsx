@@ -15,14 +15,22 @@
 // staff with the second sign in step done), picks the people again, renders the email again with
 // the same renderer this preview uses (lib/updateEmailRules.js) and writes one row per person
 // (20261008b_OPS_update_emails.sql). Nothing here sends anything by itself.
+//
+// REMOVED AND UNSUBSCRIBED (Peter, 5 Nov 2026: "be able to remove a user or delete a user and
+// add unsubscribe button to emails so they dont receive them again"): Remove next to a person
+// takes them out of every send from now on; every email carries their own unsubscribe link that
+// does the same by itself; both show in the Removed from emails card, with Put back. The list
+// lives in update_email_blocks (20261123a), read and written only by the function.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { callUpdateEmails, newBroadcastId } from '../../lib/updateEmails';
 import {
-  SUBJECT_MAX, BODY_MAX, MAX_RECIPIENTS_PER_SEND, ROLE_LABEL, NEEDS_UPDATE_LINE, NO_PROVIDER_LINE,
-  cleanDraft, textHash, buildEmail, sendQuestion, sendResultLine, peopleWord, rollupSends, countsLine, formatWhen,
+  SUBJECT_MAX, BODY_MAX, MAX_RECIPIENTS_PER_SEND, ROLE_LABEL, NEEDS_UPDATE_LINE, NO_PROVIDER_LINE, BLOCKS_NEEDS_UPDATE_LINE,
+  cleanDraft, textHash, buildEmail, sendQuestion, sendResultLine, peopleWord, rollupSends, countsLine, formatWhen, blocksList, blockedWord,
 } from '../../lib/updateEmailRules';
 
 const WHO_DEBOUNCE_MS = 300;
+// A stand in for the preview only (the frame is sandboxed, nothing in it can be followed).
+const PREVIEW_UNSUBSCRIBE_URL = 'https://app.serv-os.app/unsubscribe-preview';
 const PLACEHOLDER_BODY = `# What's new this week
 
 A short line about the update.
@@ -81,6 +89,11 @@ export default function AdminUpdateEmails() {
   const [providerOk, setProviderOk] = useState(true);
   const [from, setFrom] = useState('');
   const [open, setOpen] = useState(null);
+  // Removed and unsubscribed
+  const [blockRows, setBlockRows] = useState([]);
+  const [blockCompanies, setBlockCompanies] = useState([]);
+  const [blocksReady, setBlocksReady] = useState(true);
+  const [blocksLoaded, setBlocksLoaded] = useState(false);
   // Screen
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
@@ -115,6 +128,21 @@ export default function AdminUpdateEmails() {
     }
   }, []);
 
+  const loadBlocks = useCallback(async () => {
+    try {
+      const res = await callUpdateEmails('blocks');
+      setBlockRows(res.rows || []);
+      setBlockCompanies(res.companies || []);
+      setBlocksReady(res.ready !== false);
+    } catch (e) {
+      if (e.notReady) setNotReady(true);
+      else if (e.code === 'blocks_not_ready') setBlocksReady(false);
+      else setErr(e.message);
+    } finally {
+      setBlocksLoaded(true);
+    }
+  }, []);
+
   const loadWho = useCallback(async (ids, owners, staff, key) => {
     try {
       const res = await callUpdateEmails('recipients', { company_ids: ids, owners_only: owners, include_staff: staff });
@@ -134,9 +162,9 @@ export default function AdminUpdateEmails() {
   }, []);
 
   useEffect(() => {
-    const first = setTimeout(() => loadHistory(), 0);
+    const first = setTimeout(() => { loadHistory(); loadBlocks(); }, 0);
     return () => clearTimeout(first);
-  }, [loadHistory]);
+  }, [loadHistory, loadBlocks]);
 
   // The list of people follows the choices, a moment after the last tick.
   const tickedKey = [...ticked].sort().join(',');
@@ -149,10 +177,47 @@ export default function AdminUpdateEmails() {
   }, [loadWho, whoKey, allCompanies, tickedKey, ownersOnly, includeStaff]);
 
   const sends = useMemo(() => rollupSends(rows, historyCompanies), [rows, historyCompanies]);
+  const blocks = useMemo(() => blocksList(blockRows, blockCompanies), [blockRows, blockCompanies]);
+
+  // Remove a person: out of the list now and out of every send from now on. The list reloads
+  // from the server, so what is shown is what the server will send to.
+  const removePerson = async (r) => {
+    setErr(''); setNote('');
+    if (!window.confirm(`Remove ${r.name || r.email} from these emails? They will not get any update email again until you put them back.`)) return;
+    setBusy(`remove:${r.email}`);
+    try {
+      await callUpdateEmails('block', { email: r.email, user_id: r.userId, name: r.name, org_id: r.orgId });
+      setNote(`${r.name || r.email} removed. They will not get update emails again.`);
+      await Promise.all([loadBlocks(), loadWho(companyIds, ownersOnly, includeStaff, whoKey)]);
+    } catch (e) {
+      if (e.notReady) setNotReady(true);
+      else if (e.code === 'blocks_not_ready') setBlocksReady(false);
+      setErr(e.message);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const putBack = async (b) => {
+    setErr(''); setNote('');
+    setBusy(`putback:${b.email}`);
+    try {
+      await callUpdateEmails('unblock', { email: b.email });
+      setNote(`${b.name || b.email} put back. They get update emails again.`);
+      await Promise.all([loadBlocks(), loadWho(companyIds, ownersOnly, includeStaff, whoKey)]);
+    } catch (e) {
+      if (e.notReady) setNotReady(true);
+      setErr(e.message);
+    } finally {
+      setBusy('');
+    }
+  };
   const preview = useMemo(() => buildEmail({
     subject: draft.ok ? draft.subject : (subject.trim() || 'Subject'),
     bodyMd: body.trim() ? body : '*Your email shows here as you type.*',
     companyName: recipients[0]?.company || 'the company',
+    // The preview shows the unsubscribe line; in the real email the link is each person's own.
+    unsubscribeUrl: PREVIEW_UNSUBSCRIBE_URL,
   }), [draft, subject, body, recipients]);
 
   const toggleCompany = (id, on) => setTicked((prev) => {
@@ -231,6 +296,7 @@ export default function AdminUpdateEmails() {
       <div style={S.sub}>
         Email your what's new to the people with a Back Office login at the companies you pick: every owner and
         manager, one email each, from {from || 'ServOS'}. Send yourself a test first. Send opens after the test.
+        Every email has an Unsubscribe link; Remove next to a person does the same from here.
       </div>
 
       {notReady && <div style={S.error} role="alert">{NEEDS_UPDATE_LINE}</div>}
@@ -311,6 +377,7 @@ export default function AdminUpdateEmails() {
                 {left.noEmail > 0 ? `${left.noEmail === 1 ? '1 login has' : `${left.noEmail} logins have`} no email. ` : ''}
                 {left.noAccess > 0 ? `${left.noAccess === 1 ? '1 login has' : `${left.noAccess} logins have`} Back Office switched off. ` : ''}
                 {left.duplicate > 0 ? `${left.duplicate === 1 ? '1 address appears' : `${left.duplicate} addresses appear`} twice and gets one email. ` : ''}
+                {left.blocked > 0 ? `${blockedWord(left.blocked)} ` : ''}
               </div>
             )}
           </div>
@@ -324,7 +391,12 @@ export default function AdminUpdateEmails() {
                 <span style={{ minWidth: 150, fontWeight: 700, color: 'var(--t1)' }}>{r.name || 'No name'}</span>
                 <span style={{ color: 'var(--t2)', overflowWrap: 'anywhere' }}>{r.email}</span>
                 <span style={S.pill(r.role === 'owner' ? 'acc' : 'plain')}>{ROLE_LABEL[r.role] || r.role}</span>
-                <span style={{ color: 'var(--t3)', fontSize: 13 }}>{r.company}</span>
+                <span style={{ color: 'var(--t3)', fontSize: 13, flex: 1 }}>{r.company}</span>
+                <button type="button" style={{ ...S.btn, ...S.ghost, padding: '4px 10px', fontSize: 13 }} disabled={!!busy || !blocksReady}
+                  title={blocksReady ? 'Take this person out of every update email from now on' : BLOCKS_NEEDS_UPDATE_LINE}
+                  onClick={() => removePerson(r)}>
+                  {busy === `remove:${r.email}` ? 'Removing…' : 'Remove'}
+                </button>
               </div>
             ))}
           </div>
@@ -342,6 +414,32 @@ export default function AdminUpdateEmails() {
           {tested && !busy && <span style={S.pill('acc')}>Tested</span>}
           {whyNotSend && !busy && <span style={{ fontSize: 14, color: 'var(--t3)' }}>{whyNotSend}</span>}
         </div>
+      </div>
+
+      {/* ── Removed and unsubscribed ── */}
+      <div style={S.card} data-testid="admin-update-email-blocks">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+          <div style={{ ...S.h2, marginBottom: 0, flex: 1 }}>Removed from emails <span style={{ fontWeight: 500, color: 'var(--t3)', fontSize: 14 }}>{blocks.length ? peopleWord(blocks.length) : ''}</span></div>
+          <button type="button" style={{ ...S.btn, ...S.ghost }} onClick={() => loadBlocks()}>Refresh</button>
+        </div>
+        <div style={{ ...S.hint, marginTop: 0, marginBottom: 12 }}>
+          People you removed with the Remove button, and people who pressed Unsubscribe in an email. They get no update
+          email until you put them back. Their Back Office login is not affected.
+        </div>
+        {!blocksReady && <div style={S.error} role="alert">{BLOCKS_NEEDS_UPDATE_LINE}</div>}
+        {blocksLoaded && blocksReady && blocks.length === 0 && <div style={{ fontSize: 14, color: 'var(--t3)' }}>Nobody is removed.</div>}
+        {blocks.map((b) => (
+          <div key={b.email} style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', padding: '7px 0', borderTop: '1px dashed var(--bdr)', fontSize: 14 }}>
+            <span style={{ minWidth: 150, fontWeight: 700, color: 'var(--t1)' }}>{b.name || 'No name'}</span>
+            <span style={{ color: 'var(--t2)', overflowWrap: 'anywhere' }}>{b.email}</span>
+            {b.company && <span style={{ color: 'var(--t3)', fontSize: 13 }}>{b.company}</span>}
+            <span style={S.pill(b.reason === 'unsubscribed' ? 'red' : 'plain')}>{b.words}</span>
+            <span style={{ color: 'var(--t3)', fontSize: 13, flex: 1 }}>{formatWhen(b.at, tz)}</span>
+            <button type="button" style={{ ...S.btn, ...S.ghost, padding: '4px 10px', fontSize: 13 }} disabled={!!busy} onClick={() => putBack(b)}>
+              {busy === `putback:${b.email}` ? 'Putting back…' : 'Put back'}
+            </button>
+          </div>
+        ))}
       </div>
 
       {/* ── Sent ── */}

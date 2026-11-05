@@ -8,6 +8,9 @@
 //   send       { subject, body_md, company_ids?, owners_only?, include_staff?, expect_count, broadcast_id }
 //                                                                -> { broadcast_id, sent, failed, skipped }
 //   history    {}                                                -> { rows, companies }
+//   blocks     {}                                                -> { rows, companies, ready }   (5 Nov 2026)
+//   block      { email, user_id?, name?, org_id? }               -> { ok, email }   remove a person from every send
+//   unblock    { email }                                         -> { ok, email }   put them back
 //
 // Same shape as callVenueMessages in admin/sections/AdminVenueMessages.jsx.
 import { supabase } from './supabase';

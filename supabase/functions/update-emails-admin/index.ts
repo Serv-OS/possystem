@@ -33,6 +33,17 @@
 //              409 test_first     no test of this exact text has gone to the caller yet
 //              409 no_provider    email sending is not set up on the server
 //   history    {}                -> { rows, companies, ready, from, provider_ready }
+//   blocks     {}                -> { rows, ready }      removed and unsubscribed addresses
+//   block      { email, user_id?, name?, org_id? }       remove a person from every send from now on
+//                -> { ok, email }
+//   unblock    { email }         -> { ok, email }         put them back
+//
+// THE UNSUBSCRIBE LINK (5 Nov 2026) is the one door that is not ServOS staff: GET or POST
+// ?unsubscribe=<token> with no sign in, handled BEFORE the staff gate. The token is one
+// address's own HMAC signature (updateEmailRules.js: unsubscribeToken / readUnsubscribeToken),
+// so a link can only ever block the address it was sent to. It writes one row to
+// update_email_blocks (20261123a) and answers a small HTML page. POST is for the one click
+// Unsubscribe button in Gmail and Outlook (List-Unsubscribe-Post, RFC 8058).
 //
 // Deploy: npx supabase functions deploy update-emails-admin --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
@@ -43,6 +54,7 @@ import {
   cleanDraft, pickRecipients, countByCompany, buildEmail, servosSender, providerRequest, providerMessageId, providerReady,
   deliverAll, stillToSend, sortPriorRows, splitOwned, sameText, sameRecipientSet, idempotencyKey, retryDelayMs,
   isUuid, isEmail, oneLine, NAME_MAX, MAX_RECIPIENTS_PER_SEND, NO_PROVIDER_LINE, SEND_GAP_MS, PROVIDER_TIMEOUT_MS, STALE_QUEUED_MS,
+  unsubscribeToken, readUnsubscribeToken, unsubscribeUrl, unsubscribePage, UNSUBSCRIBE_PARAM, BLOCKS_NEEDS_UPDATE_LINE,
 } from '../_shared/updateEmailRules.js';
 
 const cors = {
@@ -63,8 +75,16 @@ const POSTMARK_KEY = Deno.env.get('POSTMARK_API_TOKEN') ?? '';
 // ServOS writing to its clients: the ServOS address, never a venue's branded domain.
 const SENDER = servosSender(Deno.env.get('RECEIPT_EMAIL_FROM') || '');
 const PROVIDER_READY = providerReady({ provider: EMAIL_PROVIDER, resendKey: RESEND_KEY, postmarkKey: POSTMARK_KEY });
+// The unsubscribe token's secret. Its own secret when one is set; otherwise the service key,
+// which never leaves the server either. Changing it turns every link already sent into "that
+// link did not work" (the page says to reply instead), nothing worse.
+const UNSUB_SECRET = Deno.env.get('UPDATE_EMAIL_UNSUB_SECRET') || SERVICE_ROLE;
+// The link in the email: this function's own URL. SUPABASE_URL is the project's, so the link
+// is https://<ref>.supabase.co/functions/v1/update-emails-admin?unsubscribe=<token>.
+const FUNCTION_URL = `${(Deno.env.get('SUPABASE_URL') ?? '').replace(/\/+$/, '')}/functions/v1/update-emails-admin`;
 
 const NOT_READY = 'Run the database update first (20261008b_OPS_update_emails.sql). Nothing was sent.';
+const BLOCKS_NOT_READY = BLOCKS_NEEDS_UPDATE_LINE;
 const HISTORY_DAYS = 180;
 const PAGE = 1000;       // PostgREST never returns more than 1000 rows a request, whatever the limit says
 const MAX_ROWS = 10000;
@@ -80,6 +100,16 @@ const isMissingTable = (e: any) => {
   if (code === '42P01' || code === 'PGRST205') return true;
   return /update_emails/i.test(String(e?.message ?? '')) && /(does not exist|could not find|schema cache)/i.test(String(e?.message ?? ''));
 };
+// update_email_blocks is not there yet (20261123a not run): the list is empty and the screen
+// is told, but a send still goes (to everyone, as before the update).
+const isMissingBlocks = (e: any) => {
+  const code = String(e?.code ?? '');
+  const msg = String(e?.message ?? '');
+  return /update_email_blocks/i.test(msg) && (code === '42P01' || code === 'PGRST205' || /(does not exist|could not find|schema cache)/i.test(msg));
+};
+const blocksRefusal = (e: any) => (isMissingBlocks(e)
+  ? json({ error: BLOCKS_NOT_READY, code: 'blocks_not_ready' }, 409)
+  : json({ error: 'The database refused that. Nothing was changed.', detail: String(e?.message ?? '') }, 500));
 const dbRefusal = (e: any) => (isMissingTable(e)
   ? json({ error: NOT_READY, code: 'not_ready' }, 409)
   : json({ error: 'The database refused that. Nothing was changed.', detail: String(e?.message ?? '') }, 500));
@@ -131,6 +161,21 @@ async function loadPeople(): Promise<{ profiles: Profile[]; orgs: Org[]; authEma
   return { profiles, orgs: orgList, authEmails, error: null };
 }
 
+/**
+ * Every address that never gets an update email again (removed on the screen or unsubscribed).
+ * ready false when 20261123a has not run: an empty set, and the send goes to everyone as before.
+ */
+async function loadBlocks(): Promise<{ rows: any[]; set: Set<string>; ready: boolean; error: any }> {
+  const { rows, error } = await pagedSelect('update_email_blocks', '*', (q) => q.order('blocked_at', { ascending: false }).order('email'));
+  if (error) {
+    if (isMissingBlocks(error)) return { rows: [], set: new Set(), ready: false, error: null };
+    return { rows: [], set: new Set(), ready: true, error };
+  }
+  return { rows, set: new Set(rows.map((r: any) => String(r.email ?? '').trim().toLowerCase())), ready: true, error: null };
+}
+
+const htmlPage = (html: string, status = 200) => new Response(html, { status, headers: { ...cors, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+
 /** The three choices on the screen, read once, the same way for recipients and send. */
 function readOptions(body: any): { companyIds: string[] | null; ownersOnly: boolean; includeStaff: boolean } {
   const companyIds = Array.isArray(body?.company_ids) ? body.company_ids.filter(isUuid).map(String) : null;
@@ -148,10 +193,12 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 function makeSendOne(broadcastId: string, subject: string, bodyMd: string, test: boolean) {
   return async (r: Recipient): Promise<SendOut> => {
-    const email = buildEmail({ subject, bodyMd, companyName: r.company, test });
+    // This person's own unsubscribe link, in the footer and in the List-Unsubscribe headers.
+    const unsub = unsubscribeUrl(FUNCTION_URL, await unsubscribeToken(r.email, UNSUB_SECRET));
+    const email = buildEmail({ subject, bodyMd, companyName: r.company, test, unsubscribeUrl: unsub });
     const spec = providerRequest({
       provider: EMAIL_PROVIDER, resendKey: RESEND_KEY, postmarkKey: POSTMARK_KEY, sender: SENDER, to: r.email,
-      subject: email.subject, html: email.html, text: email.text, idempotencyKey: idempotencyKey(broadcastId, r.email),
+      subject: email.subject, html: email.html, text: email.text, idempotencyKey: idempotencyKey(broadcastId, r.email), unsubscribeUrl: unsub,
     });
     if (!spec) return { ok: false, error: NO_PROVIDER_LINE };
     let lastError = '';
@@ -197,6 +244,25 @@ async function deliverAndRecord(broadcastId: string, list: Recipient[], sendOne:
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+
+  // ── The unsubscribe link: no sign in, one address, its own signature ─────────────────────
+  // The only thing this door can do is add the address the token was signed for to the blocked
+  // list. It never reads anything back and never answers with anything but the page.
+  const unsubToken = new URL(req.url).searchParams.get(UNSUBSCRIBE_PARAM);
+  if (unsubToken != null && (req.method === 'GET' || req.method === 'POST')) {
+    const email = await readUnsubscribeToken(unsubToken, UNSUB_SECRET);
+    if (!email) return htmlPage(unsubscribePage({ ok: false }), 400);
+    // ignoreDuplicates: an address already removed on the screen keeps its row and its reason.
+    const { error } = await admin.from('update_email_blocks')
+      .upsert({ email, reason: 'unsubscribed', blocked_at: new Date().toISOString() }, { onConflict: 'email', ignoreDuplicates: true });
+    if (error) {
+      if (isMissingBlocks(error)) return htmlPage(unsubscribePage({ ok: false, notReady: true }), 503);
+      console.error('[update-emails-admin] unsubscribe not written', email, error.message);
+      return htmlPage(unsubscribePage({ ok: false }), 500);
+    }
+    return htmlPage(unsubscribePage({ ok: true, email }));
+  }
+
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   // 1. A real sign in with its second step done, always (docs/SECOND_STEP.md).
@@ -224,15 +290,49 @@ Deno.serve(async (req) => {
   // ── recipients: who the current choices reach, for the list the admin checks before Send ──
   if (action === 'recipients') {
     const opts = readOptions(body);
-    const people = await loadPeople();
+    const [people, blocks] = await Promise.all([loadPeople(), loadBlocks()]);
     if (people.error) return dbRefusal(people.error);
-    const { recipients, left } = pickRecipients({ ...people, ...opts });
+    if (blocks.error) return blocksRefusal(blocks.error);
+    const { recipients, left } = pickRecipients({ ...people, ...opts, blocked: blocks.set });
     // Per company counts for the tick list, with the same owners / staff choices and every
     // company picked, so a company's number does not change as companies are ticked.
-    const everyCompany = pickRecipients({ ...people, companyIds: null, ownersOnly: opts.ownersOnly, includeStaff: opts.includeStaff });
+    const everyCompany = pickRecipients({ ...people, companyIds: null, ownersOnly: opts.ownersOnly, includeStaff: opts.includeStaff, blocked: blocks.set });
     const perCompany = countByCompany(everyCompany.recipients);
     const companies = people.orgs.map((o) => ({ id: o.id, name: o.name, status: o.status, count: perCompany.get(o.id) || 0 }));
-    return json({ ok: true, recipients, count: recipients.length, left, companies });
+    return json({ ok: true, recipients, count: recipients.length, left, companies, blocks_ready: blocks.ready });
+  }
+
+  // ── blocks: the removed and unsubscribed addresses, newest first ──────────────────────────
+  if (action === 'blocks') {
+    const [blocks, orgs] = await Promise.all([loadBlocks(), pagedSelect('organisations', 'id, name, status', (q) => q.order('name'))]);
+    if (blocks.error) return blocksRefusal(blocks.error);
+    if (orgs.error) return dbRefusal(orgs.error);
+    const companies = orgs.rows.map((o: any) => ({ id: String(o.id), name: String(o.name ?? ''), status: o.status ?? null }));
+    return json({ ok: true, rows: blocks.rows, companies, ready: blocks.ready, note: blocks.ready ? null : BLOCKS_NOT_READY });
+  }
+
+  // ── block: remove a person from every send from now on ───────────────────────────────────
+  if (action === 'block') {
+    const email = String(body?.email ?? '').trim().toLowerCase();
+    if (!isEmail(email)) return json({ error: 'Which address? Pick a person in the list.', code: 'bad_request' }, 400);
+    const row = {
+      email, reason: 'removed', blocked_at: new Date().toISOString(),
+      user_id: isUuid(body?.user_id) ? String(body.user_id) : null, org_id: isUuid(body?.org_id) ? String(body.org_id) : null,
+      name: oneLine(body?.name).slice(0, NAME_MAX) || null, blocked_by: user.id, blocked_by_name: senderName,
+    };
+    // A second Remove of the same address (or one that unsubscribed) keeps the first row.
+    const { error } = await admin.from('update_email_blocks').upsert(row, { onConflict: 'email', ignoreDuplicates: true });
+    if (error) return blocksRefusal(error);
+    return json({ ok: true, email });
+  }
+
+  // ── unblock: put them back ───────────────────────────────────────────────────────────────
+  if (action === 'unblock') {
+    const email = String(body?.email ?? '').trim().toLowerCase();
+    if (!isEmail(email)) return json({ error: 'Which address?', code: 'bad_request' }, 400);
+    const { error } = await admin.from('update_email_blocks').delete().eq('email', email);
+    if (error) return blocksRefusal(error);
+    return json({ ok: true, email });
   }
 
   // ── history: every send of the last 180 days, one row per person ─────────────────────────
@@ -281,9 +381,12 @@ Deno.serve(async (req) => {
     const broadcastId = String(body.broadcast_id);
     const opts = readOptions(body);
 
-    const people = await loadPeople();
+    // The blocked list is read again here, never trusted from the screen: an address removed or
+    // unsubscribed between the list and Send is left out, and the count check tells the screen.
+    const [people, blocks] = await Promise.all([loadPeople(), loadBlocks()]);
     if (people.error) return dbRefusal(people.error);
-    const { recipients } = pickRecipients({ ...people, ...opts }) as { recipients: Recipient[] };
+    if (blocks.error) return blocksRefusal(blocks.error);
+    const { recipients } = pickRecipients({ ...people, ...opts, blocked: blocks.set }) as { recipients: Recipient[] };
     if (!recipients.length) return json({ error: 'Nobody matches those choices. Tick a company that has Back Office logins.', code: 'no_people' }, 400);
     if (recipients.length > MAX_RECIPIENTS_PER_SEND) return json({ error: `That is more than ${MAX_RECIPIENTS_PER_SEND} people in one send. Tick fewer companies.`, code: 'too_many', count: recipients.length }, 400);
     // The screen showed a list and a count and asked "Email 7 people now?". If the server's

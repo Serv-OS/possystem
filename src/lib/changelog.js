@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.63',
+    date: '5 Nov 2026',
+    items: [
+      'Update emails, removed and unsubscribed (Peter, 5 Nov 2026: "be able to remove a user or delete a user and add unsubscribe button to emails so they dont receive them again"): on Company Admin, Email an update, every person in the list has a Remove button that takes them out of every send from now on, and a Removed from emails card lists them with Put back. Every update email now carries an Unsubscribe link under the footer, one address\'s own signed link (and the List-Unsubscribe headers Gmail and Outlook use for their Unsubscribe button); pressing it removes that address by itself and shows a small page saying so. Their Back Office login is not affected. The list and the send both leave blocked addresses out on the server. Needs 20261123a (update_email_blocks, service role only) and the update-emails-admin function deployed; until then sends go to everyone as before and the screen says so.',
+    ],
+  },
+  {
     v: '5.12.62',
     date: '4 Nov 2026',
     items: [

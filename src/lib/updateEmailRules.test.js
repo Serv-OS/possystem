@@ -15,6 +15,8 @@ import {
   deliverAll, stillToSend, rollupSends, countsLine, formatWhen, ROLE_LABEL,
   sortPriorRows, splitOwned, sameRecipientSet, idempotencyKey, parseRetryAfter, retryDelayMs,
   SEND_GAP_MS, PROVIDER_TIMEOUT_MS, STALE_QUEUED_MS, RETRY_429_MAX, RETRY_OTHER_MAX,
+  unsubscribeToken, readUnsubscribeToken, unsubscribeUrl, unsubscribePage, unsubscribeWords, blocksList, blockReasonWords, blockedWord,
+  UNSUBSCRIBE_PARAM, UNSUBSCRIBE_LABEL, UNSUBSCRIBE_WORDS, BLOCKS_NEEDS_UPDATE_LINE, BLOCK_REASONS,
 } from '../../supabase/functions/_shared/updateEmailRules.js';
 import * as app from './updateEmailRules.js';
 
@@ -213,7 +215,7 @@ test('pickRecipients: owners and managers with access and an email, staff out, o
     ['Sam Manager', 'sam@coffeeboy.co.uk', 'manager', 'Coffee Boy'],
     ['Wing Owner', 'owner@wingfest.com', 'owner', 'Wing Fest'],
   ]);
-  assert.deepEqual(left, { notLogin: 1, noAccess: 1, noEmail: 1, staff: 2, managers: 0, otherCompany: 0, duplicate: 1 });
+  assert.deepEqual(left, { notLogin: 1, noAccess: 1, noEmail: 1, staff: 2, managers: 0, otherCompany: 0, duplicate: 1, blocked: 0 });
   assert.equal(recipients[0].userId, U(1), 'the owner wins the shared address, not the manager');
   assert.equal(recipients[0].orgId, ORG_A);
 });
@@ -243,6 +245,126 @@ test('pickRecipients: owners only, chosen companies, include staff', () => {
 test('pickRecipients: a company that is gone still names its people, and an unknown row never breaks it', () => {
   const { recipients } = pickRecipients({ profiles: [profiles[0], null, {}], orgs: [] });
   assert.equal(recipients[0].company, 'Company removed');
+});
+
+// ── removed and unsubscribed (5 Nov 2026) ───────────────────────────────────
+
+test('pickRecipients: a removed or unsubscribed address is never in the list, any case, as a Set or an array, and is counted', () => {
+  const asSet = pickRecipients({ profiles, orgs, blocked: new Set(['SAM@coffeeboy.co.uk']) });
+  assert.deepEqual(asSet.recipients.map((r) => r.email), ['mo@coffeeboy.co.uk', 'owner@wingfest.com']);
+  assert.equal(asSet.left.blocked, 1);
+  const asArray = pickRecipients({ profiles, orgs, blocked: [' mo@coffeeboy.co.uk ', 'owner@wingfest.com', ''] });
+  assert.deepEqual(asArray.recipients.map((r) => r.email), ['sam@coffeeboy.co.uk']);
+  // The blocked owner's shared address: the manager row with the same address is blocked too,
+  // never let through as the "duplicate" that would have been dropped anyway.
+  assert.equal(asArray.left.blocked, 3, 'Mo Owner, Mo Again (same address) and Wing Owner');
+  assert.equal(asArray.left.duplicate, 0);
+  // The sign in email is what is compared, not the profile one.
+  const authEmails = new Map([[U(1), 'Mo.Real@CoffeeBoy.co.uk']]);
+  assert.equal(pickRecipients({ profiles: [profiles[0]], orgs, authEmails, blocked: ['mo.real@coffeeboy.co.uk'] }).recipients.length, 0);
+  assert.equal(pickRecipients({ profiles: [profiles[0]], orgs, authEmails, blocked: ['mo@coffeeboy.co.uk'] }).recipients.length, 1, 'the old profile address is not the one that reaches them');
+  // No blocked list at all reads as before.
+  assert.equal(pickRecipients({ profiles, orgs, blocked: null }).left.blocked, 0);
+});
+
+test('unsubscribeToken: one address, its own signature; a changed address, signature, secret or shape is refused', async () => {
+  const t = await unsubscribeToken('Mo@CoffeeBoy.co.uk ', 'secret-1');
+  assert.match(t, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, 'base64url, no padding, one dot');
+  assert.equal(await readUnsubscribeToken(t, 'secret-1'), 'mo@coffeeboy.co.uk', 'lower case, trimmed');
+  assert.equal(await unsubscribeToken('mo@coffeeboy.co.uk', 'secret-1'), t, 'the same address signs the same, so a link in two emails is one link');
+  assert.equal(await readUnsubscribeToken(t, 'secret-2'), null, 'another secret');
+  assert.equal(await readUnsubscribeToken(`${t.slice(0, -1)}${t.endsWith('A') ? 'B' : 'A'}`, 'secret-1'), null, 'one character of the signature changed');
+  const [addr, sig] = t.split('.');
+  const other = (await unsubscribeToken('sam@coffeeboy.co.uk', 'secret-1')).split('.')[0];
+  assert.equal(await readUnsubscribeToken(`${other}.${sig}`, 'secret-1'), null, 'another address under this signature');
+  assert.equal(await readUnsubscribeToken(addr, 'secret-1'), null, 'no signature');
+  assert.equal(await readUnsubscribeToken(`${addr}.`, 'secret-1'), null);
+  assert.equal(await readUnsubscribeToken('', 'secret-1'), null);
+  assert.equal(await readUnsubscribeToken(null, 'secret-1'), null);
+  assert.equal(await readUnsubscribeToken('%%%.%%%', 'secret-1'), null, 'not base64 at all');
+  assert.equal(await readUnsubscribeToken(t, ''), null, 'no secret on the server');
+  assert.equal(await readUnsubscribeToken('a'.repeat(1001), 'secret-1'), null, 'too long to be ours');
+  assert.equal(await unsubscribeToken('nope', 'secret-1'), null, 'not an address');
+  assert.equal(await unsubscribeToken('mo@coffeeboy.co.uk', ''), null, 'no secret');
+});
+
+test('unsubscribeUrl: the function URL with the token, never a relative or non web base', () => {
+  assert.equal(unsubscribeUrl('https://x.supabase.co/functions/v1/update-emails-admin', 'a.b'), `https://x.supabase.co/functions/v1/update-emails-admin?${UNSUBSCRIBE_PARAM}=a.b`);
+  assert.equal(unsubscribeUrl('https://x.supabase.co/functions/v1/update-emails-admin/?old=1', 'a.b'), `https://x.supabase.co/functions/v1/update-emails-admin?${UNSUBSCRIBE_PARAM}=a.b`, 'a trailing slash or old query is dropped');
+  assert.equal(unsubscribeUrl('https://x.supabase.co/f', 'a+b/c'), 'https://x.supabase.co/f?unsubscribe=a%2Bb%2Fc', 'encoded');
+  assert.equal(unsubscribeUrl('/functions/v1/update-emails-admin', 'a.b'), '');
+  assert.equal(unsubscribeUrl('https://x.supabase.co/f', ''), '');
+  assert.equal(unsubscribeUrl('https://x.supabase.co/f', null), '');
+});
+
+test('buildEmail: with a link the footer gains the unsubscribe line in HTML and text; the preview (no link) does not', () => {
+  const url = 'https://x.supabase.co/functions/v1/update-emails-admin?unsubscribe=abc.def';
+  const e = buildEmail({ subject: 'S', bodyMd: 'Hi', companyName: 'Coffee Boy', unsubscribeUrl: url });
+  assert.ok(e.html.includes(`${UNSUBSCRIBE_WORDS.replace(/'/g, '&#39;')} <a href="${url}" style=`), 'the words then the link');
+  assert.match(e.html, new RegExp(`<a href="[^"]+" style="[^"]+">${UNSUBSCRIBE_LABEL}</a>\\.`));
+  assert.ok(e.html.indexOf('You get this because') < e.html.indexOf(UNSUBSCRIBE_LABEL), 'under the footer line');
+  assert.ok(e.html.indexOf(UNSUBSCRIBE_LABEL) < e.html.indexOf('Powered by ServOS'), 'above the Powered by line');
+  assert.equal(e.text, `Hi\n\n--\nYou get this because you have a ServOS Back Office login for Coffee Boy.\n${UNSUBSCRIBE_WORDS} ${UNSUBSCRIBE_LABEL}: ${url}`);
+  // A test email carries it too (the sender sees what everyone sees).
+  const t = buildEmail({ subject: 'S', bodyMd: 'Hi', companyName: 'Coffee Boy', unsubscribeUrl: url, test: true });
+  assert.ok(t.html.includes(url));
+  // Not a web link: left out rather than put in the email.
+  for (const bad of ['javascript:alert(1)', '/relative', '', null]) {
+    const x = buildEmail({ subject: 'S', bodyMd: 'Hi', companyName: 'Coffee Boy', unsubscribeUrl: bad });
+    assert.doesNotMatch(x.html, /Unsubscribe/);
+    assert.doesNotMatch(x.text, /Unsubscribe/);
+  }
+  // The link is escaped like any attribute.
+  const amp = buildEmail({ subject: 'S', bodyMd: 'Hi', companyName: 'C', unsubscribeUrl: 'https://x.co/f?a=1&unsubscribe=t"' });
+  assert.ok(amp.html.includes('href="https://x.co/f?a=1&amp;unsubscribe=t&quot;"'));
+});
+
+test('providerRequest: the link goes into List-Unsubscribe and List-Unsubscribe-Post for Resend and Postmark; without one the shape is unchanged', () => {
+  const sender = servosSender('hello@posup.co.uk');
+  const url = 'https://x.supabase.co/functions/v1/update-emails-admin?unsubscribe=abc.def';
+  const base = { sender, to: 'mo@coffeeboy.co.uk', subject: 'S', html: '<p>h</p>', text: 't', unsubscribeUrl: url };
+  const resend = providerRequest({ ...base, provider: 'resend', resendKey: 'rk' });
+  assert.deepEqual(resend.body.headers, { 'List-Unsubscribe': `<${url}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' });
+  assert.deepEqual(resend.headers, { Authorization: 'Bearer rk', 'Content-Type': 'application/json' }, 'the request headers are not where it goes');
+  const postmark = providerRequest({ ...base, provider: 'postmark', postmarkKey: 'pk' });
+  assert.deepEqual(postmark.body.Headers, [{ Name: 'List-Unsubscribe', Value: `<${url}>` }, { Name: 'List-Unsubscribe-Post', Value: 'List-Unsubscribe=One-Click' }]);
+  assert.equal('headers' in providerRequest({ ...base, provider: 'resend', resendKey: 'rk', unsubscribeUrl: '' }).body, false);
+  assert.equal('Headers' in providerRequest({ ...base, provider: 'postmark', postmarkKey: 'pk', unsubscribeUrl: 'nope' }).body, false);
+});
+
+test('unsubscribePage and unsubscribeWords: done, a bad link, not set up; nothing typed reaches the page as HTML', () => {
+  assert.deepEqual(unsubscribeWords({ ok: true, email: 'mo@coffeeboy.co.uk' }), { title: 'You are unsubscribed', line: 'mo@coffeeboy.co.uk will not get ServOS update emails again. Your Back Office login is not affected.' });
+  assert.equal(unsubscribeWords({ ok: false }).title, 'That link did not work');
+  assert.equal(unsubscribeWords({ ok: false, notReady: true }).title, 'Not set up yet');
+  assert.match(unsubscribeWords({ ok: false }).line, /Reply to the email/);
+  const page = unsubscribePage({ ok: true, email: 'a<b@x.co' });
+  assert.match(page, /^<!DOCTYPE html>/);
+  assert.ok(page.includes('<meta name="robots" content="noindex">'));
+  assert.ok(page.includes('a&lt;b@x.co will not get'));
+  assert.ok(!page.includes('a<b@x.co'));
+  assert.ok(page.includes('<title>You are unsubscribed</title>'));
+});
+
+test('blocksList, blockReasonWords, blockedWord: newest first, company named, the reason in words', () => {
+  const rows = [
+    { email: 'sam@coffeeboy.co.uk', name: 'Sam', org_id: ORG_A, reason: 'removed', blocked_by_name: 'Peter', blocked_at: '2026-11-04T10:00:00Z' },
+    { email: 'OWNER@wingfest.com', org_id: ORG_B, reason: 'unsubscribed', blocked_at: '2026-11-05T10:00:00Z' },
+    { email: 'x@y.co', reason: 'weird', blocked_at: 'nope' },
+    { email: 'not an email' }, null,
+  ];
+  const list = blocksList(rows, orgs);
+  assert.deepEqual(list.map((b) => [b.email, b.name, b.company, b.reason, b.words]), [
+    ['owner@wingfest.com', '', 'Wing Fest', 'unsubscribed', 'Unsubscribed from an email'],
+    ['sam@coffeeboy.co.uk', 'Sam', 'Coffee Boy', 'removed', 'Removed by Peter'],
+    ['x@y.co', '', '', 'removed', 'Removed'],
+  ]);
+  assert.equal(blockReasonWords(null), '');
+  assert.deepEqual([...BLOCK_REASONS], ['removed', 'unsubscribed']);
+  assert.equal(blockedWord(0), '');
+  assert.equal(blockedWord(1), '1 removed or unsubscribed.');
+  assert.equal(blockedWord(3), '3 removed or unsubscribed.');
+  assert.match(BLOCKS_NEEDS_UPDATE_LINE, /20261123a/);
+  assert.match(BLOCKS_NEEDS_UPDATE_LINE, /Sends still go to everyone/);
 });
 
 test('isStaffEmail: exact ServOS domains only', () => {
