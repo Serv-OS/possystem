@@ -101,7 +101,7 @@ export function shortRef(ref) {
  *               ready or collected when the last screen bumps (src/lib/kds/kdsAutoStatus.js).
  *               null for a table or bar tab send, which has no order_queue row.
  */
-export function buildTicketMeta({ channel, orderType, isTable = false, customerName, orderRef, appCode, source, staff, note } = {}) {
+export function buildTicketMeta({ channel, orderType, isTable = false, customerName, orderRef, appCode, source, staff, note, newCustomer = false } = {}) {
   const ch = clean(channel);
   const table = !!isTable || ch === 'table';
   // Tables show no number (Peter, 14 Sep 2026). Bar tabs have no order number either.
@@ -117,6 +117,9 @@ export function buildTicketMeta({ channel, orderType, isTable = false, customerN
     source: clean(source),
     staff: clean(staff),
     note: cleanNote(note),
+    // 5 Nov 2026 (Peter): Yes to "New customer?" on the till's Order details pop up. The card
+    // and the docket show NEW CUSTOMER (lib/tillOrderType.js NEW_CUSTOMER_LABEL).
+    newCustomer: newCustomer === true,
   };
 }
 
@@ -438,6 +441,7 @@ export function ticketView(row, queueRow = null) {
     coversLabel: covers > 1 ? `${covers} cv` : null,
     staff: meta.staff,
     note: meta.note,
+    newCustomer: meta.newCustomer === true,
     groups: courseGroups(row?.items, row?.firedCourses),
     voids: voidState(row?.items),
   };

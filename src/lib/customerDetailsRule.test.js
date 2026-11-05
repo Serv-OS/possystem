@@ -147,7 +147,8 @@ test('POSSurface picks types, sends and shows the Add customer button through th
   const src = read('../surfaces/POSSurface.jsx');
   has(src, "from '../lib/customerDetailsRule'", 'POSSurface');
   has(src, 'promptsOnTypeChange({ orderType: t, mode: takeawayCustomerDetails })', 'POSSurface');
-  has(src, 'sendsWithoutPrompt({ orderType, mode: takeawayCustomerDetails, hasName', 'POSSurface');
+  // 5 Nov 2026: the type and the customer are read fresh from the store (the Order details pop up may have just changed them).
+  has(src, 'sendsWithoutPrompt({ orderType: typeNow, mode: takeawayCustomerDetails, hasName', 'POSSurface');
   lacks(src, "takeawayCustomerDetails === 'none' && (t === 'takeaway'", 'POSSurface');
   lacks(src, "takeawayCustomerDetails === 'none' && (orderType === 'takeaway'", 'POSSurface');
   // One customer row, rendered in the walk in header AND the table header (item 7).

@@ -415,7 +415,7 @@ export function docketNameLines(name) {
   return [product.substring(0, DOCKET_NAME_MAX), size.substring(0, DOCKET_NAME_MAX - 2)];
 }
 
-export function buildKitchenTicketDoc({ table, server, covers, centreName, items, sentAt, delivery, itemLabel, reprint }, { cols = 42 } = {}) {
+export function buildKitchenTicketDoc({ table, server, covers, centreName, items, sentAt, delivery, itemLabel, reprint, newCustomer }, { cols = 42 } = {}) {
   const b = new DocBuilder(cols);
   const time = ticketTime(sentAt);
 
@@ -443,6 +443,9 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
   // v5.7.72: duplicate docket requested from the till, still in doubleBoth so it prints BIG.
   // The kitchen must not read this as a new order.
   if (reprint) b.center().line('** REPRINT **').left();
+
+  // 5 Nov 2026 (Peter): Yes to "New customer?" on the till's Order details pop up, still big.
+  if (newCustomer) b.center().line('** NEW CUSTOMER **').left();
 
   // Coffee-shop "sticker" mode: one ticket per item, numbered ITEM X OF Y.
   if (itemLabel) b.center().bold(true).line(itemLabel).bold(false).left();

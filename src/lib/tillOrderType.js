@@ -18,6 +18,19 @@
  *   way a kiosk order with a flag does (kioskStaffFlags.js kioskTicketLabels): "Table 30 · #09"
  *   on the kitchen screen and the paper ticket, "Table 30" on the receipt and in Orders.
  *
+ *   Order details pop up (Peter, 5 Nov 2026): "Like the table flag number we can force to bring
+ *   it up: a number of guests in the party, order type, new customer question yes or no, yes
+ *   equals flag on the KDS or production ticket. These all need to be able to be turned off and
+ *   on in the same place as the force table flag feature." And: "its not that its forced, its
+ *   that it pops up. I want one screen that has this info and each one can be turned off and on."
+ *   So: ONE screen (components/OrderDetailsModal.jsx) before a walk in order is sent or paid,
+ *   showing only the parts the device profile switches on: the flag number (the column above),
+ *   the number of guests (order_prompt_guests), the order type (order_prompt_order_type) and
+ *   "New customer?" (order_prompt_new_customer). Each answer lives on the order
+ *   (walkInOrder.tableFlag / covers / newCustomer / orderTypeChosen), so Send and Pay both see
+ *   it and nothing is asked twice (needsOrderDetails). Guests ride as the ticket's covers; Yes to
+ *   new customer puts NEW CUSTOMER on the kitchen screen card and the production ticket.
+ *
  * Pure: imports only kioskStaffFlags.js (itself import free), so node:test can load it
  * (tillOrderType.test.js).
  */
@@ -150,4 +163,128 @@ export function flagTicketLabel(flag, ref) {
   const raw = ref == null ? '' : String(ref).trim().replace(/^#/, '');
   if (!raw) return table;
   return `${table} · #${kioskShortRef(raw)}`;
+}
+
+// ── Order details pop up (5 Nov 2026) ────────────────────────────────────────
+
+/** device_profiles columns added by 20261124a_OPS_device_profile_order_details.sql. */
+export const GUESTS_PROMPT_COLUMN = 'order_prompt_guests';
+export const ORDER_TYPE_PROMPT_COLUMN = 'order_prompt_order_type';
+export const NEW_CUSTOMER_PROMPT_COLUMN = 'order_prompt_new_customer';
+
+/** The three new switches as the editor form and deviceConfig hold them, and as the table stores them. */
+export const TILL_PROMPT_FIELDS = [
+  ['promptGuests', GUESTS_PROMPT_COLUMN],
+  ['promptOrderType', ORDER_TYPE_PROMPT_COLUMN],
+  ['promptNewCustomer', NEW_CUSTOMER_PROMPT_COLUMN],
+];
+
+/** Guests in the party: 1 to 99, two digits on the keypad. */
+export const GUESTS_MAX = 99;
+
+/** The mark on the kitchen screen card and the production ticket. */
+export const NEW_CUSTOMER_LABEL = 'NEW CUSTOMER';
+
+/**
+ * True once device_profiles has the three 20261124a columns: a row read with select('*') carries
+ * them. Separate from tillOrderColumnsReady on purpose: the flag number (20260930c) keeps working
+ * at venues that have not run the new file yet.
+ */
+export function tillPromptColumnsReady(row) {
+  return !!row && typeof row === 'object' && GUESTS_PROMPT_COLUMN in row;
+}
+
+/** The stale tab guard for the three new columns, the same rule as tillOrderColumnsToKeep. */
+export function tillPromptColumnsToKeep(touched, ready) {
+  if (ready !== true || !(touched instanceof Set)) return [];
+  return TILL_PROMPT_FIELDS.filter(([formKey]) => !touched.has(formKey));
+}
+
+/** A whole number of guests, 1 to GUESTS_MAX, or null when nothing usable was typed. */
+export function cleanGuests(raw) {
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'number' ? Math.floor(raw) : Math.floor(Number(String(raw).replace(/\D/g, '')));
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(n, GUESTS_MAX);
+}
+
+/**
+ * Which parts of the pop up a profile switches on. config is the till's deviceConfig (or a
+ * profile). The flag number is the 30 Sep 2026 switch; the other three are 5 Nov 2026.
+ */
+export function orderDetailsSections(config) {
+  return {
+    flag: config?.dineInFlagPrompt === true,
+    guests: config?.promptGuests === true,
+    orderType: config?.promptOrderType === true,
+    newCustomer: config?.promptNewCustomer === true,
+  };
+}
+
+/** True when any part of the pop up is switched on. */
+export function orderDetailsOn(config) {
+  return Object.values(orderDetailsSections(config)).some(Boolean);
+}
+
+/**
+ * Does this order need the pop up before it is sent or paid? Returns the parts still to ask
+ * (true for each), or null when nothing is. A floor table never asks (it has a table and its
+ * covers already). Each answer is kept on the order, so a part answered once is never asked
+ * again; a part switched off is never asked at all. The flag and the guests only matter on a
+ * dine in order (a takeaway has no table and no party); the pop up itself hides them when staff
+ * pick another type on it.
+ *   deviceConfig            the profile switches (orderDetailsSections)
+ *   orderType               the till's current type
+ *   activeTableId           a floor table never asks
+ *   walkInOrder             .tableFlag, .covers, .newCustomer (true/false once answered),
+ *                           .orderTypeChosen (true once staff picked on the pop up)
+ */
+export function needsOrderDetails({ deviceConfig, orderType, activeTableId, walkInOrder } = {}) {
+  if (activeTableId) return null;
+  const on = orderDetailsSections(deviceConfig);
+  const dineIn = orderType === 'dine-in';
+  const ask = {
+    flag: on.flag && dineIn && !cleanFlagNumber(walkInOrder?.tableFlag),
+    guests: on.guests && dineIn && !cleanGuests(walkInOrder?.covers),
+    orderType: on.orderType && walkInOrder?.orderTypeChosen !== true,
+    newCustomer: on.newCustomer && typeof walkInOrder?.newCustomer !== 'boolean',
+  };
+  return Object.values(ask).some(Boolean) ? ask : null;
+}
+
+/**
+ * The covers an order carries, or null. Only a dine in order has a party: guests typed before
+ * staff switched the order to takeaway never reach a takeaway ticket (the same rule as orderFlag).
+ */
+export function orderCovers(walkInOrder, orderType) {
+  if (orderType !== 'dine-in') return null;
+  return cleanGuests(walkInOrder?.covers);
+}
+
+/** True only when staff answered Yes. Unanswered, No, or an old order: false. */
+export function orderIsNewCustomer(walkInOrder) {
+  return walkInOrder?.newCustomer === true;
+}
+
+/**
+ * The answers as the pop up hands them back, cleaned for the order:
+ *   { orderType, tableFlag, covers, newCustomer, orderTypeChosen: true }
+ * A part that was not shown comes back as it was on the order (undefined keeps the old value).
+ */
+export function cleanOrderDetails(answers = {}) {
+  const out = { orderTypeChosen: true };
+  if ('orderType' in answers && ORDER_TYPE_KEYS.includes(answers.orderType)) out.orderType = answers.orderType;
+  if ('tableFlag' in answers) out.tableFlag = cleanFlagNumber(answers.tableFlag);
+  if ('covers' in answers) out.covers = cleanGuests(answers.covers);
+  if ('newCustomer' in answers) out.newCustomer = answers.newCustomer === true;
+  return out;
+}
+
+/** 'Flag number, guests, order type, new customer' for the profile card; null when all are off. */
+export function orderDetailsSummary(config) {
+  const on = orderDetailsSections(config);
+  const words = [on.flag && 'flag number', on.guests && 'guests', on.orderType && 'order type', on.newCustomer && 'new customer'].filter(Boolean);
+  if (!words.length) return null;
+  const s = words.join(', ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }

@@ -205,7 +205,8 @@ import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
 // 30 Sep 2026 (Peter, Coffee Boy): the till's default order type and the dine in flag number.
-import { defaultOrderTypeFor, orderFlag, flagTableLabel, flagTicketLabel, cleanFlagNumber } from '../lib/tillOrderType';
+// 5 Nov 2026: the Order details pop up (guests, order type, new customer) rides the same file.
+import { defaultOrderTypeFor, orderFlag, flagTableLabel, flagTicketLabel, cleanFlagNumber, orderCovers, orderIsNewCustomer, cleanOrderDetails } from '../lib/tillOrderType';
 import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
 import { voidOccupationKey } from '../lib/rowWriteFence';
 // 30 Sep 2026: the void rules (who can be voided, the records a void writes, how a kitchen
@@ -3866,13 +3867,18 @@ export const useStore = create((set, get) => ({
       const flag = orderFlag(order, orderType);
       const label = flag ? flagTicketLabel(flag, ref)
         : customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
+      // 5 Nov 2026 (Order details pop up, lib/tillOrderType.js): the guests staff typed are the
+      // ticket's covers (dine in only), and Yes to "New customer?" marks the card and the docket.
+      const walkInCovers = orderCovers(order, orderType) || 1;
+      const newCustomer = orderIsNewCustomer(order);
       const walkInMeta = buildTicketMeta({
         channel: 'till', orderType, isTable: !!flag,
         customerName: customer?.name, orderRef: ref,
         source: thisDeviceName(), staff: staff?.name,
         note: joinNotes(order.orderNote, customer?.notes),
+        newCustomer,
       });
-      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1, wiFiredOnSend, walkInMeta);
+      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', walkInCovers, wiFiredOnSend, walkInMeta);
       // v4.6.5 Bug 3: walk-in / takeaway / collection / delivery orders must ALSO route
       // print jobs to each production centre. Previously only the table branch did this,
       // so non-table orders only hit the KDS screen and silently skipped every printer.
@@ -3892,6 +3898,7 @@ export const useStore = create((set, get) => ({
           course: t.firedCourses?.[0] ?? 1,
           items: t.items,
           type: 'kitchen',
+          newCustomer,
         });
       });
       // Always add walk-in orders to queue so they appear in Orders Hub
@@ -3904,7 +3911,9 @@ export const useStore = create((set, get) => ({
         // would show as the customer's name and a reopen would attach as a real customer, so a
         // flag order with no customer gets an empty name (Orders then shows the order ref, as an
         // unnamed walk in does).
-        customer: { ...(customer ? { ...customer } : { name: flag ? '' : label }), ...(flag ? { tableFlag: flag } : {}) },
+        customer: { ...(customer ? { ...customer } : { name: flag ? '' : label }), ...(flag ? { tableFlag: flag } : {}), ...(newCustomer ? { newCustomer: true } : {}) },
+        // 5 Nov 2026: the guests typed on the pop up, so a reopened order keeps them.
+        ...(walkInCovers > 1 ? { covers: walkInCovers } : {}),
         // v4.6.5 follow-up: align with dine-in visual semantics. Table sessions persist
         // the fired+sent mutation on their items until payment, so reopening a table shows
         // them green. Walk-ins had the same mutation applied to walkInOrder but clearWalkIn()
@@ -4235,9 +4244,16 @@ export const useStore = create((set, get) => ({
   // later order) stayed on the till after Clear, and the next delivery sale charged it.
   clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null, deliveryQuote:null })),
   // 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed for a dine in walk in order
-  // (FlagNumberModal, lib/tillOrderType.js). Lives on the order, so Send and Pay both see it
+  // (OrderDetailsModal, lib/tillOrderType.js). Lives on the order, so Send and Pay both see it
   // and the prompt never shows twice. Digits only, or cleared.
   setWalkInTableFlag: (flag) => set(s => ({ walkInOrder: { ...(s.walkInOrder || {}), tableFlag: cleanFlagNumber(flag) } })),
+  // 5 Nov 2026 (Peter): the answers from the Order details pop up, cleaned by cleanOrderDetails
+  // (tableFlag, covers, newCustomer, orderTypeChosen). The order type itself is set by the
+  // surface through setOrderType, which may first ask for the customer's details.
+  setWalkInOrderDetails: (answers) => set(s => {
+    const { orderType: _type, ...rest } = cleanOrderDetails(answers);
+    return { walkInOrder: { ...(s.walkInOrder || {}), ...rest } };
+  }),
 
   // activeSessions — map of tableId → session for all tables that have a session
   // Used by Reports, AI assistant, and back office dashboard
@@ -7517,7 +7533,7 @@ export const useStore = create((set, get) => ({
         taxBreakdown = computeCheckTotals({
           items: walkInOrder.items.filter(i => !i.voided),
           checkDiscounts: walkInOrder.discounts || [],
-          covers: 1,
+          covers: orderCovers(walkInOrder, orderType) || 1,
           serviceChargeWaived: walkInOrder.serviceChargeWaived || false,
           orderType,
           deviceConfig: get().deviceConfig,
@@ -7552,7 +7568,8 @@ export const useStore = create((set, get) => ({
       locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
       server: staff?.name || 'Staff',
       staffId: staff?.id || null,                                              // v4.6.19
-      covers: 1,
+      // 5 Nov 2026: the guests typed on the Order details pop up (dine in only), else 1 as before.
+      covers: orderCovers(walkInOrder, orderType) || 1,
       orderType,
       customer,
       items: walkInOrder.items.filter(i => !i.voided).map(i => ({ ...i })),
@@ -8760,7 +8777,7 @@ export const useStore = create((set, get) => ({
             table: job.tableLabel || '', server: job.server || '', covers: job.covers || 0,
             course: job.course || null, centreName: centre?.name || job.printerName || 'Kitchen',
             items: [units[i]], sentAt: basePrintJob.sentAt, delivery: job.delivery || null,
-            itemLabel: `ITEM ${i + 1} OF ${total}`, reprint: !!job.reprint,
+            itemLabel: `ITEM ${i + 1} OF ${total}`, reprint: !!job.reprint, newCustomer: job.newCustomer === true,
           }, printerId, { idempotencyKey: `${idempotencyKey}-i${i}` });
           if (!r?.ok) allOk = false; else lastJobId = r.jobId;
         }
@@ -8796,6 +8813,7 @@ export const useStore = create((set, get) => ({
             delivery: job.delivery || null,   // HubRise/delivery context block (null for all other tickets)
             reprint: !!job.reprint,           // v5.7.72: duplicate docket — banner, never a new order
             itemLabel: job.itemLabel || undefined,   // 30 Sep 2026: "** VOID **" on a void docket
+            newCustomer: job.newCustomer === true,   // 5 Nov 2026: "** NEW CUSTOMER **" (Order details pop up)
           }, printerId, { idempotencyKey });
 
       // Any outcome here is "first attempt done". PrintRetrier handles persistent retries.

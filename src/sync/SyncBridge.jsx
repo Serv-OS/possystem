@@ -434,6 +434,9 @@ export default function SyncBridge({ onSyncPulse }) {
               serviceCharge: p.service_charge || null,
               defaultOrderType: p.default_order_type || null,        // 30 Sep 2026 (lib/tillOrderType.js)
               dineInFlagPrompt: p.dine_in_flag_prompt === true,
+              promptGuests: p.order_prompt_guests === true,           // 5 Nov 2026: the Order details pop up
+              promptOrderType: p.order_prompt_order_type === true,
+              promptNewCustomer: p.order_prompt_new_customer === true,
             }));
             try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
           }
