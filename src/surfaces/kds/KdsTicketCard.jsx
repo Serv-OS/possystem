@@ -22,6 +22,7 @@ import { memo, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'r
 import { identityParts, formatElapsed, statusOf } from '../../lib/kds/kdsTicket';
 import { KDS_NOTE_MAX, cleanKdsNote } from '../../lib/kds/kdsOrderNote';
 import { kdsVisibleNote } from '../../lib/kioskStaffFlags';
+import { NEW_CUSTOMER_LABEL } from '../../lib/tillOrderType';   // 5 Nov 2026: the Order details pop up
 import { scaled, breakableWords, fitFontSize } from '../../lib/kds/kdsFit';
 import { BUMP_NOT_SAVED } from '../../lib/kds/kdsLinkHealth';
 import { C, SANS, MONO, LATE_PULSE, ghostBtn } from './kdsStyles';
@@ -138,6 +139,18 @@ function Badge({ view, font, pad }) {
       display: 'inline-flex', alignItems: 'center', borderRadius: 6, padding: pad,
       font: `700 ${font}px ${MONO}`, letterSpacing: '.1em', color: c, background: `${c}1F`,
     }}>{view.type.label}</span>
+  );
+}
+
+// 5 Nov 2026 (Peter): Yes to "New customer?" on the till's Order details pop up. Filled, not
+// tinted like the type badge, so it reads at a glance from across the pass.
+function NewCustomerBadge({ view, font, pad }) {
+  if (!view.newCustomer) return null;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', borderRadius: 6, padding: pad,
+      font: `800 ${font}px ${MONO}`, letterSpacing: '.1em', color: '#0F1211', background: '#FFFFFF',
+    }}>{NEW_CUSTOMER_LABEL}</span>
   );
 }
 
@@ -401,6 +414,7 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 7 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <Badge view={view} font={z.badge} pad={z.badgePad} />
+            <NewCustomerBadge view={view} font={z.badge} pad={z.badgePad} />
             {ident.length > 0 && <Identity parts={ident} font={z.ident} />}
           </div>
           {show.name && (
@@ -508,6 +522,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <Badge view={view} font={z.badge} pad="4px 9px" />
+              <NewCustomerBadge view={view} font={z.badge} pad="4px 9px" />
               {ident.length > 0 && <Identity parts={ident} font={z.ident} />}
             </div>
             <FitText text={view.headline} maxPx={z.headline} minPx={z.headlineMin} weight={800}

@@ -419,17 +419,17 @@ const QR_META = buildTicketMeta({ channel: 'qr', orderType: 'dine-in', isTable: 
 
 test('ROUTE_STAMP_KEY is routedBy, and is none of the names a meta reader takes', () => {
   assert.equal(ROUTE_STAMP_KEY, 'routedBy');
-  const taken = ['channel', 'orderType', 'isTable', 'customerName', 'orderRef', 'appCode', 'source', 'staff', 'note', 'v', 'ref', 'orderNo', 'kdsNote'];
+  const taken = ['channel', 'orderType', 'isTable', 'customerName', 'orderRef', 'appCode', 'source', 'staff', 'note', 'v', 'ref', 'orderNo', 'kdsNote', 'newCustomer'];
   assert.ok(!taken.includes(ROUTE_STAMP_KEY));
   // The names buildTicketMeta writes are all in that list, so the stamp can never land on one.
   for (const k of Object.keys(buildTicketMeta({}))) assert.ok(taken.includes(k), k);
 });
 
-test('withRouteStamp adds the stamp under routedBy and leaves the ten meta keys as they are', () => {
+test('withRouteStamp adds the stamp under routedBy and leaves the eleven meta keys as they are', () => {
   const stamped = withRouteStamp(QR_META, ROUTE_STAMP);
   assert.deepEqual(stamped, { ...QR_META, routedBy: ROUTE_STAMP });
   assert.deepEqual(Object.keys(stamped), [...Object.keys(QR_META), 'routedBy']);
-  assert.equal(Object.keys(QR_META).length, 10);
+  assert.equal(Object.keys(QR_META).length, 11);   // 5 Nov 2026: newCustomer joined the ten
   assert.ok(!('routedBy' in QR_META), 'the input is not changed');
   // No stamp (it could not be built): the very same meta object goes on the ticket.
   assert.equal(withRouteStamp(QR_META, null), QR_META);

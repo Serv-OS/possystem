@@ -420,6 +420,10 @@ function profileRowToProfile(row) {
     // prompt (lib/tillOrderType.js). The columns arrive with 20260930c; missing = automatic, off.
     defaultOrderType: row.default_order_type || null,
     dineInFlagPrompt: row.dine_in_flag_prompt === true,
+    // 5 Nov 2026 (Peter): the Order details pop up's other three parts (20261124a); missing = off.
+    promptGuests: row.order_prompt_guests === true,
+    promptOrderType: row.order_prompt_order_type === true,
+    promptNewCustomer: row.order_prompt_new_customer === true,
   };
 }
 
@@ -444,6 +448,9 @@ function configFromProfile(profile) {
     trainingMode: profile.trainingMode === true,   // v5.5.645: per-device training
     defaultOrderType: profile.defaultOrderType || null,        // 30 Sep 2026, see profileRowToProfile
     dineInFlagPrompt: profile.dineInFlagPrompt === true,
+    promptGuests: profile.promptGuests === true,               // 5 Nov 2026, see profileRowToProfile
+    promptOrderType: profile.promptOrderType === true,
+    promptNewCustomer: profile.promptNewCustomer === true,
     // v5.5.731: auto sign-out policy, how this device signs the operator out
     signout: {
       idleSeconds: Number(profile.signoutIdleSeconds) || 0,
@@ -509,6 +516,7 @@ const CONFIG_COMPARE_KEYS = [
   'enabledOrderTypes', 'hiddenFeatures', 'serviceCharge', 'signout',
   'paymentMode', 'assignedReaderId', 'runnerMode', 'customerDisplayMode',   // v5.8.27
   'defaultOrderType', 'dineInFlagPrompt',   // 30 Sep 2026
+  'promptGuests', 'promptOrderType', 'promptNewCustomer',   // 5 Nov 2026
 ];
 function deviceConfigChanged(prev, next) {
   if (!prev) return true;
@@ -853,6 +861,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               trainingMode: existingConfig?.trainingMode === true,   // v5.5.645: preserve training flag on fallback
               defaultOrderType: existingConfig?.defaultOrderType || null,   // 30 Sep 2026
               dineInFlagPrompt: existingConfig?.dineInFlagPrompt === true,
+              promptGuests: existingConfig?.promptGuests === true,           // 5 Nov 2026
+              promptOrderType: existingConfig?.promptOrderType === true,
+              promptNewCustomer: existingConfig?.promptNewCustomer === true,
             };
             applyDeviceConfig(keepStoredMaster(minConfig));   // v5.7.7: same apply path (change-gated)
           }

@@ -50,8 +50,8 @@ import OrderTypeModal from '../components/OrderTypeModal';
 import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
-import FlagNumberModal from '../components/FlagNumberModal';   // 30 Sep 2026: flag number on dine in orders
-import { needsFlagPrompt, flagTableLabel, defaultOrderTypeFor } from '../lib/tillOrderType';
+import OrderDetailsModal from '../components/OrderDetailsModal';   // 5 Nov 2026: one pop up (flag number, guests, order type, new customer)
+import { needsOrderDetails, orderFlag, orderCovers, flagTableLabel, defaultOrderTypeFor } from '../lib/tillOrderType';
 // 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
 import { promptsOnTypeChange, sendsWithoutPrompt } from '../lib/customerDetailsRule';
 import { money, getActiveCurrencyCode } from '../lib/currency';
@@ -109,7 +109,7 @@ export default function POSSurface() {
     addItemDiscount, removeItemDiscount,
     deviceConfig,
     setDeviceConfig,
-    walkInOrder, setWalkInTableFlag,   // 30 Sep 2026: the flag number lives on the order
+    walkInOrder, setWalkInOrderDetails,   // 5 Nov 2026: the pop up's answers live on the order (flag, guests, new customer)
     menuItems: storeMenuItems,
     instructionGroupDefs,
     menuCategories,
@@ -440,8 +440,8 @@ export default function POSSurface() {
   // switch (confirming would silently no-op against the wrong session).
   useEffect(() => { setEditLine(null); }, [activeTableId]);
   const [showCheckout, setShowCheckout] = useState(false);
-  // 30 Sep 2026: 'send' | 'pay' while the flag number keypad is up, so it knows what to do next.
-  const [flagPromptFor, setFlagPromptFor] = useState(null);
+  // 30 Sep 2026 / 5 Nov 2026: 'send' | 'pay' while the Order details pop up is up, so it knows what to do next.
+  const [detailsFor, setDetailsFor] = useState(null);
   const [search, setSearch]       = useState('');
   const [showAllergens, setShowAllergens] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
@@ -492,7 +492,7 @@ export default function POSSurface() {
   // 17 Oct 2026 (Multi site menu): a head office menu update waits until this till is idle (no
   // lines, no payment screen, nothing open). Only lib/msm/msmTillWatch.js reads this; an ordinary
   // Push to POS is not affected.
-  const _tillModalOpen = !!(modalItem || editLine || flagPromptFor || showAllergens || showCustom || showGift || giftActivate || showCustomerModal
+  const _tillModalOpen = !!(modalItem || editLine || detailsFor || showAllergens || showCustom || showGift || giftActivate || showCustomerModal
     || linkMemberFor || pendingOrderType || voidTarget || showDiscount || showReceipt || showReprint || infoItem
     || showReview || showSendModal || showAllergenGate || showTableActions);
   useEffect(() => {
@@ -667,7 +667,8 @@ export default function POSSurface() {
   // v4.5.1: course management is gated per device profile. Hides per-course header (Fire button)
   // and the standalone Fire-course banner. Item.course data is preserved internally.
   const hideCourses = (deviceConfig?.hiddenFeatures || []).includes('courses');
-  const covers = session?.covers || 2;
+  // 5 Nov 2026: a walk in order's covers are the guests typed on the Order details pop up (dine in only).
+  const covers = session?.covers || orderCovers(walkInOrder, orderType) || 2;
   const hasSent = !!session?.sentAt;
   // 30 Sep 2026 (Peter, Coffee Boy: "Can't void anything other than table orders"): the Void
   // button follows the ORDER, table or walk in: it shows once any line has gone to the kitchen.
@@ -898,8 +899,11 @@ export default function POSSurface() {
   // the profile switch on, a dine in walk in order must have its flag number before it is sent
   // or paid, whichever comes first, and staff cannot skip it (lib/tillOrderType.js). The order
   // then goes to the kitchen as "Table <n>", like a kiosk flag order, with no table picker.
-  const flagNeeded = needsFlagPrompt({ deviceConfig, orderType, activeTableId, walkInOrder });
-  const walkInFlag = !activeTableId && orderType === 'dine-in' ? walkInOrder?.tableFlag : null;
+  // 5 Nov 2026 (Peter): "I want one screen that has this info and each one can be turned off and
+  // on": the flag is one part of the Order details pop up, with the guests, the order type and
+  // "New customer?" (needsOrderDetails says which parts are still to ask, or null).
+  const detailsNeeded = needsOrderDetails({ deviceConfig, orderType, activeTableId, walkInOrder });
+  const walkInFlag = !activeTableId ? orderFlag(walkInOrder, orderType) : null;
   // Pay: the allergen gate, then checkout (the flag, when needed, is asked before this).
   const proceedToCheckout = () => {
     const hasAllergens = items.some(i=>!i.voided&&i.allergens?.length);
@@ -907,29 +911,53 @@ export default function POSSurface() {
     else setShowCheckout(true);
   };
   const openCheckout = () => {
-    if (flagNeeded) { setFlagPromptFor('pay'); return; }
+    if (detailsNeeded) { setDetailsFor('pay'); return; }
     proceedToCheckout();
   };
-  const onFlagEntered = (flag) => {
-    const next = flagPromptFor;
-    setFlagPromptFor(null);
-    setWalkInTableFlag(flag);   // sync: sendToKitchen below reads the store fresh
+  // The pop up's answers: onto the order first (sync: sendToKitchen below reads the store fresh),
+  // then the order type if staff picked one. A type that needs the customer's details (takeaway
+  // with details required, delivery) opens that form instead and stops here: staff press Send or
+  // Pay again, and the pop up does not come back (every part is answered). Otherwise the order
+  // goes on: a dine in order with a flag sends as Table <n>; anything else takes the usual Send
+  // path (the counter / table picker, or straight through), or the usual Pay gates.
+  const onDetailsEntered = (answers) => {
+    const next = detailsFor;
+    setDetailsFor(null);
+    setWalkInOrderDetails(answers);
+    if (answers.orderType && answers.orderType !== orderType) {
+      handleTypeChange(answers.orderType);
+      if (promptsOnTypeChange({ orderType: answers.orderType, mode: takeawayCustomerDetails })) return;
+    }
+    const fresh = useStore.getState();
+    const flag = orderFlag(fresh.walkInOrder, fresh.orderType);
     if (next === 'send') {
-      setShowCheckout(false);
-      sendToKitchen();
-      clearWalkIn();
-      showToast(`${flagTableLabel(flag)} sent`, 'success');
+      if (flag) {
+        setShowCheckout(false);
+        sendToKitchen();
+        clearWalkIn();
+        showToast(`${flagTableLabel(flag)} sent`, 'success');
+      } else {
+        handleSend({ afterDetails: true });
+      }
     } else if (next === 'pay') {
       proceedToCheckout();
     }
   };
 
-  const handleSend = () => {
+  // afterDetails: called from onDetailsEntered, whose answers are on the store but not yet in
+  // this render's props, so the pop up is not asked again and the type is read fresh.
+  const handleSend = ({ afterDetails = false } = {}) => {
     // Walk-in with no table
     if (!activeTableId) {
       if (!items.length) { showToast('No items on order', 'error'); return; }
-      // 30 Sep 2026: the flag number first (profile switch); onFlagEntered then sends as Table <n>.
-      if (flagNeeded) { setFlagPromptFor('send'); return; }
+      // 30 Sep 2026 / 5 Nov 2026: the Order details pop up first (profile switches);
+      // onDetailsEntered then sends as Table <n> or comes back here.
+      if (!afterDetails && detailsNeeded) { setDetailsFor('send'); return; }
+      // Read fresh from the store: after the pop up this render's orderType / customer are stale.
+      const fresh = useStore.getState();
+      const typeNow = fresh.orderType;
+      const customerNow = fresh.customer;
+      const walkInFlag = orderFlag(fresh.walkInOrder, typeNow);
       // An order that already has its flag (typed at Pay then backed out, or reopened from
       // Orders) sends as Table <n> too: the counter / table picker would seat it on a real table.
       if (walkInFlag) {
@@ -946,12 +974,12 @@ export default function POSSurface() {
       // customer prompt. An empty-name customer means Orders Hub falls back to the short
       // order ref (R-number), matching unnamed walk-ins; delivery always needs details.
       // 30 Sep 2026: decided by lib/customerDetailsRule.js (dine in still goes to the send modal).
-      if (sendsWithoutPrompt({ orderType, mode: takeawayCustomerDetails, hasName: !!customer?.name })) {
+      if (sendsWithoutPrompt({ orderType: typeNow, mode: takeawayCustomerDetails, hasName: !!customerNow?.name })) {
         // 30 Sep 2026: a dine in walk in under 'Not needed' is an unnamed counter order (the same
         // shape the send modal's Counter choice writes), so Orders shows its short ref.
-        if (!customer?.name) setCustomer(orderType === 'dine-in' ? { name: '', isASAP: true, channel: 'counter' } : { name: '', isASAP: true });
-        const name = customer?.name;
-        const type = orderTypeLabel;
+        if (!customerNow?.name) setCustomer(typeNow === 'dine-in' ? { name: '', isASAP: true, channel: 'counter' } : { name: '', isASAP: true });
+        const name = customerNow?.name;
+        const type = ORDER_TYPE_LABEL[typeNow] || typeNow;
         setShowCheckout(false);
         sendToKitchen();
         // v4.6.5 follow-up: clear the POS after send, matching every OrderTypeModal branch
@@ -2379,8 +2407,8 @@ export default function POSSurface() {
         </div></div>
       )}
 
-      {/* 30 Sep 2026: flag number keypad before Send or Pay on a dine in order (profile switch, no skip) */}
-      {flagPromptFor && <FlagNumberModal action={flagPromptFor} onConfirm={onFlagEntered} onClose={()=>setFlagPromptFor(null)}/>}
+      {/* 30 Sep 2026 / 5 Nov 2026: the Order details pop up before Send or Pay on a walk in order (profile switches, no skip) */}
+      {detailsFor && <OrderDetailsModal action={detailsFor} deviceConfig={deviceConfig} ask={detailsNeeded} orderType={orderType} enabledOrderTypes={allowedOrderTypes} walkInOrder={walkInOrder} onConfirm={onDetailsEntered} onClose={()=>setDetailsFor(null)}/>}
 
       {/* Allergen confirmation gate before checkout */}
       {showAllergenGate && (
@@ -2415,8 +2443,8 @@ export default function POSSurface() {
             if (result.type === 'counter') {
               store.setCustomer({ name: result.name, isASAP: true, isNamedDineIn: true, channel: 'counter' });
               store.setOrderType('dine-in');
-              // 30 Sep 2026: with the flag prompt on, a counter order needs its flag number first.
-              if (needsFlagPrompt({ deviceConfig, orderType: 'dine-in', activeTableId: null, walkInOrder: store.walkInOrder })) { setFlagPromptFor('send'); return; }
+              // 30 Sep 2026 / 5 Nov 2026: with the pop up on, a counter order answers it first.
+              if (needsOrderDetails({ deviceConfig, orderType: 'dine-in', activeTableId: null, walkInOrder: store.walkInOrder })) { setDetailsFor('send'); return; }
               store.sendToKitchen();
               store.clearWalkIn();
               showToast(result.name ? `${result.name} — sent to kitchen` : 'Sent to kitchen', 'success');
@@ -2531,7 +2559,7 @@ export default function POSSurface() {
           covers={covers}
           customer={customer}
           onClose={()=>setShowReview(false)}
-          onCheckout={()=>{ setShowReview(false); if(items.length>0) { if (flagNeeded) setFlagPromptFor('pay'); else setShowCheckout(true); } }}
+          onCheckout={()=>{ setShowReview(false); if(items.length>0) { if (detailsNeeded) setDetailsFor('pay'); else setShowCheckout(true); } }}
           onPrint={()=>{ setShowReview(false); setShowReceipt(true); }}
         />
       )}

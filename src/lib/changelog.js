@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.64',
+    date: '5 Nov 2026',
+    items: [
+      'Order details pop up on the till (Peter, 5 Nov 2026: "like the table flag number: a number of guests in the party, order type, new customer question yes or no, yes equals flag on the KDS or production ticket; these all need to be able to be turned off and on in the same place as the force table flag feature", then "its not that its forced, its that it pops up. I want one screen that has this info and each one can be turned off and on"). One screen pops up before a walk in order is sent or paid, whichever comes first, with up to four parts: the order type (the profile\'s enabled types as buttons), New customer? Yes or No, the flag number and how many guests (both dine in only, one shared keypad). Each part has its own switch in Back Office, Devices, the device profile, under Starts on, next to the flag number switch, and the pop up shows only the parts switched on. Staff cannot skip a part that shows; nothing is asked twice on one order; floor tables never see it. Guests go on the kitchen screen card, the production ticket and the closed check as covers. Yes to New customer puts a white NEW CUSTOMER badge on the kitchen screen card and ** NEW CUSTOMER ** in big print on the production ticket, and rides to Orders. SQL 20261124a (Ops) adds the three new switches; until it runs they are greyed out and the flag number works as before. Nothing to deploy.',
+    ],
+  },
+  {
     v: '5.12.63',
     date: '5 Nov 2026',
     items: [

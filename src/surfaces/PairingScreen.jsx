@@ -176,6 +176,9 @@ export default function PairingScreen({ onPaired }) {
             orderNotifications: profile.orderNotifications !== false,
             defaultOrderType: profile.defaultOrderType || null,        // 30 Sep 2026 (lib/tillOrderType.js)
             dineInFlagPrompt: profile.dineInFlagPrompt === true,
+            promptGuests: profile.promptGuests === true,               // 5 Nov 2026: the Order details pop up
+            promptOrderType: profile.promptOrderType === true,
+            promptNewCustomer: profile.promptNewCustomer === true,
           }, { force: true });
         }
       } catch(e) { console.warn('Profile apply failed:', e); }

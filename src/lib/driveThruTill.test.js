@@ -37,7 +37,8 @@ test('POSSurface.jsx: drive thru follows takeaway through the prompt, Send and t
   assert.equal(promptsOnTypeChange({ orderType: 'drive-thru', mode: 'none' }), false, 'drive thru under none skips the prompt');
   assert.equal(promptsOnTypeChange({ orderType: 'drive-thru', mode: 'full' }), true, 'drive thru under full prompts');
   // Send never falls into OrderTypeModal for a drive thru order.
-  has(src, "sendsWithoutPrompt({ orderType, mode: takeawayCustomerDetails, hasName: !!customer?.name })", 'skipDetails');
+  // 5 Nov 2026: the type and the customer are read fresh from the store (the Order details pop up may have just changed them).
+  has(src, "sendsWithoutPrompt({ orderType: typeNow, mode: takeawayCustomerDetails, hasName: !!customerNow?.name })", 'skipDetails');
   assert.equal(sendsWithoutPrompt({ orderType: 'drive-thru', mode: 'none', hasName: false }), true, 'drive thru under none sends straight through');
   assert.equal(sendsWithoutPrompt({ orderType: 'drive-thru', mode: 'full', hasName: true }), true, 'a named drive thru order sends straight through');
   // The modal result reaches setOrderType + sendToKitchen like takeaway and collection.

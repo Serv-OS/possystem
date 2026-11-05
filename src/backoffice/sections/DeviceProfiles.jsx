@@ -3,7 +3,7 @@ import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
 // 30 Sep 2026 (Peter, Coffee Boy): the order type a till starts on, and the dine in flag prompt.
-import { defaultOrderTypeFor, defaultOrderTypeSummary, cleanDefaultOrderType, tillOrderColumnsReady, tillOrderColumnsToKeep, DEFAULT_ORDER_TYPE_COLUMN, FLAG_PROMPT_COLUMN } from '../../lib/tillOrderType';
+import { defaultOrderTypeFor, defaultOrderTypeSummary, cleanDefaultOrderType, tillOrderColumnsReady, tillOrderColumnsToKeep, DEFAULT_ORDER_TYPE_COLUMN, FLAG_PROMPT_COLUMN, tillPromptColumnsReady, tillPromptColumnsToKeep, TILL_PROMPT_FIELDS, GUESTS_PROMPT_COLUMN, orderDetailsSummary } from '../../lib/tillOrderType';
 import { useSyncExternalStore } from 'react';   // 30 Sep 2026: the editor watches the till order type column flag
 import { money } from '../../lib/currency';
 import { activeCountry } from '../../lib/regionPack';
@@ -63,6 +63,18 @@ const readTillOrderColumns = () => _tillOrderColumns;
 function useTillOrderColumns() {
   return useSyncExternalStore(subscribeTillOrderColumns, readTillOrderColumns);
 }
+// 5 Nov 2026: the same again for the Order details pop up's three columns (20261124a). A second
+// flag, not the first widened, so the flag number keeps working at a venue that has run 20260930c
+// but not yet 20261124a.
+let _tillPromptColumns = isMock ? true : null;
+function setTillPromptColumns(value) {
+  _tillPromptColumns = value;
+  _tillOrderWatchers.forEach(fn => fn());
+}
+const readTillPromptColumns = () => _tillPromptColumns;
+function useTillPromptColumns() {
+  return useSyncExternalStore(subscribeTillOrderColumns, readTillPromptColumns);
+}
 
 // 30 Sep 2026: the stale tab guard for the two till order type columns (the v5.7.9 GUARDED_FIELDS
 // class: a tab that opened the profile before another tab set "Starts on" must not wipe it with a
@@ -72,7 +84,8 @@ function useTillOrderColumns() {
 // the columns so PostgREST leaves them as they are. Returns the kept values as the form holds them
 // (for this tab's list), or null when nothing was kept.
 async function keepTillOrderColumns(row, touched) {
-  const keep = tillOrderColumnsToKeep(touched, _tillOrderColumns);
+  // 5 Nov 2026: the pop up's three columns ride the same guard, each list behind its own flag.
+  const keep = [...tillOrderColumnsToKeep(touched, _tillOrderColumns), ...tillPromptColumnsToKeep(touched, _tillPromptColumns)];
   if (!keep.length || !row?.id) return null;
   const fresh = await supabase.from('device_profiles')
     .select(keep.map(([, col]) => col).join(', '))
@@ -81,7 +94,7 @@ async function keepTillOrderColumns(row, touched) {
   for (const [formKey, col] of keep) {
     if (fresh.data) {
       row[col] = fresh.data[col];   // untouched: keep the DB value
-      kept[formKey] = col === FLAG_PROMPT_COLUMN ? fresh.data[col] === true : (fresh.data[col] || null);
+      kept[formKey] = col === DEFAULT_ORDER_TYPE_COLUMN ? (fresh.data[col] || null) : fresh.data[col] === true;
     } else {
       delete row[col];              // new row, or the read failed: omit the column
     }
@@ -176,6 +189,8 @@ export default function DeviceProfiles() {
         // 30 Sep 2026: the order type the till starts on (null = automatic) and the flag prompt.
         defaultOrderType: p[DEFAULT_ORDER_TYPE_COLUMN] || null,
         dineInFlagPrompt: p[FLAG_PROMPT_COLUMN] === true,
+        // 5 Nov 2026: the Order details pop up's other three parts.
+        ...Object.fromEntries(TILL_PROMPT_FIELDS.map(([formKey, col]) => [formKey, p[col] === true])),
         menuId: p.menu_id,
         sortOrder: p.sort_order || 0,
         deviceCount: countMap[p.id] || 0,
@@ -207,6 +222,12 @@ export default function DeviceProfiles() {
         const probe = await supabase.from('device_profiles').select(DEFAULT_ORDER_TYPE_COLUMN).limit(1);
         setTillOrderColumns(!probe.error);
       }
+      // 5 Nov 2026: and the pop up's three columns (20261124a), the same way.
+      if (profileData?.length) setTillPromptColumns(tillPromptColumnsReady(profileData[0]));
+      else if (profileData) {
+        const probe = await supabase.from('device_profiles').select(GUESTS_PROMPT_COLUMN).limit(1);
+        setTillPromptColumns(!probe.error);
+      }
     };
     loadFromDB();
   }, []);
@@ -230,6 +251,8 @@ export default function DeviceProfiles() {
       [DEFAULT_ORDER_TYPE_COLUMN]: cleanDefaultOrderType(p.defaultOrderType, p.enabledOrderTypes),
       [FLAG_PROMPT_COLUMN]: p.dineInFlagPrompt === true,
     } : {}),
+    // 5 Nov 2026: the Order details pop up's three columns, only once 20261124a has run.
+    ...(_tillPromptColumns === true ? Object.fromEntries(TILL_PROMPT_FIELDS.map(([formKey, col]) => [col, p[formKey] === true])) : {}),
     menu_id: p.menuId || null,
     sort_order: p.sortOrder || 0,
     service_charge: p.serviceCharge || null,
@@ -483,7 +506,7 @@ export default function DeviceProfiles() {
                   <ConfigRow label="Default screen" value={SURFACES.find(s => s.id === prof.defaultSurface)?.label}/>
                   <ConfigRow label="Order types" value={orderTypes.length ? <span style={{ display:'inline-flex', alignItems:'center', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>{orderTypes.map((t, i) => { const o = ORDER_TYPES.find(x => x.id === t); return <span key={t} style={{ display:'inline-flex', alignItems:'center', gap:4 }}>{i > 0 && ' · '}{o?.icon && <Icon name={o.icon} size={13} />}{o?.label}</span>; })}</span> : 'None'}/>
                   <ConfigRow label="Starts on" value={defaultOrderTypeSummary(prof, orderTypeLabel)}/>
-                  {prof.dineInFlagPrompt && <ConfigRow label="Flag number" value="Asked on dine in orders" valueColor="var(--acc)"/>}
+                  {orderDetailsSummary(prof) && <ConfigRow label="Order details pop up" value={orderDetailsSummary(prof)} valueColor="var(--acc)"/>}
                   <ConfigRow label="Table service" value={prof.tableServiceEnabled ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.tableServiceEnabled ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Auto-print receipt" value={prof.autoPrintReceiptOnClose !== false ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.autoPrintReceiptOnClose !== false ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Section" value={prof.assignedSection || 'All sections'}/>
@@ -514,6 +537,9 @@ export default function DeviceProfiles() {
                     receiptPrinterId: prof.receiptPrinterId,
                     defaultOrderType: prof.defaultOrderType || null,   // 30 Sep 2026 (lib/tillOrderType.js)
                     dineInFlagPrompt: prof.dineInFlagPrompt === true,
+                    promptGuests: prof.promptGuests === true,          // 5 Nov 2026: the Order details pop up
+                    promptOrderType: prof.promptOrderType === true,
+                    promptNewCustomer: prof.promptNewCustomer === true,
                   });
                   showToast(`"${prof.name}" applied to this terminal`, 'success');
                 }} style={{
@@ -689,23 +715,52 @@ function ConfigRow({ label, value, valueColor, truncate }) {
   );
 }
 
-// ── Starts on + flag number (30 Sep 2026) ─────────────────────────────────────
+// ── Starts on + Order details pop up (30 Sep 2026, 5 Nov 2026) ───────────────
 // Peter, Coffee Boy: "Huddersfield have one POS that only does drive thru but it's defaulting to
 // Dine in", and for coffee shops with numbered flags and no fixed tables, "prompts for a table
-// flag ... then the KDS and production tickets say Table and the number typed". Both live on the
-// device profile (lib/tillOrderType.js). Greyed out until the 20260930c migration has run.
+// flag ... then the KDS and production tickets say Table and the number typed". 5 Nov 2026: "its
+// not that its forced, its that it pops up. I want one screen that has this info and each one can
+// be turned off and on": the flag number, the number of guests, the order type and "New
+// customer?" are the four parts of ONE pop up on the till (components/OrderDetailsModal.jsx), each
+// with its own switch here (lib/tillOrderType.js). Starts on and the flag number are greyed out
+// until the 20260930c migration has run; the other three until 20261124a has.
 const TILL_LABEL = { display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 };
 const TILL_HINT = { fontSize:11, color:'var(--t4)', marginTop:6, lineHeight:1.45 };
 
+function TillSwitch({ label, on, disabled, onToggle }) {
+  return (
+    <button type="button" onClick={onToggle} aria-pressed={on} disabled={disabled} style={{
+      width:'100%', padding:'11px 14px', borderRadius:10, cursor: disabled ? 'not-allowed' : 'pointer', fontFamily:'inherit', textAlign:'left',
+      background: on ? 'var(--acc-d)' : 'var(--bg3)',
+      border:`1.5px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`,
+      color: on ? 'var(--acc)' : 'var(--t2)', fontSize:13, fontWeight:700, transition:'all .1s', opacity: disabled ? .55 : 1,
+      display:'flex', alignItems:'center', justifyContent:'space-between', gap:10,
+    }}>
+      <span>{label}</span>
+      <span style={{ fontSize:11, fontWeight:800 }}>{on ? 'ON' : 'OFF'}</span>
+    </button>
+  );
+}
+
+// The four parts of the pop up, in the order the screen shows them. `ready` names the flag that
+// gates each one: the flag number is a 20260930c column, the other three are 20261124a.
+const ORDER_DETAIL_PARTS = [
+  { key:'promptOrderType',  ready:'prompt', label:'Ask for the order type',                       hint:'Staff pick the order type from the types enabled on this profile.' },
+  { key:'promptNewCustomer', ready:'prompt', label:'Ask "New customer?" (Yes or No)',              hint:'Yes puts NEW CUSTOMER on the kitchen screen card and the production ticket.' },
+  { key:'dineInFlagPrompt', ready:'order',  label:'Ask for a flag number on dine in orders',      hint:'For coffee shops with numbered flags and no fixed tables. Kitchen screens, kitchen tickets, the receipt and Orders say Table and the number typed.' },
+  { key:'promptGuests',     ready:'prompt', label:'Ask how many guests on dine in orders',        hint:'The number goes on the kitchen screen card, the production ticket and the closed check as covers.' },
+];
+
 function TillOrderTypeSettings({ form, upd }) {
   const ready = useTillOrderColumns();
+  const promptReady = useTillPromptColumns();
   if (ready !== true) {
     return (
       <div style={{ marginBottom:18 }}>
-        <label style={TILL_LABEL}>Starts on and flag number</label>
+        <label style={TILL_LABEL}>Starts on and Order details pop up</label>
         <div style={{ fontSize:12, color:'var(--t3)', lineHeight:1.45 }}>
           {ready === false
-            ? 'Choosing the order type a till starts on, and asking for a flag number on dine in orders, need a database update first. Until then a till starts on its only enabled order type, or dine in.'
+            ? 'Choosing the order type a till starts on, and the Order details pop up (flag number, guests, order type, new customer), need a database update first. Until then a till starts on its only enabled order type, or dine in, and nothing pops up.'
             : 'These settings are still loading. If they do not appear, refresh Back Office.'}
         </div>
       </div>
@@ -714,8 +769,8 @@ function TillOrderTypeSettings({ form, upd }) {
   const enabled = form.enabledOrderTypes || [];
   const current = cleanDefaultOrderType(form.defaultOrderType, enabled) || '';
   const auto = defaultOrderTypeFor({ enabledOrderTypes: enabled, defaultOrderType: null });
-  const flagOn = form.dineInFlagPrompt === true;
   const dineIn = enabled.includes('dine-in');
+  const anyOn = ORDER_DETAIL_PARTS.some(part => form[part.key] === true);
   return (
     <div style={{ marginBottom:18 }}>
       <label style={TILL_LABEL}>Starts on</label>
@@ -726,23 +781,27 @@ function TillOrderTypeSettings({ form, upd }) {
       </select>
       <div style={TILL_HINT}>The order type a till on this profile opens on, and goes back to after each order. Automatic means the only enabled type, or dine in. Floor tables are always dine in.</div>
 
-      <label style={{ ...TILL_LABEL, marginTop:14 }}>Flag number</label>
-      <button type="button" onClick={() => upd('dineInFlagPrompt', !flagOn)} aria-pressed={flagOn} style={{
-        width:'100%', padding:'11px 14px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', textAlign:'left',
-        background: flagOn ? 'var(--acc-d)' : 'var(--bg3)',
-        border:`1.5px solid ${flagOn ? 'var(--acc)' : 'var(--bdr)'}`,
-        color: flagOn ? 'var(--acc)' : 'var(--t2)', fontSize:13, fontWeight:700, transition:'all .1s',
-        display:'flex', alignItems:'center', justifyContent:'space-between', gap:10,
-      }}>
-        <span>Ask for a flag number on dine in orders</span>
-        <span style={{ fontSize:11, fontWeight:800 }}>{flagOn ? 'ON' : 'OFF'}</span>
-      </button>
-      <div style={TILL_HINT}>
-        {flagOn
-          ? 'Before a dine in order is sent or paid, staff type the number on the customer\'s flag. Staff cannot skip it. Kitchen screens, kitchen tickets, the receipt and Orders then say Table and that number.'
-          : 'For coffee shops with numbered flags and no fixed tables. Kitchen screens and tickets say Table and the number typed.'}
-        {!dineIn && ' Dine in is not enabled on this profile, so nothing asks until it is.'}
+      <label style={{ ...TILL_LABEL, marginTop:14 }}>Order details pop up</label>
+      <div style={{ ...TILL_HINT, marginTop:0, marginBottom:8 }}>
+        One screen that pops up before a walk in order is sent or paid, whichever comes first. It shows only the parts switched on here, and staff cannot skip a part that shows. Floor tables never see it.
+        {promptReady === false && ' The order type, new customer and guests switches need a database update first (20261124a); the flag number works now.'}
+        {promptReady === null && ' Checking which switches are available.'}
       </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+        {ORDER_DETAIL_PARTS.map(part => {
+          const disabled = part.ready === 'prompt' && promptReady !== true;
+          const on = form[part.key] === true;
+          return (
+            <div key={part.key}>
+              <TillSwitch label={part.label} on={on} disabled={disabled} onToggle={() => upd(part.key, !on)}/>
+              <div style={TILL_HINT}>{part.hint}</div>
+            </div>
+          );
+        })}
+      </div>
+      {anyOn && !dineIn && (form.dineInFlagPrompt || form.promptGuests) && (
+        <div style={TILL_HINT}>Dine in is not enabled on this profile, so the flag number and the guests are never asked until it is.</div>
+      )}
     </div>
   );
 }
@@ -761,6 +820,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
     trainingMode:false,
     signoutIdleSeconds:0, signoutOnPay:false, signoutOnSend:false,
     defaultOrderType:null, dineInFlagPrompt:false,   // 30 Sep 2026 (lib/tillOrderType.js)
+    promptGuests:false, promptOrderType:false, promptNewCustomer:false,   // 5 Nov 2026: the Order details pop up
   });
 
   // v5.7.9: record which fields THIS editor session actually changed. Every control
