@@ -141,3 +141,100 @@ test('the migration opens no door to the API and its rollback drops only the tab
   assert.equal(count(back, 'drop table'), 1);
   assert.equal(count(back, 'drop function'), 0);
 });
+
+// ── removed and unsubscribed (5 Nov 2026) ───────────────────────────────────
+
+test('update_email_blocks: service role only, one row per lower case address, two reasons; rollback drops only that table', () => {
+  const mig = read('supabase/migrations/20261123a_OPS_update_email_blocks.sql');
+  assert.ok(mig.includes('create table if not exists public.update_email_blocks ('));
+  assert.ok(mig.includes('email          text primary key,'));
+  assert.ok(mig.includes("constraint update_email_blocks_reason_ok check (reason in ('removed', 'unsubscribed'))"));
+  assert.ok(mig.includes('email = lower(email)'), 'the address is stored lower case, so one person is one row');
+  assert.ok(mig.includes('alter table public.update_email_blocks enable row level security;'));
+  assert.ok(mig.includes('revoke all on table public.update_email_blocks from public, anon, authenticated;'));
+  assert.ok(mig.includes('grant all on table public.update_email_blocks to service_role;'));
+  assert.equal(count(mig, 'create policy'), 0, 'no policy at all: nothing for anon or authenticated');
+  assert.equal(count(mig, 'to authenticated'), 0);
+  assert.ok(mig.includes("raise exception 'This is not the Ops database"));
+  assert.ok(mig.includes("if to_regclass('public.update_emails') is null then"), 'needs 20261008b first');
+  assert.ok(mig.includes("notify pgrst, 'reload schema';"));
+  assert.equal(count(mig, 'alter table public.update_emails'), 0, 'touches no existing table');
+  const back = read('supabase/migrations/20261123a_OPS_update_email_blocks_ROLLBACK.sql');
+  assert.ok(back.includes('drop table if exists public.update_email_blocks;'));
+  assert.equal(count(back, 'drop table'), 1);
+  assert.equal(count(back, 'update_emails;'), 0, 'never drops the record of what was sent');
+  for (const text of [mig, back]) assert.doesNotMatch(text, /[^ -~\n]/, 'ASCII only');
+});
+
+test('update-emails-admin: the unsubscribe door is before the staff gate, GET or POST, one signed address, writes one row and answers a page', () => {
+  const fn = read('supabase/functions/update-emails-admin/index.ts');
+  const door = between(fn, 'const unsubToken = new URL(req.url).searchParams.get(UNSUBSCRIBE_PARAM);', "if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);");
+  assert.ok(door, 'the door exists and the 405 for other methods comes after it');
+  assert.ok(door.indexOf("if (unsubToken != null && (req.method === 'GET' || req.method === 'POST'))") >= 0, 'GET for the link, POST for the one click button');
+  assert.ok(fn.indexOf('const unsubToken = ') < fn.indexOf('requireAal2(req, [SERVICE_ROLE])'), 'no sign in needed for a link in an email');
+  assert.ok(door.includes('const email = await readUnsubscribeToken(unsubToken, UNSUB_SECRET);'), 'the address comes from the signature, never from the query');
+  assert.ok(door.includes('if (!email) return htmlPage(unsubscribePage({ ok: false }), 400);'));
+  assert.ok(door.includes(".upsert({ email, reason: 'unsubscribed', blocked_at: new Date().toISOString() }, { onConflict: 'email', ignoreDuplicates: true })"));
+  assert.equal(count(door, '.select('), 0, 'the door reads nothing back');
+  assert.equal(count(door, 'json('), 0, 'the door answers only with the page');
+  assert.ok(door.includes('return htmlPage(unsubscribePage({ ok: true, email }));'));
+  assert.ok(door.includes('unsubscribePage({ ok: false, notReady: true }), 503'), 'before 20261123a the page says so');
+  assert.equal(count(door, 'req.json()'), 0, 'no body is read before the staff gate');
+  // The secret never leaves the server, and the link is this function's own URL.
+  assert.ok(fn.includes("const UNSUB_SECRET = Deno.env.get('UPDATE_EMAIL_UNSUB_SECRET') || SERVICE_ROLE;"));
+  assert.ok(fn.includes("/functions/v1/update-emails-admin`;"));
+  assert.equal(count(fn, 'UNSUB_SECRET'), 4, 'defined, read at the door, signed in the sender, and nowhere in a reply');
+  assert.equal(count(between(fn, 'return json(', '\n'), 'UNSUB_SECRET'), 0);
+});
+
+test('update-emails-admin: every email carries its own link in the footer and the headers; the list and the send leave blocked addresses out; block and unblock are staff actions', () => {
+  const fn = read('supabase/functions/update-emails-admin/index.ts');
+  const sendOne = between(fn, 'function makeSendOne(', 'async function deliverAndRecord(');
+  assert.ok(sendOne.includes('const unsub = unsubscribeUrl(FUNCTION_URL, await unsubscribeToken(r.email, UNSUB_SECRET));'));
+  assert.ok(sendOne.includes('buildEmail({ subject, bodyMd, companyName: r.company, test, unsubscribeUrl: unsub })'));
+  assert.ok(sendOne.includes('unsubscribeUrl: unsub,'), 'the provider request gets it for List-Unsubscribe');
+  // The blocked list is read on the server for the list and again for the send.
+  const rec = between(fn, "if (action === 'recipients') {", "if (action === 'blocks') {");
+  assert.ok(rec.includes('const [people, blocks] = await Promise.all([loadPeople(), loadBlocks()]);'));
+  assert.ok(rec.includes('pickRecipients({ ...people, ...opts, blocked: blocks.set })'));
+  assert.ok(rec.includes('blocks_ready: blocks.ready'));
+  const send = between(fn, "if (action === 'send') {", "return json({ error: 'unknown action' }, 400);");
+  assert.ok(send.includes('const [people, blocks] = await Promise.all([loadPeople(), loadBlocks()]);'));
+  assert.ok(send.includes('pickRecipients({ ...people, ...opts, blocked: blocks.set })'));
+  assert.ok(send.indexOf('blocked: blocks.set') < send.indexOf('Number(body.expect_count) !== recipients.length'), 'blocked out before the count the screen agreed to is compared');
+  // Before 20261123a: an empty set, ready false, and the send still goes.
+  const load = between(fn, 'async function loadBlocks()', 'const htmlPage');
+  assert.ok(load.includes("pagedSelect('update_email_blocks', '*'"));
+  assert.ok(load.includes('if (isMissingBlocks(error)) return { rows: [], set: new Set(), ready: false, error: null };'));
+  // block and unblock come after the staff gate (they are inside the action switch, after the body is read).
+  const blockAct = between(fn, "if (action === 'block') {", "if (action === 'unblock') {");
+  assert.ok(fn.indexOf("if (action === 'block') {") > fn.indexOf("profile?.role !== 'super_admin'"));
+  assert.ok(blockAct.includes("reason: 'removed'"));
+  assert.ok(blockAct.includes('blocked_by: user.id, blocked_by_name: senderName'));
+  assert.ok(blockAct.includes("{ onConflict: 'email', ignoreDuplicates: true }"), 'an unsubscribe already there keeps its reason');
+  assert.ok(blockAct.includes("if (!isEmail(email)) return json({ error: 'Which address? Pick a person in the list.', code: 'bad_request' }, 400);"));
+  const unblockAct = between(fn, "if (action === 'unblock') {", "if (action === 'history') {") || between(fn, "if (action === 'unblock') {", "// ── history");
+  assert.ok(unblockAct.includes(".delete().eq('email', email)"));
+  assert.equal(count(unblockAct, '.delete()'), 1, 'one address, never a sweep');
+});
+
+test('the screen: Remove next to a person, a Removed from emails card with Put back, the preview shows the line, and it never touches the tables', () => {
+  const sec = read('src/admin/sections/AdminUpdateEmails.jsx');
+  assert.equal(count(sec, ".from('update_email_blocks')"), 0);
+  assert.ok(sec.includes("await callUpdateEmails('block', { email: r.email, user_id: r.userId, name: r.name, org_id: r.orgId });"));
+  assert.ok(sec.includes("await callUpdateEmails('unblock', { email: b.email });"));
+  assert.ok(sec.includes("const res = await callUpdateEmails('blocks');"));
+  assert.ok(sec.includes('if (!window.confirm(`Remove ${r.name || r.email} from these emails?'), 'Remove asks first');
+  assert.ok(sec.includes("{busy === `remove:${r.email}` ? 'Removing…' : 'Remove'}"));
+  assert.ok(sec.includes("{busy === `putback:${b.email}` ? 'Putting back…' : 'Put back'}"));
+  assert.ok(sec.includes('data-testid="admin-update-email-blocks"'));
+  assert.ok(sec.includes('{!blocksReady && <div style={S.error} role="alert">{BLOCKS_NEEDS_UPDATE_LINE}</div>}'));
+  assert.ok(sec.includes('disabled={!!busy || !blocksReady}'), 'Remove is closed until 20261123a has run');
+  // After a Remove or a Put back the list of people is reloaded from the server.
+  assert.equal(count(sec, 'await Promise.all([loadBlocks(), loadWho(companyIds, ownersOnly, includeStaff, whoKey)]);'), 2);
+  assert.ok(sec.includes("{left.blocked > 0 ? `${blockedWord(left.blocked)} ` : ''}"));
+  assert.ok(sec.includes('unsubscribeUrl: PREVIEW_UNSUBSCRIBE_URL,'));
+  assert.ok(sec.includes('<iframe title="Email preview" sandbox="" srcDoc={preview.html}'), 'still sandboxed, the stand in link cannot be followed');
+  const lib = read('src/lib/updateEmails.js');
+  assert.ok(lib.includes('//   block      { email, user_id?, name?, org_id? }'));
+});

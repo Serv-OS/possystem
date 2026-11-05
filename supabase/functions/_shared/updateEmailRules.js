@@ -256,22 +256,32 @@ export function renderMarkdown(md) {
 
 // ── The email ───────────────────────────────────────────────────────────────
 
-/** The one line footer. Service notice to an account holder, so there is no unsubscribe. */
+/** The one line footer: why this person gets it. */
 export function emailFooter(companyName) {
   const c = oneLine(companyName);
   return c ? `You get this because you have a ServOS Back Office login for ${c}.` : 'You get this because you have a ServOS Back Office login.';
 }
 
 export const TEST_NOTE = 'This is a test. It went only to you.';
+/** The unsubscribe line under the footer (5 Nov 2026). The link is one address's own signed link. */
+export const UNSUBSCRIBE_WORDS = 'Don\'t want these emails?';
+export const UNSUBSCRIBE_LABEL = 'Unsubscribe';
 
 /**
  * The whole email for one recipient: subject, HTML and plain text. `test` puts [TEST] on the
  * subject and a note at the top, and nothing else changes, so the test shows the real thing.
+ * `unsubscribeUrl` (the person's own signed link) adds the unsubscribe line under the footer;
+ * without one (the screen's preview) the line is left out.
  */
-export function buildEmail({ subject, bodyMd, companyName, test = false } = {}) {
+export function buildEmail({ subject, bodyMd, companyName, test = false, unsubscribeUrl = '' } = {}) {
   const subj = `${test ? TEST_PREFIX : ''}${oneLine(subject)}`;
   const body = renderMarkdown(bodyMd);
   const footer = emailFooter(companyName);
+  const unsub = URL_OK.test(String(unsubscribeUrl || '')) ? String(unsubscribeUrl) : '';
+  const unsubHtml = unsub
+    ? `\n    <div style="margin-top:6px;color:#5E665E;font-size:12.5px;line-height:1.5;">${escapeHtml(UNSUBSCRIBE_WORDS)} <a href="${escapeHtml(unsub)}" style="${A_STYLE}">${UNSUBSCRIBE_LABEL}</a>.</div>`
+    : '';
+  const unsubText = unsub ? `\n${UNSUBSCRIBE_WORDS} ${UNSUBSCRIBE_LABEL}: ${unsub}` : '';
   const font = "font-family:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;";
   // Its own row only on a test, so the real email has no empty line where the note was.
   const note = test
@@ -292,7 +302,7 @@ export function buildEmail({ subject, bodyMd, companyName, test = false } = {}) 
 ${body.html}
   </td></tr>
   <tr><td style="padding:14px 24px 18px;border-top:1px solid rgba(15,18,17,0.08);${font}">
-    <div style="color:#5E665E;font-size:12.5px;line-height:1.5;">${escapeHtml(footer)}</div>
+    <div style="color:#5E665E;font-size:12.5px;line-height:1.5;">${escapeHtml(footer)}</div>${unsubHtml}
     <div style="margin-top:8px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.16em;color:#9AA39A;">Powered by ServOS &middot; serv-os.app</div>
   </td></tr>
 </table>
@@ -300,7 +310,7 @@ ${body.html}
 </table>
 </body>
 </html>`;
-  const text = `${test ? `${TEST_NOTE}\n\n` : ''}${body.text}\n\n--\n${footer}`;
+  const text = `${test ? `${TEST_NOTE}\n\n` : ''}${body.text}\n\n--\n${footer}${unsubText}`;
   return { subject: subj, html, text };
 }
 
@@ -321,26 +331,154 @@ export function servosSender(fromEnv) {
  * The provider request for one email, in the shape send-welcome and send-receipt use
  * (provider: resend or postmark; anything else, or no key, sends nothing and returns null).
  */
-export function providerRequest({ provider, resendKey, postmarkKey, sender, to, subject, html, text, idempotencyKey = null }) {
+export function providerRequest({ provider, resendKey, postmarkKey, sender, to, subject, html, text, idempotencyKey = null, unsubscribeUrl = '' }) {
   const p = String(provider || '').toLowerCase();
   if (!isEmail(to) || !sender || !sender.from) return null;
+  // List-Unsubscribe (5 Nov 2026): the same signed link as the footer, in the headers Gmail and
+  // Outlook read for their own Unsubscribe button. One-Click means they may POST it (RFC 8058).
+  const unsub = URL_OK.test(String(unsubscribeUrl || '')) ? String(unsubscribeUrl) : '';
+  const listHeaders = unsub ? { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : null;
   if (p === 'resend' && resendKey) {
     return {
       url: 'https://api.resend.com/emails',
       // Idempotency-Key (8 Oct 2026, review): the same key within 24 hours is the same email to
       // Resend, so even a request repeated after a lost reply cannot produce a second copy.
       headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : {}) },
-      body: { from: sender.from, to: [to], subject, html, text, ...(sender.replyTo ? { reply_to: sender.replyTo } : {}) },
+      body: { from: sender.from, to: [to], subject, html, text, ...(sender.replyTo ? { reply_to: sender.replyTo } : {}), ...(listHeaders ? { headers: listHeaders } : {}) },
     };
   }
   if (p === 'postmark' && postmarkKey) {
     return {
       url: 'https://api.postmarkapp.com/email',
       headers: { 'X-Postmark-Server-Token': postmarkKey, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: { From: sender.from, To: to, Subject: subject, HtmlBody: html, TextBody: text, ...(sender.replyTo ? { ReplyTo: sender.replyTo } : {}) },
+      body: {
+        From: sender.from, To: to, Subject: subject, HtmlBody: html, TextBody: text, ...(sender.replyTo ? { ReplyTo: sender.replyTo } : {}),
+        ...(listHeaders ? { Headers: Object.entries(listHeaders).map(([Name, Value]) => ({ Name, Value })) } : {}),
+      },
     };
   }
   return null;
+}
+
+// ── Removed and unsubscribed (update_email_blocks, 5 Nov 2026) ──────────────
+//
+// WHY (Peter, 5 Nov 2026): "be able to remove a user or delete a user and add unsubscribe
+// button to emails so they dont receive them again." One list of addresses that never get an
+// update email again: removed by ServOS staff on the screen, or unsubscribed from an email.
+//
+// The unsubscribe link is one address's own signed token: HMAC-SHA256 over the address with a
+// secret only the server has. Whoever holds a link can unsubscribe THAT address and nothing
+// else; a changed address or a changed signature is refused. Web Crypto, so the same code runs
+// in Deno and in the node tests.
+
+export const BLOCK_REASONS = Object.freeze(['removed', 'unsubscribed']);
+export const BLOCKS_NEEDS_UPDATE_LINE = 'Removing people and the unsubscribe link need a ServOS database update first (20261123a). Sends still go to everyone.';
+export const UNSUBSCRIBE_PARAM = 'unsubscribe';
+
+// btoa and atob are globals in Deno and in node 16+, the two places this file runs.
+const toB64Url = (bytes) => globalThis.btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64Url = (s) => {
+  const padded = String(s || '').replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (String(s || '').length % 4)) % 4);
+  const bin = globalThis.atob(padded);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+};
+const utf8 = (s) => new TextEncoder().encode(String(s));
+const fromUtf8 = (bytes) => new TextDecoder().decode(bytes);
+
+async function hmac(secret, message) {
+  const key = await globalThis.crypto.subtle.importKey('raw', utf8(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await globalThis.crypto.subtle.sign('HMAC', key, utf8(message)));
+}
+
+/** Same length and same bytes, checked in constant time. */
+function sameBytes(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+/** The token for one address: base64url(address).base64url(HMAC-SHA256(secret, "unsubscribe:" + address)). */
+export async function unsubscribeToken(email, secret) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!isEmail(e) || !secret) return null;
+  const sig = await hmac(String(secret), `unsubscribe:${e}`);
+  return `${toB64Url(utf8(e))}.${toB64Url(sig)}`;
+}
+
+/** The address a token is for, or null when the token is not one of ours (changed, cut short, forged). */
+export async function readUnsubscribeToken(token, secret) {
+  const t = String(token || '').trim();
+  if (!t || !secret || t.length > 1000) return null;
+  const dot = t.indexOf('.');
+  if (dot <= 0 || dot === t.length - 1) return null;
+  let email, given;
+  try {
+    email = fromUtf8(fromB64Url(t.slice(0, dot))).trim().toLowerCase();
+    given = fromB64Url(t.slice(dot + 1));
+  } catch { return null; }
+  if (!isEmail(email)) return null;
+  const want = await hmac(String(secret), `unsubscribe:${email}`);
+  return sameBytes(given, want) ? email : null;
+}
+
+/** The link in the email: the function's own URL with the token. */
+export function unsubscribeUrl(functionUrl, token) {
+  const base = String(functionUrl || '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(base) || !token) return '';
+  return `${base}?${UNSUBSCRIBE_PARAM}=${encodeURIComponent(String(token))}`;
+}
+
+/** The words on the page the link opens. */
+export function unsubscribeWords({ ok, email = '', notReady = false } = {}) {
+  if (notReady) return { title: 'Not set up yet', line: 'Unsubscribing is not switched on yet. Reply to the email and we will take you off by hand.' };
+  if (!ok) return { title: 'That link did not work', line: 'The link is not one of ours or was cut short when it was copied. Reply to the email and we will take you off by hand.' };
+  return { title: 'You are unsubscribed', line: `${email} will not get ServOS update emails again. Your Back Office login is not affected.` };
+}
+
+/** The small page the unsubscribe link shows in the browser. */
+export function unsubscribePage(state = {}) {
+  const w = unsubscribeWords(state);
+  const font = "font-family:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;";
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(w.title)}</title></head>
+<body style="margin:0;padding:0;background:#F5F7F4;${font}">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#F5F7F4;padding:48px 16px;"><tr><td align="center">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid rgba(15,18,17,0.08);">
+  <tr><td style="background:#0F1211;padding:18px 24px;"><span style="color:#15C26A;font-size:16px;font-weight:800;letter-spacing:-0.02em;">ServOS</span></td></tr>
+  <tr><td style="padding:24px;${font}">
+    <h1 style="margin:0 0 10px;font-size:22px;color:#0F1211;">${escapeHtml(w.title)}</h1>
+    <p style="margin:0;color:#2B302D;font-size:15px;line-height:1.6;">${escapeHtml(w.line)}</p>
+  </td></tr>
+</table></td></tr></table>
+</body></html>`;
+}
+
+/** "Unsubscribed from an email" or "Removed by Peter". */
+export function blockReasonWords(row) {
+  if (!row) return '';
+  if (row.reason === 'unsubscribed') return 'Unsubscribed from an email';
+  const by = oneLine(row.blocked_by_name);
+  return by ? `Removed by ${by}` : 'Removed';
+}
+
+/** update_email_blocks rows for the screen: newest first, company named. */
+export function blocksList(rows, orgs = []) {
+  const orgName = new Map((orgs || []).filter((o) => o && o.id).map((o) => [String(o.id), oneLine(o.name) || 'Unnamed company']));
+  const out = (rows || []).filter((r) => r && isEmail(String(r.email || ''))).map((r) => ({
+    email: String(r.email).trim().toLowerCase(), name: oneLine(r.name) || '', userId: r.user_id || null,
+    company: r.org_id ? (orgName.get(String(r.org_id)) || 'Company removed') : '',
+    reason: BLOCK_REASONS.includes(r.reason) ? r.reason : 'removed', words: blockReasonWords(r), at: r.blocked_at || null,
+  }));
+  out.sort((a, b) => timeOf(b.at) - timeOf(a.at) || a.email.localeCompare(b.email));
+  return out;
+}
+
+/** The hint under the list: "2 removed or unsubscribed." */
+export function blockedWord(n) {
+  const k = Number(n) || 0;
+  if (!k) return '';
+  return k === 1 ? '1 removed or unsubscribed.' : `${k} removed or unsubscribed.`;
 }
 
 /**
@@ -428,15 +566,18 @@ const ROLE_RANK = { owner: 0, manager: 1, super_admin: 2 };
  *   left:{notLogin:number,noAccess:number,noEmail:number,staff:number,managers:number,otherCompany:number,duplicate:number}}}
  */
 export function pickRecipients(input) {
-  const { profiles = [], authEmails = null, orgs = [], companyIds = null, ownersOnly = false, includeStaff = false } = input || {};
+  const { profiles = [], authEmails = null, orgs = [], companyIds = null, ownersOnly = false, includeStaff = false, blocked = null } = input || {};
   const orgName = new Map((orgs || []).filter((o) => o && o.id).map((o) => [String(o.id), oneLine(o.name) || 'Unnamed company']));
   const wanted = Array.isArray(companyIds) ? new Set(companyIds.filter(Boolean).map(String)) : null;
+  // Addresses removed on the screen or unsubscribed from an email (update_email_blocks, 5 Nov
+  // 2026): never in the list, never sent to, counted in left.blocked so the screen can say so.
+  const blockedSet = new Set([...(blocked instanceof Set ? blocked : Array.isArray(blocked) ? blocked : [])].map((e) => String(e || '').trim().toLowerCase()).filter(Boolean));
   const emailOf = (id) => {
     if (!authEmails) return null;
     const v = authEmails instanceof Map ? authEmails.get(String(id)) : authEmails[String(id)];
     return v == null ? null : String(v);
   };
-  const left = { notLogin: 0, noAccess: 0, noEmail: 0, staff: 0, managers: 0, otherCompany: 0, duplicate: 0 };
+  const left = { notLogin: 0, noAccess: 0, noEmail: 0, staff: 0, managers: 0, otherCompany: 0, duplicate: 0, blocked: 0 };
   const picked = [];
   for (const p of profiles || []) {
     if (!p || !p.id) continue;
@@ -446,6 +587,7 @@ export function pickRecipients(input) {
     if (p.bo_access === false) { left.noAccess += 1; continue; }
     const email = String(emailOf(p.id) || p.email || '').trim().toLowerCase();
     if (!isEmail(email)) { left.noEmail += 1; continue; }
+    if (blockedSet.has(email)) { left.blocked += 1; continue; }
     if ((isStaffRole || isStaffEmail(email)) && !includeStaff) { left.staff += 1; continue; }
     if (ownersOnly && role === 'manager') { left.managers += 1; continue; }
     const orgId = p.org_id ? String(p.org_id) : null;
