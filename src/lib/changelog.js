@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.65',
+    date: '5 Nov 2026',
+    items: [
+      'Delete organisation: all locations and wipe all data (Peter, 5 Nov 2026: "Cant delete organizations from the back office. Delete button doesn\'t do anything, this should say delete organizations - all locations and wipe all data"). The old Delete deleted 13 hand picked tables from the browser and ignored every error, so with two hundred tables pointing at a venue the organisation never went. Now Company Admin, Organisations, Delete organisation opens one screen: it counts first what would go (locations, rows by table, closed checks, customers, logins, files), asks for the organisation name typed out, and the red button only then deletes everything on the server: every Ops table that belongs to each venue (and every row that points at those, whatever the table), the company rows, the people\'s profiles and their Back Office sign ins (never a ServOS staff login), the Platform company (gift cards, loyalty, online pages, payment records, readers, billing) and the stored files. Venue by venue, each step all or nothing; a step that fails stops the rest and says so, and Delete again carries on. The location Delete uses the same screen. ServOS staff only, behind the second sign in step. SQL 20261125a (Ops) and 20261125b (Platform), deploy org-admin; until then the screen says what is missing and deletes nothing.',
+    ],
+  },
+  {
     v: '5.12.64',
     date: '5 Nov 2026',
     items: [
