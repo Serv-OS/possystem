@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.66',
+    date: '6 Nov 2026',
+    items: [
+      'Customer app gateway (the native customer app, one app themed per tenant, its own repository). One new edge function, customer-app, called with the public key like loyalty-otp, adds the four things the web loyalty portal never needed and changes nothing that exists: a sign in that lasts (session_start turns a fresh loyalty-otp token into a 180 day refresh token, session_refresh rotates it and mints a brand new loyalty-otp token, so every existing loyalty-otp action keeps working; an old token used again ends every sign in in that chain; session_end signs out), Delete my account (Peter, 18 Sep 2026: wipe personal data, end the membership and stamps, keep sales and gift ledgers; the name becomes Deleted customer, deleted_at is set, every app sign in ends, closed checks, orders, loyalty and stamp ledgers and gift cards stay), the organisation\'s live venues with opening hours, open or closed now and the web ordering link, and the tenant theme (tenant_app_config, checked against the app\'s own schema before it leaves). No customer id is ever read from a request. SQL 20261126a (Ops: customer_app_sessions, tenant_app_config, customer_app_delete_account) and 20261126b (Platform: customer_app_end_loyalty); deploy customer-app. The first tenant row is inserted by hand (example at the end of the Ops file). Nothing on the till, in Back Office or on the web portal changes.',
+    ],
+  },
+  {
     v: '5.12.65',
     date: '5 Nov 2026',
     items: [
