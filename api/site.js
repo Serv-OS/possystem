@@ -24,6 +24,7 @@ import { getShell, injectShell, bootScript } from './_lib/website/shell.js';
 import { resolveSite, loadDraftSnapshot } from './_lib/website/resolveSite.js';
 import { menuForPage } from './_lib/website/menuForPage.js';
 import { formsForPage } from './_lib/website/formsForPage.js';
+import { reviewsForPage } from './_lib/website/reviewsForPage.js';
 import { formStateFrom } from '../src/lib/forms/formRules.js';
 import { submitUrl } from '../src/lib/forms/formHtml.js';
 
@@ -111,11 +112,12 @@ export default async function handler(req, res) {
     const pagePath = preview ? (new URL(req.url || '/', 'https://x.invalid').searchParams.get('page') || '/') : path;
     const route = resolveRoute(snapshot, pagePath);
     const ctx = buildCtx({ snapshot, host, path: pagePath, customerRoot: root, menuVenue: venue, pageKind: route.page ? route.page.kind : null });
-    const [menu, forms] = route.page ? await Promise.all([menuForPage(ops, route.page, ctx), formsForPage(ops, route.page, snapshot)]) : [null, {}];
+    // 5.12.67: the Review Manager's public reviews for the page's Reviews blocks (only when switched on).
+    const [menu, forms, reviews] = route.page ? await Promise.all([menuForPage(ops, route.page, ctx), formsForPage(ops, route.page, snapshot), reviewsForPage(ops, route.page, snapshot)]) : [null, {}, []];
     const formAction = submitUrl(opsEnv().url);
-    const rendered = renderPage({ snapshot, route, path: pagePath, host, menu, customerRoot: root, status, preview, menuVenue: venue, forms, formAction, formState });
+    const rendered = renderPage({ snapshot, route, path: pagePath, host, menu, reviews, customerRoot: root, status, preview, menuVenue: venue, forms, formAction, formState });
 
-    const boot = bootScript({ snapshot, path: pagePath, host, preview, status, forms, formAction });
+    const boot = bootScript({ snapshot, path: pagePath, host, preview, status, forms, formAction, reviews });
     const dep = req.headers['x-vercel-deployment-url'] || process.env.VERCEL_URL || '';
     const shell = dep ? await getShell(dep) : null;
     const html = shell ? injectShell(shell, { head: rendered.head, body: rendered.body, boot })

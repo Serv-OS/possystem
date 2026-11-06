@@ -7,6 +7,11 @@
 //       (t is an HMAC over "<customer_id>:<channel>" minted by marketing-send → no enumeration).
 //       Adds a marketing_suppressions row + writes a withdrawal to the customer_consents ledger.
 //
+//   (3) Tracked link click (5.12.67)  — GET ?action=click&m=<message id>&u=<url>&t=<token>
+//       t is an HMAC over "click:<message id>:<url>" minted when the email was sent. Writes one
+//       marketing_link_clicks row, moves the message to 'clicked' (once: the provider's own click
+//       event moves the same status, never a second count) and sends the person on with a 302.
+//
 //   (2) Provider event webhooks  — POST ?provider=twilio|resend|postmark[&key=<secret>]
 //       Updates marketing_messages status (delivered/opened/clicked/bounced/complained/failed) by
 //       provider_message_id, and on bounce / spam-complaint / SMS "STOP" adds a suppression.
@@ -15,6 +20,8 @@
 // ?key=<secret> to the webhook URL). Proper per-provider signature verification can harden in slice 8.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { clickParamsOk, plainUrl } from '../_shared/marketingLinks.js';
+import { clickToken } from '../_shared/marketingTracking.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -83,6 +90,30 @@ Deno.serve(async (req) => {
     // POST one-click (RFC 8058) wants a bare 200; GET (human) gets a confirmation page.
     if (req.method === 'POST') return json({ ok: true });
     return html('<div style="font-family:system-ui;max-width:420px;margin:80px auto;text-align:center"><h2>You\'re unsubscribed</h2><p style="color:#666">You will no longer receive marketing messages on this channel. You can opt back in any time from your account.</p></div>');
+  }
+
+  // ---------- (3) TRACKED LINK CLICK (GET) ----------
+  if (action === 'click') {
+    const ok = clickParamsOk({ m: url.searchParams.get('m'), u: url.searchParams.get('u'), t: url.searchParams.get('t') });
+    if (!ok.ok) return html('<h2>This link is not valid.</h2>', 400);
+    if (ok.token !== (await clickToken(ok.messageId, ok.url))) return html('<h2>This link is not valid.</h2>', 403);
+    // HEAD (link scanners) is sent on without being counted.
+    if (req.method === 'GET') {
+      try {
+        const { data: row } = await opsAdmin.from('marketing_messages').select('id, org_id, campaign_id, workflow_id, customer_id, status, clicked_at').eq('id', ok.messageId).maybeSingle();
+        if (row) {
+          await opsAdmin.from('marketing_link_clicks').insert({
+            org_id: row.org_id, message_id: row.id, campaign_id: row.campaign_id || null, workflow_id: row.workflow_id || null,
+            customer_id: row.customer_id || null, url: plainUrl(ok.url).slice(0, 2048), user_agent: (req.headers.get('user-agent') || '').slice(0, 200) || null,
+          });
+          const upd: Record<string, unknown> = {};
+          if ((RANK['clicked'] ?? 99) > (RANK[row.status] ?? -1)) upd.status = 'clicked';
+          if (!row.clicked_at) upd.clicked_at = new Date().toISOString();
+          if (Object.keys(upd).length) await opsAdmin.from('marketing_messages').update(upd).eq('id', row.id);
+        }
+      } catch (e) { console.warn('[marketing-webhook] click not recorded:', e instanceof Error ? e.message : String(e)); }
+    }
+    return new Response(null, { status: 302, headers: { ...cors, Location: ok.url, 'Cache-Control': 'no-store' } });
   }
 
   // ---------- (2) PROVIDER EVENT WEBHOOKS (POST) ----------

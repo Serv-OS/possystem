@@ -3,6 +3,9 @@
 // Slice 7 — back-office marketing reporting & attribution. Auth mirrors marketing-campaigns. One action:
 //   overview { ops_location_id, days? }  → the whole dashboard for the org over the window (default 30d)
 // via the marketing_report() SQL function (all aggregation server-side).
+// 5.12.67: two more, same shape:
+//   links    { ops_location_id, days? }  → clicks on tracked email links per campaign, automation and link (marketing_link_report)
+//   website  { ops_location_id, days? }  → the venue website's visits: per day, pages, referrers, sources, from campaigns (website_report)
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -30,7 +33,9 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
   let body: any; try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const ops = String(body?.ops_location_id ?? '').trim();
-  if (String(body?.action ?? '') !== 'overview' || !ops) return json({ error: 'action overview + ops_location_id required' }, 400);
+  const action = String(body?.action ?? '');
+  const FN: Record<string, string> = { overview: 'marketing_report', links: 'marketing_link_report', website: 'website_report' };
+  if (!FN[action] || !ops) return json({ error: 'action overview, links or website + ops_location_id required' }, 400);
   if (!(await authed(req, ops))) return json({ error: 'no access to this location' }, 403);
   const { data: loc } = await sb.from('locations').select('org_id').eq('id', ops).maybeSingle();
   const org_id = loc?.org_id;
@@ -38,7 +43,9 @@ Deno.serve(async (req) => {
 
   const days = Math.min(Math.max(Number(body.days) || 30, 1), 365);
   const since = new Date(Date.now() - days * 86400000).toISOString();
-  const { data, error } = await sb.rpc('marketing_report', { p_org: org_id, p_since: since });
+  const { data, error } = await sb.rpc(FN[action], { p_org: org_id, p_since: since });
+  // The SQL not run yet (20261126a): say so in words, the screen shows the message.
+  if (error && /could not find the function|does not exist/i.test(error.message)) return json({ error: 'This report needs SQL 20261126a run on the database first.', code: 'sql_missing' }, 400);
   if (error) return json({ error: error.message }, 500);
   return json({ ok: true, days, report: data });
 });

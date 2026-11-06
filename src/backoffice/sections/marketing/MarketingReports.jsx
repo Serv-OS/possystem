@@ -4,7 +4,7 @@
 // edge fn (marketing_report SQL aggregation) → KPIs, channel split, per-campaign and per-offer tables.
 // Revenue is the gross total of orders where a code was redeemed (attributed to the campaign/offer).
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { money as venueMoneyText } from '../../../lib/currency';
 import { dateNumeric, venueStamp } from '../../../lib/venueDates';
@@ -42,11 +42,20 @@ export default function MarketingReports() {
   const [codes, setCodes] = useState(null);          // { rows, total, tally }
   const [codeFilter, setCodeFilter] = useState({ status: '', campaign_id: '' });
   const [codesBusy, setCodesBusy] = useState(false);
+  // 5.12.67: clicks on tracked email links, per campaign, automation and link (marketing_link_report).
+  const [links, setLinks] = useState(null);     // { clicks, customers, campaigns, workflows, links } | { err }
+  const [openLinks, setOpenLinks] = useState({}); // campaign or workflow id -> expanded
 
   const loadReport = async (id, d) => {
     setBusy(true);
-    try { const { data } = await supabase.functions.invoke('marketing-report', { body: { action: 'overview', ops_location_id: id, days: d } }); setReport(data?.report || null); }
-    finally { setBusy(false); }
+    try {
+      const [{ data }, { data: lk }] = await Promise.all([
+        supabase.functions.invoke('marketing-report', { body: { action: 'overview', ops_location_id: id, days: d } }),
+        supabase.functions.invoke('marketing-report', { body: { action: 'links', ops_location_id: id, days: d } }),
+      ]);
+      setReport(data?.report || null);
+      setLinks(lk?.report ? lk.report : { err: lk?.error || 'Link clicks could not be read.' });
+    } finally { setBusy(false); }
   };
 
   const loadCodes = async (id = locId, f = codeFilter, offset = 0, append = false) => {
@@ -235,6 +244,44 @@ export default function MarketingReports() {
           </table>
         )}
         <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>Enrolled/Completed are over the window; “Completed (%)” is the conversion to the final step. Sent/Open/Click are this window’s step sends (open/click need the email provider’s tracking webhook). Revenue is orders where a code from this automation was redeemed.</div>
+      </div>
+
+      {/* 5.12.67: link clicks. Every link in a campaign or automation email goes through a signed
+          redirect that records the click, so this needs no provider webhook. */}
+      <div style={S.card}>
+        <h2 style={S.h2}>Link clicks</h2>
+        {!links && <div style={{ fontSize: 13, color: 'var(--t4) ' }}>Loading…</div>}
+        {links?.err && <div style={{ fontSize: 13, color: 'var(--red)' }}>{links.err}</div>}
+        {links && !links.err && (
+          <>
+            <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 10 }}><b style={{ color: 'var(--t1)' }}>{links.clicks || 0}</b> clicks by <b style={{ color: 'var(--t1)' }}>{links.customers || 0}</b> customers in the last {days} days.</div>
+            {[...(links.campaigns || []).map((c) => ({ ...c, key: c.campaign_id, kind: 'Campaign' })), ...(links.workflows || []).map((w) => ({ ...w, key: w.workflow_id, kind: 'Automation' }))].length === 0
+              ? <div style={{ fontSize: 13, color: 'var(--t4)' }}>No link clicks in this window. Links in every email sent from now on are tracked.</div>
+              : (
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr><th style={S.th}>Campaign / automation</th><th style={{ ...S.th, textAlign: 'right' }}>Clicks</th><th style={{ ...S.th, textAlign: 'right' }}>Customers</th><th style={S.th}></th></tr></thead>
+                  <tbody>
+                    {[...(links.campaigns || []).map((c) => ({ ...c, key: c.campaign_id, kind: 'Campaign' })), ...(links.workflows || []).map((w) => ({ ...w, key: w.workflow_id, kind: 'Automation' }))].map((c) => (
+                      <Fragment key={c.key}>
+                        <tr>
+                          <td style={S.td}>{c.name} <span style={{ fontSize: 11, color: 'var(--t4)' }}>· {c.kind}</span></td>
+                          <td style={S.tdr}>{c.clicks}</td><td style={S.tdr}>{c.customers}</td>
+                          <td style={{ ...S.td, textAlign: 'right' }}><button style={{ background: 'transparent', border: '1px solid var(--bdr2)', borderRadius: 7, padding: '4px 9px', fontSize: 11.5, cursor: 'pointer', color: 'var(--t2)', fontFamily: 'inherit' }} onClick={() => setOpenLinks((o) => ({ ...o, [c.key]: !o[c.key] }))}>{openLinks[c.key] ? 'Hide links' : `Links (${(c.links || []).length})`}</button></td>
+                        </tr>
+                        {openLinks[c.key] && (c.links || []).map((l) => (
+                          <tr key={l.url}>
+                            <td style={{ ...S.td, paddingLeft: 24, fontSize: 12, wordBreak: 'break-all' }}><a href={l.url} target="_blank" rel="noreferrer" style={{ color: 'var(--t2)' }}>{l.url}</a></td>
+                            <td style={S.tdr}>{l.clicks}</td><td style={S.tdr}>{l.customers}</td><td style={S.td}></td>
+                          </tr>
+                        ))}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>A click is counted when a customer opens a link from the email; the customer's record (Customers) lists what they clicked. Some mail scanners open links before the person does, so a click can arrive early.</div>
+          </>
+        )}
       </div>
     </div>
   );

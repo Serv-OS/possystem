@@ -180,7 +180,7 @@ test('form-submit: public, CORS here only, a plain post answers 303 to an allowe
   const site = read('api/site.js');
   assert.doesNotMatch(site, /Access-Control-Allow-Origin/);
   assert.match(site, /formsForPage\(ops, route\.page, snapshot\)/);
-  assert.match(site, /bootScript\(\{ snapshot, path: pagePath, host, preview, status, forms, formAction \}\)/);
+  assert.match(site, /bootScript\(\{ snapshot, path: pagePath, host, preview, status, forms, formAction, reviews \}\)/);   // 5.12.67: reviews ride the same boot
 });
 
 test('marketing-forms: second step, company from the venue, an id must be mine', () => {

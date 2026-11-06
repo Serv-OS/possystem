@@ -11,6 +11,9 @@
 import { renderMergeTags, buildMergeContext } from './marketing-merge.ts';
 import { resolveSenderForOrg, type Sender } from './sending-domain.ts';
 import { resendBatchItems, SMS_GAP_MS } from './campaignBatch.js';
+import { mentionsLoyalty } from './loyaltyMerge.js';
+import { loyaltyValuesFor, BLANK_LOYALTY } from './loyaltyMergeRead.ts';
+import { trackLinks } from './marketingTracking.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -123,10 +126,16 @@ export async function deliverBatch(sb: any, p: DeliverParams): Promise<DeliverRe
   const results: DeliverResult[] = [];
   const rows: Record<string, unknown>[] = [];   // marketing_messages rows to insert, one per recipient
   const toSend: Pending[] = [];
+  // 5.12.67: each recipient's message id is chosen up front so the tracked links can name it.
+  const messageIdOf = new Map<string, string>(recips.map((r) => [r.idempotency_key, crypto.randomUUID()]));
   const baseRow = (r: DeliverRecipient, address: string) => ({
-    org_id: p.org_id, customer_id: r.customer_id, channel, to_address: address || '(none)',
+    id: messageIdOf.get(r.idempotency_key), org_id: p.org_id, customer_id: r.customer_id, channel, to_address: address || '(none)',
     campaign_id: p.campaign_id, promo_code: r.promo_code || null, idempotency_key: r.idempotency_key,
   });
+  // 5.12.67: loyalty tags, one read for the batch, only when the message asks for one.
+  let loyaltyOf = new Map<string, Record<string, string | number>>();
+  const wantLoyalty = mentionsLoyalty(p.subject, p.html, p.text, p.sms_body, ...recips.map((r) => r.subject || ''));
+  if (wantLoyalty) { try { loyaltyOf = (await loyaltyValuesFor(sb, p.org_id, ids)).values; } catch { /* blanks */ } }
 
   for (const r of recips) {
     const ex = dedupe.get(r.idempotency_key);
@@ -141,9 +150,11 @@ export async function deliverBatch(sb: any, p: DeliverParams): Promise<DeliverRe
 
     const link = await unsubUrl(r.customer_id, channel);
     const prefs = channel === 'email' ? await prefUrl(r.customer_id) : null;
-    const ctx = buildMergeContext(cust, { ...((r.merge || {}) as Record<string, string>), unsubscribe_url: link || '', preferences_url: prefs || '' });
+    const loyalty = wantLoyalty ? { ...BLANK_LOYALTY, ...(loyaltyOf.get(r.customer_id) || {}) } : {};
+    const ctx = buildMergeContext(cust, { ...loyalty, ...((r.merge || {}) as Record<string, string>), unsubscribe_url: link || '', preferences_url: prefs || '' });
     const subject = renderMergeTags(r.subject || p.subject || '', ctx);
     let html = renderMergeTags(p.html || '', ctx);
+    if (channel === 'email') html = await trackLinks(html, messageIdOf.get(r.idempotency_key) || '', { campaignId: p.campaign_id });
     let text = renderMergeTags(p.text || '', ctx);
     let sms = renderMergeTags(p.sms_body || p.text || '', ctx);
     if (channel === 'email' && link) {

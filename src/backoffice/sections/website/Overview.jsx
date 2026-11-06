@@ -87,6 +87,35 @@ function ChannelsCard({ site, saveSite, toast }) {
   );
 }
 
+// 5.12.67 (Peter: "website traffic reports"): one site wide switch. Visits: on by default; off
+// stops the page view ping, so the Website report sees nothing from this site. Reviews have no
+// switch here (Peter, 6 Nov 2026: "just a website builder element we can drag on if we choose"):
+// a Reviews block on a page shows the Review Manager's public reviews, each block picks how many
+// and the minimum stars.
+function VisitsCard({ site, saveSite, toast }) {
+  const [busy, setBusy] = useState(null);
+  const settings = site?.settings || {};
+  const visitsOn = settings.analytics_enabled !== false;
+  const flip = async (key, on) => {
+    setBusy(key);
+    const { error } = await saveSite({ settings: { ...settings, [key]: on } });
+    setBusy(null);
+    if (error) toast(error.message || 'Could not save', 'error');
+  };
+  return (
+    <div style={W.card}>
+      <h2 style={W.h2}>Visits</h2>
+      <div style={W.switchRow}>
+        <div>
+          <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>Count visits</div>
+          <div style={W.hint}>Feeds the Website report under Customers: visits per day, pages, where people came from and which campaign link brought them. No cookie, nothing kept on the visitor's phone.</div>
+        </div>
+        <Toggle on={visitsOn} label="Count visits" onChange={(v) => busy ? null : flip('analytics_enabled', v)} />
+      </div>
+    </div>
+  );
+}
+
 function HealthCard({ site, pages, branding, onBranding }) {
   const items = healthChecklist({ site, pages, branding });
   const okCount = items.filter((i) => i.ok).length;
@@ -147,6 +176,7 @@ export default function Overview({ ws, toast, onBuild, onDesigner, onEditor, onB
         </div>
         <div>
           <ChannelsCard site={site} saveSite={ws.saveSite} toast={toast} />
+          <VisitsCard site={site} saveSite={ws.saveSite} toast={toast} />
           <HealthCard site={site} pages={pages} branding={branding} onBranding={onBranding} />
         </div>
       </div>

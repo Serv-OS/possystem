@@ -173,7 +173,7 @@ test('Drop 3 adds exactly six routes and Drop 4a exactly stock-gp: no multi-site
   assert.ok(!allRoutes.includes('multi-site-stock'), 'Menu > Multi site stock never comes back');
   assert.ok(allRoutes.includes(STOCK_GP_ROUTE));
   assert.deepEqual([...BETA_ROUTES], [MSM_ROUTE]);
-  assert.equal(allRoutes.length, 102, 'the 93 routes of v5.11.84 plus the 6 of Drop 3 plus stock-gp plus wf-chat (5.11.102) plus marketing-forms (5.12.40)');
+  assert.equal(allRoutes.length, 103, 'the 93 routes of v5.11.84 plus the 6 of Drop 3 plus stock-gp plus wf-chat (5.11.102) plus marketing-forms (5.12.40) plus website-report (5.12.67)');
   for (const id of STOCK_GATED) assert.ok(allRoutes.includes(id), id);
   assert.doesNotMatch(read('./boSections.js'), /multi-site-stock/);
   assert.equal(STOCK_GP_ROUTE, 'stock-gp');
