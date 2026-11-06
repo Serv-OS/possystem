@@ -369,8 +369,8 @@ export function settingsProblems(settings) {
   if (settings === undefined) return [];
   if (!isPlainObject(settings)) return ['Settings must be an object.'];
   const errors = [];
-  // 5.12.67: reviews_enabled (Review Manager reviews on the site) and analytics_enabled (page view pings).
-  for (const k of ['allow_custom_code', 'nearest_store', 'reviews_enabled', 'analytics_enabled']) {
+  // 5.12.67: analytics_enabled (page view pings). Reviews have no switch: the Reviews block is the choice.
+  for (const k of ['allow_custom_code', 'nearest_store', 'analytics_enabled']) {
     if (settings[k] !== undefined && typeof settings[k] !== 'boolean') errors.push(`Settings ${k} must be true or false.`);
   }
   errors.push(strProblem('Settings custom_head_html', settings.custom_head_html, LIMITS.MAX_STRING));

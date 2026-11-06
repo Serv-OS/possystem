@@ -87,14 +87,14 @@ function ChannelsCard({ site, saveSite, toast }) {
   );
 }
 
-// 5.12.67 (Peter: "Reviews on the website", "website traffic reports"): two site wide switches.
-// Reviews: off until switched on; then every Reviews block on the site shows the Review Manager's
-// public reviews (each block picks how many and the minimum stars). Visits: on by default; off
-// stops the page view ping, so the Website report sees nothing from this site.
-function ReviewsVisitsCard({ site, saveSite, toast }) {
+// 5.12.67 (Peter: "website traffic reports"): one site wide switch. Visits: on by default; off
+// stops the page view ping, so the Website report sees nothing from this site. Reviews have no
+// switch here (Peter, 6 Nov 2026: "just a website builder element we can drag on if we choose"):
+// a Reviews block on a page shows the Review Manager's public reviews, each block picks how many
+// and the minimum stars.
+function VisitsCard({ site, saveSite, toast }) {
   const [busy, setBusy] = useState(null);
   const settings = site?.settings || {};
-  const reviewsOn = settings.reviews_enabled === true;
   const visitsOn = settings.analytics_enabled !== false;
   const flip = async (key, on) => {
     setBusy(key);
@@ -104,14 +104,7 @@ function ReviewsVisitsCard({ site, saveSite, toast }) {
   };
   return (
     <div style={W.card}>
-      <h2 style={W.h2}>Reviews and visits</h2>
-      <div style={W.switchRow}>
-        <div>
-          <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>Show reviews on the site</div>
-          <div style={W.hint}>Public reviews from Customers, Reviews appear in every Reviews block (rating, words, first name, date, source). Each block sets how many and the minimum stars.</div>
-        </div>
-        <Toggle on={reviewsOn} label="Show reviews on the site" onChange={(v) => busy ? null : flip('reviews_enabled', v)} />
-      </div>
+      <h2 style={W.h2}>Visits</h2>
       <div style={W.switchRow}>
         <div>
           <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>Count visits</div>
@@ -183,7 +176,7 @@ export default function Overview({ ws, toast, onBuild, onDesigner, onEditor, onB
         </div>
         <div>
           <ChannelsCard site={site} saveSite={ws.saveSite} toast={toast} />
-          <ReviewsVisitsCard site={site} saveSite={ws.saveSite} toast={toast} />
+          <VisitsCard site={site} saveSite={ws.saveSite} toast={toast} />
           <HealthCard site={site} pages={pages} branding={branding} onBranding={onBranding} />
         </div>
       </div>

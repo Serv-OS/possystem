@@ -27,7 +27,7 @@ import { loadMenu } from './data/loadMenu.js';
 import { BlockRenderer } from './blocks/BlockRenderer.jsx';
 import { PostArticle } from './blocks/components/ContentBlocks.jsx';
 import { formIdsOf, siteOpsLocationIds } from './formsOnPage.js';
-import { reviewsEnabled, reviewsAskOf, reviewRowsForBlocks } from './reviewsOnPage.js';
+import { reviewsAskOf, reviewRowsForBlocks } from './reviewsOnPage.js';
 import { shouldPing, pingPayload, sendPing } from './visitPing.js';
 import { submitUrl } from '../../lib/forms/formHtml.js';
 
@@ -205,7 +205,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   useEffect(() => {
     const page = route && route.page;
     const ask = page ? reviewsAskOf(page) : null;
-    if (!ask || !supabase || !reviewsEnabled(snapshot)) return undefined;
+    if (!ask || !supabase) return undefined;
     const key = `${ask.min}:${ask.count}`;
     if (reviewsKeyRef.current === key || (reviewsKeyRef.current === 'boot' && reviews.length)) { reviewsKeyRef.current = key; return undefined; }
     const venues = siteOpsLocationIds(snapshot);

@@ -3,18 +3,13 @@
 // Peter: "Reviews on the website". Which reviews a page needs from the Review Manager, decided the
 // same way on the server (api/_lib/website/reviewsForPage.js) and in the browser (WebsiteSurface).
 // The read is review_feedback_public on Ops (anon): public reviews only, first name and last
-// initial, never a contact detail. It runs only when the site has reviews switched on
-// (settings.reviews_enabled, Back Office, Website builder, Overview) AND the page has a Reviews block.
+// initial, never a contact detail. Peter (6 Nov 2026): "website reviews should be just a website
+// builder element we can drag on if we choose". So there is NO site switch: a page with a Reviews
+// block reads reviews, a page without one never does.
 
 import { walkBlocks } from './blocks/schema.js';
 
 export const MAX_REVIEWS = 24;
-
-/** True when the owner switched reviews on for the site. Off until they do. */
-export function reviewsEnabled(snapshot) {
-  const s = snapshot && snapshot.site && snapshot.site.settings;
-  return !!(s && s.reviews_enabled === true);
-}
 
 /** The widest ask of the page's Reviews blocks: { min, count }, or null when the page has none. */
 export function reviewsAskOf(page) {

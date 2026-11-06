@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { shouldPing, pingPayload, sendPing } from './visitPing.js';
-import { reviewsEnabled, reviewsAskOf, reviewRowsForBlocks } from './reviewsOnPage.js';
+import { reviewsAskOf, reviewRowsForBlocks } from './reviewsOnPage.js';
 
 test('a view is reported only on a live site with visits on', () => {
   const snapshot = { site: { settings: {} } };
@@ -22,9 +22,7 @@ test('the payload carries host, path, referrer, utm and the message token and no
   assert.equal(sendPing('', { host: 'a' }), false);
 });
 
-test('reviews: off until the owner switches them on, the page asks with its widest block', () => {
-  assert.equal(reviewsEnabled({ site: { settings: {} } }), false);
-  assert.equal(reviewsEnabled({ site: { settings: { reviews_enabled: true } } }), true);
+test('reviews: no site switch, the Reviews block on the page is the ask, the widest block wins', () => {
   const page = { layout: { content: [{ type: 'Reviews', props: { min_stars: 5, count: 3 } }, { type: 'Reviews', props: { min_stars: 3, count: 9 } }, { type: 'Text', props: {} }] } };
   assert.deepEqual(reviewsAskOf(page), { min: 3, count: 9 });
   assert.equal(reviewsAskOf({ layout: { content: [{ type: 'Text', props: {} }] } }), null);
