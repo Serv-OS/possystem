@@ -20,6 +20,10 @@ import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
 import TimezoneOptions from '../components/TimezoneOptions';
 import { defaultTimezoneFor } from '../lib/timezones';
+// 5 Nov 2026: Delete organisation: all locations and wipe all data. The screen only asks the
+// org-admin function; the wipe runs on the server (SQL 20261125a Ops, 20261125b Platform).
+import { callOrgAdmin } from '../lib/orgAdmin';
+import { ORG_WIPE_TITLE, LOCATION_WIPE_TITLE, nameMatches, wipeSummary, wipeDoneLine } from '../lib/orgWipeRules';
 
 // v5.11.75: loaded only when a company is opened here, so the Multi site menu code never rides in
 // the bundle every till downloads.
@@ -176,6 +180,54 @@ export default function CompanyAdminApp() {
   return <AdminPanel authUser={authUser} />;
 }
 
+/**
+ * The one screen before an organisation or a location is deleted (Peter, 5 Nov 2026: "this should
+ * say delete organizations - all locations and wipe all data"). It shows what the server counted
+ * (a dry run, nothing changed yet), asks for the name typed out, and only then lets the red
+ * button go. confirm() is never used: app shells show no confirm dialog at all.
+ *
+ *   wipe { kind: 'org' | 'location', target: { id, name }, preview, loading, typed, error, busy }
+ */
+function WipeModal({ wipe, onTyped, onConfirm, onClose }) {
+  const isOrg = wipe.kind === 'org';
+  const title = isOrg ? ORG_WIPE_TITLE : LOCATION_WIPE_TITLE;
+  const name = wipe.target?.name || '';
+  const summary = wipe.preview ? wipeSummary(wipe.preview) : null;
+  const ready = !wipe.loading && !wipe.busy && !!wipe.preview && nameMatches(wipe.typed, name);
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && !wipe.busy && onClose()}
+      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.6)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:50, padding:16 }}>
+      <div role="dialog" aria-label={title} style={{ ...S.card, width:'100%', maxWidth:520, marginBottom:0, border:'1px solid var(--red-b)' }}>
+        <div style={{ fontSize:17, fontWeight:800, color:'var(--red)', marginBottom:4 }}>{title}</div>
+        <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:12 }}>{name}</div>
+        {wipe.loading && <div style={{ fontSize:13, color:'var(--t3)' }}>Counting what would go…</div>}
+        {!wipe.loading && wipe.preview && (
+          <>
+            <div style={{ fontSize:12, color:'var(--t3)', marginBottom:6 }}>This cannot be undone. It deletes:</div>
+            <ul style={{ margin:'0 0 12px', paddingLeft:18, fontSize:13, color:'var(--t1)', lineHeight:1.6 }}>
+              {isOrg && (wipe.preview.locations || []).map(l => <li key={l.id}><b>{l.name}</b> and every row of its data</li>)}
+              {summary.lines.map(line => <li key={line}>{line}</li>)}
+              <li>Files in storage (logos, documents, invoice scans, photos)</li>
+              {isOrg && <li>The Platform company (gift cards, loyalty, online pages, payment records)</li>}
+            </ul>
+            <label style={S.label}>Type the {isOrg ? 'organisation' : 'location'} name to confirm</label>
+            <input value={wipe.typed} onChange={e => onTyped(e.target.value)} placeholder={name} autoFocus disabled={wipe.busy}
+              onKeyDown={e => { if (e.key === 'Enter' && ready) onConfirm(); if (e.key === 'Escape' && !wipe.busy) onClose(); }}
+              style={{ ...S.input, marginBottom:12 }} aria-label="Name to confirm" />
+          </>
+        )}
+        {wipe.error && <div style={{ fontSize:13, color:'var(--red)', marginBottom:12 }}>{wipe.error}</div>}
+        <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+          <button type="button" onClick={onClose} disabled={wipe.busy} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
+          <button type="button" onClick={onConfirm} disabled={!ready} style={{ ...S.btn, background:'var(--red)', color:'#fff', opacity: ready ? 1 : .5 }}>
+            {wipe.busy ? 'Deleting…' : (isOrg ? 'Delete organisation and all its data' : 'Delete location and all its data')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminPanel({ authUser }) {
   const [section, setSection] = useState('orgs');
   const [orgs, setOrgs] = useState([]);
@@ -201,6 +253,7 @@ function AdminPanel({ authUser }) {
   const locTzDefault = form.locCurrency ? defaultTimezoneFor(form.locCurrency) : '';
   const [working, setWorking] = useState(false);
   const [msg, setMsg] = useState({ type:'', text:'' });
+  const [wipe, setWipe] = useState(null);   // 5 Nov 2026: the delete and wipe screen (WipeModal)
 
   const loadAllUsers = async () => {
     // Fetches every user_profiles row across all orgs. Only callable from
@@ -299,44 +352,48 @@ function AdminPanel({ authUser }) {
     ok('✓ Organisation renamed');
   };
 
-  // ── Delete org ───────────────────────────────────────────────────────────────
-  const deleteOrg = async (org) => {
-    if (!confirm(`Delete "${org.name}" and ALL its locations, devices, menus and data? This cannot be undone.`)) return;
-    setWorking(true);
+  // ── Delete org: all locations and wipe all data ─────────────────────────────
+  // 5 Nov 2026 (Peter: "Delete button doesn't do anything, this should say delete organizations -
+  // all locations and wipe all data"). The old code deleted 13 hand listed tables from the browser
+  // and ignored every error, so the organisation never went. Now: the org-admin function counts
+  // first (a dry run), the name is typed, and the server wipes every table, the logins, the
+  // Platform rows and the stored files. See lib/orgWipeRules.js and the SQL files.
+  const openWipe = async (kind, target) => {
     setMsg({ type:'', text:'' });
+    setWipe({ kind, target, preview:null, loading:true, typed:'', error:'', busy:false });
     try {
-      // Get all locations for this org
-      const { data: locs } = await sbFetch(`locations?org_id=eq.${org.id}&select=id`);
-      const locIds = (locs || []).map(l => l.id);
-      // Delete location data in order
-      for (const locId of locIds) {
-        await sbFetch(`kds_tickets?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`closed_checks?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`config_pushes?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`devices?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`staff_members?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`floor_tables?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`menu_items?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`menu_categories?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`menus?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`sections?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`subscriptions?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`location_features?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-        await sbFetch(`eighty_six?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
+      const preview = await callOrgAdmin(kind === 'org' ? 'preview' : 'preview_location', kind === 'org' ? { org_id: target.id } : { location_id: target.id });
+      setWipe(w => (w && w.target?.id === target.id ? { ...w, preview, loading:false } : w));
+    } catch (e) {
+      setWipe(w => (w && w.target?.id === target.id ? { ...w, loading:false, error: e.message } : w));
+    }
+  };
+  const deleteOrg = (org) => openWipe('org', org);
+
+  const confirmWipe = async () => {
+    if (!wipe || wipe.busy || !wipe.preview) return;
+    const { kind, target, typed } = wipe;
+    if (!nameMatches(typed, target.name)) return;
+    setWipe(w => ({ ...w, busy:true, error:'' }));
+    setWorking(true);
+    try {
+      const report = kind === 'org'
+        ? await callOrgAdmin('delete_org', { org_id: target.id, name_typed: typed })
+        : await callOrgAdmin('delete_location', { location_id: target.id, name_typed: typed });
+      setWipe(null);
+      if (kind === 'org') {
+        if (selectedOrg?.id === target.id) { setSelectedOrg(null); setSection('orgs'); }
+        await loadOrgs();
+        await loadAllUsers();
+      } else if (selectedOrg) {
+        await loadLocations(selectedOrg.id);
+        await loadUsers(selectedOrg.id);
       }
-      // Delete user_locations and user_profiles for this org
-      const { data: ups } = await sbFetch(`user_profiles?org_id=eq.${org.id}&select=id`);
-      for (const up of ups || []) {
-        await sbFetch(`user_locations?user_id=eq.${up.id}`, { method:'DELETE', prefer:'' });
-      }
-      await sbFetch(`user_profiles?org_id=eq.${org.id}`, { method:'DELETE', prefer:'' });
-      // Finally delete locations and org
-      if (locIds.length) await sbFetch(`locations?org_id=eq.${org.id}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`organisations?id=eq.${org.id}`, { method:'DELETE', prefer:'' });
-      if (selectedOrg?.id === org.id) { setSelectedOrg(null); setSection('orgs'); }
-      await loadOrgs();
-      ok(`✓ "${org.name}" and all its data permanently deleted`);
-    } catch(e) { err('Delete failed: ' + e.message); }
+      const lines = Array.isArray(report?.storage?.errors) && report.storage.errors.length ? ' ' + report.storage.errors.join('; ') : '';
+      ok(`\u2713 ${wipeDoneLine(kind, target.name, report)}${lines}`);
+    } catch (e) {
+      setWipe(w => (w ? { ...w, busy:false, error: e.message } : w));
+    }
     setWorking(false);
   };
 
@@ -352,37 +409,8 @@ function AdminPanel({ authUser }) {
     else ok(`✓ Location renamed${service?.words ? `. ${service.words}` : ''}`);
   };
 
-  // ── Delete location ──────────────────────────────────────────────────────────
-  const deleteLocation = async (loc) => {
-    if (!confirm(`Delete "${loc.name}" and ALL its devices, menus, floor plan and data? This cannot be undone.`)) return;
-    setWorking(true);
-    setMsg({ type:'', text:'' });
-    try {
-      const locId = loc.id;
-      await sbFetch(`kds_tickets?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`closed_checks?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`config_pushes?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`devices?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`staff_members?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`floor_tables?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`menu_items?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`menu_categories?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`menus?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`sections?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`subscriptions?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`location_features?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await sbFetch(`eighty_six?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      // Remove user_locations links but keep user_profiles
-      await sbFetch(`user_locations?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      // Null out primary location_id on any user who had this as primary
-      await sbFetch(`user_profiles?location_id=eq.${locId}`, { method:'PATCH', body:{ location_id: null }, prefer:'' });
-      await sbFetch(`locations?id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      await loadLocations(selectedOrg.id);
-      await loadUsers(selectedOrg.id);
-      ok(`✓ "${loc.name}" and all its data permanently deleted`);
-    } catch(e) { err('Delete failed: ' + e.message); }
-    setWorking(false);
-  };
+  // ── Delete location and wipe all its data (same screen as the organisation) ──
+  const deleteLocation = (loc) => openWipe('location', loc);
 
   // ── Create org ───────────────────────────────────────────────────────────────
   const createOrg = async () => {
@@ -559,6 +587,7 @@ function AdminPanel({ authUser }) {
         {ms && msg.text && (
           <div style={{ background:ms.bg, border:`1px solid ${ms.border}`, color:ms.color, borderRadius:10, padding:'12px 16px', marginBottom:20, fontSize:13 }}>{msg.text}</div>
         )}
+        {wipe && <WipeModal wipe={wipe} onTyped={t => setWipe(w => (w ? { ...w, typed:t } : w))} onConfirm={confirmWipe} onClose={() => setWipe(null)} />}
 
         {/* ── Processing: payment accounts & pricing ── */}
         {section === 'billing' && <AdminBillingManager authUser={authUser} />}
@@ -606,7 +635,7 @@ function AdminPanel({ authUser }) {
                           <div style={{ fontSize:12, color:'var(--t3)' }}>{new Date(o.created_at).toLocaleDateString('en-GB')}</div>
                           <button onClick={() => selectOrg(o)} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}>Manage →</button>
                           <button onClick={() => setEditingOrg({ id:o.id, name:o.name })} style={{ ...S.btn, ...S.btnGhost, padding:'5px 12px', fontSize:12 }}><Icon name="pencil" size={14} /></button>
-                          <button onClick={() => deleteOrg(o)} disabled={working} style={{ ...S.btn, ...S.btnDanger, padding:'5px 12px', fontSize:12 }}><Icon name="trash" size={14} /></button>
+                          <button onClick={() => deleteOrg(o)} disabled={working} title={ORG_WIPE_TITLE} style={{ ...S.btn, ...S.btnDanger, padding:'5px 12px', fontSize:12, display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="trash" size={14} />Delete organisation</button>
                         </>
                       )}
                     </div>
@@ -689,7 +718,7 @@ function AdminPanel({ authUser }) {
                                   </div>
                                   <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
                                     <button onClick={() => setEditingLoc({ id:loc.id, name:loc.name })} style={{ ...S.btn, ...S.btnGhost, padding:'4px 10px', fontSize:11, display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="pencil" size={12} />Rename</button>
-                                    <button onClick={() => deleteLocation(loc)} disabled={working} style={{ ...S.btn, ...S.btnDanger, padding:'4px 10px', fontSize:11, display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="trash" size={12} />Delete</button>
+                                    <button onClick={() => deleteLocation(loc)} disabled={working} title={LOCATION_WIPE_TITLE} style={{ ...S.btn, ...S.btnDanger, padding:'4px 10px', fontSize:11, display:'inline-flex', alignItems:'center', gap:4 }}><Icon name="trash" size={12} />Delete</button>
                                   </div>
                                 </>
                               )}
