@@ -1,8 +1,8 @@
 // The customer app brand form's rules, shared by the Back Office tab and customer-app-admin.
 // Pure: no I/O. The payload shape is tenantAppSchema.json (the app's tenant.schema.json).
 
-export const DISPLAY_FACES = ['Instrument Serif', 'DM Serif Display', 'Space Grotesk', 'Fraunces'];
-export const BODY_FACES = ['Schibsted Grotesk', 'Figtree', 'Public Sans'];
+export const DISPLAY_FACES = ['Instrument Serif', 'DM Serif Display', 'Space Grotesk', 'Fraunces', 'Montserrat', 'Poppins', 'Bebas Neue'];
+export const BODY_FACES = ['Schibsted Grotesk', 'Figtree', 'Public Sans', 'Inter', 'DM Sans'];
 export const CURRENCIES = ['GBP', 'USD', 'EUR', 'AUD', 'CAD', 'NZD'];
 export const LOCALES = ['en-GB', 'en-US', 'en-IE', 'en-AU', 'en-CA', 'en-NZ'];
 export const MODULES = [
