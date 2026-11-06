@@ -5,6 +5,13 @@
 // the marketing-segments edge fn (marketing_resolve_segment over the customer_rfm view). Segments feed
 // the campaign engine (slice 4). The send itself re-checks consent + suppression, so targeting here is
 // about WHO to reach; deliverability is enforced at send time.
+//
+// 5.12.67 (Peter: "Segment by item ordered. And/or logic. Loyalty points stamps"): a rule can be a
+// GROUP (match all / any of its own rules) to three levels, so "VIPs who ordered pizza OR lapsed
+// customers with email" is one segment. New rule fields: ordered an item / anything in a category in
+// the last N days (every channel, every venue; pickers fed by the organisation's menu), and the
+// loyalty fields (points balance, points to next reward, stamps on card, stamps to go, rewards
+// ready, member or not, tier). Old flat segments open and save unchanged (one level group).
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
@@ -34,38 +41,179 @@ const S = {
 
 const FIELDS = [
   // 5.12.57: read when shown, so it names the venue's own money ($ at a US venue).
-  { v: 'lifetime_revenue', get l() { return `Total spend (${currencySymbol()})`; }, t: 'num' },
-  { v: 'visit_count', l: 'Number of visits', t: 'num' },
-  { v: 'days_since_visit', l: 'Days since last visit', t: 'num' },
-  { v: 'signed_up_days', l: 'Days since signup', t: 'num' },
-  { v: 'birthday_in_days', l: 'Days until birthday', t: 'num' },
-  { v: 'source', l: 'Signup source', t: 'text' },
-  { v: 'marketing_opt_in', l: 'Opted in to marketing', t: 'bool' },
-  { v: 'has_email', l: 'Has email', t: 'bool' },
-  { v: 'has_phone', l: 'Has mobile', t: 'bool' },
-  { v: 'is_local', l: 'Local customer', t: 'bool' },
-  { v: 'never_visited', l: 'Never visited', t: 'bool' },
-  { v: 'has_birthday', l: 'Birthday on file', t: 'bool' },
+  { v: 'lifetime_revenue', get l() { return `Total spend (${currencySymbol()})`; }, t: 'num', g: 'Visits and spend' },
+  { v: 'visit_count', l: 'Number of visits', t: 'num', g: 'Visits and spend' },
+  { v: 'days_since_visit', l: 'Days since last visit', t: 'num', g: 'Visits and spend' },
+  { v: 'signed_up_days', l: 'Days since signup', t: 'num', g: 'Visits and spend' },
+  { v: 'never_visited', l: 'Never visited', t: 'bool', g: 'Visits and spend' },
+  { v: 'ordered_item', l: 'Ordered an item', t: 'item', g: 'What they ordered' },
+  { v: 'ordered_category', l: 'Ordered from a category', t: 'cat', g: 'What they ordered' },
+  { v: 'points_balance', l: 'Points balance', t: 'num', g: 'Loyalty' },
+  { v: 'points_to_next_reward', l: 'Points to next reward', t: 'num', g: 'Loyalty' },
+  { v: 'stamps_earned', l: 'Stamps on card', t: 'num', g: 'Loyalty' },
+  { v: 'stamps_to_go', l: 'Stamps to go', t: 'num', g: 'Loyalty' },
+  { v: 'rewards_ready', l: 'Rewards ready', t: 'num', g: 'Loyalty' },
+  { v: 'loyalty_member', l: 'Loyalty member', t: 'bool', g: 'Loyalty' },
+  { v: 'tier', l: 'Loyalty tier', t: 'tier', g: 'Loyalty' },
+  { v: 'birthday_in_days', l: 'Days until birthday', t: 'num', g: 'About them' },
+  { v: 'has_birthday', l: 'Birthday on file', t: 'bool', g: 'About them' },
+  { v: 'source', l: 'Signup source', t: 'text', g: 'About them' },
+  { v: 'marketing_opt_in', l: 'Opted in to marketing', t: 'bool', g: 'About them' },
+  { v: 'has_email', l: 'Has email', t: 'bool', g: 'About them' },
+  { v: 'has_phone', l: 'Has mobile', t: 'bool', g: 'About them' },
+  { v: 'is_local', l: 'Local customer', t: 'bool', g: 'About them' },
 ];
+const GROUPS = ['Visits and spend', 'What they ordered', 'Loyalty', 'About them'];
 const OPS = {
   num: [['gte', '≥'], ['lte', '≤'], ['gt', '>'], ['lt', '<'], ['eq', '='], ['neq', '≠']],
   text: [['eq', 'is'], ['neq', 'is not'], ['contains', 'contains'], ['in', 'is any of']],
   bool: [['is_true', 'yes'], ['is_false', 'no']],
+  item: [['in', 'ordered'], ['not_in', 'did not order']],
+  cat: [['in', 'ordered from'], ['not_in', 'did not order from']],
+  tier: [['eq', 'is'], ['neq', 'is not']],
 };
 const ftype = (f) => (FIELDS.find((x) => x.v === f) || {}).t || 'num';
+const isGroup = (r) => !!r && Array.isArray(r.rules);
+export const MAX_DEPTH = 3;
 
-// editor rule -> wire rule for the resolver
+// editor rule -> wire rule for the resolver (a group is carried as it is, its rules converted)
 const toWire = (r) => {
+  if (isGroup(r)) return { match: r.match === 'any' ? 'any' : 'all', rules: (r.rules || []).map(toWire) };
   const t = ftype(r.field);
   if (t === 'bool') return { field: r.field, op: r.op };
+  if (t === 'item' || t === 'cat') {
+    const picks = Array.isArray(r.picks) ? r.picks : [];
+    const ids = [...new Set(picks.flatMap((p) => p.ids || []))];
+    const key = t === 'item' ? 'items' : 'categories';
+    // picks (label + ids) ride along in the value so the editor can show the names again; the resolver reads items/categories/days only
+    return { field: r.field, op: r.op === 'not_in' ? 'not_in' : 'in', value: { [key]: ids, days: Math.max(1, Math.round(Number(r.days) || 90)), picks: picks.map((p) => ({ label: p.label, ids: p.ids || [] })) } };
+  }
+  if (t === 'tier') return { field: 'tier', op: r.op, value: String(r.value ?? '') };
   if (r.op === 'in') return { field: r.field, op: 'in', value: String(r.value || '').split(',').map((s) => s.trim()).filter(Boolean) };
   if (t === 'num') return { field: r.field, op: r.op, value: Number(r.value) || 0 };
   return { field: r.field, op: r.op, value: String(r.value ?? '') };
 };
-// wire rule -> editor rule
-const toEdit = (r) => ({ field: r.field, op: r.op || (ftype(r.field) === 'bool' ? 'is_true' : OPS[ftype(r.field)][0][0]), value: Array.isArray(r.value) ? r.value.join(', ') : (r.value ?? '') });
+// wire rule -> editor rule (item picks come back from the saved value's picks)
+const toEdit = (r) => {
+  if (isGroup(r)) return { match: r.match === 'any' ? 'any' : 'all', rules: (r.rules || []).map(toEdit) };
+  const t = ftype(r.field);
+  if (t === 'item' || t === 'cat') {
+    const v = r.value && typeof r.value === 'object' ? r.value : {};
+    const ids = Array.isArray(v.items) ? v.items : Array.isArray(v.categories) ? v.categories : [];
+    const picks = Array.isArray(v.picks) && v.picks.length ? v.picks.filter((p) => p && p.label).map((p) => ({ label: String(p.label), ids: Array.isArray(p.ids) ? p.ids : [] }))
+      : (ids.length ? [{ label: `${ids.length} saved`, ids }] : []);
+    return { field: r.field, op: r.op === 'not_in' ? 'not_in' : 'in', picks, days: Number(v.days) || 90 };
+  }
+  return { field: r.field, op: r.op || (t === 'bool' ? 'is_true' : OPS[t][0][0]), value: Array.isArray(r.value) ? r.value.join(', ') : (r.value ?? '') };
+};
+const blankRule = (field = 'visit_count') => {
+  const t = ftype(field);
+  if (t === 'item' || t === 'cat') return { field, op: 'in', picks: [], days: 90 };
+  if (t === 'bool') return { field, op: 'is_true', value: '' };
+  return { field, op: OPS[t][0][0], value: t === 'num' ? 1 : '' };
+};
 
 const BLANK = { name: '', description: '', match: 'all', rules: [{ field: 'lifetime_revenue', op: 'gte', value: 100 }] };
+
+// A picker for items or categories: type to search the organisation's menu, pick several.
+function MenuPicker({ kind, picks, onChange, catalogue }) {
+  const [q, setQ] = useState('');
+  const list = kind === 'item' ? (catalogue?.items || []) : (catalogue?.categories || []);
+  const hits = q.trim() ? list.filter((e) => e.label.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 12) : [];
+  const chosen = new Set((picks || []).map((p) => p.label));
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
+        {(picks || []).map((p) => (
+          <span key={p.label} style={{ ...S.pill, display: 'inline-flex', gap: 5, alignItems: 'center' }}>{p.label}
+            <button type="button" style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--t3)', padding: 0, fontSize: 12 }} onClick={() => onChange(picks.filter((x) => x.label !== p.label))} title="Remove">✕</button>
+          </span>
+        ))}
+      </div>
+      <input style={S.input} value={q} onChange={(e) => setQ(e.target.value)} placeholder={catalogue ? (kind === 'item' ? 'Type an item name' : 'Type a category name') : 'Loading the menu…'} />
+      {hits.length > 0 && (
+        <div style={{ border: '1px solid var(--bdr2)', borderRadius: 8, marginTop: 4, background: 'var(--bg1)', maxHeight: 180, overflowY: 'auto' }}>
+          {hits.map((e) => (
+            <button type="button" key={e.label} disabled={chosen.has(e.label)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', border: 'none', background: 'transparent', cursor: chosen.has(e.label) ? 'default' : 'pointer', color: chosen.has(e.label) ? 'var(--t4)' : 'var(--t1)', fontSize: 12.5, fontFamily: 'inherit' }}
+              onClick={() => { onChange([...(picks || []), { label: e.label, ids: e.ids }]); setQ(''); }}>
+              {e.label}{e.venues > 1 ? <span style={{ color: 'var(--t4)' }}> · {e.venues} venues</span> : null}
+            </button>
+          ))}
+        </div>
+      )}
+      {q.trim() && !hits.length && catalogue && <div style={S.hint}>Nothing on the menu matches "{q.trim()}".</div>}
+    </div>
+  );
+}
+
+// One rule row.
+function RuleRow({ r, onChange, onRemove, catalogue }) {
+  const t = ftype(r.field);
+  const changeField = (field) => onChange(blankRule(field));
+  return (
+    <div style={{ ...S.ruleRow, gridTemplateColumns: t === 'item' || t === 'cat' ? '1.2fr 1fr 2fr auto' : '1.4fr 1fr 1.2fr auto', alignItems: 'start' }}>
+      <select style={S.input} value={r.field} onChange={(e) => changeField(e.target.value)}>
+        {GROUPS.map((g) => <optgroup key={g} label={g}>{FIELDS.filter((f) => f.g === g).map((f) => <option key={f.v} value={f.v}>{f.l}</option>)}</optgroup>)}
+      </select>
+      <select style={S.input} value={r.op} onChange={(e) => onChange({ ...r, op: e.target.value })}>
+        {OPS[t].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+      {t === 'bool' && <span style={{ fontSize: 12, color: 'var(--t4)', paddingTop: 10 }}>—</span>}
+      {(t === 'item' || t === 'cat') && (
+        <div>
+          <MenuPicker kind={t} picks={r.picks} onChange={(picks) => onChange({ ...r, picks })} catalogue={catalogue} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12, color: 'var(--t3)' }}>in the last
+            <input style={{ ...S.input, width: 70, padding: '5px 8px' }} type="number" min={1} max={730} value={r.days} onChange={(e) => onChange({ ...r, days: e.target.value })} /> days, on any channel at any venue
+          </div>
+        </div>
+      )}
+      {t === 'tier' && (
+        <select style={S.input} value={r.value} onChange={(e) => onChange({ ...r, value: e.target.value })}>
+          <option value="">Pick a tier</option>
+          {(catalogue?.tiers || []).map((x) => <option key={x.id} value={x.name}>{x.name}</option>)}
+        </select>
+      )}
+      {(t === 'num' || t === 'text') && (
+        <input style={S.input} value={r.value} onChange={(e) => onChange({ ...r, value: e.target.value })} placeholder={r.op === 'in' ? 'qr, wifi, online' : t === 'num' ? '0' : 'value'} type={t === 'num' && r.op !== 'in' ? 'number' : 'text'} />
+      )}
+      <button style={{ ...S.ghost, padding: '6px 9px' }} onClick={onRemove} title="Remove">✕</button>
+    </div>
+  );
+}
+
+// A group: match all / any of its rules, which may be rules or groups (to three levels).
+function GroupEditor({ g, depth, onChange, onRemove, catalogue }) {
+  const rules = g.rules || [];
+  const setAt = (i, v) => onChange({ ...g, rules: rules.map((x, j) => (j === i ? v : x)) });
+  const rmAt = (i) => onChange({ ...g, rules: rules.filter((_, j) => j !== i) });
+  const add = () => onChange({ ...g, rules: [...rules, blankRule()] });
+  const addGroup = () => onChange({ ...g, rules: [...rules, { match: g.match === 'any' ? 'all' : 'any', rules: [blankRule()] }] });
+  const word = g.match === 'any' ? 'OR' : 'AND';
+  return (
+    <div style={{ border: depth > 1 ? '1px dashed var(--bdr2)' : 'none', borderRadius: 10, padding: depth > 1 ? '10px 12px' : 0, marginBottom: 8, background: depth > 1 ? (depth === 2 ? 'var(--bg2)' : 'var(--bg1)') : 'transparent' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 10px' }}>
+        <span style={{ fontSize: 12.5, color: 'var(--t2)', fontWeight: 700 }}>{depth > 1 ? 'Group: match' : 'Match'}</span>
+        <select style={{ ...S.input, width: 'auto' }} value={g.match === 'any' ? 'any' : 'all'} onChange={(e) => onChange({ ...g, match: e.target.value })}>
+          <option value="all">ALL of these</option>
+          <option value="any">ANY of these</option>
+        </select>
+        {depth > 1 && <button style={{ ...S.ghost, padding: '5px 9px', marginLeft: 'auto' }} onClick={onRemove} title="Remove group">Remove group</button>}
+      </div>
+      {rules.map((r, i) => (
+        <div key={i}>
+          {i > 0 && <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--t4)', letterSpacing: '.06em', margin: '2px 0 8px 4px' }}>{word}</div>}
+          {isGroup(r)
+            ? <GroupEditor g={r} depth={depth + 1} onChange={(v) => setAt(i, v)} onRemove={() => rmAt(i)} catalogue={catalogue} />
+            : <RuleRow r={r} onChange={(v) => setAt(i, v)} onRemove={() => rmAt(i)} catalogue={catalogue} />}
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+        <button style={S.ghost} onClick={add}>+ Add condition</button>
+        {depth < MAX_DEPTH && <button style={S.ghost} onClick={addGroup} title="A group of conditions matched the other way round (all inside any, any inside all)">+ Add group ({g.match === 'any' ? 'all' : 'any'} of)</button>}
+      </div>
+    </div>
+  );
+}
 
 export default function Segments() {
   const [locId, setLocId] = useState(null);
@@ -76,6 +224,7 @@ export default function Segments() {
   const [preview, setPreview] = useState(null);   // { count, sample } | { busy } | { err }
   const [save, setSave] = useState({});
   const [pcounts, setPcounts] = useState({});      // prebuilt key -> count
+  const [catalogue, setCatalogue] = useState(null); // 5.12.67: { items, categories, tiers, programs } across the organisation
 
   const call = (action, extra = {}) => supabase.functions.invoke('marketing-segments', { body: { action, ops_location_id: locId, ...extra } })
     .then(({ data, error }) => { if (error) throw new Error(error.message); if (data?.error) throw new Error(data.error); return data; });
@@ -91,7 +240,11 @@ export default function Segments() {
         const id = await getActiveLocationSync(); setLocId(id);
         if (!supabase || !id) { setLoading(false); return; }
         await load(id);
-      } catch {} finally { setLoading(false); }
+        // the pickers' menu and loyalty lists, after the page is up (never blocks the list)
+        supabase.functions.invoke('marketing-segments', { body: { action: 'menu_catalogue', ops_location_id: id } })
+          .then(({ data }) => setCatalogue(data && !data.error ? data : { items: [], categories: [], tiers: [], programs: [] }))
+          .catch(() => setCatalogue({ items: [], categories: [], tiers: [], programs: [] }));
+      } catch { /* the page shows its empty state */ } finally { setLoading(false); }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -125,19 +278,13 @@ export default function Segments() {
 
   const del = async (seg) => { if (!window.confirm(`Delete segment "${seg.name}"?`)) return; try { await call('delete_segment', { id: seg.id }); await load(); } catch (e) { alert(e.message); } };
 
-  // rule editing
-  const setRule = (i, patch) => setEditing((e) => ({ ...e, rules: e.rules.map((r, j) => (j === i ? { ...r, ...patch } : r)) }));
-  const changeField = (i, field) => { const t = ftype(field); setRule(i, { field, op: t === 'bool' ? 'is_true' : OPS[t][0][0], value: t === 'bool' ? '' : '' }); };
-  const addRule = () => setEditing((e) => ({ ...e, rules: [...e.rules, { field: 'visit_count', op: 'gte', value: 1 }] }));
-  const rmRule = (i) => setEditing((e) => ({ ...e, rules: e.rules.filter((_, j) => j !== i) }));
-
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!supabase || !locId) return <div style={S.empty}>Pick a location to manage segments.</div>;
 
   return (
     <div>
       <h1 style={S.h1}>Segments</h1>
-      <div style={S.sub}>Build audiences from spend, visits, recency and birthdays. Use them to target campaigns. Consent and suppression are always re-checked when a message is actually sent.</div>
+      <div style={S.sub}>Build audiences from spend, visits, what people ordered, loyalty points and stamps, and birthdays. Group conditions with AND and OR. Consent and suppression are always re-checked when a message is actually sent.</div>
 
       {/* Prebuilt */}
       {!editing && (
@@ -183,32 +330,8 @@ export default function Segments() {
             <div style={S.field}><label style={S.label}>Segment name</label><input style={S.input} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="Lapsed VIPs" /></div>
             <div style={S.field}><label style={S.label}>Description <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label><input style={S.input} value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} /></div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 10px' }}>
-              <span style={{ fontSize: 12.5, color: 'var(--t2)', fontWeight: 700 }}>Match</span>
-              <select style={{ ...S.input, width: 'auto' }} value={editing.match} onChange={(e) => setEditing({ ...editing, match: e.target.value })}>
-                <option value="all">ALL of these</option>
-                <option value="any">ANY of these</option>
-              </select>
-            </div>
-
-            {editing.rules.map((r, i) => {
-              const t = ftype(r.field);
-              return (
-                <div key={i} style={S.ruleRow}>
-                  <select style={S.input} value={r.field} onChange={(e) => changeField(i, e.target.value)}>
-                    {FIELDS.map((f) => <option key={f.v} value={f.v}>{f.l}</option>)}
-                  </select>
-                  <select style={S.input} value={r.op} onChange={(e) => setRule(i, { op: e.target.value })}>
-                    {OPS[t].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                  </select>
-                  {t === 'bool'
-                    ? <span style={{ fontSize: 12, color: 'var(--t4)' }}>—</span>
-                    : <input style={S.input} value={r.value} onChange={(e) => setRule(i, { value: e.target.value })} placeholder={r.op === 'in' ? 'qr, wifi, online' : t === 'num' ? '0' : 'value'} type={t === 'num' && r.op !== 'in' ? 'number' : 'text'} />}
-                  <button style={{ ...S.ghost, padding: '6px 9px' }} onClick={() => rmRule(i)} title="Remove">✕</button>
-                </div>
-              );
-            })}
-            <button style={{ ...S.ghost, marginTop: 2 }} onClick={addRule}>+ Add condition</button>
+            <GroupEditor g={{ match: editing.match, rules: editing.rules }} depth={1} onChange={(g) => setEditing((e) => ({ ...e, match: g.match, rules: g.rules }))} catalogue={catalogue} />
+            <div style={S.hint}>A group is matched the other way round from its parent, so you can say "VIPs who ordered pizza, OR lapsed customers with an email". Up to three levels.</div>
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
               <button style={S.btn} onClick={saveSeg} disabled={save.busy}>{save.busy ? 'Saving…' : (editing.id ? 'Save segment' : 'Create segment')}</button>

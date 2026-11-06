@@ -185,7 +185,9 @@ export const CATEGORIES = [
     // Opens the full Customers → Marketing report screen (its own section).
     reports: [
       { id:'marketing_reports', label:'Marketing report', section:'marketing-reports',
-        desc:'Redemptions, attributed revenue, channel split and message delivery stats' },
+        desc:'Redemptions, attributed revenue, channel split, message delivery stats and link clicks' },
+      { id:'website_report', label:'Website report', section:'website-report',
+        desc:'Visits to your website: per day, top pages, where people came from, visits from campaign links' },
     ],
   },
   {

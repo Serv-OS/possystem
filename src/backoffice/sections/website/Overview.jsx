@@ -87,6 +87,42 @@ function ChannelsCard({ site, saveSite, toast }) {
   );
 }
 
+// 5.12.67 (Peter: "Reviews on the website", "website traffic reports"): two site wide switches.
+// Reviews: off until switched on; then every Reviews block on the site shows the Review Manager's
+// public reviews (each block picks how many and the minimum stars). Visits: on by default; off
+// stops the page view ping, so the Website report sees nothing from this site.
+function ReviewsVisitsCard({ site, saveSite, toast }) {
+  const [busy, setBusy] = useState(null);
+  const settings = site?.settings || {};
+  const reviewsOn = settings.reviews_enabled === true;
+  const visitsOn = settings.analytics_enabled !== false;
+  const flip = async (key, on) => {
+    setBusy(key);
+    const { error } = await saveSite({ settings: { ...settings, [key]: on } });
+    setBusy(null);
+    if (error) toast(error.message || 'Could not save', 'error');
+  };
+  return (
+    <div style={W.card}>
+      <h2 style={W.h2}>Reviews and visits</h2>
+      <div style={W.switchRow}>
+        <div>
+          <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>Show reviews on the site</div>
+          <div style={W.hint}>Public reviews from Customers, Reviews appear in every Reviews block (rating, words, first name, date, source). Each block sets how many and the minimum stars.</div>
+        </div>
+        <Toggle on={reviewsOn} label="Show reviews on the site" onChange={(v) => busy ? null : flip('reviews_enabled', v)} />
+      </div>
+      <div style={W.switchRow}>
+        <div>
+          <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>Count visits</div>
+          <div style={W.hint}>Feeds the Website report under Customers: visits per day, pages, where people came from and which campaign link brought them. No cookie, nothing kept on the visitor's phone.</div>
+        </div>
+        <Toggle on={visitsOn} label="Count visits" onChange={(v) => busy ? null : flip('analytics_enabled', v)} />
+      </div>
+    </div>
+  );
+}
+
 function HealthCard({ site, pages, branding, onBranding }) {
   const items = healthChecklist({ site, pages, branding });
   const okCount = items.filter((i) => i.ok).length;
@@ -147,6 +183,7 @@ export default function Overview({ ws, toast, onBuild, onDesigner, onEditor, onB
         </div>
         <div>
           <ChannelsCard site={site} saveSite={ws.saveSite} toast={toast} />
+          <ReviewsVisitsCard site={site} saveSite={ws.saveSite} toast={toast} />
           <HealthCard site={site} pages={pages} branding={branding} onBranding={onBranding} />
         </div>
       </div>

@@ -9,10 +9,13 @@
 //   delete_segment   { ops_location_id, id }
 //   preview_segment  { ops_location_id, definition, sample? }     → { count, sample:[customers] }
 //   resolve_segment  { ops_location_id, id? | definition, limit? }→ { customer_ids:[...] }   (slice 4)
+//   menu_catalogue   { ops_location_id }                          → { items:[{label, ids}], categories:[{label, ids}], tiers, programs }  (5.12.67)
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { PREBUILT } from '../_shared/segments-prebuilt.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { resolveAudience } from '../_shared/segmentAudience.ts';
+import { companyLoyalty } from '../_shared/loyaltyMergeRead.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -39,23 +42,9 @@ async function orgFor(opsLocationId: string): Promise<string | null> {
   return data?.org_id ?? null;
 }
 
-async function resolveIds(org_id: string, definition: any, limit?: number): Promise<string[]> {
-  // 28 Sep 2026: marketing_resolve_segment RETURNS TABLE, and the API hands back at most 1,000 rows
-  // per request, so every audience stopped at 1,000 (Coffee Boy: 2,898 email subscribers, 8,030
-  // customers) and a campaign reached only the first 1,000. Page it, in a fixed order, to the end.
-  const PAGE = 1000;
-  const out: string[] = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await opsAdmin.rpc('marketing_resolve_segment', { p_org: org_id, p_def: definition ?? { match: 'all', rules: [] }, p_limit: limit ?? null })
-      .order('customer_id', { ascending: true }).range(from, from + PAGE - 1);
-    if (error) throw new Error(error.message);
-    const rows = data ?? [];
-    for (const r of rows as any[]) out.push(r.customer_id);
-    if (rows.length < PAGE) break;
-    if (limit && out.length >= limit) break;
-  }
-  return limit ? out.slice(0, limit) : out;
-}
+// 6 Nov 2026 (5.12.67): one shared resolver (loyalty rules decided on the Platform, groups and item
+// rules on Ops, paged past the 1,000 row cap) for every caller. See _shared/segmentAudience.ts.
+const resolveIds = (org_id: string, definition: any, limit?: number) => resolveAudience(opsAdmin, org_id, definition ?? { match: 'all', rules: [] }, limit ?? null);
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -68,6 +57,45 @@ Deno.serve(async (req) => {
   if (!(await authed(req, ops))) return json({ error: 'no access to this location' }, 403);
   const org_id = await orgFor(ops);
   if (!org_id) return json({ error: 'location not provisioned (no org)' }, 400);
+
+  // 5.12.67: what the rule builder's pickers show. Items and categories across EVERY venue of the
+  // organisation, grouped by name, so "Pizza" is one choice whose ids cover each site's own row (the
+  // multi site menu publishes a product into each venue under that venue's id). Sizes (child rows)
+  // are folded into their product: the resolver matches a size line by parent_id.
+  if (action === 'menu_catalogue') {
+    const { data: locs } = await opsAdmin.from('locations').select('id, name').eq('org_id', org_id).limit(100);
+    const locIds = (locs ?? []).map((l: any) => l.id);
+    const items: Map<string, { label: string; ids: string[]; venues: Set<string> }> = new Map();
+    const cats: Map<string, { label: string; ids: string[]; venues: Set<string> }> = new Map();
+    if (locIds.length) {
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const { data } = await opsAdmin.from('menu_items').select('id, name, location_id, parent_id, archived').in('location_id', locIds).eq('archived', false).order('id').range(from, from + PAGE - 1);
+        const rows = data ?? [];
+        for (const r of rows as any[]) {
+          if (r.parent_id) continue;                       // a size: folded into its product
+          const key = String(r.name || '').trim().toLowerCase();
+          if (!key) continue;
+          const e = items.get(key) || { label: String(r.name).trim(), ids: [], venues: new Set<string>() };
+          e.ids.push(r.id); e.venues.add(r.location_id); items.set(key, e);
+        }
+        if (rows.length < PAGE) break;
+      }
+      const { data: cs } = await opsAdmin.from('menu_categories').select('id, label, location_id').in('location_id', locIds).limit(2000);
+      for (const r of (cs ?? []) as any[]) {
+        const key = String(r.label || '').trim().toLowerCase();
+        if (!key) continue;
+        const e = cats.get(key) || { label: String(r.label).trim(), ids: [], venues: new Set<string>() };
+        e.ids.push(r.id); e.venues.add(r.location_id); cats.set(key, e);
+      }
+    }
+    const pack = (m: Map<string, { label: string; ids: string[]; venues: Set<string> }>) =>
+      [...m.values()].map((e) => ({ label: e.label, ids: e.ids, venues: e.venues.size })).sort((a, b) => a.label.localeCompare(b.label));
+    // tiers and stamp programs, for the loyalty rules' pickers (blank when the company runs no loyalty)
+    let tiers: any[] = [], programs: any[] = [];
+    try { const co = await companyLoyalty(opsAdmin, org_id); tiers = co?.tiers ?? []; programs = (co?.programs ?? []).map((p: any) => ({ id: p.id, name: p.name, stamps_required: p.stamps_required })); } catch { /* blank */ }
+    return json({ items: pack(items), categories: pack(cats), venues: locs ?? [], tiers, programs });
+  }
 
   if (action === 'list_segments') {
     const { data } = await opsAdmin.from('segments').select('*').eq('org_id', org_id).order('created_at', { ascending: false });

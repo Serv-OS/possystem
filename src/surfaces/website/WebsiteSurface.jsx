@@ -27,6 +27,8 @@ import { loadMenu } from './data/loadMenu.js';
 import { BlockRenderer } from './blocks/BlockRenderer.jsx';
 import { PostArticle } from './blocks/components/ContentBlocks.jsx';
 import { formIdsOf, siteOpsLocationIds } from './formsOnPage.js';
+import { reviewsEnabled, reviewsAskOf, reviewRowsForBlocks } from './reviewsOnPage.js';
+import { shouldPing, pingPayload, sendPing } from './visitPing.js';
 import { submitUrl } from '../../lib/forms/formHtml.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
@@ -134,6 +136,9 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   // boot payload; a page reached by client side navigation reads the rest (marketing_form_public).
   const [forms, setForms] = useState(() => (boot && boot.forms && typeof boot.forms === 'object' ? boot.forms : {}));
   const formAction = (boot && boot.formAction) || submitUrl(import.meta.env.VITE_SUPABASE_URL || '');
+  // 5.12.67: the public reviews the page's Reviews blocks show (Review Manager, when switched on).
+  const [reviews, setReviews] = useState(() => (boot && Array.isArray(boot.reviews) ? boot.reviews : []));
+  const reviewsKeyRef = useRef(boot && Array.isArray(boot.reviews) ? 'boot' : '');
 
   // 1. The snapshot: boot payload, else the Platform RPC.
   useEffect(() => {
@@ -193,7 +198,37 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   }, []);
 
   const route = useMemo(() => (snapshot ? resolveRoute(snapshot, path) : null), [snapshot, path]);
-  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue, pageKind: route && route.page ? route.page.kind : null, forms, formAction }), [snapshot, host, path, menu, menuVenue, route, forms, formAction]);
+  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, reviews, customerRoot: CUSTOMER_ROOT, menuVenue, pageKind: route && route.page ? route.page.kind : null, forms, formAction }), [snapshot, host, path, menu, reviews, menuVenue, route, forms, formAction]);
+
+  // 5.12.67: reviews for a page the server did not read (client side navigation, or no server
+  // render). Read once per page ask; never throws, the block paints nothing on a failed read.
+  useEffect(() => {
+    const page = route && route.page;
+    const ask = page ? reviewsAskOf(page) : null;
+    if (!ask || !supabase || !reviewsEnabled(snapshot)) return undefined;
+    const key = `${ask.min}:${ask.count}`;
+    if (reviewsKeyRef.current === key || (reviewsKeyRef.current === 'boot' && reviews.length)) { reviewsKeyRef.current = key; return undefined; }
+    const venues = siteOpsLocationIds(snapshot);
+    if (!venues.length) return undefined;
+    let alive = true;
+    reviewsKeyRef.current = key;
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc('review_feedback_public', { p_location_ids: venues, p_min: ask.min, p_limit: ask.count });
+        if (alive && !error && Array.isArray(data)) setReviews(reviewRowsForBlocks(data));
+      } catch { /* left empty */ }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route, snapshot]);
+
+  // 5.12.67: one page view ping per path (website traffic report). Off on previews and when the
+  // owner switched visits off. Nothing is stored in the browser.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !shouldPing({ snapshot, preview })) return;
+    const body = pingPayload({ loc: window.location, referrer: document.referrer, path });
+    sendPing(import.meta.env.VITE_SUPABASE_URL || '', body);
+  }, [path, snapshot, preview]);
 
   // 5.12.40: forms on this page that the server did not read (client side navigation). Never throws.
   useEffect(() => {

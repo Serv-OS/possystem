@@ -104,6 +104,7 @@ import Workflows from './sections/marketing/Workflows';
 // 5.12.40: lazy, it carries the form preview (website theme + form markup).
 const Forms = lazy(() => import('./sections/marketing/Forms'));
 import MarketingReports from './sections/marketing/MarketingReports';
+import WebsiteReport from './sections/marketing/WebsiteReport';   // 5.12.67: the venue website's visits
 import CateringSettings from './sections/CateringSettings';
 import MenuAppearance from './sections/MenuAppearance';
 import CateringOrders from './sections/CateringOrders';
@@ -226,6 +227,7 @@ const NAV = [
   { id: 'workflows', label: 'Automations', icon: 'repeat', group: 'Analytics' },
   { id: 'marketing-forms', label: 'Forms', icon: 'note', group: 'Analytics' },
   { id: 'marketing-reports', label: 'Marketing report', icon: 'trendUp', group: 'Analytics' },
+  { id: 'website-report', label: 'Website report', icon: 'trendUp', group: 'Analytics' },
   { id: 'compliance', label: 'Marketing compliance', icon: 'shield', group: 'Analytics' },
   { id: 'security', label: 'Sign in security', icon: 'lock', group: 'Settings' },
   { id: 'servos-messages', label: 'Messages from ServOS', icon: 'bell', group: 'Settings' },
@@ -1227,6 +1229,7 @@ export default function BackOfficeApp() {
           {section === 'workflows' && <Workflows />}
           {section === 'marketing-forms' && <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading forms…</div>}><Forms /></Suspense>}
           {section === 'marketing-reports' && <MarketingReports />}
+          {section === 'website-report' && <WebsiteReport />}
           {section === 'compliance' && <Compliance />}
           {section === 'sending-domain' && <SendingDomain />}
           {section === 'xero' && <XeroIntegration />}

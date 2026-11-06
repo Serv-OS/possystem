@@ -624,6 +624,9 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
   const [editing, setEditing] = useState(false);
   const [giftCards, setGiftCards] = useState([]);
   const [giftLoading, setGiftLoading] = useState(false);
+  // 5.12.67: the links this customer clicked in campaign and automation emails (marketing_link_clicks,
+  // read under the company's own row rule). [] until the SQL 20261126a has run.
+  const [clicks, setClicks] = useState([]);
   const [form, setForm] = useState({
     name: customer.name || '',
     phone_raw: customer.phone_raw || customer.phone || '',
@@ -689,6 +692,14 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
       } finally {
         setGiftLoading(false);
       }
+    })();
+
+    (async () => {
+      if (isMock || !supabase) { setClicks([]); return; }
+      try {
+        const { data } = await supabase.from('marketing_link_clicks').select('id, url, clicked_at, campaign_id, workflow_id').eq('customer_id', customer.id).order('clicked_at', { ascending: false }).limit(50);
+        setClicks(Array.isArray(data) ? data : []);
+      } catch { setClicks([]); }
     })();
 
     setForm({
@@ -1005,6 +1016,21 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* 5.12.67: links clicked in marketing emails */}
+      {clicks.length > 0 && (
+        <div style={{ padding:'14px 22px', borderBottom:'1px solid var(--bdr)' }}>
+          <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Links clicked in emails</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:6, fontSize:12 }}>
+            {clicks.map((c) => (
+              <div key={c.id} style={{ display:'flex', justifyContent:'space-between', gap:10 }}>
+                <a href={c.url} target="_blank" rel="noreferrer" style={{ color:'var(--t2)', wordBreak:'break-all', minWidth:0 }}>{c.url}</a>
+                <span style={{ color:'var(--t3)', flexShrink:0 }}>{fmtTime(c.clicked_at)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

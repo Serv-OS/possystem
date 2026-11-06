@@ -25,6 +25,9 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { renderMergeTags, buildMergeContext } from '../_shared/marketing-merge.ts';
 import { resolveSenderForOrg, type Sender } from '../_shared/sending-domain.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { mentionsLoyalty } from '../_shared/loyaltyMerge.js';
+import { loyaltyValuesFor, BLANK_LOYALTY } from '../_shared/loyaltyMergeRead.ts';
+import { trackLinks } from '../_shared/marketingTracking.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -231,9 +234,11 @@ Deno.serve(async (req) => {
     if (existing) return json({ ok: true, deduped: true, message_id: existing.id, status: existing.status });
   }
 
-  // common base row
+  // common base row. 5.12.67: the message id is chosen HERE so the tracked links in the email can
+  // name it before the row exists (the row is written after the provider answers).
+  const messageId = crypto.randomUUID();
   const base: Record<string, unknown> = {
-    org_id, customer_id: customerId, channel, to_address: address || '(none)',
+    id: messageId, org_id, customer_id: customerId, channel, to_address: address || '(none)',
     campaign_id: body?.campaign_id || null, workflow_id: body?.workflow_id || null, template_id: body?.template_id || null,
     promo_code: body?.promo_code || null, idempotency_key: idempotencyKey,
   };
@@ -265,9 +270,18 @@ Deno.serve(async (req) => {
   // ---- render content ----
   const link = await unsubUrl(customerId, channel);
   const prefs = channel === 'email' ? await prefUrl(customerId) : null;
-  const ctx = buildMergeContext(customer || to, { ...(body?.merge || {}), unsubscribe_url: link || '', preferences_url: prefs || '' });
+  // 5.12.67: loyalty tags ({{points_balance}}, {{stamps_to_go}} ...) read from the rows the loyalty
+  // app reads, only when the message asks for one; a test send to a bare address gets the sample values.
+  let loyalty: Record<string, string | number> = {};
+  if (mentionsLoyalty(body?.subject, body?.html, body?.text, body?.sms_body)) {
+    if (customerId) { const got = await loyaltyValuesFor(opsAdmin, org_id, [customerId]); loyalty = { ...BLANK_LOYALTY, ...(got.values.get(customerId) || {}) }; }
+    else loyalty = { ...BLANK_LOYALTY };
+  }
+  const ctx = buildMergeContext(customer || to, { ...loyalty, ...(body?.merge || {}), unsubscribe_url: link || '', preferences_url: prefs || '' });
   const subject = renderMergeTags(body?.subject || '', ctx);
   let html = renderMergeTags(body?.html || '', ctx);
+  // 5.12.67: every link in a campaign or automation email goes through the signed click redirect.
+  if (channel === 'email' && customerId && (body?.campaign_id || body?.workflow_id)) html = await trackLinks(html, messageId, { campaignId: body?.campaign_id || null, workflowId: body?.workflow_id || null });
   let text = renderMergeTags(body?.text || '', ctx);
   let smsBody = renderMergeTags(body?.sms_body || body?.text || '', ctx);
 

@@ -14,6 +14,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runWorkflow, enrollCustomers } from '../_shared/workflow-engine.ts';
 import { PREBUILT, resolveSegmentRef } from '../_shared/segments-prebuilt.ts';
+import { resolveAudience } from '../_shared/segmentAudience.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -139,7 +140,7 @@ Deno.serve(async (req) => {
       ids = (valid ?? []).map((r: any) => r.id);
     } else if (body.segment_id) {
       const { data: seg } = await sb.from('segments').select('definition').eq('id', String(body.segment_id)).eq('org_id', org_id).maybeSingle();
-      if (seg) { const { data } = await sb.rpc('marketing_resolve_segment', { p_org: org_id, p_def: seg.definition, p_limit: null }); ids = (data ?? []).map((r: any) => r.customer_id); }
+      if (seg) ids = await resolveAudience(sb, org_id, seg.definition, null);   // 5.12.67: shared resolver, every row
     }
     const r = await enrollCustomers(sb, wf, ids, engineOpts(body.now));
     return json({ ok: true, enrolled: r.enrolled, already_enrolled: r.skipped, candidates: ids.length });

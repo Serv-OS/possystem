@@ -84,13 +84,27 @@ export function renderMergePreview(tpl, ctx) {
 
 // 5.12.57: the sample offer is read when used, so the preview (and a test send) names the venue's
 // own money ($5 off at a US venue), never a typed pound. Real sends carry their own merge values.
-export const SAMPLE_MERGE = { first_name: 'Sam', last_name: 'Patel', name: 'Sam Patel', email: 'sam@example.com', phone: '+447700900123', promo_code: 'BDAY-7F3K9', get offer() { return `${currencySymbol()}5 off`; } };
+export const SAMPLE_MERGE = {
+  first_name: 'Sam', last_name: 'Patel', name: 'Sam Patel', email: 'sam@example.com', phone: '+447700900123', promo_code: 'BDAY-7F3K9', get offer() { return `${currencySymbol()}5 off`; },
+  // 5.12.67: loyalty, read at send time from the same rows the loyalty app shows (company wide).
+  points_balance: 120, points_to_next_reward: 80, next_reward: 'Free cake', tier: 'Gold',
+  stamps_earned: 9, stamps_target: 10, stamps_to_go: 1, stamp_reward: 'free coffee', rewards_ready: 1, stamp_card: 'Coffee card',
+};
 
 export const MERGE_TAGS = [
   ['{{first_name}}', 'First name'],
   ['{{name}}', 'Full name'],
   ['{{promo_code}}', 'Promo code'],
   ['{{offer}}', 'Offer label'],
+  ['{{points_balance}}', 'Points balance'],
+  ['{{points_to_next_reward}}', 'Points to next reward'],
+  ['{{next_reward}}', 'Next reward name'],
+  ['{{tier}}', 'Loyalty tier'],
+  ['{{stamps_earned}}', 'Stamps on card'],
+  ['{{stamps_target}}', 'Stamps for a reward'],
+  ['{{stamps_to_go}}', 'Stamps to go'],
+  ['{{stamp_reward}}', 'Stamp card reward'],
+  ['{{rewards_ready}}', 'Rewards ready'],
 ];
 
 export const STARTER_BLOCKS = () => ([
