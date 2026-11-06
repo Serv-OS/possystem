@@ -21,6 +21,9 @@ import { buildGiftTheme, fetchGiftLimits, giftPresetsFor, GIFT_DEFAULT_LIMITS, f
 // 5.12.57: the preview's sample prices show the venue's own money, never a typed pound.
 import { money, currencySymbol } from '../../lib/currency';
 
+// 5.12.70: the customer app's brand tab, its own full width layout like the website builder.
+const MobileAppBrand = lazy(() => import('./appearance/MobileAppBrand'));
+
 const ASSET_BUCKET = 'receipt-assets';
 async function uploadAsset(file, locationId, kind) {
   const ext = (file.name.split('.').pop() || 'png').toLowerCase();
@@ -67,6 +70,7 @@ const SECTIONS = [
   ['portal', 'star', 'Loyalty portal'],
   ['gift', 'gift', 'Gift cards'],
   ['website', 'globe', 'Website builder'],
+  ['app', 'phone', 'App branding'],
 ];
 // v5.12.0: the website builder is a lazy chunk so Puck and the designer never load for
 // the other four tabs (or the POS bundle). It owns the whole width, see below.
@@ -292,6 +296,10 @@ export default function MenuAppearance() {
       {section === 'website' ? (
         <Suspense fallback={<div style={S.empty}>Loading the website builder…</div>}>
           <WebsiteBuilder venueName={branding.display_name || name} onBack={() => setSection('brand')} />
+        </Suspense>
+      ) : section === 'app' ? (
+        <Suspense fallback={<div style={S.empty}>Loading the app brand…</div>}>
+          <MobileAppBrand />
         </Suspense>
       ) : (
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 380px) 1fr', gap: 20, alignItems: 'start' }}>
