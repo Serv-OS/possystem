@@ -16,6 +16,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { PREBUILT } from '../_shared/segments-prebuilt.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { resolveAudience } from '../_shared/segmentAudience.ts';
+import { withSiteScope } from '../_shared/venueScope.js';
+import { scopeForOrg } from '../_shared/orgVenues.ts';
 import { companyLoyalty } from '../_shared/loyaltyMergeRead.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -132,6 +134,14 @@ Deno.serve(async (req) => {
   if (action === 'preview_segment') {
     let def = body.definition;
     if (!def && body.id) { const { data } = await opsAdmin.from('segments').select('definition').eq('id', String(body.id)).eq('org_id', org_id).maybeSingle(); def = data?.definition; }
+    // 5.12.69: the Sites control on the page: count the audience at these venues only (one more rule
+    // through the same resolver, never a second path). A foreign list or a failed check is an error,
+    // never a quiet company wide number under a site's name.
+    if (Array.isArray(body.location_ids) && body.location_ids.length) {
+      const sc = await scopeForOrg(opsAdmin, org_id, body.location_ids);
+      if (!sc.ok) return json({ error: sc.error }, sc.status);
+      if (def) def = withSiteScope(def, sc.ids);   // no audience stays no audience (0), never 'everyone who visited'
+    }
     let ids: string[];
     try { ids = await resolveIds(org_id, def); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
     const sampleN = Math.min(Number(body.sample) || 8, 50);

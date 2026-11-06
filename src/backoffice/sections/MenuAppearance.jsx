@@ -21,7 +21,7 @@ import { buildGiftTheme, fetchGiftLimits, giftPresetsFor, GIFT_DEFAULT_LIMITS, f
 // 5.12.57: the preview's sample prices show the venue's own money, never a typed pound.
 import { money, currencySymbol } from '../../lib/currency';
 
-// 5.12.69: the customer app's brand tab, its own full width layout like the website builder.
+// 5.12.70: the customer app's brand tab, its own full width layout like the website builder.
 const MobileAppBrand = lazy(() => import('./appearance/MobileAppBrand'));
 
 const ASSET_BUCKET = 'receipt-assets';

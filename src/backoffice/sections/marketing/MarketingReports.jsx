@@ -4,8 +4,11 @@
 // edge fn (marketing_report SQL aggregation) → KPIs, channel split, per-campaign and per-offer tables.
 // Revenue is the gross total of orders where a code was redeemed (attributed to the campaign/offer).
 
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar } from './MarketingSites';
+import { siteReportRow, siteReportRows } from '../../../lib/marketingSites';
 import { money as venueMoneyText } from '../../../lib/currency';
 import { dateNumeric, venueStamp } from '../../../lib/venueDates';
 // 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
@@ -31,6 +34,7 @@ const S = {
 // 5.12.57: the venue's own money ($ at a US venue), never a typed pound. The CSV carries plain numbers.
 const money = (n) => venueMoneyText(n || 0);
 const pct = (n, d) => (d ? `${Math.round((n / d) * 100)}%` : '—');
+const NO_VENUES = Object.freeze([]);
 
 export default function MarketingReports() {
   const [locId, setLocId] = useState(null);
@@ -48,6 +52,12 @@ export default function MarketingReports() {
   // 5.12.68: the report split by venue (marketing_report_sites) and the site whose campaigns are shown.
   const [sites, setSites] = useState(null);     // { venues, unassigned, campaigns, workflows } | { err }
   const [siteView, setSiteView] = useState('');
+  // 5.12.69: the Sites control (src/lib/marketingSites.js): one site's numbers on top, from the By site split.
+  const reportVenues = useMemo(() => (sites && !sites.err && Array.isArray(sites.venues) ? sites.venues : NO_VENUES), [sites]);
+  const scope = useMarketingSites(locId, reportVenues);
+  useEffect(() => { setSiteView(scope.siteId); }, [scope.siteId]);
+  const siteRow = siteReportRow(sites && !sites.err ? sites : null, scope.siteId);
+  const siteRows = siteReportRows(sites && !sites.err ? sites : null, scope.siteId);
 
   const loadReport = async (id, d) => {
     setBusy(true);
@@ -111,6 +121,43 @@ export default function MarketingReports() {
         </div>
       </div>
       <div style={S.sub}>Sends, engagement and redemptions over the last {days} days. Revenue is the value of orders where a promo code was redeemed.{busy ? ' · refreshing…' : ''}</div>
+      <MarketingSitesBar scope={scope} what="numbers" onSite="The numbers at {site} on top; everything below is the whole organisation." />
+
+      {/* 5.12.69: one site on top. Sent, opened, clicked and link clicks by the customer's home venue;
+          redeemed, discount and revenue at the venue where the code was used. */}
+      {scope.siteId && (
+        <div style={{ ...S.card, borderColor: 'var(--acc-b, var(--bdr))' }}>
+          <h2 style={S.h2}>At {scope.siteName}</h2>
+          {!siteRow && <div style={{ fontSize: 13, color: 'var(--t4)' }}>{sites?.err ? sites.err : `Nothing sent to or redeemed at ${scope.siteName} in the last ${days} days.`}</div>}
+          {siteRow && (
+            <>
+              <div style={{ ...S.kpis, marginBottom: 12 }}>
+                <div style={S.kpi}><div style={S.kpiV}>{siteRow.sent || 0}</div><div style={S.kpiL}>Messages sent</div></div>
+                <div style={S.kpi}><div style={S.kpiV}>{pct(siteRow.opened, siteRow.sent)}</div><div style={S.kpiL}>Opened</div></div>
+                <div style={S.kpi}><div style={S.kpiV}>{pct(siteRow.clicked, siteRow.sent)}</div><div style={S.kpiL}>Clicked</div></div>
+                <div style={S.kpi}><div style={S.kpiV}>{siteRow.link_clicks || 0}</div><div style={S.kpiL}>Link clicks</div></div>
+                <div style={S.kpi}><div style={S.kpiV}>{siteRow.redeemed || 0}</div><div style={S.kpiL}>Codes redeemed here</div></div>
+                <div style={S.kpi}><div style={S.kpiV}>{money(siteRow.discount)}</div><div style={S.kpiL}>Discount given here</div></div>
+                <div style={S.kpi}><div style={S.kpiV}>{money(siteRow.revenue)}</div><div style={S.kpiL}>Revenue here</div></div>
+              </div>
+              {siteRows.length === 0 ? <div style={{ fontSize: 13, color: 'var(--t4)' }}>No campaign or automation had activity here in this window.</div> : (
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr><th style={S.th}>Campaign / automation</th><th style={{ ...S.th, textAlign: 'right' }}>Sent</th><th style={{ ...S.th, textAlign: 'right' }}>Opened</th><th style={{ ...S.th, textAlign: 'right' }}>Clicked</th><th style={{ ...S.th, textAlign: 'right' }}>Redeemed</th><th style={{ ...S.th, textAlign: 'right' }}>Revenue</th></tr></thead>
+                  <tbody>
+                    {siteRows.map((x) => (
+                      <tr key={`${x.kind}-${x.key}`}>
+                        <td style={S.td}>{x.name} <span style={{ fontSize: 11, color: 'var(--t4)' }}>· {x.kind}</span></td>
+                        <td style={S.tdr}>{x.v.sent}</td><td style={S.tdr}>{x.v.opened}</td><td style={S.tdr}>{x.v.clicked}</td><td style={S.tdr}>{x.v.redeemed}</td><td style={S.tdr}>{money(x.v.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+          <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>Everything below is the whole organisation: offers, codes and link clicks are shared across every site.</div>
+        </div>
+      )}
 
       <div style={S.kpis}>
         <div style={S.kpi}><div style={S.kpiV}>{m.total || 0}</div><div style={S.kpiL}>Messages sent</div></div>

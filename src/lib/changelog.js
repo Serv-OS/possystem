@@ -1,9 +1,16 @@
 export const CHANGELOG = [
   {
-    v: '5.12.69',
+    v: '5.12.70',
     date: '6 Nov 2026',
     items: [
       'Customer app, App branding (Peter, 6 Nov 2026: "the brand tab needs to be under appearance ... it needs to say app branding"). Back Office, Channels, Appearance has a new tab, App branding: the customer app\'s identity (app name, app id, bundle id), the two logos and the icon (uploaded to receipt-assets under app/<id>/), the accent colour with a contrast readout (the app corrects a pale accent for text and buttons, the tab says which shade it will use), display and body typefaces, corner radius, money and language, the modules the app ships with (ordering, stamps, gift cards), the privacy, support and terms links, and a live phone preview drawn from the same theme the app fetches. Publish theme writes tenant_app_config through the new edge function customer-app-admin (owner, admin or super admin, the venue\'s own organisation only; the app id cannot be taken by another organisation and one organisation has one app) and bumps the version installed apps read on their next launch. Rules shared with the function in _shared/customerAppBrand.js. No SQL; deploy customer-app-admin.',
+    ],
+  },
+  {
+    v: '5.12.69',
+    date: '6 Nov 2026',
+    items: [
+      'Marketing from a multi site point of view (Peter, 6 Nov 2026: "if I start a campaign on one site is it here on the other? ... I need marketing to make sense from a multi site point of view ... a code made on one site can work on multiple sites, this needs logic behind it not just features"). One rule, written down in src/lib/marketingSites.js and now shown on every screen: THE ORGANISATION OWNS, THE SITES USE. Customers, loyalty, segments, campaigns, automations, offers and their codes, forms and the website belong to the organisation; every site sees every one of them whichever venue the Back Office is signed in to; a site is only ever where a thing is aimed ("Which sites") or where a code was used. (1) A Sites control at the top of Promotions, Segments, Campaigns, Quick send, Forms, Automations, Marketing report and Website report: All sites (the default, with the one line that says the data is shared) or one site, remembered per login. On one site the lists show what is aimed at that site or at every site, a new campaign, automation, offer or form starts aimed at that site (one tap back to All sites in the editor), Segments and Quick send count the customers who visited that site, Quick send sends to them, the Marketing report puts that site\'s numbers and its campaigns on top, and the Website report opens the website tied to that venue. (2) A site badge on every campaign, automation and offer row: All sites, or the venue names. (3) Offers get "Which sites": where the codes work (the till already refused a code at a venue outside the offer\'s list; now the list can be set, and a till that sends its Platform venue id is matched too). Every saved site list is checked against the organisation\'s own venues on the server; a list naming only sites that are not yours, or a check that fails, refuses the save or the send rather than quietly going to every site. Nothing changes for a one site company. Till discounts stay per site (a separate build). No SQL; deploy marketing-admin, marketing-segments, marketing-campaigns, marketing-workflows, promo-redeem.',
     ],
   },
   {

@@ -9,7 +9,7 @@ import {
   isValidDomain, isValidSlug, siteUrl, pagePath, recordsMailto, channelOn, buildBrief, PUCK_THEME_VARS,
 } from './helpers.js';
 
-test('MenuAppearance SECTIONS has six entries: the fifth is the website builder, the sixth App branding (5.12.69)', () => {
+test('MenuAppearance SECTIONS has six entries: the fifth is the website builder, the sixth App branding (5.12.70)', () => {
   const src = readFileSync(new URL('../MenuAppearance.jsx', import.meta.url), 'utf8');
   const block = /const SECTIONS = \[([\s\S]*?)\];/.exec(src);
   assert.ok(block, 'SECTIONS list found');

@@ -14,6 +14,9 @@ import { Icon } from '../../../components/ServOSIcons';
 import { compileEmail, SAMPLE_MERGE, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
 import { dateNumeric, venueStamp } from '../../../lib/venueDates';
 import SitesScope from './SitesScope';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar, SiteBadge } from './MarketingSites';
+import { defaultScope, rowSiteIds } from '../../../lib/marketingSites';
 // 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
 // US venue's zone is not known yet); days as 11/03/2026 at a US venue (dateNumeric). A UK venue reads as before.
 const atVenue = (ts) => venueStamp(ts);
@@ -77,6 +80,11 @@ export default function Campaigns() {
   const [q, setQ] = useState('');
   const [shown, setShown] = useState(25);
   const smsRef = useRef(null);
+  // 5.12.69: the Sites control (src/lib/marketingSites.js): the list shows what is aimed at the picked
+  // site or at every site; a new campaign starts aimed at the picked site.
+  const scope = useMarketingSites(locId, venues);
+  const visible = scope.filter('campaign', campaigns);
+  const fresh = (base) => ({ ...base, schedule: { ...(base.schedule || {}), location_ids: defaultScope(scope.siteId) } });
 
   const call = (action, extra = {}) => supabase.functions.invoke('marketing-campaigns', { body: { action, ops_location_id: locId, ...extra } })
     .then(({ data, error }) => { if (error) throw new Error(error.message); if (data?.error) throw new Error(data.error); return data; });
@@ -196,7 +204,7 @@ export default function Campaigns() {
     return (
       <div key={c.id} style={S.row}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{c.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[c.status] || 'var(--t2)' }}>{ended ? 'ended' : c.status}</span></div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{c.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[c.status] || 'var(--t2)' }}>{ended ? 'ended' : c.status}</span><SiteBadge scope={scope} ids={rowSiteIds('campaign', c)} /></div>
           <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
             {c.type === 'automation'
               ? `Automation · ${c.trigger?.type || '—'}${c.trigger?.type === 'birthday' ? ` (${c.trigger.days_before ?? 7}d before)` : c.trigger?.type === 'lapsed' ? ` (${c.trigger.days ?? 30}d)` : c.trigger?.type === 'recurring' ? ` (${c.trigger.recurrence || 'weekly'})` : ''}`
@@ -227,6 +235,7 @@ export default function Campaigns() {
     <div>
       <h1 style={S.h1}>Campaigns</h1>
       <div style={S.sub}>Automations (birthday, win-back) and one-off sends. Attach an offer to give each recipient a unique single-use code. Automations run daily; consent &amp; suppression are always checked at send time.</div>
+      <MarketingSitesBar scope={scope} what="campaigns" />
 
       {/* List */}
       {!editing && !runsView && (
@@ -234,7 +243,7 @@ export default function Campaigns() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, gap: 10, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               {[['live', 'Live'], ['history', 'History']].map(([k, l]) => {
-                const n = campaigns.filter((c) => (k === 'history') === (c.status === 'archived')).length;
+                const n = visible.filter((c) => (k === 'history') === (c.status === 'archived')).length;
                 return (
                   <button key={k} onClick={() => { setTab(k); setShown(25); }}
                     style={{ ...S.ghost, fontWeight: tab === k ? 800 : 500, color: tab === k ? 'var(--acc)' : 'var(--t3)', borderColor: tab === k ? 'var(--acc-b)' : 'var(--bdr)' }}>
@@ -245,16 +254,16 @@ export default function Campaigns() {
               <input style={{ ...S.input, width: 180, marginLeft: 6 }} placeholder="Search campaigns…" value={q} onChange={(e) => { setQ(e.target.value); setShown(25); }} />
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button style={S.ghost} onClick={() => { setEditing(BIRTHDAY_PRESET()); setSave({}); }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="cake" size={14} />Birthday preset</span></button>
-              <button style={S.btn} onClick={() => { setEditing(BLANK()); setSave({}); }}>+ New campaign</button>
+              <button style={S.ghost} onClick={() => { setEditing(fresh(BIRTHDAY_PRESET())); setSave({}); }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="cake" size={14} />Birthday preset</span></button>
+              <button style={S.btn} onClick={() => { setEditing(fresh(BLANK())); setSave({}); }}>+ New campaign</button>
             </div>
           </div>
           {campaigns.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No campaigns yet. Start with the Birthday preset.</div>}
           {(() => {
-            const list = campaigns
+            const list = visible
               .filter((c) => (tab === 'history') === (c.status === 'archived'))
               .filter((c) => !q.trim() || (c.name || '').toLowerCase().includes(q.trim().toLowerCase()));
-            if (campaigns.length && !list.length) return <div style={{ ...S.hint, padding: '14px 0' }}>{tab === 'history' ? 'Nothing in History yet — End a campaign to move it here.' : 'No live campaigns match.'}</div>;
+            if (campaigns.length && !list.length) return <div style={{ ...S.hint, padding: '14px 0' }}>{scope.siteId && !visible.length ? `Nothing is aimed at ${scope.siteName} or at every site yet.` : tab === 'history' ? 'Nothing in History yet. End a campaign to move it here.' : 'No live campaigns match.'}</div>;
             return <>
               {list.slice(0, shown).map((c) => renderCampaignRow(c))}
               {list.length > shown && (

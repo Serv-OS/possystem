@@ -1,4 +1,4 @@
-// Back office → Channels → Appearance → "App branding" (v5.12.69). The customer app's theme:
+// Back office → Channels → Appearance → "App branding" (v5.12.70). The customer app's theme:
 // identity, logos and icon, accent with the contrast readout, typefaces, radius, money and
 // language, module switches, support links, and a live preview drawn from the same payload the
 // app fetches. Saves through customer-app-admin (the only writer of tenant_app_config); installed

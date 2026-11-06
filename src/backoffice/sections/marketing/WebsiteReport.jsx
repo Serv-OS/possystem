@@ -12,6 +12,8 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar } from './MarketingSites';
 import { dateNumeric } from '../../../lib/venueDates';
 
 const S = {
@@ -69,6 +71,9 @@ export default function WebsiteReport() {
   const [busy, setBusy] = useState(false);
   const [host, setHost] = useState('');        // '' = every site
   const [sites, setSites] = useState([]);      // every site of the company, from the last report
+  const [venues, setVenues] = useState([]);    // 5.12.69: the organisation's venues (marketing-segments, venues)
+  // 5.12.69: the Sites control: one venue picks the website tied to it (web_pages.location_id), when there is one.
+  const scope = useMarketingSites(locId, venues);
 
   const load = async (id, d, h = host) => {
     setBusy(true); setErr('');
@@ -89,8 +94,22 @@ export default function WebsiteReport() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    if (!locId || !supabase) return;
+    supabase.functions.invoke('marketing-segments', { body: { action: 'venues', ops_location_id: locId } })
+      .then(({ data }) => setVenues(Array.isArray(data?.venues) ? data.venues : []))
+      .catch(() => setVenues([]));
+  }, [locId]);
+  // The venue picked in the Sites control: its website, or every site when no website is tied to it.
+  const tied = scope.siteId ? sites.find((s) => String(s.location_id || '').toLowerCase() === scope.siteId) : null;
+  useEffect(() => {
+    if (!scope.ready || !locId) return;
+    const want = tied ? tied.host : '';
+    if (want !== host) pickSite(want);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope.siteId, scope.ready, tied?.host]);
   const setRange = (d) => { setDays(d); if (locId) load(locId, d); };
-  const pickSite = (h) => { setHost(h); if (locId) load(locId, days, h); };
+  function pickSite(h) { setHost(h); if (locId) load(locId, days, h); }
   const siteLabel = (s) => (s.name && s.name !== s.host ? `${s.name} (${s.host})` : s.host);
 
   if (loading) return <div style={S.empty}>Loading…</div>;
@@ -113,6 +132,8 @@ export default function WebsiteReport() {
         </div>
       </div>
       <div style={S.sub}>Visits to {host ? `${host}` : (sites.length > 1 ? 'all your websites' : 'your website')} over the last {days} days: which pages, where people came from, and the visits that followed a link in a campaign email.{busy ? ' · refreshing…' : ''}</div>
+      <MarketingSitesBar scope={scope} what="visits" note={false} onSite="Shows the website tied to {site}, or every site when none is." />
+      {scope.siteId && !tied && <div style={{ fontSize: 12.5, color: 'var(--t3)', margin: '-8px 0 14px' }}>No website is tied to {scope.siteName}, so every site is shown. Pages belong to a venue in Website builder.</div>}
       {err && <div style={{ ...S.card, color: 'var(--red)', fontSize: 13 }}>{err}</div>}
 
       <div style={S.kpis}>
