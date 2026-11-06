@@ -14,6 +14,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { genCode } from '../_shared/promo.ts';
 import { normalisePromoCode, escapeLike, pickPromoRow, planSaveOffer } from '../_shared/promoLookup.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { scopeForOrg } from '../_shared/orgVenues.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -56,8 +57,12 @@ Deno.serve(async (req) => {
   if (!org_id) return json({ error: 'location not provisioned (no org)' }, 400);
 
   if (action === 'list_offers') {
-    const { data } = await opsAdmin.from('offers').select('*').eq('org_id', org_id).order('created_at', { ascending: false });
-    return json({ offers: data ?? [] });
+    const [{ data }, { data: venues }] = await Promise.all([
+      opsAdmin.from('offers').select('*').eq('org_id', org_id).order('created_at', { ascending: false }),
+      // 5.12.69: the organisation's sites, for the Sites control and "Which sites" on an offer
+      opsAdmin.from('locations').select('id, name').eq('org_id', org_id).order('name').limit(200),
+    ]);
+    return json({ offers: data ?? [], venues: venues ?? [] });
   }
 
   if (action === 'save_offer') {
@@ -65,6 +70,13 @@ Deno.serve(async (req) => {
     const row: Record<string, unknown> = { org_id, company_id, updated_at: new Date().toISOString() };
     for (const k of OFFER_FIELDS) if (k in incoming) row[k] = incoming[k];
     if (!row.name) return json({ error: 'name required' }, 400);
+    // 5.12.69: Which sites an offer's codes work at (promo-redeem checks venue_ids): the organisation's
+    // own venues only; an empty list is every site; a foreign list or a failed check refuses the save.
+    if ('venue_ids' in row) {
+      const sc = await scopeForOrg(opsAdmin, org_id, row.venue_ids);
+      if (!sc.ok) return json({ error: sc.error }, sc.status);
+      row.venue_ids = sc.ids;
+    }
     // Review round four (5c): never upsert on a caller supplied id (that let an owner take over
     // another company's offer). An id means "update MY offer": it must exist in this org.
     const incomingId = incoming.id ?? null;

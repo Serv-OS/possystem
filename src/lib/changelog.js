@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.69',
+    date: '6 Nov 2026',
+    items: [
+      'Marketing from a multi site point of view (Peter, 6 Nov 2026: "if I start a campaign on one site is it here on the other? ... I need marketing to make sense from a multi site point of view ... a code made on one site can work on multiple sites, this needs logic behind it not just features"). One rule, written down in src/lib/marketingSites.js and now shown on every screen: THE ORGANISATION OWNS, THE SITES USE. Customers, loyalty, segments, campaigns, automations, offers and their codes, forms and the website belong to the organisation; every site sees every one of them whichever venue the Back Office is signed in to; a site is only ever where a thing is aimed ("Which sites") or where a code was used. (1) A Sites control at the top of Promotions, Segments, Campaigns, Quick send, Forms, Automations, Marketing report and Website report: All sites (the default, with the one line that says the data is shared) or one site, remembered per login. On one site the lists show what is aimed at that site or at every site, a new campaign, automation, offer or form starts aimed at that site (one tap back to All sites in the editor), Segments and Quick send count the customers who visited that site, Quick send sends to them, the Marketing report puts that site\'s numbers and its campaigns on top, and the Website report opens the website tied to that venue. (2) A site badge on every campaign, automation and offer row: All sites, or the venue names. (3) Offers get "Which sites": where the codes work (the till already refused a code at a venue outside the offer\'s list; now the list can be set, and a till that sends its Platform venue id is matched too). Every saved site list is checked against the organisation\'s own venues on the server; a list naming only sites that are not yours, or a check that fails, refuses the save or the send rather than quietly going to every site. Nothing changes for a one site company. Till discounts stay per site (a separate build). No SQL; deploy marketing-admin, marketing-segments, marketing-campaigns, marketing-workflows, promo-redeem.',
+    ],
+  },
+  {
     v: '5.12.68',
     date: '6 Nov 2026',
     items: [

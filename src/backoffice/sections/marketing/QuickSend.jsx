@@ -8,6 +8,9 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar } from './MarketingSites';
+import { defaultScope } from '../../../lib/marketingSites';
 import EmailBuilder from './EmailBuilder';
 import { compileEmail, MERGE_TAGS, STARTER_BLOCKS } from '../../../lib/emailCompiler';
 import { venueStamp } from '../../../lib/venueDates';
@@ -50,10 +53,13 @@ export default function QuickSend() {
   const [progress, setProgress] = useState(null);    // { done, pending, total, sent, failed, skipped, run }
   const [recent, setRecent] = useState([]);           // the last quick sends, with what is still to go
   const [continuing, setContinuing] = useState(null); // campaign id being continued from a button
+  const [venues, setVenues] = useState([]);           // 5.12.69: the organisation's sites (list_campaigns)
+  // 5.12.69: the Sites control: on one site the count and the send are that site's customers (schedule.location_ids).
+  const scope = useMarketingSites(locId, venues);
 
   const load = async (id) => {
     const { data } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'list_campaigns', ops_location_id: id } });
-    setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []);
+    setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []); setVenues(data?.venues || []);
     try {
       const { data: rb } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'blast_recent', ops_location_id: id } });
       setRecent(rb?.blasts || []);
@@ -97,7 +103,7 @@ export default function QuickSend() {
     if (!segRef) { setCount(null); return; }
     setCounting(true); setCount(null);
     try {
-      const body = { action: 'preview_segment', ops_location_id: locId };
+      const body = { action: 'preview_segment', ops_location_id: locId, location_ids: defaultScope(scope.siteId) };
       if (String(segRef).startsWith('prebuilt:')) { const p = prebuilt.find((x) => `prebuilt:${x.key}` === segRef); if (!p) { setCounting(false); return; } body.definition = p.definition; }
       else body.id = segRef;
       const { data } = await supabase.functions.invoke('marketing-segments', { body });
@@ -105,18 +111,21 @@ export default function QuickSend() {
     } catch { setCount(null); } finally { setCounting(false); }
   };
   const pickSegment = (segRef) => { setForm((f) => ({ ...f, segment_id: segRef })); previewCount(segRef); };
+  // A new site in the control: the count is that site's.
+  useEffect(() => { if (scope.ready && form.segment_id) previewCount(form.segment_id); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [scope.siteId]);
 
   const doSend = async () => {
     if (!form.segment_id) { setSend({ err: 'Pick an audience first.' }); return; }
     if ((form.channel === 'email' || form.channel === 'both') && !form.subject.trim()) { setSend({ err: 'Add an email subject.' }); return; }
     if ((form.channel === 'sms' || form.channel === 'both') && !form.sms_body.trim()) { setSend({ err: 'Add an SMS message.' }); return; }
-    if (!window.confirm(`Send now to ${count != null ? count : 'the selected'} customer${count === 1 ? '' : 's'}? Unique codes will be issued (if an offer is attached) and messages sent — this can't be undone.`)) return;
+    if (!window.confirm(`Send now to ${count != null ? count : 'the selected'} customer${count === 1 ? '' : 's'}${scope.siteId ? ` at ${scope.siteName}` : ''}? Unique codes will be issued (if an offer is attached) and messages sent. This can't be undone.`)) return;
     setSend({ busy: true });
     try {
       const html = compileEmail(form.email_blocks || []);
       const { data, error } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'blast_send', ops_location_id: locId, blast: {
         name: form.name || 'Quick send', segment_id: form.segment_id, channel: form.channel, offer_id: form.offer_id || null,
         subject: form.subject || null, email_html: html, email_blocks: form.email_blocks || null, sms_body: form.sms_body || null,
+        location_ids: defaultScope(scope.siteId),
       } } });
       if (error) throw new Error(error.message);
       if (data?.error) throw new Error(data.error);
@@ -196,6 +205,7 @@ export default function QuickSend() {
         </div>
       )}
       <div style={S.sub}>Blast an offer to a segment right now. Pick the audience, write the message, attach an offer for unique single-use codes, and send. Consent &amp; suppression are always checked.</div>
+      <MarketingSitesBar scope={scope} what="customers" onSite="The count and the send are the customers who have visited {site}." />
 
       <div style={S.card}>
         <div style={S.row3}>

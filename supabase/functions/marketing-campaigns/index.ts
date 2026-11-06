@@ -24,6 +24,7 @@ const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: 
 const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'exclusion_segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'email_blocks', 'sms_body', 'from_name', 'offer_id', 'status', 'variants'];
 
 import { isVenueWriter } from '../_shared/venueWriter.js';
+import { scopeForOrg } from '../_shared/orgVenues.ts';
 
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
@@ -81,6 +82,13 @@ Deno.serve(async (req) => {
     const incoming = body.campaign || {};
     const row: Record<string, unknown> = { org_id, updated_at: new Date().toISOString() };
     for (const k of CAMPAIGN_FIELDS) if (k in incoming) row[k] = incoming[k];
+    // 5.12.69: Which sites: the organisation's own venues only; an empty list is every site; a foreign
+    // list or a failed check refuses the save (never a silent every site).
+    if (row.schedule && typeof row.schedule === 'object' && 'location_ids' in (row.schedule as any)) {
+      const sc = await scopeForOrg(sb, org_id, (row.schedule as any).location_ids);
+      if (!sc.ok) return json({ error: sc.error }, sc.status);
+      (row.schedule as any).location_ids = sc.ids;
+    }
     if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
     // Persist a prebuilt audience on first use so the ids are always real segment ids the engine can resolve.
@@ -137,10 +145,16 @@ Deno.serve(async (req) => {
     const segment_id = await resolveSegmentRef(sb, org_id, b.segment_id);
     if (!segment_id) return json({ error: 'pick an audience' }, 400);
     if (!['email', 'sms', 'both'].includes(b.channel)) return json({ error: 'pick a channel' }, 400);
+    // 5.12.69: a quick send made with the Sites control on one site goes to that site's customers
+    // (schedule.location_ids, the same scope a campaign carries; the engine applies it). A foreign
+    // list or a failed check refuses the send: it must never widen to the whole company.
+    const sc = await scopeForOrg(sb, org_id, b.location_ids);
+    if (!sc.ok) return json({ error: sc.error }, sc.status);
     const row = {
       org_id, name: (b.name || 'Quick send').toString().slice(0, 120), type: 'one_off', status: 'archived', ephemeral: true,
       channel: b.channel, segment_id, offer_id: b.offer_id || null, trigger: { type: 'manual' },
       subject: b.subject || null, email_html: b.email_html || null, email_blocks: b.email_blocks || null, sms_body: b.sms_body || null,
+      schedule: { location_ids: sc.ids },
     };
     const { data: camp, error } = await sb.from('campaigns').insert(row).select('*').maybeSingle();
     if (error || !camp) return json({ error: error?.message || 'could not create blast' }, 500);

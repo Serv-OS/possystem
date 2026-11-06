@@ -42,18 +42,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // The Ops org of the venue this request is for, resolved server side. The till, kiosk and online
 // send the Ops location id; a Platform id is mapped through ops_location_id. No venue, no org.
-async function orgForLocation(locationId: string): Promise<string | null> {
-  if (!UUID.test(locationId)) return null;
+// 5.12.69: the org AND the Ops id of the venue. An offer's venue_ids are Ops ids (Back Office,
+// "Which sites"); a till that sends its Platform id (3 of 6 venues differ) must still match.
+async function orgAndOpsForLocation(locationId: string): Promise<{ orgId: string | null; opsId: string | null }> {
+  if (!UUID.test(locationId)) return { orgId: null, opsId: null };
   const { data: loc } = await opsAdmin.from('locations').select('org_id').eq('id', locationId).maybeSingle();
-  if (loc?.org_id) return String(loc.org_id);
+  if (loc?.org_id) return { orgId: String(loc.org_id), opsId: locationId };
   const platformUrl = Deno.env.get('PLATFORM_SUPABASE_URL') ?? '';
   const platformKey = Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '';
-  if (!platformUrl || !platformKey) return null;
+  if (!platformUrl || !platformKey) return { orgId: null, opsId: null };
   const platformAdmin = createClient(platformUrl, platformKey, { auth: { autoRefreshToken: false, persistSession: false } });
   const { data: pl } = await platformAdmin.from('locations').select('ops_location_id').eq('id', locationId).maybeSingle();
-  if (!pl?.ops_location_id || !UUID.test(String(pl.ops_location_id))) return null;
+  if (!pl?.ops_location_id || !UUID.test(String(pl.ops_location_id))) return { orgId: null, opsId: null };
   const { data: ol } = await opsAdmin.from('locations').select('org_id').eq('id', pl.ops_location_id).maybeSingle();
-  return ol?.org_id ? String(ol.org_id) : null;
+  return ol?.org_id ? { orgId: String(ol.org_id), opsId: String(pl.ops_location_id) } : { orgId: null, opsId: null };
 }
 
 // Load code + its offer, and run all eligibility checks. Returns { code, offer, discount } or { reason }.
@@ -66,7 +68,7 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
   // enumerated) another company's codes. See _shared/promoLookup.ts.
   const code = normalisePromoCode(codeStr);
   if (!code) return { reason: 'not_found' as const };
-  const orgId = await orgForLocation(locationId);
+  const { orgId, opsId } = await orgAndOpsForLocation(locationId);
   if (!orgId) return { reason: 'not_found' as const };
   const { data: rows } = await opsAdmin.from('promo_codes').select('*')
     .eq('org_id', orgId)
@@ -96,7 +98,8 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
   if (offer.valid_from && new Date(offer.valid_from).getTime() > nowMs) return { reason: 'not_yet_active' as const, row, offer };
   if (offer.valid_to && new Date(offer.valid_to).getTime() < nowMs) return { reason: 'expired' as const, row, offer };
   const venues: string[] = Array.isArray(offer.venue_ids) ? offer.venue_ids : [];
-  if (venues.length && locationId && !venues.includes(locationId)) return { reason: 'wrong_venue' as const, row, offer };
+  const venueKeys = venues.map((v) => String(v).toLowerCase());
+  if (venues.length && locationId && !venueKeys.includes(locationId.toLowerCase()) && !(opsId && venueKeys.includes(opsId.toLowerCase()))) return { reason: 'wrong_venue' as const, row, offer };
   if (offer.min_spend != null && Number(subtotal) < Number(offer.min_spend)) return { reason: 'min_spend' as const, row, offer, min_spend: Number(offer.min_spend) };
 
   // per-customer limit across the offer (shared codes): count this customer's prior redemptions.

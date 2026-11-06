@@ -16,6 +16,9 @@ import EmailBuilder from './EmailBuilder';
 import { compileEmail, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
 import { dateNumeric } from '../../../lib/venueDates';
 import SitesScope from './SitesScope';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar, SiteBadge } from './MarketingSites';
+import { defaultScope, rowSiteIds } from '../../../lib/marketingSites';
 // 5.12.57 (US basics batch 8): days in the venue's order on its clock (11/03/2026 at a US venue; UK as before).
 
 const S = {
@@ -71,6 +74,9 @@ export default function Workflows() {
   const [save, setSave] = useState({});
   const [runMsg, setRunMsg] = useState({});
   const [enrollView, setEnrollView] = useState(null);
+  // 5.12.69: the Sites control (src/lib/marketingSites.js). Sign up, manual and form triggers never carry a scope.
+  const scope = useMarketingSites(locId, venues);
+  const visible = scope.filter('automation', workflows);
 
   const call = (action, extra = {}) => supabase.functions.invoke('marketing-workflows', { body: { action, ops_location_id: locId, ...extra } })
     .then(({ data, error }) => { if (error) throw new Error(error.message); if (data?.error) throw new Error(data.error); return data; });
@@ -131,21 +137,23 @@ export default function Workflows() {
     <div>
       <h1 style={S.h1}>Automations</h1>
       <div style={S.sub}>A sequence of messages sent over time, such as a welcome series or a post-visit follow-up. Customers join on a trigger and move through the steps automatically. Consent &amp; suppression are checked at every send.</div>
+      <MarketingSitesBar scope={scope} what="automations" />
 
       {/* List */}
       {!editing && !enrollView && (
         <div style={S.card}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <h2 style={{ ...S.h2, margin: 0 }}>Your automations</h2>
-            <button style={S.btn} onClick={() => { setEditing(BLANK()); setExpanded(0); setSave({}); }}>+ New automation</button>
+            <button style={S.btn} onClick={() => { setEditing({ ...BLANK(), entry_trigger: { type: 'signup', location_ids: defaultScope(scope.siteId) } }); setExpanded(0); setSave({}); }}>+ New automation</button>
           </div>
           {workflows.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No automations yet. Create a welcome series to greet new sign-ups automatically.</div>}
-          {workflows.map((w) => {
+          {workflows.length > 0 && visible.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>Nothing is aimed at {scope.siteName} or at every site yet.</div>}
+          {visible.map((w) => {
             const rm = runMsg[w.id] || {};
             return (
               <div key={w.id} style={S.row}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{w.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[w.status] || 'var(--t2)' }}>{w.status}</span></div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{w.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[w.status] || 'var(--t2)' }}>{w.status}</span><SiteBadge scope={scope} ids={rowSiteIds('automation', w)} /></div>
                   <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>On {TRIGGER_WORDS[w.entry_trigger?.type || 'manual'] || w.entry_trigger?.type}{w.entry_trigger?.type === 'form_submitted' ? `: ${forms.find((f) => f.id === w.entry_trigger.form_id)?.name || 'a form'}` : ''} · {(w.steps || []).length} step{(w.steps || []).length === 1 ? '' : 's'}</div>
                   {rm.summary && <div style={{ ...S.ok, marginTop: 6 }}>Ran: {rm.summary.enrolled} enrolled · {rm.summary.advanced} advanced · {rm.summary.completed} completed{rm.summary.failed ? ` · ${rm.summary.failed} failed` : ''}</div>}
                   {rm.err && <div style={S.err}>{rm.err}</div>}

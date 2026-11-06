@@ -15,6 +15,9 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar } from './MarketingSites';
+import { defaultScope } from '../../../lib/marketingSites';
 import { EmojiIcon } from '../../../components/ServOSIcons';
 import { currencySymbol } from '../../../lib/currency';
 
@@ -258,6 +261,8 @@ export default function Segments() {
   const [save, setSave] = useState({});
   const [pcounts, setPcounts] = useState({});      // prebuilt key -> count
   const [catalogue, setCatalogue] = useState(null); // 5.12.67: { items, categories, tiers, programs } across the organisation
+  // 5.12.69: the Sites control: a count is of the customers who visited the picked site (one more rule, same resolver).
+  const scope = useMarketingSites(locId, catalogue?.venues);
 
   const call = (action, extra = {}) => supabase.functions.invoke('marketing-segments', { body: { action, ops_location_id: locId, ...extra } })
     .then(({ data, error }) => { if (error) throw new Error(error.message); if (data?.error) throw new Error(data.error); return data; });
@@ -286,15 +291,20 @@ export default function Segments() {
 
   const doPreview = async (e = editing) => {
     setPreview({ busy: true });
-    try { const d = await call('preview_segment', { definition: definitionOf(e) }); setPreview(d); }
+    try { const d = await call('preview_segment', { definition: definitionOf(e), location_ids: defaultScope(scope.siteId) }); setPreview(d); }
     catch (err) { setPreview({ err: err.message }); }
   };
 
+  // A prebuilt count is kept per site, so a new site in the control never shows the old site's number.
+  const pkey = (p) => `${scope.siteId}|${p.key}`;
   const previewPrebuilt = async (p) => {
-    setPcounts((s) => ({ ...s, [p.key]: '…' }));
-    try { const d = await call('preview_segment', { definition: p.definition }); setPcounts((s) => ({ ...s, [p.key]: d.count })); }
-    catch { setPcounts((s) => ({ ...s, [p.key]: '?' })); }
+    const k = pkey(p);
+    setPcounts((s) => ({ ...s, [k]: '…' }));
+    try { const d = await call('preview_segment', { definition: p.definition, location_ids: defaultScope(scope.siteId) }); setPcounts((s) => ({ ...s, [k]: d.count })); }
+    catch { setPcounts((s) => ({ ...s, [k]: '?' })); }
   };
+  // A new site in the control: the open editor's preview is counted again for that site.
+  useEffect(() => { if (editing && preview && !preview.busy && !preview.err) doPreview(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [scope.siteId]);
 
   const editPrebuilt = (p) => { setPreview(null); setEditing({ name: p.name, description: p.description, match: p.definition.match || 'all', rules: (p.definition.rules || []).map(toEdit), prebuilt_key: p.key }); };
 
@@ -318,6 +328,7 @@ export default function Segments() {
     <div>
       <h1 style={S.h1}>Segments</h1>
       <div style={S.sub}>Build audiences from spend, visits, what people ordered, loyalty points and stamps, and birthdays. Group conditions with AND and OR. Consent and suppression are always re-checked when a message is actually sent.</div>
+      <MarketingSitesBar scope={scope} what="counts" onSite="Counts are of the customers who have visited {site}. Segments themselves are the whole organisation's." />
 
       {/* Prebuilt */}
       {!editing && (
@@ -329,7 +340,7 @@ export default function Segments() {
                 <div style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 6 }}><EmojiIcon value={p.icon} fallback="users" size={15} />{p.name}</div>
                 <div style={{ fontSize: 11.5, color: 'var(--t3)', margin: '4px 0 10px', minHeight: 30 }}>{p.description}</div>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <button style={{ ...S.ghost, padding: '5px 10px' }} onClick={() => previewPrebuilt(p)}>Count{pcounts[p.key] !== undefined ? `: ${pcounts[p.key]}` : ''}</button>
+                  <button style={{ ...S.ghost, padding: '5px 10px' }} onClick={() => previewPrebuilt(p)}>Count{pcounts[pkey(p)] !== undefined ? `: ${pcounts[pkey(p)]}` : ''}{scope.siteId && pcounts[pkey(p)] !== undefined ? ` at ${scope.siteName}` : ''}</button>
                   <button style={{ ...S.ghost, padding: '5px 10px' }} onClick={() => editPrebuilt(p)}>Customise</button>
                 </div>
               </div>
@@ -375,7 +386,7 @@ export default function Segments() {
 
             {preview && !preview.busy && !preview.err && (
               <div style={{ marginTop: 14, padding: 12, border: '1px solid var(--bdr2)', borderRadius: 10, background: 'var(--bg2)' }}>
-                <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>{preview.count} customer{preview.count === 1 ? '' : 's'} match</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>{preview.count} customer{preview.count === 1 ? '' : 's'} match{scope.siteId ? ` at ${scope.siteName}` : ''}</div>
                 {(preview.sample || []).length > 0 && (
                   <div style={{ marginTop: 8, fontSize: 12, color: 'var(--t3)', lineHeight: 1.7 }}>
                     {preview.sample.map((c) => <div key={c.id}>· {c.name || [c.first_name, c.last_name].filter(Boolean).join(' ') || '(no name)'} {c.email ? `— ${c.email}` : c.phone ? `— ${c.phone}` : ''}</div>)}
