@@ -63,12 +63,12 @@
       "properties": {
         "display": {
           "type": "string",
-          "enum": ["Instrument Serif", "DM Serif Display", "Space Grotesk", "Fraunces"],
+          "enum": ["Instrument Serif", "DM Serif Display", "Space Grotesk", "Fraunces", "Montserrat", "Poppins", "Bebas Neue"],
           "description": "Carries numbers and headings. Adding to this list is a product decision made once for everyone."
         },
         "body": {
           "type": "string",
-          "enum": ["Schibsted Grotesk", "Figtree", "Public Sans"]
+          "enum": ["Schibsted Grotesk", "Figtree", "Public Sans", "Inter", "DM Sans"]
         }
       }
     },

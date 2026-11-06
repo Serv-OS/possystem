@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.71',
+    date: '6 Nov 2026',
+    items: [
+      'Customer app, App branding: five more typefaces (Peter, 6 Nov 2026: "we need more fonts, this is not on brand for Coffee Boy"). Display: Montserrat, Poppins and Bebas Neue, bold geometric faces that sit with a logo like Coffee Boy\'s, next to the four serif and grotesk faces. Body: Inter and DM Sans. The same list in the Appearance tab, the theme schema and the app (customer app build 5 ships the files). Deploy customer-app-admin and customer-app (both check a theme against the schema).',
+    ],
+  },
+  {
     v: '5.12.70',
     date: '6 Nov 2026',
     items: [
