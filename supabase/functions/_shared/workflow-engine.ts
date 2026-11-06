@@ -16,6 +16,7 @@
 
 import { genCode } from './promo.ts';
 import { resolveAudience } from './segmentAudience.ts';
+import { siteScopeIds, venueRule } from './venueScope.js';
 import { planFormEnrol, reachableChannels, roundStepKey, formTriggerId } from './formRules.js';
 
 type SB = ReturnType<typeof import('https://esm.sh/@supabase/supabase-js@2').createClient>;
@@ -105,6 +106,15 @@ async function entryAudience(sb: SB, wf: any, opts: WfOpts): Promise<string[]> {
   if (wf.segment_id && type !== 'segment') {
     const { data: seg } = await sb.from('segments').select('definition').eq('id', wf.segment_id).eq('org_id', org).maybeSingle();
     if (seg) { const set = new Set(await resolveIds(sb, org, seg.definition)); ids = ids.filter((id) => set.has(id)); }
+  }
+  // 5.12.68: site scope (entry_trigger.location_ids): only customers who have visited one of these
+  // venues join. Same resolver as every rule (20261127a). Empty = every site. Not applied to a new
+  // sign up (no venue yet: the rule would drop every one of them), a form (already the venue's own)
+  // or manual enrolment (the operator's pick).
+  const siteScope = type === 'signup' ? [] : siteScopeIds(wf);
+  if (siteScope.length && ids.length) {
+    const keep = new Set(await resolveIds(sb, org, { match: 'all', rules: [venueRule(siteScope)] }));
+    ids = ids.filter((id) => keep.has(id));
   }
   return ids;
 }

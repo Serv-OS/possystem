@@ -45,16 +45,21 @@ export default function MarketingReports() {
   // 5.12.67: clicks on tracked email links, per campaign, automation and link (marketing_link_report).
   const [links, setLinks] = useState(null);     // { clicks, customers, campaigns, workflows, links } | { err }
   const [openLinks, setOpenLinks] = useState({}); // campaign or workflow id -> expanded
+  // 5.12.68: the report split by venue (marketing_report_sites) and the site whose campaigns are shown.
+  const [sites, setSites] = useState(null);     // { venues, unassigned, campaigns, workflows } | { err }
+  const [siteView, setSiteView] = useState('');
 
   const loadReport = async (id, d) => {
     setBusy(true);
     try {
-      const [{ data }, { data: lk }] = await Promise.all([
+      const [{ data }, { data: lk }, { data: st }] = await Promise.all([
         supabase.functions.invoke('marketing-report', { body: { action: 'overview', ops_location_id: id, days: d } }),
         supabase.functions.invoke('marketing-report', { body: { action: 'links', ops_location_id: id, days: d } }),
+        supabase.functions.invoke('marketing-report', { body: { action: 'sites', ops_location_id: id, days: d } }),
       ]);
       setReport(data?.report || null);
       setLinks(lk?.report ? lk.report : { err: lk?.error || 'Link clicks could not be read.' });
+      setSites(st?.report ? st.report : { err: st?.error || 'The per site split could not be read.' });
     } finally { setBusy(false); }
   };
 
@@ -83,7 +88,7 @@ export default function MarketingReports() {
 
   useEffect(() => {
     (async () => {
-      try { const id = await getActiveLocationSync(); setLocId(id); if (!supabase || !id) { setLoading(false); return; } await loadReport(id, days); await loadCodes(id); } catch {} finally { setLoading(false); }
+      try { const id = await getActiveLocationSync(); setLocId(id); if (!supabase || !id) { setLoading(false); return; } await loadReport(id, days); await loadCodes(id); } catch { /* the empty state shows */ } finally { setLoading(false); }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -244,6 +249,68 @@ export default function MarketingReports() {
           </table>
         )}
         <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>Enrolled/Completed are over the window; “Completed (%)” is the conversion to the final step. Sent/Open/Click are this window’s step sends (open/click need the email provider’s tracking webhook). Revenue is orders where a code from this automation was redeemed.</div>
+      </div>
+
+      {/* 5.12.68: by site. Sent, opened and clicked by the customer's home venue; redeemed and revenue
+          by the venue where the code was used. A site picker shows each campaign and automation there. */}
+      <div style={S.card}>
+        <h2 style={S.h2}>By site</h2>
+        {!sites && <div style={{ fontSize: 13, color: 'var(--t4)' }}>Loading…</div>}
+        {sites?.err && <div style={{ fontSize: 13, color: 'var(--red)' }}>{sites.err}</div>}
+        {sites && !sites.err && (sites.venues || []).length < 2 && <div style={{ fontSize: 13, color: 'var(--t4)' }}>One site in this company, so the report above is that site.</div>}
+        {sites && !sites.err && (sites.venues || []).length >= 2 && (() => {
+          const rows = sites.venues || [];
+          const un = sites.unassigned || {};
+          const forSite = siteView ? [
+            ...(sites.campaigns || []).map((c) => ({ key: c.campaign_id, name: c.name, kind: 'Campaign', v: (c.venues || []).find((x) => x.location_id === siteView) })),
+            ...(sites.workflows || []).map((w) => ({ key: w.workflow_id, name: w.name, kind: 'Automation', v: (w.venues || []).find((x) => x.location_id === siteView) })),
+          ].filter((x) => x.v) : [];
+          return (
+            <>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={S.th}>Site</th><th style={{ ...S.th, textAlign: 'right' }}>Sent</th><th style={{ ...S.th, textAlign: 'right' }}>Opened</th><th style={{ ...S.th, textAlign: 'right' }}>Clicked</th><th style={{ ...S.th, textAlign: 'right' }}>Link clicks</th><th style={{ ...S.th, textAlign: 'right' }}>Redeemed</th><th style={{ ...S.th, textAlign: 'right' }}>Revenue</th></tr></thead>
+                <tbody>
+                  {rows.map((v) => (
+                    <tr key={v.location_id}>
+                      <td style={S.td}>{v.name}</td>
+                      <td style={S.tdr}>{v.sent}</td><td style={S.tdr}>{v.opened} <span style={{ color: 'var(--t4)' }}>({pct(v.opened, v.sent)})</span></td><td style={S.tdr}>{v.clicked}</td><td style={S.tdr}>{v.link_clicks}</td>
+                      <td style={S.tdr}>{v.redeemed}</td><td style={S.tdr}>{money(v.revenue)}</td>
+                    </tr>
+                  ))}
+                  {(un.sent > 0 || un.redeemed > 0) && (
+                    <tr>
+                      <td style={{ ...S.td, color: 'var(--t4)' }}>No home venue yet</td>
+                      <td style={S.tdr}>{un.sent}</td><td style={S.tdr}>{un.opened}</td><td style={S.tdr}>{un.clicked}</td><td style={S.tdr}></td><td style={S.tdr}>{un.redeemed}</td><td style={S.tdr}></td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: 'var(--t2)' }}>
+                Campaigns and automations at
+                <select style={{ fontSize: 12.5, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--bdr2)', background: 'var(--bg1)', color: 'var(--t1)', fontFamily: 'inherit' }} value={siteView} onChange={(e) => setSiteView(e.target.value)}>
+                  <option value="">pick a site</option>
+                  {rows.map((v) => <option key={v.location_id} value={v.location_id}>{v.name}</option>)}
+                </select>
+              </div>
+              {siteView && (forSite.length === 0
+                ? <div style={{ fontSize: 13, color: 'var(--t4)', marginTop: 8 }}>Nothing sent to or redeemed at this site in the last {days} days.</div>
+                : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                    <thead><tr><th style={S.th}>Campaign / automation</th><th style={{ ...S.th, textAlign: 'right' }}>Sent</th><th style={{ ...S.th, textAlign: 'right' }}>Opened</th><th style={{ ...S.th, textAlign: 'right' }}>Clicked</th><th style={{ ...S.th, textAlign: 'right' }}>Redeemed</th><th style={{ ...S.th, textAlign: 'right' }}>Revenue</th></tr></thead>
+                    <tbody>
+                      {forSite.map((x) => (
+                        <tr key={x.key}>
+                          <td style={S.td}>{x.name} <span style={{ fontSize: 11, color: 'var(--t4)' }}>· {x.kind}</span></td>
+                          <td style={S.tdr}>{x.v.sent}</td><td style={S.tdr}>{x.v.opened}</td><td style={S.tdr}>{x.v.clicked}</td><td style={S.tdr}>{x.v.redeemed}</td><td style={S.tdr}>{money(x.v.revenue)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ))}
+              <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>Sent, opened, clicked and link clicks count by the customer's home venue (the one they visit most). Redeemed and revenue count at the venue where the code was used, so a Leeds customer who redeems in Hudds counts for Hudds.</div>
+            </>
+          );
+        })()}
       </div>
 
       {/* 5.12.67: link clicks. Every link in a campaign or automation email goes through a signed

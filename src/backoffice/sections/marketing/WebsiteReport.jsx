@@ -7,6 +7,8 @@
 // visits that came from a campaign or automation link (the tracked email redirect's sv_m token, or
 // a utm_campaign naming one). The page view ping is switched on and off per site in Website
 // builder, Overview, "Count visits". No cookie is set, so no banner is needed.
+// 5.12.68: a company with more than one website gets a site picker (host) and a "By site" table;
+// website_report takes the host and always lists every site.
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
@@ -65,14 +67,17 @@ export default function WebsiteReport() {
   const [report, setReport] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [host, setHost] = useState('');        // '' = every site
+  const [sites, setSites] = useState([]);      // every site of the company, from the last report
 
-  const load = async (id, d) => {
+  const load = async (id, d, h = host) => {
     setBusy(true); setErr('');
     try {
-      const { data, error } = await supabase.functions.invoke('marketing-report', { body: { action: 'website', ops_location_id: id, days: d } });
+      const { data, error } = await supabase.functions.invoke('marketing-report', { body: { action: 'website', ops_location_id: id, days: d, ...(h ? { host: h } : {}) } });
       if (error) throw new Error(error.message);
       if (data?.error) throw new Error(data.error);
       setReport(data?.report || null);
+      if (Array.isArray(data?.report?.sites)) setSites(data.report.sites.filter((s) => s && s.host));
     } catch (e) { setErr(e.message || 'The report could not be read.'); }
     finally { setBusy(false); }
   };
@@ -85,6 +90,8 @@ export default function WebsiteReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const setRange = (d) => { setDays(d); if (locId) load(locId, d); };
+  const pickSite = (h) => { setHost(h); if (locId) load(locId, days, h); };
+  const siteLabel = (s) => (s.name && s.name !== s.host ? `${s.name} (${s.host})` : s.host);
 
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!supabase || !locId) return <div style={S.empty}>Pick a location to see the website report.</div>;
@@ -95,9 +102,17 @@ export default function WebsiteReport() {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', maxWidth: 920 }}>
         <h1 style={S.h1}>Website report</h1>
-        <div style={S.seg}>{[7, 30, 90].map((d) => <button key={d} style={S.segBtn(days === d)} onClick={() => setRange(d)}>{d}d</button>)}</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {sites.length > 1 && (
+            <select style={{ fontSize: 12.5, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg1)', color: 'var(--t1)', fontFamily: 'inherit' }} value={host} onChange={(e) => pickSite(e.target.value)} aria-label="Which site">
+              <option value="">All sites</option>
+              {sites.map((s) => <option key={`${s.host}|${s.location_id || ''}`} value={s.host}>{siteLabel(s)}</option>)}
+            </select>
+          )}
+          <div style={S.seg}>{[7, 30, 90].map((d) => <button key={d} style={S.segBtn(days === d)} onClick={() => setRange(d)}>{d}d</button>)}</div>
+        </div>
       </div>
-      <div style={S.sub}>Visits to your website over the last {days} days: which pages, where people came from, and the visits that followed a link in a campaign email.{busy ? ' · refreshing…' : ''}</div>
+      <div style={S.sub}>Visits to {host ? `${host}` : (sites.length > 1 ? 'all your websites' : 'your website')} over the last {days} days: which pages, where people came from, and the visits that followed a link in a campaign email.{busy ? ' · refreshing…' : ''}</div>
       {err && <div style={{ ...S.card, color: 'var(--red)', fontSize: 13 }}>{err}</div>}
 
       <div style={S.kpis}>
@@ -118,6 +133,12 @@ export default function WebsiteReport() {
       </div>
 
       <div style={S.two}>
+        {sites.length > 1 && (
+          <div style={S.card}><h2 style={S.h2}>By site</h2>
+            <Table rows={sites.map((s) => ({ ...s, label: `${siteLabel(s)}${s.location_id ? '' : ' (no venue)'}` }))} first="Site" keyOf={(x) => x.label} cols={[['Visits', 'visits'], ['Visitors', 'visitors'], ['From campaigns', 'from_campaigns']]} />
+            <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>Every site of the company over the window, whichever site is picked above.</div>
+          </div>
+        )}
         <div style={S.card}><h2 style={S.h2}>Top pages</h2><Table rows={r.pages || []} first="Page" keyOf={(x) => x.path} cols={[['Visits', 'visits'], ['Visitors', 'visitors']]} /></div>
         <div style={S.card}><h2 style={S.h2}>Where they came from</h2><Table rows={r.referrers || []} first="Site" keyOf={(x) => x.referrer} cols={[['Visits', 'visits'], ['Visitors', 'visitors']]} /></div>
         <div style={S.card}><h2 style={S.h2}>Campaign links</h2><Table rows={r.campaigns || []} first="Campaign" keyOf={(x) => x.name} cols={[['Visits', 'visits'], ['Visitors', 'visitors']]} />

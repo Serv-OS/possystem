@@ -11,6 +11,7 @@
 import { genCode } from './promo.ts';
 import { deliverBatch } from './marketingDeliver.ts';
 import { resolveAudience } from './segmentAudience.ts';
+import { siteScopeIds, venueRule } from './venueScope.js';
 import { chunk, claimDecision, outOfTime, sendOutcome, runStalled, EMAIL_BATCH, SMS_BATCH, RESEND_BATCH_GAP_MS, DEFAULT_BUDGET_MS } from './campaignBatch.js';
 
 type SB = ReturnType<typeof import('https://esm.sh/@supabase/supabase-js@2').createClient>;
@@ -220,6 +221,13 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
     if (campaign.exclusion_segment_id) {
       const { data: ex } = await sb.from('segments').select('definition').eq('id', campaign.exclusion_segment_id).eq('org_id', org).maybeSingle();
       if (ex) { const exSet = new Set(await resolveIds(sb, org, ex.definition)); ids = ids.filter((id) => !exSet.has(id)); }
+    }
+    // 5.12.68: site scope (schedule.location_ids): only customers who have visited one of these venues.
+    // Decided by the same resolver as every other rule (20261127a venue rule). Empty = every site.
+    const siteScope = siteScopeIds(campaign);
+    if (siteScope.length && ids.length) {
+      const keep = new Set(await resolveIds(sb, org, { match: 'all', rules: [venueRule(siteScope)] }));
+      ids = ids.filter((id) => keep.has(id));
     }
     summary.candidates = ids.length;
 

@@ -13,6 +13,7 @@ import EmailBuilder from './EmailBuilder';
 import { Icon } from '../../../components/ServOSIcons';
 import { compileEmail, SAMPLE_MERGE, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
 import { dateNumeric, venueStamp } from '../../../lib/venueDates';
+import SitesScope from './SitesScope';
 // 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
 // US venue's zone is not known yet); days as 11/03/2026 at a US venue (dateNumeric). A UK venue reads as before.
 const atVenue = (ts) => venueStamp(ts);
@@ -64,6 +65,7 @@ export default function Campaigns() {
   const [segments, setSegments] = useState([]);
   const [prebuilt, setPrebuilt] = useState([]);
   const [offers, setOffers] = useState([]);
+  const [venues, setVenues] = useState([]);       // 5.12.68: the company's sites, for "Which sites"
   const [editing, setEditing] = useState(null);
   const [save, setSave] = useState({});
   const [runMsg, setRunMsg] = useState({});      // { [id]: summary|busy|err }
@@ -81,7 +83,7 @@ export default function Campaigns() {
 
   const load = async (id = locId) => {
     const { data } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'list_campaigns', ops_location_id: id } });
-    setCampaigns(data?.campaigns || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []);
+    setCampaigns(data?.campaigns || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []); setVenues(data?.venues || []);
   };
 
   // Segment <select> options: prebuilt audiences (value "prebuilt:<key>") + the org's saved segments.
@@ -338,6 +340,9 @@ export default function Campaigns() {
               </div>
             </div>
           )}
+
+          {/* 5.12.68: site scope, saved in schedule.location_ids; the engine narrows the audience with the venue rule */}
+          <SitesScope venues={venues} value={editing.schedule?.location_ids} onChange={(ids) => setEditing({ ...editing, schedule: { ...(editing.schedule || {}), location_ids: ids } })} what="campaign" />
 
           <div style={S.field}><label style={S.label}>Exclude segment <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt. — these customers never get it</span></label>
             <select style={S.input} value={editing.exclusion_segment_id || ''} onChange={(e) => setEditing({ ...editing, exclusion_segment_id: e.target.value })}>

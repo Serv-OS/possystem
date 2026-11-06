@@ -9,7 +9,8 @@
 //   delete_segment   { ops_location_id, id }
 //   preview_segment  { ops_location_id, definition, sample? }     → { count, sample:[customers] }
 //   resolve_segment  { ops_location_id, id? | definition, limit? }→ { customer_ids:[...] }   (slice 4)
-//   menu_catalogue   { ops_location_id }                          → { items:[{label, ids}], categories:[{label, ids}], tiers, programs }  (5.12.67)
+//   menu_catalogue   { ops_location_id }                          → { items:[{label, ids}], categories:[{label, ids}], venues, tiers, programs }  (5.12.67)
+//   venues           { ops_location_id }                          → { venues:[{id, name}] }  (5.12.68: the organisation's sites, for the venue rules and site scope pickers)
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { PREBUILT } from '../_shared/segments-prebuilt.ts';
@@ -95,6 +96,11 @@ Deno.serve(async (req) => {
     let tiers: any[] = [], programs: any[] = [];
     try { const co = await companyLoyalty(opsAdmin, org_id); tiers = co?.tiers ?? []; programs = (co?.programs ?? []).map((p: any) => ({ id: p.id, name: p.name, stamps_required: p.stamps_required })); } catch { /* blank */ }
     return json({ items: pack(items), categories: pack(cats), venues: locs ?? [], tiers, programs });
+  }
+
+  if (action === 'venues') {
+    const { data: locs } = await opsAdmin.from('locations').select('id, name').eq('org_id', org_id).order('name').limit(200);
+    return json({ venues: locs ?? [] });
   }
 
   if (action === 'list_segments') {
