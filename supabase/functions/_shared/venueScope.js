@@ -45,3 +45,15 @@ export function siteScopeLabel(ids, venues) {
   const byId = new Map((Array.isArray(venues) ? venues : []).map((v) => [String(v.id).toLowerCase(), v.name || v.id]));
   return scope.map((id) => byId.get(id) || 'a venue no longer here').join(', ');
 }
+
+/**
+ * 5.12.69: the ids kept when a save names venues: only the organisation's own (the Back Office
+ * sends ids; a stale tab or a hand made request could name another company's venue). Empty in,
+ * empty out (every site). Null orgIds = nothing known, keep the valid ids as they are.
+ */
+export function keepOrgVenues(ids, orgIds) {
+  const scope = siteScopeIds({ location_ids: ids });
+  if (!Array.isArray(orgIds)) return scope;
+  const own = new Set(orgIds.map((x) => String(x == null ? '' : x).trim().toLowerCase()));
+  return scope.filter((id) => own.has(id));
+}

@@ -17,6 +17,13 @@ const S = {
   hint: { fontSize: 11.5, color: 'var(--t4)', marginTop: 6 },
 };
 
+const HINTS = {
+  campaign: (n) => (n === 0 ? 'This campaign goes to the whole company.' : `Only customers who have visited ${n === 1 ? 'this site' : 'one of these sites'} get this campaign.`),
+  automation: (n) => (n === 0 ? 'This automation runs for the whole company.' : `Only customers who have visited ${n === 1 ? 'this site' : 'one of these sites'} join this automation.`),
+  // 5.12.69: an offer's sites are where its codes can be USED (promo-redeem refuses elsewhere).
+  offer: (n) => (n === 0 ? 'Codes from this offer work at every site.' : `Codes from this offer work only at ${n === 1 ? 'this site' : 'these sites'}.`),
+};
+
 export default function SitesScope({ venues, value, onChange, what = 'campaign' }) {
   const list = Array.isArray(venues) ? venues : [];
   if (list.length < 2) return null;
@@ -35,7 +42,7 @@ export default function SitesScope({ venues, value, onChange, what = 'campaign' 
         <button type="button" style={S.chip(all)} onClick={() => onChange([])} aria-pressed={all}>{all ? '✓ ' : ''}All sites</button>
         {list.map((v) => <button type="button" key={v.id} style={S.chip(!all && has(v.id))} onClick={() => toggle(v.id)} aria-pressed={!all && has(v.id)}>{!all && has(v.id) ? '✓ ' : ''}{v.name || v.id}</button>)}
       </div>
-      <div style={S.hint}>{all ? `This ${what} goes to the whole company.` : `Only customers who have visited ${ids.length === 1 ? 'this site' : 'one of these sites'} get this ${what}.`}</div>
+      <div style={S.hint}>{(HINTS[what] || HINTS.campaign)(all ? 0 : ids.length)}</div>
     </div>
   );
 }

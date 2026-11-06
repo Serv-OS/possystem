@@ -16,6 +16,7 @@ import { runWorkflow, enrollCustomers } from '../_shared/workflow-engine.ts';
 import { PREBUILT, resolveSegmentRef } from '../_shared/segments-prebuilt.ts';
 import { resolveAudience } from '../_shared/segmentAudience.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { scopeForOrg } from '../_shared/orgVenues.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -70,6 +71,13 @@ Deno.serve(async (req) => {
     const incoming = body.workflow || {};
     const row: Record<string, unknown> = { org_id, updated_at: new Date().toISOString() };
     for (const k of WORKFLOW_FIELDS) if (k in incoming) row[k] = incoming[k];
+    // 5.12.69: Which sites: the organisation's own venues only; an empty list is every site; a foreign
+    // list or a failed check refuses the save (never a silent every site).
+    if (row.entry_trigger && typeof row.entry_trigger === 'object' && 'location_ids' in (row.entry_trigger as any)) {
+      const sc = await scopeForOrg(sb, org_id, (row.entry_trigger as any).location_ids);
+      if (!sc.ok) return json({ error: sc.error }, sc.status);
+      (row.entry_trigger as any).location_ids = sc.ids;
+    }
     if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
     // 5.12.40: an id means "update MY automation" (same rule as save_offer since review round four):

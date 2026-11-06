@@ -1,7 +1,7 @@
 // marketingVenueScope.test.js (6 Nov 2026, 5.12.68): the site scope a campaign or automation carries.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { siteScopeIds, venueRule, withSiteScope, siteScopeLabel } from '../../supabase/functions/_shared/venueScope.js';
+import { siteScopeIds, venueRule, withSiteScope, siteScopeLabel, keepOrgVenues } from '../../supabase/functions/_shared/venueScope.js';
 
 const A = '33333333-3333-3333-3333-333333333333';
 const B = '34333333-3333-3333-3333-333333333333';
@@ -30,4 +30,13 @@ test('siteScopeLabel: names from the venue list, All sites when empty', () => {
   assert.equal(siteScopeLabel([], venues), 'All sites');
   assert.equal(siteScopeLabel([B, A], venues), 'Hudds, Leeds');
   assert.equal(siteScopeLabel(['55555555-5555-5555-5555-555555555555'], venues), 'a venue no longer here');
+});
+
+test('keepOrgVenues (5.12.69): only the organisation\'s own venues survive a save', () => {
+  assert.deepEqual(keepOrgVenues([A, B], [A]), [A]);
+  assert.deepEqual(keepOrgVenues([A, B], [A.toUpperCase(), B]), [A, B]);
+  assert.deepEqual(keepOrgVenues([], [A]), []);
+  assert.deepEqual(keepOrgVenues(['junk', B], null), [B], 'no org list known: the valid ids as they are');
+  assert.deepEqual(keepOrgVenues([A], []), [], 'an organisation with no venues keeps none');
+  assert.deepEqual(keepOrgVenues(null, [A]), []);
 });

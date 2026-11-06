@@ -6,6 +6,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import SitesScope from './SitesScope';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar, SiteBadge } from './MarketingSites';
+import { defaultScope, rowSiteIds } from '../../../lib/marketingSites';
 import { money, currencySymbol } from '../../../lib/currency';
 import { dateNumeric, venueStamp } from '../../../lib/venueDates';
 // 5.12.57 (US basics batch 8): times in the venue's words on the venue's clock, not the laptop's ('' while a
@@ -61,13 +65,17 @@ export default function Promotions() {
   const [issued, setIssued] = useState({});          // { [offerId]: { code, busy } }
   const [lookupCode, setLookupCode] = useState('');
   const [lookup, setLookup] = useState(null);
+  const [venues, setVenues] = useState([]);        // 5.12.69: the organisation's sites (list_offers)
+  // 5.12.69: the Sites control (src/lib/marketingSites.js); an offer's venue_ids are where its codes work.
+  const scope = useMarketingSites(locId, venues);
+  const visible = scope.filter('offer', offers);
 
   const call = (action, extra = {}) => supabase.functions.invoke('marketing-admin', { body: { action, ops_location_id: locId, ...extra } })
     .then(({ data, error }) => { if (error) { throw new Error(error.message); } if (data?.error) throw new Error(data.error); return data; });
 
   const loadOffers = async (id = locId) => {
     const { data } = await supabase.functions.invoke('marketing-admin', { body: { action: 'list_offers', ops_location_id: id } });
-    setOffers(data?.offers || []);
+    setOffers(data?.offers || []); setVenues(data?.venues || []);
   };
 
   useEffect(() => {
@@ -95,6 +103,7 @@ export default function Promotions() {
         per_customer_limit: Number(o.per_customer_limit) || 1,
         code_prefix: (o.code_prefix || '').toUpperCase(), code_length: Number(o.code_length) || 5,
         active: !!o.active,
+        venue_ids: Array.isArray(o.venue_ids) ? o.venue_ids : [],   // 5.12.69: where the codes work; [] = every site
       };
       await call('save_offer', { offer });
       setEditing(null); setSave({ done: true }); setTimeout(() => setSave((s) => (s.done ? {} : s)), 2000);
@@ -129,20 +138,22 @@ export default function Promotions() {
     <div>
       <h1 style={S.h1}>Promotions</h1>
       <div style={S.sub}>Create offers and issue promo codes. Codes are redeemed at the till and fully attributed back to the campaign and customer.</div>
+      <MarketingSitesBar scope={scope} what="offers" />
 
       {/* Offers */}
       <div style={S.card}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
           <h2 style={{ ...S.h2, margin: 0 }}>Offers</h2>
-          {!editing && <button style={S.btn} onClick={() => setEditing({ ...BLANK })}>+ New offer</button>}
+          {!editing && <button style={S.btn} onClick={() => setEditing({ ...BLANK, venue_ids: defaultScope(scope.siteId) })}>+ New offer</button>}
         </div>
         {!editing && offers.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No offers yet. Create one to start issuing codes.</div>}
-        {!editing && offers.map((o) => {
+        {!editing && offers.length > 0 && visible.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No offer works at {scope.siteName} yet.</div>}
+        {!editing && visible.map((o) => {
           const iss = issued[o.id] || {};
           return (
             <div key={o.id} style={S.offerRow}>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{o.name} <span style={{ ...S.pill, marginLeft: 6, color: o.active ? 'var(--grn)' : 'var(--t4)' }}>{o.active ? 'Active' : 'Off'}</span></div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{o.name} <span style={{ ...S.pill, marginLeft: 6, color: o.active ? 'var(--grn)' : 'var(--t4)' }}>{o.active ? 'Active' : 'Off'}</span><SiteBadge scope={scope} ids={rowSiteIds('offer', o)} /></div>
                 <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{rewardSummary(o)}{o.min_spend ? ` · min ${money(o.min_spend)}` : ''} · issued {o.issued_count || 0} · redeemed {o.redeemed_count || 0}</div>
                 {iss.code && <div style={{ marginTop: 6 }}><span style={S.code}>{iss.code}</span> <span style={S.ok}>✓ issued</span></div>}
                 {iss.err && <div style={S.err}>{iss.err}</div>}
@@ -172,6 +183,8 @@ export default function Promotions() {
               <div style={S.field}><label style={S.label}>Valid from <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label><input style={S.input} type="date" value={editing.valid_from} onChange={(e) => setEditing({ ...editing, valid_from: e.target.value })} /></div>
               <div style={S.field}><label style={S.label}>Valid to <span style={{ color: 'var(--t4)', fontWeight: 500 }}>opt.</span></label><input style={S.input} type="date" value={editing.valid_to} onChange={(e) => setEditing({ ...editing, valid_to: e.target.value })} /></div>
             </div>
+            {/* 5.12.69: where the codes work (offers.venue_ids, checked by promo-redeem) */}
+            <SitesScope venues={venues} value={editing.venue_ids} onChange={(ids) => setEditing({ ...editing, venue_ids: ids })} what="offer" />
             <div style={S.row3}>
               <div style={S.field}><label style={S.label}>Uses per customer</label><input style={S.input} type="number" value={editing.per_customer_limit} onChange={(e) => setEditing({ ...editing, per_customer_limit: e.target.value })} /></div>
               <div style={S.field}><label style={S.label}>Code prefix</label><input style={S.input} value={editing.code_prefix} onChange={(e) => setEditing({ ...editing, code_prefix: e.target.value.toUpperCase() })} placeholder="BDAY" maxLength={12} /></div>

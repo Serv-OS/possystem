@@ -12,6 +12,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { useMarketingSites } from './useMarketingSites';
+import { MarketingSitesBar, SiteBadge } from './MarketingSites';
 import {
   FIELD_KINDS, CONTACT_KINDS, KIND_LABELS, LIMITS, newField, starterForm, normaliseFormDef, submissionsCsv, embedSnippet,
 } from '../../../lib/forms/formRules.js';
@@ -99,6 +101,9 @@ export default function Forms() {
 
   const venueName = (id) => (id ? (venues.find((v) => v.id === id)?.name || 'One venue') : 'Whole company');
   const venueTz = (id) => (venues.find((v) => v.id === id) || venues[0] || {}).timezone || undefined;
+  // 5.12.69: the Sites control (src/lib/marketingSites.js): a form is the whole company's or one venue's.
+  const scope = useMarketingSites(locId, venues);
+  const visible = scope.filter('form', forms);
 
   // ── editing ──
   const check = useMemo(() => (editing ? normaliseFormDef(editing) : null), [editing]);
@@ -154,6 +159,7 @@ export default function Forms() {
         To send them a promo code automatically, make an automation with the trigger <b>Form submitted</b> (Customers, Automations).
         Marketing is only ever sent to people who tick the marketing box.
       </div>
+      <MarketingSitesBar scope={scope} what="forms" />
       {notReady && <div style={{ ...S.card, borderColor: 'var(--amber,#d98a00)' }}><div style={S.err}>{notReady}</div></div>}
       {loadErr && <div style={{ ...S.card }}><div style={S.err}>{loadErr}</div></div>}
 
@@ -162,10 +168,11 @@ export default function Forms() {
         <div style={S.card}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ ...S.h2, margin: 0 }}>Your forms</h2>
-            <button style={S.btn} onClick={() => { setEditing(starterForm()); setSave({}); }}>+ New form</button>
+            <button style={S.btn} onClick={() => { setEditing({ ...starterForm(), location_id: scope.siteId || null }); setSave({}); }}>+ New form</button>
           </div>
           {forms.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No forms yet. A sign up form with a welcome code is a good first one.</div>}
-          {forms.map((f) => (
+          {forms.length > 0 && visible.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No form is for {scope.siteName} or the whole company yet.</div>}
+          {visible.map((f) => (
             <div key={f.id} style={S.row} data-form-row={f.id}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>
