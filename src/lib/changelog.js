@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.69',
+    date: '6 Nov 2026',
+    items: [
+      'Customer app, App branding (Peter, 6 Nov 2026: "the brand tab needs to be under appearance ... it needs to say app branding"). Back Office, Channels, Appearance has a new tab, App branding: the customer app\'s identity (app name, app id, bundle id), the two logos and the icon (uploaded to receipt-assets under app/<id>/), the accent colour with a contrast readout (the app corrects a pale accent for text and buttons, the tab says which shade it will use), display and body typefaces, corner radius, money and language, the modules the app ships with (ordering, stamps, gift cards), the privacy, support and terms links, and a live phone preview drawn from the same theme the app fetches. Publish theme writes tenant_app_config through the new edge function customer-app-admin (owner, admin or super admin, the venue\'s own organisation only; the app id cannot be taken by another organisation and one organisation has one app) and bumps the version installed apps read on their next launch. Rules shared with the function in _shared/customerAppBrand.js. No SQL; deploy customer-app-admin.',
+    ],
+  },
+  {
     v: '5.12.68',
     date: '6 Nov 2026',
     items: [
