@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.68',
+    date: '6 Nov 2026',
+    items: [
+      'Marketing across sites (Peter, 6 Nov 2026: "we dont have multi site for marketing where someone can see all marketing data in one place ... support much more multi site functions"). The marketing data was already company wide; nothing split it by venue. Now: (1) Segments, a new "Where they visit" group with "Visited a venue" (which venues, optionally in the last N days) and "Home venue" (the venue they visit most), both nestable with every other rule and decided by the same resolver (SQL 20261127a adds marketing_venue_customers and two whitelisted fields; everything else word for word). (2) Campaigns and Automations get "Which sites": tick the venues, default All sites; the engine narrows the audience with the same venue rule, so a Leeds offer never reaches a Hudds only customer. (3) Marketing report, a new "By site" card: sent, opened and clicked by the customer\'s home venue, redeemed, discount and revenue by the venue where the code was used, with a site picker that shows each campaign and automation for that venue (marketing_report_sites). (4) Website report: a site picker when the company runs more than one website (website_report takes a host) and a "By site" table. SQL 20261127a on Ops (needs 20261126a first, rollback twin). Deploy marketing-segments, marketing-campaigns, marketing-workflows, marketing-run, marketing-report, form-submit (it bundles the workflow engine).',
+    ],
+  },
+  {
     v: '5.12.67',
     date: '6 Nov 2026',
     items: [

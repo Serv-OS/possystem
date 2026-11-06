@@ -1,7 +1,7 @@
 // supabase/functions/marketing-workflows/index.ts
 //
 // Slice 6 — back-office drip/workflow management. Auth mirrors marketing-campaigns. Actions:
-//   list_workflows   { ops_location_id }                         → workflows + segments + offers
+//   list_workflows   { ops_location_id }                         → workflows + segments + offers + venues (5.12.68: for the site scope picker)
 //   save_workflow    { ops_location_id, workflow:{...} }         → upsert
 //   set_status       { ops_location_id, id, status }
 //   delete_workflow  { ops_location_id, id }
@@ -55,14 +55,15 @@ Deno.serve(async (req) => {
   if (!org_id) return json({ error: 'location not provisioned (no org)' }, 400);
 
   if (action === 'list_workflows') {
-    const [{ data: workflows }, { data: segments }, { data: offers }, formsRes] = await Promise.all([
+    const [{ data: workflows }, { data: segments }, { data: offers }, formsRes, { data: venues }] = await Promise.all([
       sb.from('workflows').select('*').eq('org_id', org_id).order('created_at', { ascending: false }),
       sb.from('segments').select('id, name').eq('org_id', org_id).order('name'),
       sb.from('offers').select('id, name, per_customer_limit').eq('org_id', org_id).eq('active', true).order('name'),
       // The forms table may not be there yet (SQL not run): no forms, never an error.
       sb.from('marketing_forms').select('id, name, status').eq('org_id', org_id).neq('status', 'archived').order('name'),
+      sb.from('locations').select('id, name').eq('org_id', org_id).order('name').limit(200),
     ]);
-    return json({ workflows: workflows ?? [], segments: segments ?? [], offers: offers ?? [], forms: formsRes?.data ?? [], prebuilt: PREBUILT });
+    return json({ workflows: workflows ?? [], segments: segments ?? [], offers: offers ?? [], forms: formsRes?.data ?? [], venues: venues ?? [], prebuilt: PREBUILT });
   }
 
   if (action === 'save_workflow') {

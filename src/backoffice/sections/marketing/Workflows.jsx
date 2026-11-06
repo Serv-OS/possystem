@@ -15,6 +15,7 @@ import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import EmailBuilder from './EmailBuilder';
 import { compileEmail, STARTER_BLOCKS, MERGE_TAGS } from '../../../lib/emailCompiler';
 import { dateNumeric } from '../../../lib/venueDates';
+import SitesScope from './SitesScope';
 // 5.12.57 (US basics batch 8): days in the venue's order on its clock (11/03/2026 at a US venue; UK as before).
 
 const S = {
@@ -64,6 +65,7 @@ export default function Workflows() {
   const [prebuilt, setPrebuilt] = useState([]);
   const [offers, setOffers] = useState([]);
   const [forms, setForms] = useState([]);
+  const [venues, setVenues] = useState([]);       // 5.12.68: the company's sites, for "Which sites"
   const [editing, setEditing] = useState(null);
   const [expanded, setExpanded] = useState(0);
   const [save, setSave] = useState({});
@@ -75,7 +77,7 @@ export default function Workflows() {
 
   const load = async (id = locId) => {
     const { data } = await supabase.functions.invoke('marketing-workflows', { body: { action: 'list_workflows', ops_location_id: id } });
-    setWorkflows(data?.workflows || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []); setForms(data?.forms || []);
+    setWorkflows(data?.workflows || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []); setForms(data?.forms || []); setVenues(data?.venues || []);
   };
 
   const segmentOptions = () => (
@@ -186,6 +188,8 @@ export default function Workflows() {
               <select style={S.input} value={tr.segment_id || ''} onChange={(e) => setTrigger({ segment_id: e.target.value })}><option value="">Select…</option>{segmentOptions()}</select>
             </div>}
           </div>
+          {/* 5.12.68: site scope, saved in entry_trigger.location_ids; automatic enrolment is narrowed with the venue rule */}
+          {tr.type !== 'manual' && tr.type !== 'form_submitted' && tr.type !== 'signup' && <SitesScope venues={venues} value={tr.location_ids} onChange={(ids) => setTrigger({ location_ids: ids })} what="automation" />}
           {tr.type === 'form_submitted' && <div style={{ ...S.hint, marginTop: -4, marginBottom: 8 }}>The person joins the moment they send the form, only when they ticked the marketing box, and only once per form (unless the offer allows more than one code each). A first step with 0 days sends straight away. Add a <b>Send a promo code</b> step below.</div>}
           {(tr.type === 'wifi_connect' || tr.type === 'wifi_not_loyal') && <div style={{ ...S.hint, marginTop: -4, marginBottom: 8 }}>Tip: a “review request” automation = trigger “Connected to WiFi”, step 1 delay ≈ 0.17 days (4h), message asking for a review. Enrols once per guest.</div>}
 

@@ -46,6 +46,9 @@ const FIELDS = [
   { v: 'days_since_visit', l: 'Days since last visit', t: 'num', g: 'Visits and spend' },
   { v: 'signed_up_days', l: 'Days since signup', t: 'num', g: 'Visits and spend' },
   { v: 'never_visited', l: 'Never visited', t: 'bool', g: 'Visits and spend' },
+  // 5.12.68 (multi site): which venues they visit; decided per venue from customer_locations.
+  { v: 'venue', l: 'Visited a venue', t: 'venue', g: 'Where they visit' },
+  { v: 'home_venue', l: 'Home venue (visits most)', t: 'home', g: 'Where they visit' },
   { v: 'ordered_item', l: 'Ordered an item', t: 'item', g: 'What they ordered' },
   { v: 'ordered_category', l: 'Ordered from a category', t: 'cat', g: 'What they ordered' },
   { v: 'points_balance', l: 'Points balance', t: 'num', g: 'Loyalty' },
@@ -63,13 +66,15 @@ const FIELDS = [
   { v: 'has_phone', l: 'Has mobile', t: 'bool', g: 'About them' },
   { v: 'is_local', l: 'Local customer', t: 'bool', g: 'About them' },
 ];
-const GROUPS = ['Visits and spend', 'What they ordered', 'Loyalty', 'About them'];
+const GROUPS = ['Visits and spend', 'Where they visit', 'What they ordered', 'Loyalty', 'About them'];
 const OPS = {
   num: [['gte', '≥'], ['lte', '≤'], ['gt', '>'], ['lt', '<'], ['eq', '='], ['neq', '≠']],
   text: [['eq', 'is'], ['neq', 'is not'], ['contains', 'contains'], ['in', 'is any of']],
   bool: [['is_true', 'yes'], ['is_false', 'no']],
   item: [['in', 'ordered'], ['not_in', 'did not order']],
   cat: [['in', 'ordered from'], ['not_in', 'did not order from']],
+  venue: [['in', 'visited'], ['not_in', 'did not visit']],
+  home: [['in', 'is'], ['not_in', 'is not']],
   tier: [['eq', 'is'], ['neq', 'is not']],
 };
 const ftype = (f) => (FIELDS.find((x) => x.v === f) || {}).t || 'num';
@@ -88,6 +93,13 @@ const toWire = (r) => {
     // picks (label + ids) ride along in the value so the editor can show the names again; the resolver reads items/categories/days only
     return { field: r.field, op: r.op === 'not_in' ? 'not_in' : 'in', value: { [key]: ids, days: Math.max(1, Math.round(Number(r.days) || 90)), picks: picks.map((p) => ({ label: p.label, ids: p.ids || [] })) } };
   }
+  if (t === 'venue' || t === 'home') {
+    const picks = Array.isArray(r.picks) ? r.picks : [];
+    const ids = [...new Set(picks.flatMap((p) => p.ids || []))];
+    const days = t === 'venue' ? Math.round(Number(r.days) || 0) : 0;
+    // venues (ids) and days are what the resolver reads; picks carry the names for the editor
+    return { field: r.field, op: r.op === 'not_in' ? 'not_in' : 'in', value: { venues: ids, ...(days > 0 ? { days } : {}), picks: picks.map((p) => ({ label: p.label, ids: p.ids || [] })) } };
+  }
   if (t === 'tier') return { field: 'tier', op: r.op, value: String(r.value ?? '') };
   if (r.op === 'in') return { field: r.field, op: 'in', value: String(r.value || '').split(',').map((s) => s.trim()).filter(Boolean) };
   if (t === 'num') return { field: r.field, op: r.op, value: Number(r.value) || 0 };
@@ -104,11 +116,19 @@ const toEdit = (r) => {
       : (ids.length ? [{ label: `${ids.length} saved`, ids }] : []);
     return { field: r.field, op: r.op === 'not_in' ? 'not_in' : 'in', picks, days: Number(v.days) || 90 };
   }
+  if (t === 'venue' || t === 'home') {
+    const v = r.value && typeof r.value === 'object' ? r.value : {};
+    const ids = Array.isArray(v.venues) ? v.venues : [];
+    const picks = Array.isArray(v.picks) && v.picks.length ? v.picks.filter((p) => p && p.label).map((p) => ({ label: String(p.label), ids: Array.isArray(p.ids) ? p.ids : [] }))
+      : (ids.length ? [{ label: `${ids.length} saved`, ids }] : []);
+    return { field: r.field, op: r.op === 'not_in' ? 'not_in' : 'in', picks, days: Number(v.days) || 0 };
+  }
   return { field: r.field, op: r.op || (t === 'bool' ? 'is_true' : OPS[t][0][0]), value: Array.isArray(r.value) ? r.value.join(', ') : (r.value ?? '') };
 };
 const blankRule = (field = 'visit_count') => {
   const t = ftype(field);
   if (t === 'item' || t === 'cat') return { field, op: 'in', picks: [], days: 90 };
+  if (t === 'venue' || t === 'home') return { field, op: 'in', picks: [], days: 0 };
   if (t === 'bool') return { field, op: 'is_true', value: '' };
   return { field, op: OPS[t][0][0], value: t === 'num' ? 1 : '' };
 };
@@ -116,10 +136,12 @@ const blankRule = (field = 'visit_count') => {
 const BLANK = { name: '', description: '', match: 'all', rules: [{ field: 'lifetime_revenue', op: 'gte', value: 100 }] };
 
 // A picker for items or categories: type to search the organisation's menu, pick several.
+// 5.12.68: kind 'venue' or 'home' lists the company's venues (shown without typing, there are few).
 function MenuPicker({ kind, picks, onChange, catalogue }) {
   const [q, setQ] = useState('');
-  const list = kind === 'item' ? (catalogue?.items || []) : (catalogue?.categories || []);
-  const hits = q.trim() ? list.filter((e) => e.label.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 12) : [];
+  const isVenue = kind === 'venue' || kind === 'home';
+  const list = kind === 'item' ? (catalogue?.items || []) : kind === 'cat' ? (catalogue?.categories || []) : (catalogue?.venues || []).map((v) => ({ label: v.name || v.id, ids: [v.id] }));
+  const hits = q.trim() ? list.filter((e) => e.label.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 12) : (isVenue ? list.slice(0, 50) : []);
   const chosen = new Set((picks || []).map((p) => p.label));
   return (
     <div>
@@ -130,7 +152,7 @@ function MenuPicker({ kind, picks, onChange, catalogue }) {
           </span>
         ))}
       </div>
-      <input style={S.input} value={q} onChange={(e) => setQ(e.target.value)} placeholder={catalogue ? (kind === 'item' ? 'Type an item name' : 'Type a category name') : 'Loading the menu…'} />
+      <input style={S.input} value={q} onChange={(e) => setQ(e.target.value)} placeholder={catalogue ? (kind === 'item' ? 'Type an item name' : kind === 'cat' ? 'Type a category name' : 'Pick a venue below') : 'Loading…'} />
       {hits.length > 0 && (
         <div style={{ border: '1px solid var(--bdr2)', borderRadius: 8, marginTop: 4, background: 'var(--bg1)', maxHeight: 180, overflowY: 'auto' }}>
           {hits.map((e) => (
@@ -141,7 +163,7 @@ function MenuPicker({ kind, picks, onChange, catalogue }) {
           ))}
         </div>
       )}
-      {q.trim() && !hits.length && catalogue && <div style={S.hint}>Nothing on the menu matches "{q.trim()}".</div>}
+      {q.trim() && !hits.length && catalogue && <div style={S.hint}>Nothing {isVenue ? 'in your venues' : 'on the menu'} matches "{q.trim()}".</div>}
     </div>
   );
 }
@@ -151,7 +173,7 @@ function RuleRow({ r, onChange, onRemove, catalogue }) {
   const t = ftype(r.field);
   const changeField = (field) => onChange(blankRule(field));
   return (
-    <div style={{ ...S.ruleRow, gridTemplateColumns: t === 'item' || t === 'cat' ? '1.2fr 1fr 2fr auto' : '1.4fr 1fr 1.2fr auto', alignItems: 'start' }}>
+    <div style={{ ...S.ruleRow, gridTemplateColumns: t === 'item' || t === 'cat' || t === 'venue' || t === 'home' ? '1.2fr 1fr 2fr auto' : '1.4fr 1fr 1.2fr auto', alignItems: 'start' }}>
       <select style={S.input} value={r.field} onChange={(e) => changeField(e.target.value)}>
         {GROUPS.map((g) => <optgroup key={g} label={g}>{FIELDS.filter((f) => f.g === g).map((f) => <option key={f.v} value={f.v}>{f.l}</option>)}</optgroup>)}
       </select>
@@ -165,6 +187,17 @@ function RuleRow({ r, onChange, onRemove, catalogue }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12, color: 'var(--t3)' }}>in the last
             <input style={{ ...S.input, width: 70, padding: '5px 8px' }} type="number" min={1} max={730} value={r.days} onChange={(e) => onChange({ ...r, days: e.target.value })} /> days, on any channel at any venue
           </div>
+        </div>
+      )}
+      {(t === 'venue' || t === 'home') && (
+        <div>
+          <MenuPicker kind={t} picks={r.picks} onChange={(picks) => onChange({ ...r, picks })} catalogue={catalogue} />
+          {t === 'venue' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12, color: 'var(--t3)' }}>in the last
+              <input style={{ ...S.input, width: 70, padding: '5px 8px' }} type="number" min={0} max={730} value={r.days} onChange={(e) => onChange({ ...r, days: e.target.value })} /> days <span style={{ color: 'var(--t4)' }}>(0 = any time)</span>
+            </div>
+          )}
+          {t === 'home' && <div style={{ ...S.hint, marginTop: 6 }}>The venue they visit most often.</div>}
         </div>
       )}
       {t === 'tier' && (

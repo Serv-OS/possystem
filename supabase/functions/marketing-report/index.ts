@@ -5,7 +5,9 @@
 // via the marketing_report() SQL function (all aggregation server-side).
 // 5.12.67: two more, same shape:
 //   links    { ops_location_id, days? }  → clicks on tracked email links per campaign, automation and link (marketing_link_report)
-//   website  { ops_location_id, days? }  → the venue website's visits: per day, pages, referrers, sources, from campaigns (website_report)
+//   website  { ops_location_id, days?, host? }  → the venue website's visits: per day, pages, referrers, sources, from campaigns (website_report);
+//                                          5.12.68: host narrows it to one of the company's sites, and sites[] always lists every site
+//   sites    { ops_location_id, days? }  → 5.12.68: the marketing report split by venue (marketing_report_sites)
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -34,8 +36,8 @@ Deno.serve(async (req) => {
   let body: any; try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const ops = String(body?.ops_location_id ?? '').trim();
   const action = String(body?.action ?? '');
-  const FN: Record<string, string> = { overview: 'marketing_report', links: 'marketing_link_report', website: 'website_report' };
-  if (!FN[action] || !ops) return json({ error: 'action overview, links or website + ops_location_id required' }, 400);
+  const FN: Record<string, string> = { overview: 'marketing_report', links: 'marketing_link_report', website: 'website_report', sites: 'marketing_report_sites' };
+  if (!FN[action] || !ops) return json({ error: 'action overview, links, website or sites + ops_location_id required' }, 400);
   if (!(await authed(req, ops))) return json({ error: 'no access to this location' }, 403);
   const { data: loc } = await sb.from('locations').select('org_id').eq('id', ops).maybeSingle();
   const org_id = loc?.org_id;
@@ -43,9 +45,12 @@ Deno.serve(async (req) => {
 
   const days = Math.min(Math.max(Number(body.days) || 30, 1), 365);
   const since = new Date(Date.now() - days * 86400000).toISOString();
-  const { data, error } = await sb.rpc(FN[action], { p_org: org_id, p_since: since });
-  // The SQL not run yet (20261126a): say so in words, the screen shows the message.
-  if (error && /could not find the function|does not exist/i.test(error.message)) return json({ error: 'This report needs SQL 20261126a run on the database first.', code: 'sql_missing' }, 400);
+  const args: Record<string, unknown> = { p_org: org_id, p_since: since };
+  const host = typeof body.host === 'string' ? body.host.trim().toLowerCase().slice(0, 253) : '';
+  if (action === 'website' && host) args.p_host = host;
+  const { data, error } = await sb.rpc(FN[action], args);
+  // The SQL not run yet (20261126a, 20261127a): say so in words, the screen shows the message.
+  if (error && /could not find the function|does not exist/i.test(error.message)) return json({ error: `This report needs SQL ${action === 'sites' || host ? '20261127a' : '20261126a'} run on the database first.`, code: 'sql_missing' }, 400);
   if (error) return json({ error: error.message }, 500);
   return json({ ok: true, days, report: data });
 });

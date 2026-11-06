@@ -2,7 +2,7 @@
 //
 // Slice 4 — back-office campaign management. Auth mirrors marketing-admin/marketing-segments (BO user
 // with location access or super_admin; service-role for internal). Campaigns are org-scoped. Actions:
-//   list_campaigns { ops_location_id }                       → campaigns + segments + offers (for pickers)
+//   list_campaigns { ops_location_id }                       → campaigns + segments + offers + venues (for pickers; venues 5.12.68 for the site scope)
 //   save_campaign  { ops_location_id, campaign:{...} }       → upsert
 //   delete_campaign{ ops_location_id, id }
 //   set_status     { ops_location_id, id, status }           → draft/scheduled/active/paused/archived
@@ -66,14 +66,15 @@ Deno.serve(async (req) => {
   if (!org_id) return json({ error: 'location not provisioned (no org)' }, 400);
 
   if (action === 'list_campaigns') {
-    const [{ data: campaigns }, { data: segments }, { data: offers }] = await Promise.all([
+    const [{ data: campaigns }, { data: segments }, { data: offers }, { data: venues }] = await Promise.all([
       // v5.5.946: bounded — years of trading accumulate hundreds of campaigns; the UI
       // splits Live/History and pages client-side, but the wire payload stays sane.
       sb.from('campaigns').select('*').eq('org_id', org_id).eq('ephemeral', false).order('created_at', { ascending: false }).limit(500),
       sb.from('segments').select('id, name').eq('org_id', org_id).order('name'),
       sb.from('offers').select('id, name, reward_type, reward_value, reward_label').eq('org_id', org_id).eq('active', true).order('name'),
+      sb.from('locations').select('id, name').eq('org_id', org_id).order('name').limit(200),
     ]);
-    return json({ campaigns: campaigns ?? [], segments: segments ?? [], offers: offers ?? [], prebuilt: PREBUILT });
+    return json({ campaigns: campaigns ?? [], segments: segments ?? [], offers: offers ?? [], venues: venues ?? [], prebuilt: PREBUILT });
   }
 
   if (action === 'save_campaign') {
