@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://servos.example/schemas/tenant.schema.json",
+  "title": "Serv OS tenant app config",
+  "description": "The complete set of values a customer may change. Validated by the back office on save and by the app on load. Anything not in this schema is the same for every tenant.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tenantId", "displayName", "logo", "color", "type", "shape", "currency", "locale", "modules"],
+  "properties": {
+    "tenantId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,31}$",
+      "description": "Immutable slug. Never changes after the first build."
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 30,
+      "description": "Name shown under the app icon. Changing it requires a new build."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Incremented on every save. The app applies a payload only if its version is higher than the cached one."
+    },
+    "bundleId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "Locked after the first successful store submission."
+    },
+    "logo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["light", "dark"],
+      "properties": {
+        "light": { "type": "string", "format": "uri", "description": "Mark for use on light backgrounds" },
+        "dark": { "type": "string", "format": "uri", "description": "Mark for use on dark and accent backgrounds" }
+      }
+    },
+    "icon": {
+      "type": "string",
+      "format": "uri",
+      "description": "Square source image, 1024 or larger. Every store icon size is generated from it."
+    },
+    "color": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accent", "onAccent", "ink", "inkMuted", "surface", "sunken", "line"],
+      "properties": {
+        "accent": { "$ref": "#/$defs/hex", "description": "The one colour that carries the brand through the app" },
+        "onAccent": { "$ref": "#/$defs/hex" },
+        "ink": { "$ref": "#/$defs/hex" },
+        "inkMuted": { "$ref": "#/$defs/hex" },
+        "surface": { "$ref": "#/$defs/hex" },
+        "sunken": { "$ref": "#/$defs/hex" },
+        "line": { "$ref": "#/$defs/hex" }
+      }
+    },
+    "type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display", "body"],
+      "properties": {
+        "display": {
+          "type": "string",
+          "enum": ["Instrument Serif", "DM Serif Display", "Space Grotesk", "Fraunces"],
+          "description": "Carries numbers and headings. Adding to this list is a product decision made once for everyone."
+        },
+        "body": {
+          "type": "string",
+          "enum": ["Schibsted Grotesk", "Figtree", "Public Sans"]
+        }
+      }
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["radius"],
+      "properties": {
+        "radius": { "type": "integer", "minimum": 4, "maximum": 34, "description": "Card corner radius. Smaller tokens are fixed." }
+      }
+    },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "locale": { "type": "string", "pattern": "^[a-z]{2}-[A-Z]{2}$" },
+    "modules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordering", "stamps", "giftCards"],
+      "description": "A module switched off removes its tab, tile, menu row and deep link. No dead screens ship.",
+      "properties": {
+        "ordering": { "type": "boolean" },
+        "stamps": { "type": "boolean" },
+        "giftCards": { "type": "boolean" }
+      }
+    },
+    "support": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "privacyUrl": { "type": "string", "format": "uri" },
+        "supportUrl": { "type": "string", "format": "uri" },
+        "termsUrl": { "type": "string", "format": "uri" }
+      }
+    }
+  },
+  "$defs": {
+    "hex": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    }
+  }
+}
