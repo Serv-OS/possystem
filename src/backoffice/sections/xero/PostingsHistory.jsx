@@ -33,6 +33,7 @@ import { markGaps } from '../../../../supabase/functions/_shared/xeroGaps.js';
 import { S, STATUS_LABEL, STATUS_COLOUR, historyRefundNote, historyFeeNote, showsGap } from './xeroUi';
 import { Bullets } from './controls';
 import ReplaceDay from './ReplaceDay';
+import BillsHistory from './BillsHistory';   // 5.12.73: bills and credit notes under the days
 
 const DOC = { invoice: 'Invoice', credit_note: 'Credit note', payment: 'Payment', refund: 'Refund', bank: 'Bank' };
 
@@ -204,6 +205,7 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
           </table>
         </div>
       )}
+      <BillsHistory locId={locId} currency={currency} />
     </div>
   );
 }

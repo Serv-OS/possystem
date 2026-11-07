@@ -26,7 +26,7 @@ import { areasReady, fetchAreas } from '../../../lib/stock/areas';
 import { pickSupplierProduct } from '../../../lib/stock/costing';
 import { matchScannedLine } from '../../../lib/stock/purchasingRules';
 import { newUuid } from '../../../lib/stock/phase0Rules';
-import { xeroStatus, xeroPushBill } from '../../../lib/xero';
+import { xeroStatus, xeroPushBill, xeroDocuments, xeroDocState } from '../../../lib/xero';
 import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag } from '../reports/reportKit';
 import { Money } from '../stock/SiteMoney';
 import { useSiteStockContext } from '../../../lib/stock/siteContext';
@@ -98,7 +98,16 @@ export default function InvoicesSite({ siteId = null } = {}) {
     ]);
     setSuppliers(s || []); setItems(it || []); setHistory(h || []);
     setAreas(areaRes.data || []); setLandArea((areaRes.data || []).find(a => a.isReceiving)?.id || '');
-    if (loc) xeroStatus(loc).then(st => setXeroOn(!!st?.connected)).catch(() => {});
+    // 5.12.73: bills the 15 minute job sent (or could not) show their mark here too, not only
+    // the ones pushed from this screen in this visit.
+    if (loc) xeroStatus(loc).then(async (st) => {
+      setXeroOn(!!st?.connected);
+      if (!st?.connected) return;
+      const ids = (h || []).filter(i => (i.status || '').toUpperCase() === 'POSTED').map(i => i.id).filter(Boolean);
+      if (!ids.length) return;
+      const d = await xeroDocuments(loc, 'bill', ids).catch(() => null);
+      if (d?.docs) setXeroPush(p => ({ ...xeroDocState(d.docs), ...p }));
+    }).catch(() => {});
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 

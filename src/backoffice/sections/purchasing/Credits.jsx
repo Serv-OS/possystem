@@ -2,8 +2,11 @@
 // 4.2). An overcharge or a short delivery makes a credit request (emailed to the supplier through
 // po-send's credit_request action); credit notes are matched to the request. Tabs Asked, Received and
 // Written off; 100 a page (stock_credits_page).
+// 5.12.73 (7 Nov 2026): each credit note shows its Xero mark (In Xero, Failed, Sending) from the sync
+// log and a Send to Xero button at a connected site; the 15 minute job sends new ones by itself when
+// the site's switch is on (Back Office, Xero, Connection).
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { supabase } from '../../../lib/supabase';
 import { useStockScope } from '../../StockScope';
@@ -17,6 +20,7 @@ import { PageHead, TabBar, TableWrap, Th, Td, Pill, Btn, ShowMore, ErrorLine, Em
 import { usePaged } from './usePaged';
 import CreditRequestModal from './CreditRequestModal';
 import CreditNoteModal from './CreditNoteModal';
+import { xeroDocuments, xeroPushCreditNote, xeroDocState } from '../../../lib/xero';
 
 export default function Credits({ orgCtx = null }) {
   const sc = useStockScope();
@@ -33,6 +37,50 @@ export default function Credits({ orgCtx = null }) {
   const fetchPage = useCallback((after) => stockApi.creditsPage({ orgId: sc.orgId, sites, status: tab, after }), [sc.orgId, sites, tab]);
   const p = usePaged(fetchPage, `${sc.orgId}|${sites ? sites.join(',') : 'all'}|${tab}`);
   const editor = sc.canEditCompany('purchasing');
+  // 5.12.73: the Xero mark of every credit note on the page, per site (a site may not be connected).
+  const [xeroDocs, setXeroDocs] = useState({});       // noteId -> 'busy' | { link } | { error }
+  const [xeroSites, setXeroSites] = useState({});     // locationId -> connected
+  useEffect(() => {
+    let alive = true;
+    const bySite = {};
+    for (const r of p.rows || []) for (const n of r.notes || []) (bySite[r.location_id] ||= []).push(n.id);
+    const sites = Object.keys(bySite);
+    if (!sites.length) return undefined;
+    Promise.all(sites.map(async (loc) => {
+      const d = await xeroDocuments(loc, 'credit_note', bySite[loc]).catch(() => null);
+      return [loc, d];
+    })).then((pairs) => {
+      if (!alive) return;
+      const conn = {}; let marks = {};
+      for (const [loc, d] of pairs) { conn[loc] = !!d?.connected; if (d?.docs) marks = { ...marks, ...xeroDocState(d.docs) }; }
+      setXeroSites(conn); setXeroDocs((cur) => ({ ...marks, ...Object.fromEntries(Object.entries(cur).filter(([, v]) => v === 'busy')) }));
+    });
+    return () => { alive = false; };
+  }, [p.rows]);
+  const sendNote = async (r, n) => {
+    setXeroDocs((d) => ({ ...d, [n.id]: 'busy' }));
+    try {
+      const res = await xeroPushCreditNote(r.location_id, n.id);
+      setXeroDocs((d) => ({ ...d, [n.id]: { link: res.link || null } }));
+      showToast?.(res.already ? 'Already in Xero' : 'Sent to Xero', 'success');
+    } catch (e) {
+      setXeroDocs((d) => ({ ...d, [n.id]: { error: e.message } }));
+      showToast?.(e.message || 'Could not send to Xero', 'error');
+    }
+  };
+  const noteMark = (r, n) => {
+    if (!xeroSites[r.location_id]) return null;
+    const st = xeroDocs[n.id];
+    if (st === 'busy') return <span style={ui.sub}>Sending to Xero</span>;
+    if (st && st.link) return <a href={st.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 700, color: 'var(--acc)', textDecoration: 'none' }}>In Xero</a>;
+    if (st && !st.link && !st.error) return <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--grn)' }}>In Xero</span>;
+    return (
+      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        {st && st.error ? <span style={{ fontSize: 12, color: 'var(--red, #c0392b)' }} title={st.error}>Failed</span> : null}
+        <Btn small onClick={() => sendNote(r, n)}>{st && st.error ? 'Retry Xero' : 'Send to Xero'}</Btn>
+      </span>
+    );
+  };
 
   const email = async (r) => {
     setBusy(r.id);
@@ -71,7 +119,13 @@ export default function Credits({ orgCtx = null }) {
                   <Td>{r.supplier_name || ''}</Td>
                   <Td>{creditReasonWords(r.reason)}{(r.lines || []).length ? <div style={ui.sub}>{r.lines.length} line{r.lines.length === 1 ? '' : 's'}</div> : null}</Td>
                   <Td num>{moneyWords(r.amount, symbolOf(r.location_id))}</Td>
-                  <Td num grey>{credited ? moneyWords(credited, symbolOf(r.location_id)) : ''}</Td>
+                  <Td num grey>
+                    {credited ? moneyWords(credited, symbolOf(r.location_id)) : ''}
+                    {(r.notes || []).map((n) => {
+                      const mark = noteMark(r, n);
+                      return mark ? <div key={n.id} style={{ ...ui.sub, display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center', marginTop: 4 }}><span>{n.number ? `Note ${n.number}` : 'Credit note'}</span>{mark}</div> : null;
+                    })}
+                  </Td>
                   <Td grey>{r.emailed_at ? dayWords(String(r.emailed_at).slice(0, 10)) : 'Not yet'}</Td>
                   <Td><Pill tone={pl.tone}>{pl.text}</Pill></Td>
                   <Td right>

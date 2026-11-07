@@ -50,6 +50,15 @@ export const xeroSetAutoDaily = (locationId, autoDaily) => call('xero-config', {
 
 // Push a posted supplier invoice to Xero as an ACCPAY bill (+ scanned image attached).
 export const xeroPushBill = (locationId, invoiceId) => call('xero-bills', { locationId, invoiceId });
+// 5.12.73 (7 Nov 2026): a supplier credit note to Xero (ACCPAYCREDIT, allocated against its bill when that is in Xero).
+export const xeroPushCreditNote = (locationId, noteId) => call('xero-bills', { action: 'credit_note', locationId, noteId });
+// The In Xero marks: what the sync log knows about these invoices ('bill') or credit notes ('credit_note').
+export const xeroDocuments = (locationId, kind, refIds) => call('xero-config', { action: 'documents', locationId, kind, refIds });
+// Every bill and credit note sent, failed or sending in the last N days, with the automatic switch.
+export const xeroBillsHistory = (locationId, days = 60) => call('xero-config', { action: 'bills_history', locationId, days });
+// The switch: bills and credit notes go to Xero by themselves (the 15 minute job) from now on.
+export const xeroSetAutoBills = (locationId, autoBills) => call('xero-config', { action: 'save', locationId, autoBills });
+export { xeroDocState, autoBillsWords } from '../../supabase/functions/_shared/xeroCreditNote.js';
 
 // ── The daily sales invoice (30 Sep 2026) ───────────────────────────────────────
 // The site's setup data: name, suggested code, sibling sites on this Xero, categories with 14 days of sales.

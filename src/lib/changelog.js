@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.73',
+    date: '7 Nov 2026',
+    items: [
+      'Xero, bills and credit notes (Peter, 7 Nov 2026: "we need to start getting ready for all stock syncing for invoices credit notes etc"). (1) Credit notes go to Xero. A credit note recorded in Purchasing, Credits goes as a supplier credit note: one net line (amount minus VAT) on the purchases account with the site tracking, the supplier matched or created by name, the scan attached when there is one, and set against the bill it answers when that bill is already in Xero, up to what the bill still owes. Each credit note on the Credits page shows In Xero (a link), Failed with Retry, or Send to Xero at a connected site. Sent once only, with every attempt kept, like bills. (2) Bills and credit notes can go by themselves. Back Office, Xero, Connection has a new switch, "Send bills and credit notes automatically": from the moment it is turned on, a supplier invoice goes to Xero as a bill when it is posted and a credit note when it is added, within fifteen minutes (a database job), never anything older than the switch, so turning it on never pushes a venue\'s history into Xero unasked. A refused one is tried again after two hours, six times at most. (3) Bills and credit notes, a new card under Xero, Postings: everything sent, failed or sending in the last 60 days with Open in Xero links and a Retry on a failure; the Invoices list shows the mark for bills the job sent too. SQL 20261129a on Ops (two columns, one function, one pg_cron job, rollback twin); deploy xero-bills and xero-config. Payroll to Xero is dropped (Peter, 7 Nov 2026); QuickBooks comes next.',
+    ],
+  },
+  {
     v: '5.12.72',
     date: '7 Nov 2026',
     items: [
