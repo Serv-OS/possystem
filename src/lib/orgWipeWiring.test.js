@@ -107,3 +107,36 @@ test('the SQL: service role only, ASCII, the same engine on both databases, a gu
   const opsCode = ops.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
   assert.equal(count(opsCode, 'auth.users'), 0, 'the Ops SQL never touches auth.users outside comments');
 });
+
+// 20261128a (7 Nov 2026): the fences let an armed wipe through. Peter: "still cant delete
+// organisations ... Set by head office. Change it in Inventory > Stock items."
+test('the fence pass SQL: arms both wipe functions, patches the four refusing fences, keeps arm private, rollback restores', () => {
+  const sql = read('supabase/migrations/20261128a_OPS_admin_wipe_fences.sql');
+  const rb = read('supabase/migrations/20261128a_OPS_admin_wipe_fences_ROLLBACK.sql');
+  for (const [name, s] of [['fences', sql], ['fences rollback', rb]]) {
+    assert.ok(!/[^ -~\n]/.test(s), `${name} is ASCII only (pbcopy is Mac Roman)`);
+    assert.equal(count(s, '\nbegin;'), 0, `${name} has no begin`);
+  }
+  assert.ok(sql.includes("raise exception 'Run 20261125a_OPS_admin_wipe.sql first. Nothing was changed.'"));
+  // the mark: this transaction, running as postgres (a PostgREST session never is)
+  assert.ok(sql.includes("select coalesce(current_setting('servos.admin_wipe', true), '') = txid_current()::text\n     and current_user = 'postgres';"));
+  assert.ok(sql.includes("perform set_config('servos.admin_wipe', txid_current()::text, true);"));
+  assert.ok(sql.includes("perform set_config('servos.stock_co_write', txid_current()::text, true);"), 'the stock writer pass the stock fences already honour');
+  // both wipe functions arm first thing; the engine text is not in this file (one engine, 20261125a)
+  assert.equal(count(sql, 'perform public.admin_wipe__arm();'), 2);
+  assert.equal(count(sql, 'CREATE OR REPLACE FUNCTION public.admin_wipe_locations('), 1);
+  assert.equal(count(sql, 'CREATE OR REPLACE FUNCTION public.admin_wipe_organisation('), 1);
+  assert.equal(count(sql, '-- ENGINE BEGIN'), 0);
+  // the four fences, each with the one line pass
+  for (const fn of ['_chat_log_append_only', 'msm_change_sets_guard', 'msm_changes_guard', 'wf_block_finalized_tronc_delete']) {
+    assert.equal(count(sql, `CREATE OR REPLACE FUNCTION public.${fn}()`), 1, fn);
+    assert.equal(count(rb, `CREATE OR REPLACE FUNCTION public.${fn}()`), 1, `${fn} restored by the rollback`);
+  }
+  assert.equal(count(sql, 'if public.admin_wipe__active() then'), 4);
+  assert.equal(count(rb, 'admin_wipe__active() then'), 0, 'the rollback holds the unpatched text');
+  // who may call: anyone may ask, nobody else may arm
+  assert.ok(sql.includes('grant execute on function public.admin_wipe__active() to public;'));
+  assert.ok(sql.includes('revoke all on function public.admin_wipe__arm() from public, anon, authenticated, service_role;'));
+  assert.ok(rb.includes('drop function if exists public.admin_wipe__arm();') && rb.includes('drop function if exists public.admin_wipe__active();'));
+  assert.ok(sql.includes("notify pgrst, 'reload schema';") && rb.includes("notify pgrst, 'reload schema';"));
+});
