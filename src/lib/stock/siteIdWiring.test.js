@@ -468,7 +468,7 @@ const MAIN_SHA = {
   'backoffice/sections/StockCounts.jsx': 'a5f3244734315a906f02f4829a7932bce7890cffed40f696f618d189da67bdbd',
   // v5.11.96 (Drop 3): moved whole into purchasing/, hashed from the first import line (full file was f18b04a253ad2845fcc2a94e061b12a9b30fda49f32e14824278313ef6a2513f)
   // 5.12.43: line icons for emoji (before: 71ed5e4a30aa8c2fc4b2938282eb3b480d616a3928a13e8131495ed36830a039)
-  'backoffice/sections/Invoices.jsx': '6f7c7ac8f72b45cd4cfe9b1b3f727ad6af38486502349d27962d56be4b3f557c',
+  'backoffice/sections/Invoices.jsx': 'ff7bdad9522e6abaeb7071a8063723a835af5daa3df75053c0a93178b78ab1d4',   // 5.12.73: Xero marks for bills the job sent
   'backoffice/sections/PurchaseOrders.jsx': '5f5aaa8b6610886b3889e4c3e1dfaa9143fca50a3a7da645afaef61739dda6e7',
   // v5.11.99 (Reports align): the Recipe GP tab says its basis (menu price less plate cost, this venue only)
   // for every company, so the pin is that text (5.11.84's was 4d5ee256...).
