@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.72',
+    date: '7 Nov 2026',
+    items: [
+      'Company Admin, delete an organisation or a site (Peter, 6 Nov 2026: "still cant delete organisations. Error when removing a site: The Ops database refused that: Set by head office. Change it in Inventory > Stock items."). The wipe (5.12.64, SQL 20261125a) deletes a venue\'s rows through each table\'s own fence trigger, and five fences refused whoever asked: the head office stock lock (stock items, suppliers, packs, recipes with a company record), the chat moderation log (append only), group menu change sets and their changes once published, and finalised tronc runs. The first refusal rolled the whole wipe back, so the screen showed the fence\'s words and nothing went; the preview never hit them because a dry run only counts. SQL 20261128a (Ops, rollback twin): the two wipe functions mark their own transaction first (and set the stock writer pass the stock fences already honour), and the four other fences let a marked wipe through, one line each, the rest of their text exactly as production holds it. Nobody else can set the mark: it only counts when the transaction runs as the database owner, which a signed in session or the service role never does. Proved on a local Postgres 17: the same wipe fails before the SQL with the chat log\'s words, deletes every row after it, ordinary users keep every refusal, and the rollback brings the failure back. No deploy; run the SQL.',
+    ],
+  },
+  {
     v: '5.12.71',
     date: '6 Nov 2026',
     items: [
