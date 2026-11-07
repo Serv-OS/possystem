@@ -14,6 +14,13 @@
 // a retry after a lost answer returns the first bill instead of creating a second one.
 //
 //   POST { locationId, invoiceId, dryRun? } -> { ok, xeroInvoiceID, link, attached }
+//   5.12.73 (7 Nov 2026): auto:true is the 15 minute job (SQL 20261129a, xero_auto_bills_post) sending
+//   every posted invoice and credit note by itself at a site with the switch on. Same path, same log.
+//   POST { action: 'credit_note', locationId, noteId, dryRun? } -> { ok, xeroCreditNoteID, link, allocated, attached }
+//     a supplier credit note (stock_credit_notes) as an ACCPAYCREDIT credit note: one NET line on the
+//     purchases account with the site tracking, allocated against the bill it answers when that bill
+//     is in Xero (up to what the bill still owes), the scan attached when there is one. Idempotent per
+//     note (xero_sync_log kind 'credit_note'). Rules in _shared/xeroCreditNote.js.
 // Deploy --no-verify-jwt (own auth, location-fenced).
 //
 // v5.11.96 (multi site stock Drop 3, contract 3.5): each line's account code is the item's company
@@ -30,6 +37,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi, XERO_API } from '../_shared/xero.ts';
 import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
 import { shortHash } from '../_shared/xeroPostingPlan.js';
+import { buildCreditNotePayload, allocationFor, creditNoteLink } from '../_shared/xeroCreditNote.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
 
@@ -165,6 +173,109 @@ async function rechargeBill(req: Request, body: any): Promise<Response> {
   return json({ ok: true, xeroBillID: billId });
 }
 
+// 5.12.73: a supplier credit note to Xero. The shape of the bill path above: claim the log row,
+// build from the rules, find a half sent one before sending again, allocate, attach, record.
+async function creditNote(req: Request, body: any): Promise<Response> {
+  const { locationId, noteId, dryRun } = body;
+  if (!locationId || !noteId) return json({ error: 'locationId and noteId required' }, 400);
+  const acc = await requireAccess(req, locationId);
+  if (!acc.ok) return acc.res;
+  const logKey = { table: 'xero_sync_log', locationId, kind: 'credit_note', refId: String(noteId) };
+  let run: any = null;
+  try {
+    const prior = await readSyncRow(sb, logKey);
+    if (prior && prior.status === 'ok') return json({ ok: true, already: true, xeroCreditNoteID: prior.xero_id, link: prior.detail?.link || creditNoteLink(prior.xero_id), detail: prior.detail });
+    if (!dryRun) {
+      const claim = await claimSyncRun(sb, logKey);
+      if (claim.done) return json({ ok: true, already: true, xeroCreditNoteID: claim.done.xero_id, link: claim.done.detail?.link || null, detail: claim.done.detail });
+      if (!claim.run) return json({ error: 'This credit note is being sent to Xero right now. Try again in a minute.', busy: true }, 409);
+      run = claim.run;
+    }
+    const { data: note } = await sb.from('stock_credit_notes').select('*').eq('id', noteId).eq('location_id', locationId).maybeSingle();
+    if (!note) throw new HttpError('Credit note not found', 404);
+    const [{ data: request }, { data: supplier }] = await Promise.all([
+      note.request_id ? sb.from('stock_credit_requests').select('id,reason,invoice_id,amount').eq('id', note.request_id).maybeSingle() : Promise.resolve({ data: null }),
+      note.supplier_id ? sb.from('suppliers').select('name').eq('id', note.supplier_id).maybeSingle() : Promise.resolve({ data: null }),
+    ]);
+    let invoice: any = null;
+    let billRow: any = null;
+    if (request?.invoice_id) {
+      const [inv, bill] = await Promise.all([
+        sb.from('supplier_invoices').select('id,invoice_number').eq('id', request.invoice_id).maybeSingle(),
+        readSyncRow(sb, { table: 'xero_sync_log', locationId, kind: 'bill', refId: String(request.invoice_id) }),
+      ]);
+      invoice = inv.data; billRow = bill;
+    }
+    const supplierName = supplier?.name || 'Unknown supplier';
+
+    const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+    const { data: cfgRow } = await sb.from('xero_config').select('mapping').eq('location_id', locationId).maybeSingle();
+    const map = cfgRow?.mapping || {};
+    const purchasesAccount = await resolvePurchasesAccount(accessToken, tenantId, map.purchasesAccount);
+    const purchaseTax = map.purchaseTax || 'NONE';
+    const tracking = await siteTracking(accessToken, tenantId, map);
+    const contactId = dryRun ? null : await findOrCreateContact(accessToken, tenantId, supplierName);
+    const payload = buildCreditNotePayload({ note, request, supplierName, contactId, purchasesAccount, purchaseTax, tracking, invoiceNumber: invoice?.invoice_number || null });
+    const billInXero = billRow?.status === 'ok' && !!billRow.xero_id;
+    if (dryRun) return json({ ok: true, dryRun: true, supplierName, payload, billInXero });
+
+    const reference = payload.CreditNotes[0].Reference;
+    let cn: any = null;
+    if (run.postings.credit_note?.status === 'sending' && note.number) {
+      const where = `Type=="ACCPAYCREDIT" AND Contact.ContactID==guid("${contactId}") AND CreditNoteNumber=="${String(note.number).replace(/"/g, '')}" AND Status!="DELETED" AND Status!="VOIDED"`;
+      const found = await xeroApi(accessToken, tenantId, `/CreditNotes?where=${encodeURIComponent(where)}`).catch(() => null);
+      cn = found?.CreditNotes?.[0] || null;
+    }
+    if (!cn) {
+      await run.setPosting('credit_note', { status: 'sending', reference });
+      const idem = `servos-credit-${locationId}-${noteId}-${shortHash(JSON.stringify(payload))}`;
+      const res = await xeroApi(accessToken, tenantId, '/CreditNotes', { method: 'PUT', body: JSON.stringify(payload), idempotencyKey: idem });
+      cn = res?.CreditNotes?.[0];
+    }
+    if (!cn?.CreditNoteID) throw new Error('Xero did not return a credit note id');
+
+    // Against the bill it answers, when that bill is in Xero and still owes something. Best effort.
+    let allocated = 0;
+    if (billInXero) {
+      try {
+        const b = await xeroApi(accessToken, tenantId, `/Invoices/${billRow.xero_id}`);
+        const amt = allocationFor(cn.Total, b?.Invoices?.[0]);
+        if (amt) {
+          await xeroApi(accessToken, tenantId, `/CreditNotes/${cn.CreditNoteID}/Allocations`, { method: 'PUT', body: JSON.stringify({ Allocations: [{ Amount: amt, Invoice: { InvoiceID: billRow.xero_id } }] }) });
+          allocated = amt;
+        }
+      } catch (e) { console.warn('[xero-bills] credit note allocation failed:', (e as Error)?.message); }
+    }
+
+    let attached = false;
+    if (note.image_path) {
+      try {
+        const dl = await sb.storage.from('invoice-scans').download(note.image_path);
+        if (dl.data) {
+          const ext = extFromPath(note.image_path);
+          const fname = `credit-note-${(note.number || String(noteId).slice(0, 8)).replace(/[^\w.-]+/g, '_')}.${ext}`;
+          const bytes = new Uint8Array(await dl.data.arrayBuffer());
+          const up = await fetch(`${XERO_API}/CreditNotes/${cn.CreditNoteID}/Attachments/${encodeURIComponent(fname)}`, {
+            method: 'PUT',
+            headers: { Authorization: `Bearer ${accessToken}`, 'xero-tenant-id': tenantId, 'Content-Type': mimeFor(ext), Accept: 'application/json' },
+            body: bytes,
+          });
+          attached = up.ok;
+        }
+      } catch (e) { console.warn('[xero-bills] credit note attach failed:', (e as Error)?.message); }
+    }
+
+    const link = creditNoteLink(cn.CreditNoteID);
+    await run.finish('ok', { xero_id: cn.CreditNoteID, detail: { postings: { ...run.postings, credit_note: { status: 'posted', id: cn.CreditNoteID } }, supplierName, total: cn.Total, allocated, attached, link, auto: !!body.auto, error: null } }, { ok: true });
+    return json({ ok: true, xeroCreditNoteID: cn.CreditNoteID, total: cn.Total, supplierName, allocated, attached, link });
+  } catch (e) {
+    const msg = (e as Error)?.message || String(e);
+    console.error('[xero-bills credit_note]', msg);
+    if (run && !run.lost) await run.finish('error', { detail: { error: msg, auto: !!body.auto } }, { ok: false, error: msg }).catch(() => {});
+    return json({ error: msg }, (e as any)?.status || 500);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
@@ -172,6 +283,7 @@ Deno.serve(async (req) => {
   let body: any = {};
   try { body = await req.json(); } catch { /* ignore */ }
   if (body?.action === 'recharge_bill') return await rechargeBill(req, body);
+  if (body?.action === 'credit_note') return await creditNote(req, body);
   const { locationId, invoiceId, dryRun } = body;
   if (!locationId || !invoiceId) return json({ error: 'locationId and invoiceId required' }, 400);
   const acc = await requireAccess(req, locationId);

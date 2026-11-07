@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tabVenue } from '../../store';
-import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily } from '../../lib/xero';
+import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily, xeroSetAutoBills, autoBillsWords } from '../../lib/xero';
 import { money, getActiveCurrencyCode } from '../../lib/currency';
 // 5.12.57 (US basics, batch 6): the venue's own tax words (VAT at a UK venue, as before).
 import { taxWords, activeTaxWords } from '../../lib/taxWords';
@@ -218,6 +218,10 @@ export default function XeroIntegration() {
   const [autoDaily, setAutoDaily] = useState(false);
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoErr, setAutoErr] = useState('');
+  // 5.12.73: bills and credit notes by themselves (xero_config.auto_bills, auto_bills_since).
+  const [autoBills, setAutoBills] = useState(false);
+  const [autoBillsSince, setAutoBillsSince] = useState(null);
+  const [billsBusy, setBillsBusy] = useState(false);
   const [tab, setTab] = useState('connection');
   const [siblings, setSiblings] = useState([]);
   const [tenantName, setTenantName] = useState('');
@@ -240,6 +244,7 @@ export default function XeroIntegration() {
       try {
         const m = await xeroGetMapping(id);
         setAutoDaily(!!m.autoDaily);
+        setAutoBills(!!m.autoBills); setAutoBillsSince(m.autoBillsSince || null);
         if (m.venue) setVenue(m.venue);
         setSiblings(m.siblings || []);
         setTenantName(m.tenantName || '');
@@ -261,6 +266,7 @@ export default function XeroIntegration() {
       const m = await xeroGetMapping(locId);
       setPostMode(m.postMode || 'bank_tx'); setSiblings(m.siblings || []); setAutoDaily(!!m.autoDaily);
       setTenantName(m.tenantName || '');   // the sites listed above belong to this organisation
+      setAutoBills(!!m.autoBills); setAutoBillsSince(m.autoBillsSince || null);   // 5.12.73
       setStartDate(m.mapping?.invoiceStartDate || null);
       setLapsed(figuresLapsed(m.postMode, m.mapping));
     } catch { /* the next load shows it */ }
@@ -507,6 +513,17 @@ export default function XeroIntegration() {
                 style={{ width: 17, height: 17 }} />
               <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>Auto-post each night</span>
               <span style={{ fontSize: 12, color: 'var(--t4)' }}>Each business day posts automatically about four hours after it ends, so a till that was offline has time to catch up. Days with no sales are skipped.</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginTop: 12 }}>
+              <input type="checkbox" checked={autoBills} disabled={billsBusy} aria-label="Send bills and credit notes automatically"
+                onChange={async (e) => {
+                  const v = e.target.checked;
+                  setAutoBills(v); setBillsBusy(true); setAutoErr('');
+                  try { await xeroSetAutoBills(locId, v); await refreshMode(); } catch (er) { setAutoBills(!v); setAutoErr(er.message || 'Could not change automatic sending'); } finally { setBillsBusy(false); }
+                }}
+                style={{ width: 17, height: 17 }} />
+              <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>Send bills and credit notes automatically</span>
+              <span style={{ fontSize: 12, color: 'var(--t4)' }}>{autoBillsWords(autoBills ? autoBillsSince : null)}</span>
             </label>
             {autoErr && <div style={{ ...S.banner(false), marginTop: 10 }}>{autoErr}</div>}
           </div>

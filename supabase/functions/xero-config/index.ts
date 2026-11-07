@@ -7,7 +7,13 @@
 //                                 salesTaxRates, purchaseTaxRates, servosTaxRates:[{id,name,code,pct,mode,isDefault,active}],
 //                                 autoTax:{ [ServOS rate id | 'none']: taxType|null }, addedOnTax,
 //                                 unmatchedTaxBuckets:[{key,name,pct}], taxRatesError, servosRatesError, paymentMethods:[...] }
-//     get     { locationId } -> { mapping, detail, autoDaily, venue:{ timezone, dayStart, currency, currentDay, lastCompletedDay } }
+//     get     { locationId } -> { mapping, detail, autoDaily, autoBills, autoBillsSince, venue:{ timezone, dayStart, currency, currentDay, lastCompletedDay } }
+//     save    { locationId, autoBills } -> { ok }  5.12.73: the "Send bills and credit notes automatically" switch;
+//             turning it on stamps auto_bills_since, so only invoices posted and credit notes added from then on go by themselves
+//     documents { locationId, kind: 'bill' | 'credit_note', refIds } -> { connected, docs:[{ refId, status, link, error, updatedAt }] }
+//             5.12.73: what the sync log knows about these invoices or credit notes, for the In Xero marks on the lists
+//     bills_history { locationId, days? } -> { autoBills, autoBillsSince, rows:[{ kind, refId, number, supplier, amount, status, error, link, attempts, updatedAt }] }
+//             5.12.73: every bill and credit note sent, failed or sending in the last N days (60), newest first
 //     save    { locationId, mapping } -> { ok, paused? } (paused: a sales invoice site whose
 //             "figures checked" tick lapsed with this save, so nightly posting now waits)
 // 28 Sep 2026: VAT on sales is chosen per ServOS tax rate (mapping.taxRateMap), from Xero's
@@ -65,6 +71,7 @@ import { suggestFromLightspeed, xeroDate } from '../_shared/lightspeedSuggest.js
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { scanXeroGaps, noticeXeroGaps } from '../_shared/xeroGapScan.ts';
 import { GAP_SCAN_DAYS } from '../_shared/xeroGaps.js';
+import { billLink, creditNoteLink } from '../_shared/xeroCreditNote.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -257,7 +264,7 @@ Deno.serve(async (req) => {
   try {
     if (action === 'get') {
       const [{ data }, venue, conn, servos] = await Promise.all([
-        sb.from('xero_config').select('mapping,detail,auto_daily,post_mode').eq('location_id', locationId).maybeSingle(),
+        sb.from('xero_config').select('mapping,detail,auto_daily,post_mode,auto_bills,auto_bills_since').eq('location_id', locationId).maybeSingle(),
         venueDay(locationId),
         connectionOf(locationId),
         venueTaxRates(sb, locationId).catch(() => null),
@@ -267,6 +274,7 @@ Deno.serve(async (req) => {
       const addedOnTax = Array.isArray(servos) ? taxContext(servos).addedOn : false;
       return json({
         mapping: data?.mapping || null, detail: data?.detail || null, autoDaily: !!data?.auto_daily, venue, addedOnTax,
+        autoBills: !!data?.auto_bills, autoBillsSince: data?.auto_bills_since || null,
         postMode: data?.post_mode === 'sales_invoice' ? 'sales_invoice' : 'bank_tx',
         tenantName: conn?.tenant_name || null, siblings: siblings.map((x: any) => ({ locationId: x.locationId, name: x.name, code: x.code, postMode: x.postMode === 'sales_invoice' ? 'sales_invoice' : 'bank_tx' })),
       });
@@ -274,7 +282,7 @@ Deno.serve(async (req) => {
 
     if (action === 'save') {
       const patch: Record<string, unknown> = { location_id: locationId, updated_at: new Date().toISOString() };
-      const { data: cur } = await sb.from('xero_config').select('mapping,post_mode').eq('location_id', locationId).maybeSingle();
+      const { data: cur } = await sb.from('xero_config').select('mapping,post_mode,auto_bills').eq('location_id', locationId).maybeSingle();
       let mapping = cur?.mapping || {};
       if (body.mapping !== undefined) {
         const bad = validateTaxMapping(body.mapping) || validateInvoiceMapping(body.mapping);
@@ -287,6 +295,12 @@ Deno.serve(async (req) => {
         }
         patch.mapping = next;
         mapping = next;
+      }
+      if (body.autoBills !== undefined) {
+        // 5.12.73: the switch for bills and credit notes. Turning it on stamps the moment, so the
+        // 15 minute job (xero_auto_bills_post) sends only what is posted or added from now on.
+        patch.auto_bills = !!body.autoBills;
+        if (body.autoBills && !cur?.auto_bills) patch.auto_bills_since = new Date().toISOString();
       }
       if (body.autoDaily !== undefined) {
         if (body.autoDaily && cur?.post_mode === 'sales_invoice') {
@@ -303,6 +317,56 @@ Deno.serve(async (req) => {
       const wasChecked = !!cur?.mapping?.figuresChecked?.hash && cur.mapping.figuresChecked.hash === mappingHash(cur.mapping);
       const paused = live && wasChecked && mappingHash(mapping) !== cur.mapping.figuresChecked.hash;
       return json({ ok: true, ...(paused ? { paused: true, message: "Saved. Nightly posting to Xero is paused until you check a day's figures again, because the choices changed." } : {}) });
+    }
+
+    // 5.12.73: the In Xero marks on Purchasing lists. What the sync log knows about these documents.
+    if (action === 'documents') {
+      const kind = body.kind === 'credit_note' ? 'credit_note' : 'bill';
+      const refIds = Array.isArray(body.refIds) ? body.refIds.map((x: unknown) => String(x)).slice(0, 200) : [];
+      const conn = await connectionOf(locationId);
+      if (!refIds.length) return json({ connected: !!conn, docs: [] });
+      const { data: rows, error } = await sb.from('xero_sync_log').select('ref_id,status,xero_id,updated_at,link:detail->>link,err:detail->>error')
+        .eq('location_id', locationId).eq('kind', kind).in('ref_id', refIds).limit(200);
+      if (error) return json({ error: `Could not read the Xero log: ${error.message}` }, 500);
+      const linkOf = (r: any) => r.link || (r.xero_id ? (kind === 'bill' ? billLink(r.xero_id) : creditNoteLink(r.xero_id)) : null);
+      return json({ connected: !!conn, docs: (rows || []).map((r: any) => ({ refId: r.ref_id, status: r.status, link: r.status === 'ok' ? linkOf(r) : null, error: r.status === 'error' ? (r.err || 'Failed') : null, updatedAt: r.updated_at })) });
+    }
+
+    // 5.12.73: every bill and credit note this site sent, failed or is sending, newest first.
+    if (action === 'bills_history') {
+      const days = Math.max(7, Math.min(180, Number(body.days) || 60));
+      const since = new Date(Date.now() - days * 86400000).toISOString();
+      const [{ data: cfg }, { data: rows, error }] = await Promise.all([
+        sb.from('xero_config').select('auto_bills,auto_bills_since').eq('location_id', locationId).maybeSingle(),
+        sb.from('xero_sync_log').select('kind,ref_id,status,xero_id,updated_at,link:detail->>link,err:detail->>error,auto:detail->>auto,history:detail->history,total:detail->>total')
+          .eq('location_id', locationId).in('kind', ['bill', 'credit_note']).gte('updated_at', since).order('updated_at', { ascending: false }).limit(300),
+      ]);
+      if (error) return json({ error: `Could not read the Xero log: ${error.message}` }, 500);
+      const billIds = (rows || []).filter((r: any) => r.kind === 'bill').map((r: any) => r.ref_id);
+      const noteIds = (rows || []).filter((r: any) => r.kind === 'credit_note').map((r: any) => r.ref_id);
+      const [{ data: invs }, { data: notes }] = await Promise.all([
+        billIds.length ? sb.from('supplier_invoices').select('id,invoice_number,total,invoice_date,supplier_id').in('id', billIds) : Promise.resolve({ data: [] }),
+        noteIds.length ? sb.from('stock_credit_notes').select('id,number,amount,note_date,supplier_id').in('id', noteIds) : Promise.resolve({ data: [] }),
+      ]);
+      const supplierIds = [...new Set([...(invs || []), ...(notes || [])].map((x: any) => x.supplier_id).filter(Boolean))];
+      const { data: sups } = supplierIds.length ? await sb.from('suppliers').select('id,name').in('id', supplierIds) : { data: [] };
+      const supName: Record<string, string> = Object.fromEntries((sups || []).map((x: any) => [x.id, x.name]));
+      const invOf: Record<string, any> = Object.fromEntries((invs || []).map((x: any) => [x.id, x]));
+      const noteOf: Record<string, any> = Object.fromEntries((notes || []).map((x: any) => [x.id, x]));
+      const out = (rows || []).map((r: any) => {
+        const src = r.kind === 'bill' ? invOf[r.ref_id] : noteOf[r.ref_id];
+        const link = r.link || (r.xero_id ? (r.kind === 'bill' ? billLink(r.xero_id) : creditNoteLink(r.xero_id)) : null);
+        return {
+          kind: r.kind, refId: r.ref_id, status: r.status,
+          number: src ? (r.kind === 'bill' ? src.invoice_number : src.number) || null : null,
+          date: src ? (r.kind === 'bill' ? src.invoice_date : src.note_date) || null : null,
+          supplier: src?.supplier_id ? supName[src.supplier_id] || null : null,
+          amount: src ? Number(r.kind === 'bill' ? src.total : src.amount) : (r.total != null ? Number(r.total) : null),
+          link: r.status === 'ok' ? link : null, error: r.status === 'error' ? (r.err || 'Failed') : null,
+          auto: r.auto === 'true', attempts: Array.isArray(r.history) ? r.history.length : 1, updatedAt: r.updated_at,
+        };
+      });
+      return json({ autoBills: !!cfg?.auto_bills, autoBillsSince: cfg?.auto_bills_since || null, days, rows: out });
     }
 
     if (action === 'site_data') {
