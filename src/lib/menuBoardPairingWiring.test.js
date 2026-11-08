@@ -42,6 +42,8 @@ test('a bad live update causes no read and no heartbeat (one bad change reaches 
 test('the tick is the rules, one at a time, and nothing else decides', () => {
   assert.equal(count(EFFECT, 'runPairingTick(mem, io)'), 1);
   assert.match(EFFECT, /if \(busy\) \{ again = true; return; \}/);
+  // 5.12.74: the nightly refresh reloads through menuBoardUptime.reloadPage (pairing kept), so the
+  // surface still never calls window.location.reload itself.
   for (const gone of ['screenIdRef', 'localStorage.removeItem(LS_SCREEN)', 'window.location.reload(', 'createRow', 'MISS_SPACING_MS']) {
     assert.equal(count(SURFACE, gone), 0, `${gone} is gone`);
   }

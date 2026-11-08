@@ -124,6 +124,30 @@ Deno.serve(async (req) => {
     const stockBy = (pick: (r: { pending_old: number; dead: number; held_old: number }) => number): Row[] =>
       stockRows.filter((r) => !demoIds.includes(String(r.location_id))).flatMap((r) => Array.from({ length: Math.max(0, Number(pick(r)) || 0) }, () => ({ location_id: r.location_id })));
 
+    // 5.12.74 menu boards (Peter, 8 Nov 2026: "the menu boards keep quitting"). A paired TV
+    // heartbeats every 12 s (mb_screen_heartbeat). One not heard from for board_dark.olderThan
+    // minutes while the venue is serving (a check closed in the last board_dark.within minutes)
+    // is a dark screen in a trading shop: the Fire TV app has quit or the TV is off. A quiet venue
+    // (shut for the night, TV off at the wall) is not a fault, so its screens are left out, and a
+    // screen silent for over two weeks is a retired TV, not an outage. Unpaired screens never
+    // count. A failed read here is said as "could not be read", never dressed up as an outage.
+    const boardOlder = clamp(w.board_dark?.olderThan, 1, 1440, 15);
+    const boardWithin = clamp(w.board_dark?.within, 5, 1440, 60);
+    const [screensRes, tradingRes] = await Promise.all([
+      realVenues(admin.from('menu_board_screens').select('location_id,last_seen_at'))
+        .eq('status', 'paired').lt('last_seen_at', ago(boardOlder)).gt('last_seen_at', ago(14 * 1440)).limit(500),
+      realVenues(admin.from('closed_checks').select('location_id'))
+        .gt('closed_at', ago(boardWithin)).order('closed_at', { ascending: false }).limit(1000),
+    ]);
+    let boardWatchError: string | null = null;
+    let darkRows: Row[] = [];
+    if (screensRes.error || tradingRes.error) {
+      boardWatchError = (screensRes.error || tradingRes.error)?.message ?? 'unknown';
+    } else {
+      const trading = new Set(((tradingRes.data ?? []) as Row[]).map((r) => String(r.location_id)));
+      darkRows = ((screensRes.data ?? []) as Row[]).filter((r) => trading.has(String(r.location_id)));
+    }
+
     const names = new Map<string, string>();
     for (const l of venuesRes.data ?? []) names.set(String(l.id), l.name ?? 'an unnamed venue');
     const byVenue = (rows: Row[] | null) => {
@@ -189,6 +213,8 @@ Deno.serve(async (req) => {
       stockHeld: byVenue(stockBy((r) => r.held_old)),
       stockWatchAvailable: !stockRes.error,
       otpNotReady: [...otpByVenue.values()].map((v) => ({ venue: v.venue, count: v.count, detail: [...v.states].join(', ') })),
+      boardsDark: byVenue(darkRows),
+      boardWatchError,
       otpAuditStale,
       otpAuditIncomplete,
     });

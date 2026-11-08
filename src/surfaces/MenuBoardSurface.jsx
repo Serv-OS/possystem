@@ -47,6 +47,10 @@ import { withTimeout } from '../lib/withTimeout';
 import OrderStatusScreen from './orderScreen/OrderStatusScreen';
 import { readSavedScreen, sameScreen, newPairingMemory, runPairingTick, applyLiveUpdate, decideView, shouldReadEarly, failedBoardRead, EARLY_READ_DELAY_MS, TICK_MS } from '../lib/menuBoardPairing';
 import { stampScreenNote } from '../lib/menuBoardNotes';
+import { nightlyReloadDue, localHourMinute, reloadPage, CHECK_MS } from '../lib/menuBoardUptime';
+
+// 5.12.74: when this page was opened. The nightly refresh counts from here (menuBoardUptime.js).
+const PAGE_UP_SINCE = Date.now();
 
 const TICK_TIMEOUT_MS = 10000;
 
@@ -391,6 +395,22 @@ export default function MenuBoardSurface() {
     const poll = setInterval(() => load(locId), 90000);   // safety net for missed events / long uptime
     return () => { supabase.removeChannel(ch); clearInterval(poll); clearTimeout(reloadTimer.current); };
   }, [locId, load, effectiveBoardId, reload]);
+
+  // 5.12.74 nightly refresh (Peter, 8 Nov 2026: "the menu boards keep quitting"). A stick's memory
+  // grows over days; once a night, at a quiet hour on the venue clock and at this screen's own
+  // minute, a page up for 20 hours or more reloads itself. The pairing and the board are in
+  // localStorage, so the same board is back within a second or two. Rules: menuBoardUptime.js.
+  useEffect(() => {
+    if (isMock || typeof window === 'undefined') return undefined;
+    const checkNightly = () => {
+      if (nightlyReloadDue({ upMs: Date.now() - PAGE_UP_SINCE, ...localHourMinute(new Date(), dataRef.current?.tz), seed: screen?.id })) {
+        console.warn('[menuboard] nightly refresh');
+        reloadPage();
+      }
+    };
+    const t = setInterval(checkNightly, CHECK_MS);
+    return () => clearInterval(t);
+  }, [screen?.id]);
 
   // Follow timed menus: schedule and membership edits reach the TV live too.
   // Only while the board follows menus (a board with the flag off subscribes to
