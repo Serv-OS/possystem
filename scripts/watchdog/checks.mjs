@@ -149,6 +149,24 @@ export const SIGNALS = Object.freeze({
     title: 'The nightly loyalty code text check did not finish',
     fix: 'Ops SQL editor: select * from loyalty_otp_audit_runs order by id desc limit 1; read errors. Then run it again: select public.loyalty_otp_audit_send();',
   },
+  // 5.12.74 menu boards (Peter, 8 Nov 2026: "the menu boards and a few stores keep quitting - they
+  // close down and dont re open"). A paired TV heartbeats every 12 s. One silent for 15 minutes
+  // while the venue is serving (a check closed in the last hour) is a dark screen in a trading shop.
+  // Staff can fix it in ten seconds once they know; the point of this signal is that somebody knows.
+  // Not a page: the till sells without it, and from app 1.2 the board comes back on its own.
+  board_dark: {
+    severity: WARN,
+    minutes: 15,
+    say: (f) => `${f.count === 1 ? 'A menu board' : `${f.count} menu boards`} at ${f.venue} ${f.count === 1 ? 'has' : 'have'} not been heard from for over ${f.minutes} minutes while the shop is serving. The screen is dark, or showing the Fire TV home screen.`,
+    title: 'A menu board has gone dark',
+    fix: 'At the venue: press Home on the Fire TV remote and open Serv OS Menu again (app 1.2 or later comes back by itself; a TV still on 1.1 should be updated). Back Office, Channels, Menu boards shows when each screen was last seen.',
+  },
+  board_watch_broken: {
+    severity: WARN,
+    say: (f) => `The menu board check could not be read: ${f.detail || 'unknown reason'}. While it lasts nobody is watching for dark screens; everything else on this list is still measured.`,
+    title: 'The menu board check is not working',
+    fix: 'Usually a column or table name changed under menu_board_screens or closed_checks. Read the detail, fix watchdog-status, deploy it.',
+  },
 });
 
 /** Plain words for a venue's code text service state (otpServiceRules.js venueWords, short). */
@@ -189,10 +207,13 @@ export const WINDOWS = Object.freeze({
   stock_held: { olderThan: 60 },
   // The nightly check runs at 04:10 UTC: 26 hours lets one late run through and no more.
   otp_audit_stale: { olderThan: 26 * 60 },
+  // A TV silent 15 minutes at a venue that closed a check in the last hour. The heartbeat is
+  // every 12 s, so 15 minutes is 75 missed beats: never a blip, always a quit TV or a TV off.
+  board_dark: { olderThan: 15, within: 60 },
 });
 
 /** Signals that are about the system as a whole, not about one venue's count. */
-const ALWAYS = Object.freeze({ db_unreachable: true, watchdog_broken: true, otp_audit_stale: true, otp_audit_incomplete: true });
+const ALWAYS = Object.freeze({ db_unreachable: true, watchdog_broken: true, otp_audit_stale: true, otp_audit_incomplete: true, board_watch_broken: true });
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -211,6 +232,8 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
  *   otpNotReady?: Array<{ venue: string, count: number, detail?: string }>,
  *   otpAuditStale?: string|null,
  *   otpAuditIncomplete?: string|null,
+ *   boardsDark?: Array<{ venue: string, count: number }>,
+ *   boardWatchError?: string|null,
  * }} measured
  * @returns {Array<{ key: string, signal: string, severity: string, venue: string, count: number, title: string, body: string, fix: string }>}
  */
@@ -260,6 +283,8 @@ export function evaluate(measured = {}) {
   for (const r of measured.otpNotReady || []) add('otp_not_ready', r.venue, r.count, r.detail);
   if (measured.otpAuditStale) add('otp_audit_stale', null, 1, String(measured.otpAuditStale));
   if (measured.otpAuditIncomplete) add('otp_audit_incomplete', null, 1, String(measured.otpAuditIncomplete));
+  for (const r of measured.boardsDark || []) add('board_dark', r.venue, r.count);
+  if (measured.boardWatchError) add('board_watch_broken', null, 1, String(measured.boardWatchError));
   return out;
 }
 

@@ -22,8 +22,8 @@ android {
         applicationId "co.posup.rpos.menuboard"
         minSdk 26          // Fire OS 7+ / Android 8+
         targetSdk 34
-        versionCode 2      // bump every release; UpdateChecker compares this to latest-menuboard.json
-        versionName "1.1"
+        versionCode 3      // bump every release; UpdateChecker compares this to latest-menuboard.json
+        versionName "1.2"
     }
 
     signingConfigs {

@@ -103,6 +103,9 @@ async function measure() {
       otpNotReady: body.otpNotReady || [],
       otpAuditStale: body.otpAuditStale || null,
       otpAuditIncomplete: body.otpAuditIncomplete || null,
+      // 5.12.74 menu boards: paired TVs silent 15 min at a venue that is serving
+      boardsDark: body.boardsDark || [],
+      boardWatchError: body.boardWatchError || null,
     };
   }
 

@@ -395,3 +395,41 @@ test('the code text window and words agree with the rules, and run.mjs and watch
   const words = src.slice(src.indexOf('otp_not_ready: {'), src.indexOf(' * The time windows the QUERIES use'));
   assert.doesNotMatch(words, /[\u2013\u2014]/);
 });
+
+// ── 5.12.74 menu boards: a dark TV in a trading shop ────────────────────────
+
+test('a menu board silent while the shop is serving is a morning warning with the venue and the fix, one issue per venue', () => {
+  const findings = evaluate({ reachable: true, boardsDark: [{ venue: 'Coffee Boy Preston', count: 2 }, { venue: 'Coffee Boy Leeds', count: 1 }] });
+  assert.equal(findings.length, 2);
+  const p = findings.find((f) => f.venue === 'Coffee Boy Preston');
+  assert.equal(p.signal, 'board_dark');
+  assert.equal(p.severity, WARN, 'the till sells without it, so it waits for the morning');
+  assert.equal(p.key, 'board_dark:Coffee Boy Preston');
+  assert.match(p.body, /2 menu boards at Coffee Boy Preston have not been heard from for over 15 minutes while the shop is serving/);
+  assert.match(p.fix, /Serv OS Menu/);
+  assert.match(p.fix, /Menu boards shows when each screen was last seen/);
+  const l = findings.find((f) => f.venue === 'Coffee Boy Leeds');
+  assert.match(l.body, /^A menu board at Coffee Boy Leeds has not been heard/);
+  assert.equal(pages(findings).length, 0, 'never a page');
+  assert.equal(WINDOWS.board_dark.olderThan, SIGNALS.board_dark.minutes);
+  assert.equal(WINDOWS.board_dark.within, 60);
+});
+
+test('a broken board check says so and nothing else about boards; a healthy fleet says nothing', () => {
+  const broken = evaluate({ reachable: true, boardWatchError: 'column last_seen_at does not exist' });
+  assert.equal(broken.length, 1);
+  assert.equal(broken[0].signal, 'board_watch_broken');
+  assert.equal(broken[0].severity, WARN);
+  assert.match(broken[0].body, /could not be read: column last_seen_at does not exist/);
+  assert.deepEqual(evaluate({ reachable: true, boardsDark: [], boardWatchError: null }), []);
+  // the edge function measures paired screens only, at venues with a recent closed check, and
+  // never a screen silent for over two weeks; the runner carries both fields through
+  const fn = read('../../supabase/functions/watchdog-status/index.ts');
+  assert.match(fn, /menu_board_screens'\)\.select\('location_id,last_seen_at'\)\)\s*\.eq\('status', 'paired'\)\.lt\('last_seen_at', ago\(boardOlder\)\)\.gt\('last_seen_at', ago\(14 \* 1440\)\)/);
+  assert.match(fn, /closed_checks'\)\.select\('location_id'\)\)\s*\.gt\('closed_at', ago\(boardWithin\)\)/);
+  assert.match(fn, /boardsDark: byVenue\(darkRows\)/);
+  assert.match(fn, /boardWatchError,/);
+  const run = read('../../scripts/watchdog/run.mjs');
+  assert.match(run, /boardsDark: body\.boardsDark \|\| \[\]/);
+  assert.match(run, /boardWatchError: body\.boardWatchError \|\| null/);
+});
