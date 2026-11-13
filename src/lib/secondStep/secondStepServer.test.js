@@ -11,6 +11,7 @@ import {
   SECOND_STEP_CODE, SECOND_STEP_CHECK_FAILED, FLAG_TTL_MS, FLAG_RETRY_MS,
   bearerToken, decodeJwtClaims, classifyCaller, mustRefuse, createFlagReader, fetchFlagFromDb,
   secondStepRefusal, passesSecondStep, requireAal2, refusalResponse, amrHasPasskey, PASSKEY_METHODS,
+  createDemoReader, fetchDemoOnlyFromDb,
 } from '../../../supabase/functions/_shared/second-step.ts';
 
 const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -251,4 +252,104 @@ test('the database rule and this file still agree, now including the passkey bra
   assert.match(sql, /passkey_methods/, 'and the same list of method names, as a setting');
   const ts = fs.readFileSync(new URL('../../../supabase/functions/_shared/second-step.ts', import.meta.url), 'utf8');
   assert.match(ts, /if \(amrHasPasskey\(c\)\) return 'passkey';/);
+});
+
+// ── THE DEMO LOGIN ALLOWANCE (App Review, 13 Nov 2026) ───────────────────────────────
+// Apple signed in to the Owner app with the demo account and then saw the second step
+// message where the figures should be: the sign in screen and the row rules honoured
+// public.second_step_demo_only, and this file did not. What must stay true:
+//   * only a login the switch has ALREADY decided to refuse is ever asked about;
+//   * a clear yes from the database lets it carry on, and nothing else does;
+//   * a failed or slow check refuses, exactly as before the allowance existed;
+//   * the answer is cached per login, and a failure is never cached.
+
+const demoReaderOf = (answer) => ({ read: async (uid) => (typeof answer === 'function' ? answer(uid) : answer) });
+
+test('a demo only login carries on; everyone else is still refused', async () => {
+  const yes = { ...opts(ON), demoReader: demoReaderOf(true) };
+  assert.equal(await secondStepRefusal(req(T.aal1), yes), null, 'the demo login is let through');
+
+  const no = { ...opts(ON), demoReader: demoReaderOf(false) };
+  const refused = await secondStepRefusal(req(T.aal1), no);
+  assert.equal(refused?.status, 403, 'an ordinary password only login is still refused');
+
+  // The allowance is never even reached while the switch is off: nobody is refused then.
+  assert.equal(await secondStepRefusal(req(T.aal1), { ...opts(OFF), demoReader: demoReaderOf(false) }), null);
+});
+
+test('only a clear yes opens it, and a broken check refuses', async () => {
+  for (const answer of [undefined, null, 0, '', 'true', 1, {}, []]) {
+    const res = await secondStepRefusal(req(T.aal1), { ...opts(ON), demoReader: demoReaderOf(answer) });
+    assert.equal(res?.status, 403, `demo answer ${JSON.stringify(answer)} must not open it`);
+  }
+  const throws = { ...opts(ON), demoReader: { read: async () => { throw new Error('postgrest down'); } } };
+  assert.equal((await secondStepRefusal(req(T.aal1), throws))?.status, 403, 'a failed check refuses');
+});
+
+test('the rule is asked about the login in the token, nobody else', async () => {
+  let asked = null;
+  const seen = { ...opts(ON), demoReader: demoReaderOf((uid) => { asked = uid; return false; }) };
+  await secondStepRefusal(req(T.aal1), seen);
+  assert.equal(asked, decodeJwtClaims(T.aal1).sub, 'the sub from the bearer token');
+});
+
+test('createDemoReader caches a yes and a no per login, and never caches a failure', async () => {
+  let now = 0;
+  let calls = 0;
+  let mode = 'yes';
+  const r = createDemoReader({
+    now: () => now,
+    ttlMs: 1000,
+    fetchDemo: async (uid) => {
+      calls++;
+      if (mode === 'boom') throw new Error('down');
+      return mode === 'yes' && uid === 'demo-user';
+    },
+  });
+
+  assert.equal(await r.read('demo-user'), true);
+  assert.equal(await r.read('demo-user'), true);
+  assert.equal(calls, 1, 'the answer is kept');
+
+  assert.equal(await r.read('real-user'), false);
+  assert.equal(calls, 2, 'each login is asked about separately');
+
+  now += 1001;
+  assert.equal(await r.read('demo-user'), true);
+  assert.equal(calls, 3, 'and asked again once it goes stale');
+
+  mode = 'boom';
+  now += 1001;
+  assert.equal(await r.read('demo-user'), false, 'a failure answers no');
+  assert.equal(await r.read('demo-user'), false);
+  assert.equal(calls, 5, 'and is asked again every time, never cached');
+
+  assert.equal(await r.read(''), false, 'no login, no allowance');
+  assert.equal(calls, 5, 'and nothing is asked');
+});
+
+test('createDemoReader does not grow without bound', async () => {
+  const r = createDemoReader({ max: 3, fetchDemo: async () => false });
+  for (let i = 0; i < 10; i++) await r.read(`u${i}`);
+  // Nothing to assert beyond it not throwing and still answering.
+  assert.equal(await r.read('u0'), false);
+});
+
+test('fetchDemoOnlyFromDb posts the login to the rule with the service role', async () => {
+  let got = null;
+  const ok = async (url, init) => { got = { url, init }; return { ok: true, json: async () => true }; };
+  assert.equal(await fetchDemoOnlyFromDb('https://x.supabase.co/', 'svc', 'u1', ok), true);
+  assert.match(got.url, /\/rest\/v1\/rpc\/second_step_demo_only$/);
+  assert.equal(got.init.method, 'POST');
+  assert.equal(JSON.parse(got.init.body).p_user, 'u1');
+  assert.equal(got.init.headers.apikey, 'svc');
+
+  const notTrue = async () => ({ ok: true, json: async () => 'true' });
+  assert.equal(await fetchDemoOnlyFromDb('https://x.supabase.co', 'svc', 'u1', notTrue), false,
+    'only the boolean true counts');
+
+  const bad = async () => ({ ok: false, status: 500, text: async () => '' });
+  await assert.rejects(() => fetchDemoOnlyFromDb('https://x.supabase.co', 'svc', 'u1', bad));
+  await assert.rejects(() => fetchDemoOnlyFromDb('', 'svc', 'u1', ok), /SUPABASE_URL/);
+  assert.equal(await fetchDemoOnlyFromDb('https://x.supabase.co', 'svc', '', ok), false, 'no login, no call');
 });

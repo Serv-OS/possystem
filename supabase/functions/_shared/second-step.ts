@@ -19,7 +19,14 @@
 //     refuses it anyway.
 //   * A real login at aal2 always passes.
 //   * A real login at aal1 is refused only while the switch
-//     public.second_step_settings.enforce is true. Peter flips it with one line of
+//     public.second_step_settings.enforce is true.
+//   * A real login that can ONLY ever reach demo venues is not refused either
+//     (public.second_step_demo_only, added 29 Oct 2026 for App Review, wired in here
+//     13 Nov 2026). The sign in screen and the row rules already honoured it; this
+//     file did not, so Apple's reviewer signed in to the Owner app and then saw
+//     SECOND_STEP_MESSAGE where the figures should be. The rule is asked of the
+//     database, never decided here, so all three layers answer the same thing. A
+//     check that fails refuses exactly as before: the allowance never fails open. Peter flips it with one line of
 //     SQL; no deploy. Default OFF, so this code can go live before anyone has set up.
 //   * The switch is read with the service role and cached for 30 seconds. If it
 //     cannot be read and we have never read it, the answer is OFF, i.e. FAIL
@@ -226,6 +233,72 @@ export async function fetchFlagFromDb(
   throw new Error(`second step: switch read failed (${res.status})`);
 }
 
+export const DEMO_TTL_MS = 30_000;
+export const DEMO_CACHE_MAX = 500;
+
+/**
+ * Is this login one that can only ever reach demo venues? Asked of the database with the
+ * service role, exactly as public.second_step_ok asks it, so the edge functions, the row
+ * rules and the sign in screen can never disagree. Throws on any failure; the caller then
+ * refuses as it did before this existed.
+ */
+export async function fetchDemoOnlyFromDb(
+  url: string,
+  key: string,
+  userId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  if (!url || !key) throw new Error('second step: SUPABASE_URL or the service role key is not set');
+  if (!userId) return false;
+  const res = await fetchImpl(`${url.replace(/\/+$/, '')}/rest/v1/rpc/second_step_demo_only`, {
+    method: 'POST',
+    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ p_user: userId }),
+    // Same two seconds as the switch read: a hung PostgREST must never hold a request open.
+    signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(2000) : undefined,
+  });
+  if (!res.ok) throw new Error(`second step: demo rule read failed (${res.status})`);
+  return (await res.json()) === true;
+}
+
+export type DemoFetch = (userId: string) => Promise<boolean>;
+
+/** One answer per login, kept for ttlMs. A failure is never cached, so it is retried. */
+export function createDemoReader(opts: { fetchDemo: DemoFetch; now?: () => number; ttlMs?: number; max?: number }) {
+  const now = opts.now ?? (() => Date.now());
+  const ttlMs = opts.ttlMs ?? DEMO_TTL_MS;
+  const max = opts.max ?? DEMO_CACHE_MAX;
+  const seen = new Map<string, { demo: boolean; at: number }>();
+
+  async function read(userId: string): Promise<boolean> {
+    if (!userId) return false;
+    const hit = seen.get(userId);
+    if (hit && now() - hit.at < ttlMs) return hit.demo;
+    let demo = false;
+    try {
+      demo = (await opts.fetchDemo(userId)) === true;
+    } catch {
+      return false;   // we do not know, so nothing is allowed through
+    }
+    if (seen.size >= max) seen.clear();
+    seen.set(userId, { demo, at: now() });
+    return demo;
+  }
+
+  function reset() { seen.clear(); }
+  return { read, reset };
+}
+
+let sharedDemoReader: ReturnType<typeof createDemoReader> | null = null;
+function defaultDemoReader() {
+  if (!sharedDemoReader) {
+    sharedDemoReader = createDemoReader({
+      fetchDemo: (userId) => fetchDemoOnlyFromDb(envValue('SUPABASE_URL'), envValue('SUPABASE_SERVICE_ROLE_KEY'), userId),
+    });
+  }
+  return sharedDemoReader;
+}
+
 let sharedReader: ReturnType<typeof createFlagReader> | null = null;
 function defaultReader() {
   if (!sharedReader) {
@@ -250,6 +323,7 @@ export function refusalResponse(
 
 export type SecondStepOptions = {
   reader?: { read: () => Promise<FlagState> };
+  demoReader?: { read: (userId: string) => Promise<boolean> };
   serviceKeys?: string[];
 };
 
@@ -273,6 +347,13 @@ export async function secondStepRefusal(input: HeaderSource, opts: SecondStepOpt
   }
   if (!mustRefuse(kind, flag.enforced)) return null;
   if (flag.source === 'error') return refusalResponse(503, SECOND_STEP_CHECK_FAILED, SECOND_STEP_CHECK_FAILED_MESSAGE);
+  // Last of all, and only for a login the switch has already decided to refuse: a login that
+  // can reach nothing but demo venues carries on (App Review, 13 Nov 2026). Asked of the
+  // database; anything other than a clear yes refuses, as before.
+  try {
+    const sub = String(decodeJwtClaims(bearerToken(input))?.sub ?? '');
+    if (sub && (await (opts.demoReader ?? defaultDemoReader()).read(sub)) === true) return null;
+  } catch { /* refuse, exactly as this function did before the allowance existed */ }
   return refusalResponse(403);
 }
 
