@@ -118,7 +118,9 @@ create table if not exists public.hq_projects (
   created_by      uuid default auth.uid(),
   created_by_name text,
   created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now()
+  updated_at      timestamptz not null default now(),
+  -- (id, org_id) together, so a task or update can only carry its own project's company.
+  unique (id, org_id)
 );
 create index if not exists idx_hq_projects_org on public.hq_projects (org_id, archived_at, status);
 
@@ -128,7 +130,7 @@ create trigger trg_hq_projects_touch before update on public.hq_projects
 
 create table if not exists public.hq_tasks (
   id              uuid primary key default gen_random_uuid(),
-  project_id      uuid not null references public.hq_projects(id) on delete cascade,
+  project_id      uuid not null,
   org_id          uuid not null,
   parent_task_id  uuid references public.hq_tasks(id) on delete cascade,
   title           text not null check (length(trim(title)) > 0),
@@ -148,7 +150,9 @@ create table if not exists public.hq_tasks (
   created_by      uuid default auth.uid(),
   created_by_name text,
   created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now()
+  updated_at      timestamptz not null default now(),
+  -- The task's org_id must be its project's: another company cannot hang a task on this project.
+  foreign key (project_id, org_id) references public.hq_projects (id, org_id) on delete cascade
 );
 create index if not exists idx_hq_tasks_project on public.hq_tasks (project_id, parent_task_id, sort_order);
 create index if not exists idx_hq_tasks_owner on public.hq_tasks (org_id, owner_id) where status <> 'done';
@@ -159,14 +163,16 @@ create trigger trg_hq_tasks_touch before update on public.hq_tasks
 
 create table if not exists public.hq_project_updates (
   id          uuid primary key default gen_random_uuid(),
-  project_id  uuid not null references public.hq_projects(id) on delete cascade,
+  project_id  uuid not null,
   task_id     uuid references public.hq_tasks(id) on delete set null,
   org_id      uuid not null,
   kind        text not null default 'update' check (kind in ('update', 'activity')),
   body        text not null check (length(trim(body)) > 0),
   author_id   uuid default auth.uid(),
   author_name text,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  -- Same rule as hq_tasks: the update's org_id must be its project's.
+  foreign key (project_id, org_id) references public.hq_projects (id, org_id) on delete cascade
 );
 create index if not exists idx_hq_project_updates_project on public.hq_project_updates (project_id, created_at desc);
 
