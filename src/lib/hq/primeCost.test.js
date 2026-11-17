@@ -50,7 +50,7 @@ test('siteRow: the till wins, typed fills the gaps, every source is named', () =
   assert.equal(r.cogsPct, 30);
   assert.equal(r.prime, 60);
   assert.equal(r.tone, 'orn');
-  assert.deepEqual(r.from, { net: 'till', labour: 'till', cogs: 'stock' });
+  assert.deepEqual(r.from, { net: 'till', labour: 'till', cogs: 'stock', morale: 'typed', hires: 'typed', turnover: 'typed', rating: 'typed', reviews: 'typed', projected: 'typed' });
   assert.equal(r.momPct, -0.6);
   assert.equal(r.wowPct, 3.2);
   assert.equal(r.cash, 9997);
@@ -67,7 +67,7 @@ test('siteRow: no till figures, typed sales, COGS and labour carry the row', () 
   assert.equal(r.cogsPct, 28.9);
   assert.equal(r.labourPct, 29.8);
   assert.equal(r.prime, 58.7);
-  assert.deepEqual(r.from, { net: 'typed', labour: 'typed', cogs: 'typed' });
+  assert.deepEqual(r.from, { net: 'typed', labour: 'typed', cogs: 'typed', morale: null, hires: null, turnover: null, rating: null, reviews: null, projected: null });
 });
 
 test('siteRow: till sales with no stock and no typed COGS leaves prime cost null, never 0', () => {
@@ -137,4 +137,14 @@ test('shortMoney: thousands shortened, small sums whole', () => {
   assert.equal(shortMoney(1703.3, 'GBP'), '£1.7k');
   assert.equal(shortMoney(-250), '-$250');
   assert.equal(shortMoney(null), null);
+});
+
+test('siteRow: a system saved day is not tagged typed; an older row or a CSV row is', () => {
+  const sys = siteRow({ id: 'a', name: 'A', typed: { net_sales: 1000, cogs: 300, labour: 250, morale_score: 8, turnover_pct: 12, source: 'system', sources: { net_sales: 'till', cogs: 'estimate', labour: 'workforce', morale_score: 'typed', turnover_pct: 'workforce' } } });
+  assert.equal(sys.from.net, 'till'); assert.equal(sys.from.cogs, 'estimate'); assert.equal(sys.from.labour, 'workforce');
+  assert.equal(sys.from.morale, 'typed'); assert.equal(sys.from.turnover, 'workforce');
+  const old = siteRow({ id: 'a', name: 'A', typed: { net_sales: 1000, cogs: 300, labour: 250, morale_score: 8, source: 'typed', sources: {} } });
+  assert.equal(old.from.net, 'typed'); assert.equal(old.from.morale, 'typed');
+  const csv = siteRow({ id: 'a', name: 'A', typed: { net_sales: 1000, cogs: 300, labour: 250, source: 'csv', sources: {} } });
+  assert.equal(csv.from.net, 'csv'); assert.equal(csv.from.cogs, 'csv');
 });

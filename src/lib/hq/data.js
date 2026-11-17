@@ -15,8 +15,8 @@ import { supabase, isMock } from '../supabase';
 import { isAbsentError } from '../ops/formRules';
 import { withTimeout } from '../withTimeout';
 import { cleanAnswers, normaliseQuestions, scoreOf, weekStartIso } from './checkinWeek.js';
-import { getVenueClock, ymdInTz, minutesInTz } from '../locationTime';
-import { businessDayOf } from '../../../supabase/functions/_shared/businessDay.js';
+import { getVenueClock, getLocationConfig, ymdInTz, minutesInTz } from '../locationTime';
+import { businessDayOf, businessDayWindow, dayStartMinutes, isYmd, addDays as addYmd } from '../../../supabase/functions/_shared/businessDay.js';
 import { buildScheduleCtx } from '../scheduleCtx';
 
 export const NOT_SET_UP = 'Head office is not set up in the database yet. Ask ServOS to run migration 20261130a.';
@@ -91,7 +91,15 @@ export async function saveDailyNumbers(rows, orgId, byName = null) {
     created_by: who.id,
     created_by_name: who.name,
   }));
-  const { data, error } = await supabase.from('hq_daily_numbers').upsert(payload, { onConflict: 'location_id,business_date' }).select();
+  let { data, error } = await supabase.from('hq_daily_numbers').upsert(payload, { onConflict: 'location_id,business_date' }).select();
+  // Slice 3 saves `sources` and source 'system'. Until migration 20261202a runs the column is not
+  // there (42703 / PGRST204) and 'system' fails the check (23514): save the figures anyway, as typed,
+  // and tell the screen so it can say the migration is waiting.
+  if (error && (error.code === '42703' || error.code === 'PGRST204' || error.code === '23514') && payload.some((r) => 'sources' in r || r.source === 'system')) {
+    const older = payload.map(({ sources: _dropped, ...r }) => ({ ...r, source: r.source === 'system' ? 'typed' : r.source }));
+    ({ data, error } = await supabase.from('hq_daily_numbers').upsert(older, { onConflict: 'location_id,business_date' }).select());
+    if (!error) return { ...ok(data || []), downgraded: true, message: 'Saved, but where each figure came from was not kept: ask ServOS to run migration 20261202a.' };
+  }
   return error ? fail(error, 'save the numbers') : ok(data || []);
 }
 
@@ -487,4 +495,118 @@ export async function fetchOpsRows(locationIds, fromYmd, toYmd) {
     return { ...r, ymd: ymdInTz(r.recorded_at, tz), minute: minutesInTz(r.recorded_at, tz) };
   });
   return ok({ checklists, runs, schedules, readings: stamped, maintenance, clocks });
+}
+
+// ============================================================================
+// Slice 3: the system's own figures for one site and one business day, so Daily numbers shows
+// what ServOS already knows and only takes an override.
+// ============================================================================
+
+const TRADING_TIMEOUT_MS = 20000;
+
+/**
+ * One business day from the Daily trading P&L function (supabase/functions/trading-report), the
+ * same rule the Daily trading report and the Owner snapshot use: net sales ex VAT after refunds,
+ * labour from approved and paid timesheets, COGS on the venue's basis (recipe ledger or flat %).
+ * Returns { data: { row, settings, tz, dayStart, demoLeftOut } } or an error with words for the screen.
+ * The function only answers for a site the login is attached to (user_locations) or a super admin;
+ * a company owner who reaches the site through the organisation alone gets a 403 and the words say so.
+ */
+export async function fetchTradingDay(locationId, ymd) {
+  if (isMock || !supabase) return offline();
+  if (!locationId || !ymd) return ok(null);
+  try {
+    const { data, error } = await withTimeout(
+      supabase.functions.invoke('trading-report', { body: { action: 'get', ops_location_id: locationId, from: ymd, to: ymd } }),
+      TRADING_TIMEOUT_MS, 'trading-report',
+    );
+    if (error) {
+      let body = null; try { body = await error.context?.json?.(); } catch { /* no body */ }
+      const status = error.context?.status;
+      const words = status === 403 || /forbidden|not allowed/i.test(String(body?.error || ''))
+        ? 'Your login is not attached to this site, so the till figures cannot be read here. Type them, or ask ServOS to attach the site.'
+        : 'Could not reach the till figures for this day. You can still type them.';
+      return { data: null, error, absent: false, message: words };
+    }
+    if (data?.error) return { data: null, error: new Error(data.error), absent: false, message: 'Could not reach the till figures for this day. You can still type them.' };
+    const row = (data?.rows || []).find((r) => r.date === ymd) || data?.rows?.[0] || null;
+    return ok({ row, settings: data?.settings || null, tz: data?.tz || null, dayStart: data?.day_start || null, demoLeftOut: !!data?.demo_left_out });
+  } catch (e) {
+    return { data: null, error: e, absent: false, message: 'The till figures took too long. You can still type them.' };
+  }
+}
+
+/** The venue's service periods and clock for one site: { timezone, businessDayStart, shifts }. */
+async function siteConfig(locationId) {
+  try {
+    const cfg = await getLocationConfig(locationId);
+    return { timezone: cfg?.timezone || 'Europe/London', businessDayStart: cfg?.businessDayStart || '06:00', shifts: Array.isArray(cfg?.shifts) ? cfg.shifts : [] };
+  } catch { return { timezone: 'Europe/London', businessDayStart: '06:00', shifts: [] }; }
+}
+
+const PATTERN_WEEKS = 4;
+
+/**
+ * Every raw row the system holds for one site and one business day, for systemDay.js systemFields:
+ *   { trading, settings, forecastHours, patternChecks, reviews, cardCount, staff, shifts, dayStartMin, today, demoLeftOut, problems[] }
+ * Each read is soft: one that fails leaves its figure blank and adds a line to problems.
+ */
+export async function fetchSystemDay(locationId, ymd) {
+  if (isMock || !supabase) return offline();
+  if (!locationId || !ymd) return ok(null);
+  // A date box emits half typed years ("0002-11-17") on the way to a real date: answer softly, never throw.
+  if (!isYmd(ymd)) return { data: null, error: new Error('date'), absent: false, message: 'Pick a real date.' };
+  try {
+    return await readSystemDay(locationId, ymd);
+  } catch (e) {
+    return { data: null, error: e, absent: false, message: 'The system figures could not be read for this day. You can still type them.' };
+  }
+}
+
+async function readSystemDay(locationId, ymd) {
+  const problems = [];
+  const cfg = await siteConfig(locationId);
+  const tz = cfg.timezone; const dayStart = cfg.businessDayStart;
+  const win = businessDayWindow(ymd, tz, dayStart);
+  const today = businessDayOf(Date.now(), tz, dayStart);
+  const dayStartMin = dayStartMinutes(dayStart);
+
+  // The same four weekdays before this one, for the daypart pattern.
+  const patternWindows = [];
+  for (let w = 1; w <= PATTERN_WEEKS; w += 1) patternWindows.push(businessDayWindow(addYmd(ymd, -7 * w), tz, dayStart));
+
+  const [tradingRes, hoursRes, patternRes, reviewsRes, staffRes] = await Promise.all([
+    fetchTradingDay(locationId, ymd),
+    supabase.from('stock_forecast_hours').select('hour, amount').eq('location_id', locationId).eq('business_day', ymd).then((r) => r, (e) => ({ error: e })),
+    // PostgREST answers at most 1000 rows whatever the limit says; a day with more checks than that
+    // (rare) loses its earliest ones, newest first, so the evening pattern is kept.
+    Promise.all(patternWindows.map((pw) => supabase.from('closed_checks').select('closed_at, total, voided, status').eq('location_id', locationId)
+      .gte('closed_at', pw.fromIso).lt('closed_at', pw.toIso).not('id', 'like', 'demo-%').order('closed_at', { ascending: false }).limit(1000).then((r) => r, (e) => ({ error: e })))),
+    supabase.from('review_feedback').select('rating, origin').eq('location_id', String(locationId))
+      .gte('created_at', win.fromIso).lt('created_at', win.toIso).limit(2000).then((r) => r, (e) => ({ error: e })),
+    supabase.from('wf_staff').select('id, status, start_date, leaver_date, created_at').eq('location_id', locationId).limit(5000).then((r) => r, (e) => ({ error: e })),
+  ]);
+
+  if (tradingRes.error) problems.push(tradingRes.message);
+  const trading = tradingRes.data?.row || null;
+  const settings = tradingRes.data?.settings || null;
+
+  const forecastHours = hoursRes?.error ? [] : (hoursRes?.data || []);
+  const patternChecks = [];
+  let patternFailed = false;
+  for (const r of patternRes || []) {
+    if (r?.error) { patternFailed = true; continue; }
+    for (const c of r?.data || []) patternChecks.push({ minutes: minutesInTz(c.closed_at, tz), total: c.total, voided: c.voided, status: c.status });
+  }
+  if (patternFailed && !patternChecks.length) problems.push('The till history for the daypart split could not be read.');
+
+  let reviews = []; let cardCount = 0;
+  if (reviewsRes?.error) problems.push('Reviews could not be read.');
+  else {
+    for (const r of reviewsRes?.data || []) { if (r.origin === 'synced') reviews.push(r); else cardCount += 1; }
+  }
+  if (staffRes?.error) problems.push('Workforce staff could not be read.');
+  const staff = staffRes?.error ? [] : (staffRes?.data || []);
+
+  return ok({ trading, settings, forecastHours, patternChecks, reviews, cardCount, staff, shifts: cfg.shifts, dayStartMin, today, timezone: tz, currency: settings?.currency || null, demoLeftOut: !!tradingRes.data?.demoLeftOut, problems });
 }

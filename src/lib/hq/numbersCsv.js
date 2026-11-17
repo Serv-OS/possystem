@@ -114,7 +114,7 @@ export function parseNumbersCsv(text, sites = []) {
     const cells = splitCsvLine(lines[i]);
     if (cells.every((c) => c === '')) continue;
     const lineNo = i + 1;
-    const rec = { source: 'csv' };
+    const rec = { source: 'csv', sources: {} }; // the empty map clears a system saved day's sources on a re-paste
     let storeRaw = ''; let dateRaw = '';
     cols.forEach((k, ci) => {
       if (!k) return;

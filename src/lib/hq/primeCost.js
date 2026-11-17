@@ -11,6 +11,8 @@
 //     COGS and labour.
 // A figure that neither place has is null, and the screen says so. Never a guessed zero.
 
+import { sourcesMap } from './systemDay.js';
+
 export const PRIME_COST_TARGET = 60;
 
 const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
@@ -61,15 +63,18 @@ export function siteRow({ id, name, code, currency, venue = null, typed = null, 
   const typedCogs = num(typed?.cogs);
   const typedLabour = num(typed?.labour);
 
+  // A saved day names where each figure came from (slice 3 sources map); a row without one was typed or pasted.
+  const saved = sourcesMap(typed);
+  const savedFrom = (col) => (saved ? (saved[col] || 'typed') : (typed?.source === 'csv' ? 'csv' : 'typed'));
   const net = snapNet !== null && snapNet > 0 ? snapNet : typedNet;
-  const netFrom = snapNet !== null && snapNet > 0 ? 'till' : (typedNet !== null ? 'typed' : null);
+  const netFrom = snapNet !== null && snapNet > 0 ? 'till' : (typedNet !== null ? savedFrom('net_sales') : null);
 
   let labourPct = null; let labourFrom = null;
   if (snapLabour !== null && net !== null && net > 0 && netFrom === 'till') { labourPct = r1((snapLabour / net) * 100); labourFrom = 'till'; }
-  else if (typedLabour !== null && net !== null && net > 0) { labourPct = r1((typedLabour / net) * 100); labourFrom = 'typed'; }
+  else if (typedLabour !== null && net !== null && net > 0) { labourPct = r1((typedLabour / net) * 100); labourFrom = savedFrom('labour'); }
 
   let cogsPct = cogsPctFromStock(venue?.stock); let cogsFrom = cogsPct === null ? null : 'stock';
-  if (cogsPct === null && typedCogs !== null && net !== null && net > 0) { cogsPct = r1((typedCogs / net) * 100); cogsFrom = 'typed'; }
+  if (cogsPct === null && typedCogs !== null && net !== null && net > 0) { cogsPct = r1((typedCogs / net) * 100); cogsFrom = savedFrom('cogs'); }
 
   const prime = cogsPct === null || labourPct === null ? null : r1(cogsPct + labourPct);
   const compare = venue?.compare || null;
@@ -85,8 +90,22 @@ export function siteRow({ id, name, code, currency, venue = null, typed = null, 
     rating: num(typed?.review_rating), reviews: num(typed?.reviews_count),
     projected: { lunch: num(typed?.projected_lunch), dinner: num(typed?.projected_dinner), late: num(typed?.projected_late) },
     typedOn: typed?.business_date || null,
-    from: { net: netFrom, labour: labourFrom, cogs: cogsFrom },
+    // Slice 3: a saved day names where each figure came from (typed.sources); a row from before
+    // that was typed or pasted, so every figure it holds counts as typed.
+    from: { net: netFrom, labour: labourFrom, cogs: cogsFrom, ...fieldSources(typed) },
   };
+}
+
+const SOURCE_FIELDS = { morale: 'morale_score', hires: 'hires_needed', turnover: 'turnover_pct', rating: 'review_rating', reviews: 'reviews_count', projected: 'projected_lunch' };
+/** { morale, hires, turnover, rating, reviews, projected }: 'typed' | 'csv' | 'forecast' | 'reviews' | 'workforce' | ... | null, from a saved day's sources map. */
+export function fieldSources(typed) {
+  const out = {};
+  const map = sourcesMap(typed);
+  for (const [k, col] of Object.entries(SOURCE_FIELDS)) {
+    if (!typed || typed[col] === null || typed[col] === undefined) { out[k] = null; continue; }
+    out[k] = map ? (map[col] || null) : (typed.source === 'csv' ? 'csv' : 'typed');
+  }
+  return out;
 }
 
 /** Three letters for the ladder: initials of three words, else first letter + next consonant + the

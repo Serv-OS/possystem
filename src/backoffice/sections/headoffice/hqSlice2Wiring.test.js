@@ -82,7 +82,7 @@ test('HqTargets saves through the lib rule and reads only for a non owner', () =
 test('Daily numbers no longer takes cash by hand; the scorecard reads the safe', () => {
   const numbers = read('./HqNumbers.jsx');
   assert.doesNotMatch(numbers, /cash_on_hand/, 'no cash_on_hand box, column or key');
-  assert.match(numbers, /Cash comes from the safe now: see Safe and banking\./);
+  assert.match(numbers, /Cash comes from the safe: see Safe and banking\./);
   assert.match(numbers, /export const NUMBER_KEYS = \[/);
   assert.match(numbers, /export function rowFromForm\(/);
   const score = read('./HqScorecard.jsx');

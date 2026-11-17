@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.78',
+    date: '17 Nov 2026',
+    items: [
+      'Head office, slice 3: Daily numbers reads the system first (Peter, 17 Nov 2026: "a lot of this info comes from other parts of the system so needs to be tied in, forecasts, net sales should pull in from the system, COGS should have an override, same with labour, same with all the reviews"). Every box on Log a day now shows what ServOS already knows for that site and business day, with where it came from, and the box underneath is an override only: leave it blank to keep the system figure, type to replace it, and the scorecard tags a typed figure and only a typed figure. Net sales come from the till by the Daily trading rule (net of VAT, after refunds, demo sales left out). Labour comes from approved and paid timesheets, with the rota\'s planned cost beside it, and stays blank with words while timesheets wait for approval, never a zero. COGS follows the venue\'s own basis: the stock ledger when it runs on recipes, else its COGS percent, with the ledger figure beside it. Lunch, dinner and late night come from the day\'s sales forecast, split by the hours saved against it or, failing that, by the site\'s own pattern over the last four same weekdays, on the venue\'s service periods when they are named. New reviews and the average rating count the day\'s public reviews synced from Google and the like; feedback cards are named but not counted. Turnover is Workforce leavers over the last 90 days against average headcount. Morale and hires still needed stay typed, because nothing in the system holds them, and the words say so. Saving a day keeps every figure, system or override, as that day\'s record for the owner, and the Last 14 days list says System, Overrides, Typed or CSV. SQL 20261202a on Ops (a sources column and a wider source check on hq_daily_numbers, rollback twin; the local proof harness now runs 7 checks). Until it is run a save still lands, as typed, and the screen says the migration is waiting. Nothing to deploy. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.77',
     date: '16 Nov 2026',
     items: [

@@ -225,7 +225,7 @@ export default function HqScorecard({ hq, go }) {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Typed />a figure typed into Daily numbers</span>
       </div>
 
-      <SectionHead title="Projected sales by daypart" sub="Lunch, dinner and late night as the site projected them in Daily numbers." />
+      <SectionHead title="Projected sales by daypart" sub="Lunch, dinner and late night from the day's sales forecast, split by each site's own pattern, or as typed in Daily numbers." />
       <Dayparts rows={rows} currency={currency} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginTop: 22 }}>
@@ -282,14 +282,14 @@ function LadderRow({ r, x }) {
           <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--bg3)', overflow: 'hidden', minWidth: 60 }}>
             <div style={{ width: `${barW}%`, height: '100%', background: tone }} />
           </div>
-          {(r.from.cogs === 'typed' || r.from.labour === 'typed') && <Typed />}
+          {(isTyped(r.from.cogs) || isTyped(r.from.labour)) && <Typed />}
         </div>
         <div style={{ display: 'flex', gap: 10, fontSize: 11, marginTop: 3, ...mono }}>
           <span style={{ color: toneOr(r.cogsTone, 'var(--t4)') }}>COGS {pct(r.cogsPct)}</span>
           <span style={{ color: toneOr(r.labourTone, 'var(--t4)') }}>Labour {pct(r.labourPct)}</span>
         </div>
       </td>
-      <td style={{ ...td, ...mono }}><Cell value={exactMoney(r.net, r.currency)} typed={r.from.net === 'typed'} /></td>
+      <td style={{ ...td, ...mono }}><Cell value={exactMoney(r.net, r.currency)} typed={isTyped(r.from.net)} /></td>
       <td style={{ ...td, ...mono, color: vsColor }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {vs !== null && <Icon name={vs >= 0 ? 'arrowUp' : 'arrowDown'} size={12} />}
@@ -305,14 +305,14 @@ function LadderRow({ r, x }) {
         ) : <span style={{ color: 'var(--t4)' }}>{NA}</span>}
       </td>
       <td style={td}>
-        <Cell value={r.morale === null ? NA : `${r.morale}`} typed={r.morale !== null}>
+        <Cell value={r.morale === null ? NA : `${r.morale}`} typed={isTyped(r.from.morale)}>
           <span className="mono" style={mono}>{r.morale === null ? NA : r.morale}</span>
           {r.moraleWord && <Chip tone={r.moraleWord === 'Strong' ? 'grn' : r.moraleWord === 'Steady' ? 'acc' : 'orn'}>{r.moraleWord}</Chip>}
         </Cell>
       </td>
-      <td style={{ ...td, ...mono }}><Cell value={num(r.hires)} typed={r.hires !== null} /></td>
+      <td style={{ ...td, ...mono }}><Cell value={num(r.hires)} typed={isTyped(r.from.hires)} /></td>
       <td style={{ ...td, ...mono }}>
-        <Cell value={r.rating === null ? NA : Number(r.rating).toFixed(1)} typed={r.rating !== null && r.from.rating !== 'reviews'}>
+        <Cell value={r.rating === null ? NA : Number(r.rating).toFixed(1)} typed={isTyped(r.from.rating)}>
           {r.rating === null ? NA : `${Number(r.rating).toFixed(1)}`}{r.rating !== null && r.reviews !== null && <span style={{ color: 'var(--t4)', fontSize: 11 }}> ({num(r.reviews)})</span>}
         </Cell>
       </td>
@@ -326,13 +326,15 @@ function LadderRow({ r, x }) {
           </div>
         ) : <Cell value={exactMoney(r.cash, r.currency)} typed={r.cash !== null} />}
       </td>
-      <td style={{ ...td, ...mono }}><Cell value={pct(r.turnoverPct, 0)} typed={r.turnoverPct !== null} /></td>
+      <td style={{ ...td, ...mono }}><Cell value={pct(r.turnoverPct, 0)} typed={isTyped(r.from.turnover)} /></td>
     </tr>
   );
 }
 
 const PART_COLORS = { lunch: 'var(--acc)', dinner: 'var(--grn)', late: 'var(--orn)' };
 const PART_WORDS = { lunch: 'Lunch', dinner: 'Dinner', late: 'Late night' };
+/** Only a figure a person typed or pasted wears the tag; one the system filled does not. */
+const isTyped = (source) => source === 'typed' || source === 'csv';
 
 function Dayparts({ rows, currency }) {
   const totals = rows.map((r) => (r.projected.lunch || 0) + (r.projected.dinner || 0) + (r.projected.late || 0));
