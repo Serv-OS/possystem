@@ -4,6 +4,8 @@
 // from here: one short entry per site per day (Log a day), or a pasted export (Import a CSV,
 // src/lib/hq/numbersCsv.js: every row checked first, a single bad row stops the whole paste).
 // Rows upsert on site + business date, so saving a day again replaces it.
+// Slice 2: cash on hand is no longer typed here. It comes from the safe ledger (Safe and banking).
+// The column stays in the database and in the CSV import (numbersCsv.js) for the sites that paste it.
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchDailyNumbers, saveDailyNumbers } from '../../../lib/hq/data.js';
@@ -14,7 +16,7 @@ import {
   PageHead, SectionHead, Chip, AbsentCard, AmberLine, GreenLine, LoadingLine, TabRow, Field, hqHandoff,
 } from './hqUi';
 
-const NUMBER_KEYS = ['net_sales', 'cogs', 'labour', 'projected_lunch', 'projected_dinner', 'projected_late', 'cash_on_hand', 'reviews_count', 'review_rating', 'turnover_pct', 'morale_score', 'hires_needed'];
+export const NUMBER_KEYS = ['net_sales', 'cogs', 'labour', 'projected_lunch', 'projected_dinner', 'projected_late', 'reviews_count', 'review_rating', 'turnover_pct', 'morale_score', 'hires_needed'];
 const EMPTY = Object.fromEntries([...NUMBER_KEYS, 'notes'].map((k) => [k, '']));
 const DAYS_BACK = 14;
 
@@ -70,7 +72,7 @@ export default function HqNumbers({ hq }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
           <thead><tr>
             <th style={th}>Site</th><th style={th}>Date</th><th style={th}>Net sales</th><th style={th}>COGS</th><th style={th}>Labour</th><th style={th}>Prime</th>
-            <th style={th}>Cash</th><th style={th}>Morale</th><th style={th}>Hires</th><th style={th}>Rating</th><th style={th}>Source</th>
+            <th style={th}>Morale</th><th style={th}>Hires</th><th style={th}>Rating</th><th style={th}>Source</th>
           </tr></thead>
           <tbody>
             {recent.rows.map((r) => {
@@ -84,7 +86,6 @@ export default function HqNumbers({ hq }) {
                   <td style={{ ...td, ...mono }}>{exactMoney(r.cogs, hq.currency)}</td>
                   <td style={{ ...td, ...mono }}>{exactMoney(r.labour, hq.currency)}</td>
                   <td style={{ ...td, ...mono, color: prime === null ? 'var(--t4)' : prime < 60 ? 'var(--grn)' : 'var(--orn)', fontWeight: 700 }}>{pct(prime)}</td>
-                  <td style={{ ...td, ...mono }}>{exactMoney(r.cash_on_hand, hq.currency)}</td>
                   <td style={{ ...td, ...mono }}>{r.morale_score === null ? NA : r.morale_score}</td>
                   <td style={{ ...td, ...mono }}>{num(r.hires_needed)}</td>
                   <td style={{ ...td, ...mono }}>{r.review_rating === null ? NA : `${Number(r.review_rating).toFixed(1)}${r.reviews_count !== null ? ` (${r.reviews_count})` : ''}`}</td>
@@ -92,7 +93,7 @@ export default function HqNumbers({ hq }) {
                 </tr>
               );
             })}
-            {!recent.loading && !recent.rows.length && <tr><td style={{ ...td, color: 'var(--t3)' }} colSpan={11}>Nothing logged in the last 14 days.</td></tr>}
+            {!recent.loading && !recent.rows.length && <tr><td style={{ ...td, color: 'var(--t3)' }} colSpan={10}>Nothing logged in the last 14 days.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -169,7 +170,6 @@ function LogDay({ hq, recent, onSaved }) {
         {money('projected_lunch', 'Lunch')}{money('projected_dinner', 'Dinner')}{money('projected_late', 'Late night')}
       </Group>
       <Group title="Team and guests">
-        {money('cash_on_hand', 'Cash on hand')}
         <Field label="New reviews"><input style={field} inputMode="numeric" value={form.reviews_count} onChange={set('reviews_count')} placeholder="0" /></Field>
         <Field label="Average rating"><input style={field} inputMode="decimal" value={form.review_rating} onChange={set('review_rating')} placeholder="0 to 5" /></Field>
         <Field label="Turnover %"><input style={field} inputMode="decimal" value={form.turnover_pct} onChange={set('turnover_pct')} placeholder="0" /></Field>
@@ -179,7 +179,8 @@ function LogDay({ hq, recent, onSaved }) {
       </Group>
       <AmberLine>{msg}</AmberLine>
       <GreenLine>{saved}</GreenLine>
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>Cash comes from the safe now: see Safe and banking.</div>
         <button type="button" style={{ ...accBtn, ...disabled(saving || !siteId || !date) }} disabled={saving || !siteId || !date} onClick={save}>{saving ? 'Saving' : 'Save the day'}</button>
       </div>
     </div>

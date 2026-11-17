@@ -55,7 +55,7 @@ export const NAV_IA = [
   // no key fails closed, so only a login that opens everything (owners, ServOS, an unlimited login)
   // is shown it. A franchisee with a list never sees it. Adding a 16th key needs the shared rules
   // and the user_profiles CHECK changed together (boSectionRules.js, 20261008a), not done here.
-  { label:'Head office', icon:'home',     children:[['hq-scorecard','Scorecard'],['hq-departments','Departments'],['hq-projects','Internal projects'],['hq-checkin','Weekly check in'],['hq-numbers','Daily numbers']] },
+  { label:'Head office', icon:'home',     children:[['hq-scorecard','Scorecard'],['hq-departments','Departments'],['hq-projects','Internal projects'],['hq-checkin','Weekly check in'],['hq-numbers','Daily numbers'],['hq-safe','Safe and banking'],['hq-targets','Targets']] },
   { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },   // uk only: a US venue reads TAX_LABEL_WHEN_US (Tax)
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-areas','Stock areas'],['stock-transfers','Transfers'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },

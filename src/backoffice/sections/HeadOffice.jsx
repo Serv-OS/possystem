@@ -2,14 +2,18 @@
 //
 // Head office (16 Nov 2026, Mozz Pizza's ask: a leadership hub for the company's directors).
 // A Back Office section group, the Workforce shape: it receives { section, orgCtx } and switches
-// on the sub route. Five screens live in ./headoffice/:
+// on the sub route. Seven screens live in ./headoffice/:
 //   hq-scorecard    the sites ranked by prime cost, the till's sales and the typed numbers
 //   hq-departments  one tab per department with its figures and projects
 //   hq-projects     internal projects, their tasks, phases and the update feed for the owner
 //   hq-checkin      the weekly check in (owner reads every one, a director reads their own)
 //   hq-numbers      the daily numbers the tills cannot know, typed or pasted
+//   hq-safe         the site's safe and banking, fed by the till (nobody retypes a figure)
+//   hq-targets      the red, amber, green bands the scorecard colours by (owner edits)
 // Back Office only: nothing here reads or writes the till store. Every read goes through
 // src/lib/hq/data.js, and a database without the hq_ tables shows one calm card per screen.
+// Slice 2 (20261201a) adds the safe ledger, bank deposits, targets and the Operations figures.
+// Those tables may not exist yet: the two new screens show the calm card, the others fall back.
 
 import { useEffect, useMemo, useState } from 'react';
 import { getAvailableLocations } from '../../lib/supabase';
@@ -21,6 +25,8 @@ import HqDepartments from './headoffice/HqDepartments';
 import HqProjects from './headoffice/HqProjects';
 import HqCheckin from './headoffice/HqCheckin';
 import HqNumbers from './headoffice/HqNumbers';
+import HqSafe from './headoffice/HqSafe';
+import HqTargets from './headoffice/HqTargets';
 import { page, LoadingLine, localYmd } from './headoffice/hqUi';
 
 /**
@@ -74,6 +80,8 @@ export default function HeadOffice({ section, orgCtx, setSection }) {
     case 'hq-projects': return <HqProjects hq={hq} go={go} />;
     case 'hq-checkin': return <HqCheckin hq={hq} go={go} />;
     case 'hq-numbers': return <HqNumbers hq={hq} go={go} />;
+    case 'hq-safe': return <HqSafe hq={hq} go={go} />;
+    case 'hq-targets': return <HqTargets hq={hq} go={go} />;
     case 'hq-scorecard':
     default: return <HqScorecard hq={hq} go={go} />;
   }

@@ -74,12 +74,12 @@ test('15 sections, the decided keys, in sidebar order', () => {
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 103 + 5);   // 16 Nov 2026: the 5 hq- routes under Head office (no key, so they are in NO section); 5.12.67: website-report (Website report) under Customers; 5.12.40: marketing-forms (Forms) under Customers; 5.11.102: wf-chat (Team chat) under Workforce; 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
+  assert.equal(allRoutes.length, 103 + 7);   // 16 Nov 2026: the 7 hq- routes under Head office (no key, so they are in NO section); 5.12.67: website-report (Website report) under Customers; 5.12.40: marketing-forms (Forms) under Customers; 5.11.102: wf-chat (Team chat) under Workforce; 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
-  assert.equal(map.size, allRoutes.length - 5, 'the 5 Head office routes are in no section');
+  assert.equal(map.size, allRoutes.length - 7, 'the 7 Head office routes are in no section');
   for (const row of NAV_IA) for (const id of routesOfRow(row)) assert.equal(sectionKeyOfRoute(id), sectionKeyOfRow(row), id);
-  for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers']) assert.equal(sectionKeyOfRoute(id), null, `${id} fails closed`);
+  for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers', 'hq-safe', 'hq-targets']) assert.equal(sectionKeyOfRoute(id), null, `${id} fails closed`);
   // Route ids and section keys share some spellings but are different things.
   assert.equal(sectionKeyOfRoute('staff'), 'team');
   assert.equal(sectionKeyOfRoute('inventory'), 'inventory');
@@ -217,11 +217,11 @@ test('an empty list opens nothing at all', () => {
 test('Head office: shown to a login that opens everything, never to a login with a list', () => {
   for (const who of [OWNER, SERVOS, MANAGER]) {
     assert.ok(filterNav(NAV_IA, who).some((r) => r.label === 'Head office'), `${who.role} sees it`);
-    for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers']) assert.equal(canOpenRoute(id, who), true);
+    for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers', 'hq-safe', 'hq-targets']) assert.equal(canOpenRoute(id, who), true);
   }
   for (const who of [MO, NOTHING, { role: 'manager', sections: [...KEYS] }]) {
     assert.equal(filterNav(NAV_IA, who).some((r) => r.label === 'Head office'), false);
-    for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers']) assert.equal(canOpenRoute(id, who), false, `${id} refused`);
+    for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers', 'hq-safe', 'hq-targets']) assert.equal(canOpenRoute(id, who), false, `${id} refused`);
   }
 });
 

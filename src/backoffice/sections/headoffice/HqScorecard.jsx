@@ -8,12 +8,22 @@
 //
 // The snapshot keys each venue by ops_location_id (supabase/functions/_shared/ownerSnapshot.js,
 // the `locations` array), and we match on the site's name as a fallback.
+//
+// Slice 2 (20261201a): the colours come from the company's targets (src/lib/hq/targets.js, a site
+// override wins), cash comes from the safe ledger where a site uses it (src/lib/hq/safeLedger.js,
+// else the typed figure with its tag), and a Checks column counts the Operations module's missed
+// checklists, temperature windows and urgent repairs (src/lib/hq/opsStats.js). When those tables
+// are not there yet the scorecard still works: one amber line, the old figures.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
-import { fetchSnapshot, fetchDailyNumbers, latestBySite, fetchRatings, fetchProjects } from '../../../lib/hq/data.js';
-import { siteRow, rankSites, portfolio, PRIME_COST_TARGET } from '../../../lib/hq/primeCost.js';
+import { fetchSnapshot, fetchDailyNumbers, latestBySite, fetchRatings, fetchProjects, fetchTargets, fetchCashForSites, fetchOpsRows, NOT_SET_UP_2 } from '../../../lib/hq/data.js';
+import { siteRow, rankSites, portfolio } from '../../../lib/hq/primeCost.js';
 import { OPEN_PROJECT_STATUSES } from '../../../lib/hq/departments.js';
+import { resolveTargets, ragOf, bandWords } from '../../../lib/hq/targets.js';
+import { cashSummary } from '../../../lib/hq/safeLedger.js';
+import { opsSiteStats, checksWords, checksPct, dateRange } from '../../../lib/hq/opsStats.js';
+import { weekStartIso } from '../../../lib/hq/checkinWeek.js';
 import {
   page, card, mono, accBtn, btn, th, td, toneColor, bigMoney, exactMoney, pct, num, signedPct, NA, addDays,
   PageHead, SectionHead, StatTile, Chip, AbsentCard, AmberLine, LoadingLine, EmptyCard, TabRow, hqHandoff,
@@ -37,8 +47,8 @@ export function venueForPeriod(venue, period) {
   return { ...venue, today: { ...venue.today, net_sales: venue.period_totals.net_sales, labour: venue.period_totals.labour } };
 }
 
-/** The site rows, ranked, with the review card's real rating where the venue runs one. */
-export function buildRows({ sites, venues, dailyRows, ratings, period, currency = null }) {
+/** The site rows, ranked, with the review card's real rating where the venue runs one, coloured by the company's targets. */
+export function buildRows({ sites, venues, dailyRows, ratings, period, currency = null, targets = [] }) {
   const latest = latestBySite(dailyRows || []);
   return rankSites((sites || []).map((s) => {
     const venue = venueForPeriod(venueForSite(venues, s), period);
@@ -47,13 +57,60 @@ export function buildRows({ sites, venues, dailyRows, ratings, period, currency 
     if (!row.currency) row.currency = currency || null;
     const r = ratings?.[s.id];
     if (r && r.count) { row.rating = r.avg; row.reviews = r.count; row.from = { ...row.from, rating: 'reviews' }; }
+    // The colour is the band's (site override, else company, else the built in default), never a fixed 60.
+    const band = resolveTargets(targets, s.id);
+    row.band = band;
+    row.tone = ragOf('prime_cost_pct', row.prime, band.prime_cost_pct);
+    row.labourTone = ragOf('labour_pct', row.labourPct, band.labour_pct);
+    row.cogsTone = ragOf('cogs_pct', row.cogsPct, band.cogs_pct);
     return row;
   }));
 }
 
+/** Per site: the safe summary and the Operations figures for today and this week, from the slice 2 reads. */
+export function buildExtras({ sites, cash, ops, today }) {
+  const out = {};
+  for (const s of sites || []) {
+    const clock = cash?.clocks?.[s.id] || ops?.clocks?.[s.id] || null;
+    const bizToday = clock?.today || today;
+    const cal = clock?.calendarToday || today;   // Operations stores run_date on the calendar day
+    const bySite = (rows) => (rows || []).filter((r) => r?.location_id === s.id);
+    const opsArgs = ops ? { checklists: bySite(ops.checklists), runs: bySite(ops.runs), schedules: bySite(ops.schedules), readings: bySite(ops.readings), maintenance: bySite(ops.maintenance), today: cal, nowMin: clock?.nowMin } : null;
+    out[s.id] = {
+      cash: cash ? cashSummary({ movements: bySite(cash.movements), counts: bySite(cash.counts), deposits: bySite(cash.deposits), today: bizToday }) : null,
+      // Does the Operations module hold anything for this site? Without a row, "0 missed" would read as all done.
+      hasRows: !!opsArgs && (opsArgs.checklists.length + opsArgs.schedules.length + opsArgs.readings.length + opsArgs.maintenance.length) > 0,
+      today: opsArgs ? opsSiteStats({ ...opsArgs, dates: [cal] }) : null,
+      week: opsArgs ? opsSiteStats({ ...opsArgs, dates: dateRange(weekStartIso(cal), cal) }) : null,
+    };
+  }
+  return out;
+}
+
+const addBucket = (a, b) => { a.due += b?.due || 0; a.done += b?.done || 0; a.missed += b?.missed || 0; a.open += b?.open || 0; };
+
+/** The portfolio's slice 2 tiles: cash in the safes, in transit, today's checks and the week's failed temps. */
+export function portfolioExtras(extras) {
+  const t = { safes: 0, safeSites: 0, transit: 0, worstDays: null, failed: 0, critical: 0, checks: null, checksDone: 0, checksRequired: 0, hasOps: false };
+  const all = { due: 0, done: 0, missed: 0, open: 0 }; const win = { due: 0, done: 0, missed: 0, open: 0 };
+  for (const x of Object.values(extras || {})) {
+    if (x?.cash?.used) {
+      t.safes += x.cash.balance || 0; t.safeSites += 1;
+      if (x.cash.unbankedDays !== null && (t.worstDays === null || x.cash.unbankedDays > t.worstDays)) t.worstDays = x.cash.unbankedDays;
+    }
+    if (x?.cash) t.transit += x.cash.inTransit || 0;
+    if (x?.week) { t.failed += x.week.temps.failed.count; t.critical += x.week.temps.failed.critical; }
+    if (x?.today) { if (x.hasRows) t.hasOps = true; addBucket(all, x.today.checklists.all); addBucket(win, x.today.temps.windows); }
+  }
+  t.checks = checksPct(all, win);
+  t.checksDone = all.done + win.done;
+  t.checksRequired = all.done + all.missed + win.done + win.missed;
+  return t;
+}
+
 export default function HqScorecard({ hq, go }) {
   const [period, setPeriod] = useState('today');
-  const [state, setState] = useState({ key: null, absent: false, error: null, snapMessage: null, venues: [], daily: [], ratings: {}, projects: [] });
+  const [state, setState] = useState({ key: null, absent: false, error: null, snapMessage: null, slice2Message: null, venues: [], daily: [], ratings: {}, projects: [], targets: [], cash: null, ops: null });
 
   const ids = useMemo(() => hq.sites.map((s) => s.id), [hq.sites]);
   // What is asked for; the screen is loading until the state carries this key.
@@ -66,25 +123,38 @@ export default function HqScorecard({ hq, go }) {
       fetchDailyNumbers(ids, addDays(hq.today, -DAYS_BACK), hq.today),
       fetchRatings(ids, 7),
       fetchProjects(hq.orgId),
-    ]).then(([snap, daily, ratings, projects]) => {
+      fetchTargets(hq.orgId),
+      fetchCashForSites(ids),
+      fetchOpsRows(ids, weekStartIso(hq.today), hq.today),
+    ]).then(([snap, daily, ratings, projects, targets, cash, ops]) => {
       if (!live) return;
       if (daily.absent || projects.absent) { setState((s) => ({ ...s, key, absent: true })); return; }
+      // Slice 2 tables missing is not the end of the scorecard: one amber line and the old figures.
+      const slice2Absent = !!(targets.absent || cash.absent);
       setState({
         key, absent: false,
         error: daily.error ? daily.message : (projects.error ? projects.message : null),
         snapMessage: snap.error ? snap.message : null,
+        slice2Message: slice2Absent ? NOT_SET_UP_2 : (targets.error ? targets.message : (cash.error ? cash.message : null)),
         venues: snap.data?.venues || [],
         daily: daily.data || [],
         ratings: ratings.data || {},
         projects: projects.data || [],
+        targets: slice2Absent ? [] : (targets.data || []),
+        cash: slice2Absent ? null : (cash.data || null),
+        ops: ops.data || null,
       });
     });
     return () => { live = false; };
   }, [period, ids, hq.today, hq.orgId, key]);
   const loading = state.key !== key;
 
-  const rows = useMemo(() => buildRows({ sites: hq.sites, venues: state.venues, dailyRows: state.daily, ratings: state.ratings, period, currency: hq.currency }), [hq.sites, hq.currency, state.venues, state.daily, state.ratings, period]);
+  const rows = useMemo(() => buildRows({ sites: hq.sites, venues: state.venues, dailyRows: state.daily, ratings: state.ratings, period, currency: hq.currency, targets: state.targets }), [hq.sites, hq.currency, state.venues, state.daily, state.ratings, state.targets, period]);
   const group = useMemo(() => portfolio(rows), [rows]);
+  const extras = useMemo(() => buildExtras({ sites: hq.sites, cash: state.cash, ops: state.ops, today: hq.today }), [hq.sites, state.cash, state.ops, hq.today]);
+  const more = useMemo(() => portfolioExtras(extras), [extras]);
+  const companyBand = useMemo(() => resolveTargets(state.targets, null), [state.targets]);
+  const primeWords = bandWords('prime_cost_pct', companyBand.prime_cost_pct, (n) => `${n}%`);
   const currencies = [...new Set(rows.map((r) => r.currency).filter(Boolean))];
   const currency = currencies.length === 1 ? currencies[0] : hq.currency;
   const openProjects = state.projects.filter((p) => OPEN_PROJECT_STATUSES.includes(p.status)).length;
@@ -113,15 +183,23 @@ export default function HqScorecard({ hq, go }) {
       {loading && <LoadingLine>Loading</LoadingLine>}
       <AmberLine>{state.error}</AmberLine>
       <AmberLine>{state.snapMessage}</AmberLine>
+      <AmberLine>{state.slice2Message}</AmberLine>
       {!hq.sites.length && !loading && <EmptyCard title="No sites yet" body="The hub ranks the sites this login can manage. None were found." />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
         <StatTile label={`Net sales, ${periodWord.toLowerCase()}`} value={bigMoney(group.netToday, currency)} note={`${rows.filter((r) => r.net !== null).length} of ${rows.length} sites reporting`} icon="money" />
-        <StatTile label="Portfolio prime cost" value={pct(group.prime)} tone={group.prime === null ? null : (group.prime < PRIME_COST_TARGET ? 'grn' : 'orn')} note={`Target under ${PRIME_COST_TARGET}%`} icon="target" />
+        <StatTile label="Portfolio prime cost" value={pct(group.prime)} tone={ragOf('prime_cost_pct', group.prime, companyBand.prime_cost_pct)} note={primeWords ? `Green ${primeWords.grn}` : 'No target set'} icon="target" />
         <StatTile label="Leadership morale" value={group.morale === null ? NA : `${group.morale} / 10`} note={group.morale === null ? 'Not logged yet' : 'Average of the sites'} icon="users" />
         <StatTile label="Open hires" value={num(group.hires)} note="Still needed, every site" icon="user" />
         <StatTile label="Guest rating" value={group.rating === null ? NA : Number(group.rating).toFixed(1)} note={group.reviews ? `${num(group.reviews)} reviews` : 'No reviews counted'} icon="star" />
-        <StatTile label="Cash on hand" value={bigMoney(group.cash, currency)} note="Sites combined" icon="wallet" />
+        <StatTile label="Cash in safes" value={more.safeSites ? bigMoney(more.safes, currency) : (group.cash !== null ? bigMoney(group.cash, currency) : NA)}
+          note={more.safeSites ? `${more.safeSites} of ${rows.length} sites on the safe ledger` : (group.cash !== null ? 'Typed figures, no safe ledger yet' : 'No safe ledger yet')} icon="lock" />
+        <StatTile label="Waiting to bank" value={bigMoney(more.transit, currency)} tone={ragOf('unbanked_days', more.worstDays, companyBand.unbanked_days)}
+          note={more.worstDays === null ? 'Prepared or banked, not yet confirmed' : `Worst site: ${more.worstDays} day${more.worstDays === 1 ? '' : 's'} unbanked`} icon="bank" />
+        <StatTile label="Checks today" value={more.checks === null ? NA : pct(more.checks, 0)} tone={ragOf('checks_pct', more.checks, companyBand.checks_pct)}
+          note={more.hasOps ? `${num(more.checksDone)} of ${num(more.checksRequired)} required so far, every site` : 'No Operations schedules found'} icon="checkSquare" />
+        <StatTile label="Failed temps this week" value={more.hasOps ? num(more.failed) : NA} tone={!more.hasOps ? null : (more.critical ? 'red' : (more.failed ? 'orn' : 'grn'))}
+          note={more.hasOps ? `${num(more.critical)} critical` : 'No temperature readings found'} icon="warn" />
       </div>
 
       <SectionHead title="Prime cost ladder" sub={`Lowest prime cost first. ${periodWord} on the tills.`} />
@@ -130,19 +208,20 @@ export default function HqScorecard({ hq, go }) {
           <thead>
             <tr>
               <th style={th}>#</th><th style={th}>Site</th><th style={{ ...th, minWidth: 170 }}>Prime cost</th><th style={th}>Net sales</th>
-              <th style={th}>vs last period</th><th style={th}>Morale</th><th style={th}>Hires</th><th style={th}>Rating</th><th style={th}>Cash on hand</th><th style={th}>Turnover</th>
+              <th style={th}>vs last period</th><th style={th}>Checks</th><th style={th}>Morale</th><th style={th}>Hires</th><th style={th}>Rating</th><th style={th}>Cash</th><th style={th}>Turnover</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => <LadderRow key={r.id} r={r} />)}
-            {!rows.length && <tr><td style={{ ...td, color: 'var(--t3)' }} colSpan={10}>No sites to rank.</td></tr>}
+            {rows.map((r) => <LadderRow key={r.id} r={r} x={extras[r.id]} />)}
+            {!rows.length && <tr><td style={{ ...td, color: 'var(--t3)' }} colSpan={11}>No sites to rank.</td></tr>}
           </tbody>
         </table>
       </div>
       <div style={{ display: 'flex', gap: 14, alignItems: 'center', fontSize: 12, color: 'var(--t3)', marginTop: 8, flexWrap: 'wrap' }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Dot color="var(--grn)" />Under target</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Dot color="var(--orn)" />Over target</span>
-        <span>Prime cost target {PRIME_COST_TARGET}%, COGS + labour against net sales.</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Dot color="var(--grn)" />Green {primeWords?.grn || NA}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Dot color="var(--orn)" />Amber {primeWords?.orn || NA}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Dot color="var(--red)" />Red {primeWords?.red || NA}</span>
+        <span>Prime cost is COGS + labour against net sales. Bands come from Targets; a site's own band wins.</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Typed />a figure typed into Daily numbers</span>
       </div>
 
@@ -177,8 +256,14 @@ function Cell({ value, typed, children }) {
   );
 }
 
-function LadderRow({ r }) {
+/** The colour for a tone, or the plain text colour when there is none. */
+const toneOr = (tone, fallback = 'var(--t1)') => (tone ? toneColor(tone) : fallback);
+
+function LadderRow({ r, x }) {
   const tone = r.tone ? toneColor(r.tone) : 'var(--t4)';
+  const band = r.band || {};
+  const cash = x?.cash;
+  const checks = x?.today;
   const barW = r.prime === null ? 0 : Math.min(100, (r.prime / 100) * 100);
   const vs = r.momPct;
   const vsColor = vs === null ? 'var(--t4)' : vs >= 0 ? 'var(--grn)' : 'var(--red)';
@@ -199,6 +284,10 @@ function LadderRow({ r }) {
           </div>
           {(r.from.cogs === 'typed' || r.from.labour === 'typed') && <Typed />}
         </div>
+        <div style={{ display: 'flex', gap: 10, fontSize: 11, marginTop: 3, ...mono }}>
+          <span style={{ color: toneOr(r.cogsTone, 'var(--t4)') }}>COGS {pct(r.cogsPct)}</span>
+          <span style={{ color: toneOr(r.labourTone, 'var(--t4)') }}>Labour {pct(r.labourPct)}</span>
+        </div>
       </td>
       <td style={{ ...td, ...mono }}><Cell value={exactMoney(r.net, r.currency)} typed={r.from.net === 'typed'} /></td>
       <td style={{ ...td, ...mono, color: vsColor }}>
@@ -206,6 +295,14 @@ function LadderRow({ r }) {
           {vs !== null && <Icon name={vs >= 0 ? 'arrowUp' : 'arrowDown'} size={12} />}
           {signedPct(vs)}
         </span>
+      </td>
+      <td style={td}>
+        {checks ? (
+          <div>
+            <div className="mono" style={{ ...mono, fontWeight: 700, color: toneOr(ragOf('checks_pct', checks.checksPct, band.checks_pct), 'var(--t4)') }}>{checks.checksPct === null ? NA : pct(checks.checksPct, 0)}</div>
+            <div style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>{checksWords(checks)}</div>
+          </div>
+        ) : <span style={{ color: 'var(--t4)' }}>{NA}</span>}
       </td>
       <td style={td}>
         <Cell value={r.morale === null ? NA : `${r.morale}`} typed={r.morale !== null}>
@@ -219,7 +316,16 @@ function LadderRow({ r }) {
           {r.rating === null ? NA : `${Number(r.rating).toFixed(1)}`}{r.rating !== null && r.reviews !== null && <span style={{ color: 'var(--t4)', fontSize: 11 }}> ({num(r.reviews)})</span>}
         </Cell>
       </td>
-      <td style={{ ...td, ...mono }}><Cell value={exactMoney(r.cash, r.currency)} typed={r.cash !== null} /></td>
+      <td style={{ ...td, ...mono }}>
+        {cash?.used ? (
+          <div>
+            <div style={{ fontWeight: 700, color: toneOr(ragOf('cash_held', cash.balance, band.cash_held)) }}>{exactMoney(cash.balance, r.currency)}</div>
+            <div style={{ fontSize: 11, color: toneOr(ragOf('unbanked_days', cash.unbankedDays, band.unbanked_days), 'var(--t4)'), whiteSpace: 'nowrap' }}>
+              {cash.unbankedDays === null ? 'in the safe' : `${cash.unbankedDays} day${cash.unbankedDays === 1 ? '' : 's'} unbanked`}
+            </div>
+          </div>
+        ) : <Cell value={exactMoney(r.cash, r.currency)} typed={r.cash !== null} />}
+      </td>
       <td style={{ ...td, ...mono }}><Cell value={pct(r.turnoverPct, 0)} typed={r.turnoverPct !== null} /></td>
     </tr>
   );

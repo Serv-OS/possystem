@@ -163,6 +163,8 @@ const NAV = [
   { id:'hq-projects',    label:'Internal projects', icon:'clipboard',  group:'Head office' },
   { id:'hq-checkin',     label:'Weekly check in',  icon:'checkSquare', group:'Head office' },
   { id:'hq-numbers',     label:'Daily numbers',    icon:'note',        group:'Head office' },
+  { id:'hq-safe',        label:'Safe and banking', icon:'lock',        group:'Head office' },
+  { id:'hq-targets',     label:'Targets',          icon:'target',      group:'Head office' },
   { id:'menu',       label:'Menu manager',    icon:'utensils',  group:'Configuration' },
   // The top bar title only: the sidebar row comes from NAV_IA and shows only to people ServOS added.
   { id:'multi-site-menu', label:'Multi site menu', icon:'utensils', group:'Configuration' },

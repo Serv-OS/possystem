@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.77',
+    date: '16 Nov 2026',
+    items: [
+      'Head office, slice 2: the safe, banking, targets and checks (Peter, 16 Nov 2026: "rather than inputting cash on hand this should be cash drawer totals, build the safe and banking flow, where do we set targets, add failed checks or missed opening checklists"). (1) Safe and banking, a new screen per site. The safe is a ledger fed by what the till already knows: a drawer\'s counted cash at cash up, a "Cash drop to safe" made during service, and the float a drawer opened with. They appear under "Waiting to go in the safe" and one tap posts them; a till event can only ever be posted once, so nothing is retyped and nothing is counted twice. Count the safe (by note or a total) against what the ledger expects, see the variance in words, and save it with or without an adjustment. Banking: prepare a deposit (the suggested bag is the balance less the cash the site keeps back), then mark it banked, then confirmed; a cancelled bag puts the cash back. Petty cash out and other cash in have their own lines. (2) Targets, a new screen the company owner edits: green, amber and red bands for prime cost, labour, COGS, checks completed, morale, rating, cash held in the safe, days since banking, safe count variance and net sales a day, one company row with a per site override; a band the wrong way round is refused with words. The Scorecard and Departments colour every figure from these bands instead of a fixed 60%. (3) Checks on the Scorecard and the Operations department, worked out from the Operations module\'s own rows: missed opening and closing checklists, missed temperature windows, failed temperature checks by severity, open urgent repairs, today and this week, with a "Checks completed" percent per site. (4) Cash on hand is no longer typed on Daily numbers: the Scorecard shows the safe balance and days unbanked, falling back to a typed figure only at a site that has not started its safe. SQL 20261201a on Ops (four hq_ tables, append only ledger, owner only targets, rollback twin; proved on a local Postgres with 6 checks). Nothing to deploy. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.76',
     date: '16 Nov 2026',
     items: [
