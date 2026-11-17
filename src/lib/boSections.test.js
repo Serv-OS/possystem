@@ -55,22 +55,31 @@ const NOTHING = { role: 'manager', sections: [] };
 
 // ── the list ────────────────────────────────────────────────────────────────
 
+// 16 Nov 2026: the Head office hub is a 16th sidebar row with NO key of its own (a new key needs the
+// shared rules and the user_profiles CHECK changed together). A row with no key fails closed: only a
+// login that opens everything is shown it, and a login with a list never is (the test below).
+const KEYLESS_ROWS = ['Head office'];
+const keyed = (rows) => rows.filter((r) => !KEYLESS_ROWS.includes(r.label));
+
 test('15 sections, the decided keys, in sidebar order', () => {
   assert.deepEqual([...BO_SECTION_KEYS], KEYS);
-  assert.equal(NAV_IA.length, 15);
-  assert.deepEqual(NAV_IA.map(sectionKeyOfRow), KEYS, 'every sidebar row has its key, in order');
+  assert.equal(NAV_IA.length, 16);
+  assert.deepEqual(keyed(NAV_IA).map(sectionKeyOfRow), KEYS, 'every keyed sidebar row has its key, in order');
+  assert.deepEqual(NAV_IA.filter((r) => KEYLESS_ROWS.includes(r.label)).map(sectionKeyOfRow), [null], 'Head office has no key');
+  assert.equal(NAV_IA[1].label, 'Head office', 'right after Overview');
   assert.deepEqual(SECTIONS.map((s) => s.key), KEYS);
-  assert.deepEqual(SECTIONS.map((s) => s.label), NAV_IA.map((r) => r.label));
+  assert.deepEqual(SECTIONS.map((s) => s.label), keyed(NAV_IA).map((r) => r.label));
   assert.equal(Object.keys(SECTION_KEY_BY_LABEL).length, 15, 'no label without a row');
   assert.ok(Object.isFrozen(BO_SECTION_KEYS) && Object.isFrozen(SECTIONS));
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 103);   // 5.12.67: website-report (Website report) under Customers; 5.12.40: marketing-forms (Forms) under Customers; 5.11.102: wf-chat (Team chat) under Workforce; 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
+  assert.equal(allRoutes.length, 103 + 5);   // 16 Nov 2026: the 5 hq- routes under Head office (no key, so they are in NO section); 5.12.67: website-report (Website report) under Customers; 5.12.40: marketing-forms (Forms) under Customers; 5.11.102: wf-chat (Team chat) under Workforce; 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
-  assert.equal(map.size, allRoutes.length);
+  assert.equal(map.size, allRoutes.length - 5, 'the 5 Head office routes are in no section');
   for (const row of NAV_IA) for (const id of routesOfRow(row)) assert.equal(sectionKeyOfRoute(id), sectionKeyOfRow(row), id);
+  for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers']) assert.equal(sectionKeyOfRoute(id), null, `${id} fails closed`);
   // Route ids and section keys share some spellings but are different things.
   assert.equal(sectionKeyOfRoute('staff'), 'team');
   assert.equal(sectionKeyOfRoute('inventory'), 'inventory');
@@ -90,10 +99,10 @@ test('the route map is built from the sidebar: every route in exactly one sectio
 
 test('a sidebar row with no key fails closed: only a login that opens everything is shown it', () => {
   const nav = [...NAV_IA, { label: 'Brand new', icon: 'home', single: 'brand-new' }];
-  assert.equal(sectionKeyOfRow(nav[15]), null);
+  assert.equal(sectionKeyOfRow(nav[16]), null);
   assert.equal(buildRouteSections(nav).has('brand-new'), false);
-  assert.equal(filterNav(nav, OWNER).length, 16);
-  assert.equal(filterNav(nav, MANAGER).length, 16);
+  assert.equal(filterNav(nav, OWNER).length, 17);
+  assert.equal(filterNav(nav, MANAGER).length, 17);
   assert.equal(filterNav(nav, MO).some((r) => r.label === 'Brand new'), false);
   // Even a list holding all 15 keys is a LIST: a new part is not on it.
   assert.equal(filterNav(nav, { role: 'manager', sections: [...KEYS] }).some((r) => r.label === 'Brand new'), false);
@@ -205,8 +214,19 @@ test('an empty list opens nothing at all', () => {
   }
 });
 
+test('Head office: shown to a login that opens everything, never to a login with a list', () => {
+  for (const who of [OWNER, SERVOS, MANAGER]) {
+    assert.ok(filterNav(NAV_IA, who).some((r) => r.label === 'Head office'), `${who.role} sees it`);
+    for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers']) assert.equal(canOpenRoute(id, who), true);
+  }
+  for (const who of [MO, NOTHING, { role: 'manager', sections: [...KEYS] }]) {
+    assert.equal(filterNav(NAV_IA, who).some((r) => r.label === 'Head office'), false);
+    for (const id of ['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers']) assert.equal(canOpenRoute(id, who), false, `${id} refused`);
+  }
+});
+
 test('one section each: that section, all of it, and no other', () => {
-  for (const row of NAV_IA) {
+  for (const row of keyed(NAV_IA)) {
     const key = sectionKeyOfRow(row);
     const who = { role: 'manager', sections: [key] };
     assert.deepEqual(filterNav(NAV_IA, who).map((r) => r.label), [row.label]);
@@ -597,14 +617,15 @@ test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   const shell = boCode.slice(boCode.indexOf('<div className="bo-page-shell">'), boCode.indexOf('{showLocationSwitcher &&'));
   const lines = shell.split('\n').filter((l) => /&& </.test(l));
   assert.ok(lines.length >= 78, `found ${lines.length} screens`);
-  for (const l of lines) assert.match(l, /^\s*\{section(\?\.startsWith\('wf-'\)| === '[a-z0-9-]+')\s*&& </, l.trim());
+  for (const l of lines) assert.match(l, /^\s*\{section(\?\.startsWith\('(wf|hq)-'\)| === '[a-z0-9-]+')\s*&& </, l.trim());
   // Every route the page can render is one the rules know, except the in-app Company Admin,
   // which is in no section on purpose (decision 4).
   const rendered = [...shell.matchAll(/section === '([a-z0-9-]+)'/g)].map((m) => m[1]);
   const unknown = rendered.filter((id) => sectionKeyOfRoute(id) === null);
   assert.deepEqual(unknown, ['admin'], 'a screen that is in no sidebar section');
-  // And every sidebar route that is not a wf- route has a screen.
-  for (const id of allRoutes.filter((r) => !r.startsWith('wf-'))) assert.ok(rendered.includes(id), `no screen for ${id}`);
+  // And every sidebar route that is not a wf- or hq- route (their groups render on one line) has a screen.
+  for (const id of allRoutes.filter((r) => !r.startsWith('wf-') && !r.startsWith('hq-'))) assert.ok(rendered.includes(id), `no screen for ${id}`);
+  assert.match(shell, /\{section\?\.startsWith\('hq-'\) && <HeadOffice section=\{section\} orgCtx=\{orgCtx\} setSection=\{setSection\} \/>\}/, 'the Head office group');
   // The sidebar lists only what the login may open.
   assert.match(boCode, /const navRows = filterNav\(NAV_IA, access\);/);
   assert.match(boCode, /\{navRows\.map\(sec => \{/);
@@ -671,7 +692,7 @@ test('BackOfficeApp: links on Overview and in Reports to a part the login is not
   // v5.11.92 (Drop 4a): Reports > Stock and GP is the same reports shell, opened on the head office
   // dashboard, handed the share link once (stockLink) and keyed apart from All reports.
   assert.match(boCode, /\{section === 'stock-gp' && <BOReports setSection=\{setSection\} canOpen=\{canOpen\} initialView="stock_home" stockLink=\{stockReportLink\} onLinkUsed=\{\(\) => setStockReportLink\(null\)\} key="stock-gp" \/>\}/);
-  assert.equal((shell.match(/setSection=\{setSection\}/g) || []).length, 8);
+  assert.equal((shell.match(/setSection=\{setSection\}/g) || []).length, 9);   // 16 Nov 2026: Head office moves between its own screens
 });
 
 // ── the Team screen ─────────────────────────────────────────────────────────

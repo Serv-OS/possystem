@@ -94,6 +94,7 @@ import GiftCards from './sections/GiftCards';
 import MessageTemplates from './sections/MessageTemplates';
 import LoyaltyManager from './sections/LoyaltyManager';
 import Workforce from './sections/Workforce';
+import HeadOffice from './sections/HeadOffice';
 import ReviewManager from './sections/ReviewManager';
 import WifiManager from './sections/WifiManager';
 import Promotions from './sections/marketing/Promotions';
@@ -156,6 +157,12 @@ const MOCK_MSM_ACCESS = Object.freeze({ installed: true, enabled: true, role: 'e
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'home',  group:'Dashboard' },
+  // 16 Nov 2026: Head office hub (sidebar rows come from NAV_IA; these give the top bar its title).
+  { id:'hq-scorecard',   label:'Scorecard',        icon:'chart',       group:'Head office' },
+  { id:'hq-departments', label:'Departments',      icon:'building',    group:'Head office' },
+  { id:'hq-projects',    label:'Internal projects', icon:'clipboard',  group:'Head office' },
+  { id:'hq-checkin',     label:'Weekly check in',  icon:'checkSquare', group:'Head office' },
+  { id:'hq-numbers',     label:'Daily numbers',    icon:'note',        group:'Head office' },
   { id:'menu',       label:'Menu manager',    icon:'utensils',  group:'Configuration' },
   // The top bar title only: the sidebar row comes from NAV_IA and shows only to people ServOS added.
   { id:'multi-site-menu', label:'Multi site menu', icon:'utensils', group:'Configuration' },
@@ -1234,6 +1241,7 @@ export default function BackOfficeApp() {
           {section === 'sending-domain' && <SendingDomain />}
           {section === 'xero' && <XeroIntegration />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
+          {section?.startsWith('hq-') && <HeadOffice section={section} orgCtx={orgCtx} setSection={setSection} />}
           {section === 'menu'       && <MenuManager setSection={setSection} canOpen={canOpen} />}
           {section === 'multi-site-menu' && (
             <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading the Multi site menu…</div>}>

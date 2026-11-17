@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.76',
+    date: '16 Nov 2026',
+    items: [
+      'Head office, a new Back Office area (Peter, 16 Nov 2026, after Mozz Pizza asked for a "MOZZ Leadership App" for their directors: "this is the start of our head office hub ... start building, I only want this on dev for now"). Five screens under a Head office group in the sidebar, for owners and logins that open everything (a login limited to a list of sections never sees it). (1) Scorecard: every site of the company ranked by prime cost (COGS plus labour against net sales, target under 60%), with net sales, change against the last period, morale, open hires, guest rating, cash on hand and turnover, six tiles for the group, projected sales by daypart and a count of projects in flight. Sales and labour come from the tills through the Owner figures, COGS from stock when the site runs it; the rest from Daily numbers. A figure nobody has is n/a, never a zero. (2) Departments: Operations, HR, Finance, Marketing and Store leadership, three tiles each and that department\'s projects. (3) Internal projects: cards with status, department, latest update, owner, site, percent and due date; behind each card the project as a plan with phases, tasks and sub tasks, owners, priority, due dates, blocked reasons and an update feed for the owner. Percent is counted from the tasks done, a project goes At risk by itself when a task is overdue or blocked, and My work lists what is mine or nobody\'s. (4) Weekly check in: six questions (the owner can change them), one send per person, week, department and site; only the owner reads them, and the database refuses everyone else, not just the screen. (5) Daily numbers: log a day per site (cash on hand, new reviews, rating, turnover, morale, hires, projected lunch, dinner and late night, and typed sales, COGS and labour for a day the tills did not see) or paste a CSV in the Mozz column order; a paste with any bad line imports nothing and says which lines. SQL 20261130a on Ops (six hq_ tables, owner only check in rule, rollback twin; proved on a local Postgres with 8 checks, which also closed a hole where another company could hang a task on a project it could not see). Nothing to deploy. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.75',
     date: '13 Nov 2026',
     items: [
