@@ -252,9 +252,9 @@ test('store: the pop up answers live on the order; guests are the covers and Yes
   has(src, "const walkInCovers = orderCovers(order, orderType) || 1;\n      const newCustomer = orderIsNewCustomer(order);", 'covers and new customer read from the order');
   has(src, "note: joinNotes(order.orderNote, customer?.notes),\n        newCustomer,\n      });", 'KDS meta carries newCustomer');
   has(src, "createKdsTickets(pendingItems, label, staff?.name || 'Server', walkInCovers, wiFiredOnSend, walkInMeta);", 'tickets carry the covers');
-  has(src, "type: 'kitchen',\n          newCustomer,\n        });", 'print job carries newCustomer');
+  has(src, "type: 'kitchen',\n          meta: t.meta, stickerRun: stickerRunsHere[ti],\n          newCustomer,\n        });", 'print job carries newCustomer');
   has(src, "newCustomer: job.newCustomer === true,   // 5 Nov 2026", 'docket gets newCustomer');
-  has(src, "itemLabel: `ITEM ${i + 1} OF ${total}`, reprint: !!job.reprint, newCustomer: job.newCustomer === true,", 'sticker dockets get it too');
+  has(src, "reprint: !!job.reprint, newCustomer: job.newCustomer === true,\n          }, printerId, { idempotencyKey: `${idempotencyKey}-i${i}` });", 'sticker dockets get it too');
   has(src, "...(newCustomer ? { newCustomer: true } : {}) },", 'queue entry carries newCustomer');
   has(src, "...(walkInCovers > 1 ? { covers: walkInCovers } : {}),", 'queue entry carries the covers');
   assert.equal((src.match(/covers: orderCovers\(walkInOrder, orderType\) \|\| 1,/g) || []).length, 2, 'the closed check and its tax both book the guests');

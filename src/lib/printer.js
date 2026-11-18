@@ -24,7 +24,7 @@ import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
 import {
   buildCustomerReceiptDoc, buildMerchantTipSlipDoc, buildGiftCardSlipDoc, buildKitchenTicketDoc, buildFireCourseTicketDoc,
-  buildTransferNoticeTicketDoc, buildTestPageDoc, docHasCut, docHasDrawer,
+  buildTransferNoticeTicketDoc, buildTestPageDoc, buildItemStickerDoc, docHasCut, docHasDrawer,
 } from './printDoc.js';
 import {
   EscPosBuilder, resolvePrinterSpec, encodeEscPos, encodeStarLine, encodeStarRaster, cashDrawerBytes,
@@ -967,6 +967,23 @@ class PrintService {
         idempotencyKey: opts.idempotencyKey,
         metadata: { tableLabel: ticketData.table, server: ticketData.server, covers: ticketData.covers, course: ticketData.course, centreName: ticketData.centreName },
         label: `Kitchen ticket — ${ticketData.table || 'Walk-in'} (${ticketData.centreName || 'kitchen'})`,
+      });
+    }
+    return { ok: false, error: 'No kitchen printer configured' };
+  }
+
+  // One ticket per item (sticker mode, 18 Nov 2026): one sticker per unit on the centre's own
+  // printer, the same transport, retry and audit row as a kitchen ticket. The paper is
+  // buildItemStickerDoc (lib/printDoc.js), the words lib/itemSticker.js.
+  async printItemSticker(data, printerId = null, opts = {}) {
+    const printer = this._printerForRole('kitchen', printerId);
+    if (printer?.address) {
+      const bytes = await encodeDocForPrinter(buildItemStickerDoc(data, { cols: resolvePrinterSpec(printer).cols }), printer);
+      const who = data.meta?.customerName || data.table || 'Walk-in';
+      return this._submitJob(printer, 'kitchen', bytes, {
+        idempotencyKey: opts.idempotencyKey,
+        metadata: { tableLabel: data.table, centreName: data.centreName, sticker: `${data.index} of ${data.total}`, orderNo: data.meta?.orderNo || null },
+        label: `Sticker ${data.index} of ${data.total}: ${who} (${data.centreName || 'kitchen'})`,
       });
     }
     return { ok: false, error: 'No kitchen printer configured' };

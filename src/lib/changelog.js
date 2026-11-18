@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.80',
+    date: '18 Nov 2026',
+    items: [
+      'One ticket per item (sticker mode) rebuilt from a Day Break pizza box label (Peter, 18 Nov 2026: "print separate labels per item so you can gather the order together"). With "One ticket per item" on for a production centre (Back Office, Print routing), every item now prints its own sticker laid out like that label: the channel and order type across the top (Online ordering, Take away) with "2 of 3" at the right, the customer\'s name big (the table when there is no name), the item in double height with its changes in red underneath, then the time, the date and the order number, and the centre\'s name small at the foot. "2 of 3" counts across the whole order, not one printer, so an order whose items print at two centres still gathers as one. Reprint and New customer marks still show. Nothing to deploy. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.79',
     date: '17 Nov 2026',
     items: [

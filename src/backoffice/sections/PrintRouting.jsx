@@ -729,7 +729,7 @@ export default function PrintRouting() {
         <div style={{ minWidth:0 }}>
           <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)', display:'flex', alignItems:'center', gap:5 }}>One ticket per item <Icon name="cup" size={14} /> (sticker mode)</div>
           <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
-            Coffee-shop style — prints a separate docket for every item (e.g. one sticker per cup), each numbered “ITEM 1 OF 3”. Off by default.
+            Prints a separate sticker for every item, numbered 1 of 3 across the whole order: the channel and order type, the customer's name big, the item and its changes, then the time, date and order number, so the order can be gathered from the stickers. Off by default.
           </div>
         </div>
         <button
