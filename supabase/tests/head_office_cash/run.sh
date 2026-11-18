@@ -165,9 +165,11 @@ RB3="$MIG/20261202a_OPS_head_office_numbers_sources_ROLLBACK.sql"
 P -f "$F3" >/dev/null
 c=$(P -c "select data_type from information_schema.columns where table_name = 'hq_daily_numbers' and column_name = 'sources'")
 [[ "$c" == "jsonb" ]] || fail "7 sources column: '$c'"
-AS $MANAGER_A "insert into public.hq_daily_numbers (org_id, location_id, business_date, net_sales, cogs, source, sources) values ('$ORG_A', '$A1', '2026-11-01', 4453.9, 160, 'system', '{\"net_sales\":\"till\",\"cogs\":\"typed\"}')" >/dev/null
-r=$(AS $MANAGER_A "select source||'|'||(sources->>'net_sales')||'|'||(sources->>'cogs') from public.hq_daily_numbers where location_id = '$A1' and business_date = '2026-11-01'")
-[[ "$r" == "system|till|typed" ]] || fail "7 system row: '$r'"
+AS $MANAGER_A "insert into public.hq_daily_numbers (org_id, location_id, business_date, net_sales, cogs, source, sources, projected_parts) values ('$ORG_A', '$A1', '2026-11-01', 4453.9, 160, 'system', '{\"net_sales\":\"till\",\"cogs\":\"typed\"}', '{\"sh-l\":{\"name\":\"Lunch\",\"amount\":2400}}')" >/dev/null
+r=$(AS $MANAGER_A "select source||'|'||(sources->>'net_sales')||'|'||(sources->>'cogs')||'|'||(projected_parts->'sh-l'->>'amount') from public.hq_daily_numbers where location_id = '$A1' and business_date = '2026-11-01'")
+[[ "$r" == "system|till|typed|2400" ]] || fail "7 system row: '$r'"
+e=$(ERR $MANAGER_A "insert into public.hq_daily_numbers (org_id, location_id, business_date, projected_parts) values ('$ORG_A', '$A1', '2026-11-04', '[]')")
+[[ "$e" == "23514" ]] || fail "7 projected_parts array accepted: '$e'"
 e=$(ERR $MANAGER_A "insert into public.hq_daily_numbers (org_id, location_id, business_date, source) values ('$ORG_A', '$A1', '2026-11-02', 'guess')")
 [[ "$e" == "23514" ]] || fail "7 unknown source accepted: '$e'"
 e=$(ERR $MANAGER_A "insert into public.hq_daily_numbers (org_id, location_id, business_date, sources) values ('$ORG_A', '$A1', '2026-11-03', '[1]')")
@@ -176,8 +178,8 @@ P -f "$F3" >/dev/null
 c=$(P -c "select count(*) from information_schema.columns where table_name = 'hq_daily_numbers' and column_name = 'sources'")
 [[ "$c" == "1" ]] || fail "7 second run: $c sources columns"
 P -f "$RB3" >/dev/null
-r=$(P -c "select source||'|'||(select count(*) from information_schema.columns where table_name = 'hq_daily_numbers' and column_name = 'sources') from public.hq_daily_numbers where location_id = '$A1' and business_date = '2026-11-01'")
+r=$(P -c "select source||'|'||(select count(*) from information_schema.columns where table_name = 'hq_daily_numbers' and column_name in ('sources', 'projected_parts')) from public.hq_daily_numbers where location_id = '$A1' and business_date = '2026-11-01'")
 [[ "$r" == "typed|0" ]] || fail "7 rollback: '$r'"
 P -f "$F3" >/dev/null
-echo "PASS 7 slice 3 sources column, 'system' rows, unknown source and array refused (23514), twice, rollback and forward"
+echo "PASS 7 slice 3 sources and projected_parts columns, 'system' rows, unknown source and arrays refused (23514), twice, rollback and forward"
 echo "head_office_cash: 7 checks pass"

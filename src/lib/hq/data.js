@@ -95,8 +95,8 @@ export async function saveDailyNumbers(rows, orgId, byName = null) {
   // Slice 3 saves `sources` and source 'system'. Until migration 20261202a runs the column is not
   // there (42703 / PGRST204) and 'system' fails the check (23514): save the figures anyway, as typed,
   // and tell the screen so it can say the migration is waiting.
-  if (error && (error.code === '42703' || error.code === 'PGRST204' || error.code === '23514') && payload.some((r) => 'sources' in r || r.source === 'system')) {
-    const older = payload.map(({ sources: _dropped, ...r }) => ({ ...r, source: r.source === 'system' ? 'typed' : r.source }));
+  if (error && (error.code === '42703' || error.code === 'PGRST204' || error.code === '23514') && payload.some((r) => 'sources' in r || 'projected_parts' in r || r.source === 'system')) {
+    const older = payload.map(({ sources: _dropped, projected_parts: _parts, ...r }) => ({ ...r, source: r.source === 'system' ? 'typed' : r.source }));
     ({ data, error } = await supabase.from('hq_daily_numbers').upsert(older, { onConflict: 'location_id,business_date' }).select());
     if (!error) return { ...ok(data || []), downgraded: true, message: 'Saved, but where each figure came from was not kept: ask ServOS to run migration 20261202a.' };
   }

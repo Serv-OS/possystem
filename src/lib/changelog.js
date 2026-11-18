@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.79',
+    date: '17 Nov 2026',
+    items: [
+      'Head office: the projected dayparts are the venue\'s own service periods (Peter, 17 Nov 2026: "Lunch, Dinner, Late: this should come from shifts that flow through the system via shifts setup"). Daily numbers no longer has a fixed Lunch, Dinner and Late night: it shows one box per service period the site set up under Location settings (Breakfast, Lunch, Dinner, whatever it named them, with their hours), and the day\'s sales forecast is split across those periods by the hours saved against it or by the site\'s own till pattern on those same periods. A period may run past midnight. A site with no service periods gets the day as one part and words that say where to set them. The Scorecard\'s daypart tile shows each site\'s own periods with their names. The saved day keeps the parts by period id (so a rename keeps them) in a new projected_parts column, folded into migration 20261202a, which is still to run; the three older columns stay filled from the parts named lunch, dinner and late for the CSV import and older rows. Nothing to deploy. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.78',
     date: '17 Nov 2026',
     items: [

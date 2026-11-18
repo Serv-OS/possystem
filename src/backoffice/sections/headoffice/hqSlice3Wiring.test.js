@@ -16,7 +16,7 @@ const read = (p) => readFileSync(join(root, p), 'utf8');
 
 test('Daily numbers: system figure beside every box, override only, save keeps the sources', () => {
   const numbers = read('src/backoffice/sections/headoffice/HqNumbers.jsx');
-  assert.match(numbers, /import \{ systemFields, resolveDay, typedBoxes, sourceWord, SYSTEM_KEYS \} from '\.\.\/\.\.\/\.\.\/lib\/hq\/systemDay\.js'/);
+  assert.match(numbers, /import \{ systemFields, resolveDay, typedBoxes, sourceWord, SYSTEM_KEYS, PART_PREFIX \} from '\.\.\/\.\.\/\.\.\/lib\/hq\/systemDay\.js'/);
   assert.match(numbers, /fetchSystemDay\(siteId, date\)/);
   assert.match(numbers, /resolveDay\(form, fields \|\| \{\}, siteId, date\)/);
   assert.match(numbers, /placeholder=\{has \? 'Override' : 'Type it'\}/);
@@ -51,9 +51,10 @@ test('migration 20261202a, its rollback and the proof harness exist', () => {
   const mig = read('supabase/migrations/20261202a_OPS_head_office_numbers_sources.sql');
   assert.match(mig, /add column if not exists sources jsonb not null default '\{\}'::jsonb/);
   assert.match(mig, /check \(source in \('typed', 'csv', 'system'\)\)/);
+  assert.match(mig, /add column if not exists projected_parts jsonb not null default '\{\}'::jsonb/);
   assert.ok(existsSync(join(root, 'supabase/migrations/20261202a_OPS_head_office_numbers_sources_ROLLBACK.sql')));
   const harness = read('supabase/tests/head_office_cash/run.sh');
-  assert.match(harness, /PASS 7 slice 3 sources column/);
+  assert.match(harness, /PASS 7 slice 3 sources and projected_parts columns/);
   for (const f of ['src/lib/hq/systemDay.js', 'src/lib/hq/systemDay.test.js', 'supabase/migrations/20261202a_OPS_head_office_numbers_sources.sql']) {
     assert.doesNotMatch(read(f), new RegExp('[\\u2013\\u2014]'), `${f} has a long dash`);
   }

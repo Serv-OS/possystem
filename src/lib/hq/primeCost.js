@@ -11,7 +11,7 @@
 //     COGS and labour.
 // A figure that neither place has is null, and the screen says so. Never a guessed zero.
 
-import { sourcesMap } from './systemDay.js';
+import { sourcesMap, partsOf } from './systemDay.js';
 
 export const PRIME_COST_TARGET = 60;
 
@@ -89,6 +89,8 @@ export function siteRow({ id, name, code, currency, venue = null, typed = null, 
     hires: num(typed?.hires_needed), turnoverPct: num(typed?.turnover_pct), cash: num(typed?.cash_on_hand),
     rating: num(typed?.review_rating), reviews: num(typed?.reviews_count),
     projected: { lunch: num(typed?.projected_lunch), dinner: num(typed?.projected_dinner), late: num(typed?.projected_late) },
+    // Slice 3: the venue's own service periods, [{ key, name, amount }] (older rows: lunch, dinner, late).
+    parts: partsOf(typed),
     typedOn: typed?.business_date || null,
     // Slice 3: a saved day names where each figure came from (typed.sources); a row from before
     // that was typed or pasted, so every figure it holds counts as typed.
@@ -105,6 +107,11 @@ export function fieldSources(typed) {
     if (!typed || typed[col] === null || typed[col] === undefined) { out[k] = null; continue; }
     out[k] = map ? (map[col] || null) : (typed.source === 'csv' ? 'csv' : 'typed');
   }
+  // The parts: typed when any period was overridden, else the one source they share.
+  const parts = partsOf(typed);
+  if (!parts.length) out.projected = null;
+  else if (map?.parts) { const srcs = Object.values(map.parts); out.projected = srcs.includes('typed') ? 'typed' : (srcs[0] || null); }
+  else out.projected = map ? (map.projected_lunch || map.projected_dinner || map.projected_late || null) : (typed.source === 'csv' ? 'csv' : 'typed');
   return out;
 }
 

@@ -6,4 +6,6 @@ alter table public.hq_daily_numbers drop constraint if exists hq_daily_numbers_s
 alter table public.hq_daily_numbers add constraint hq_daily_numbers_source_check check (source in ('typed', 'csv'));
 alter table public.hq_daily_numbers drop constraint if exists hq_daily_numbers_sources_object;
 alter table public.hq_daily_numbers drop column if exists sources;
+alter table public.hq_daily_numbers drop constraint if exists hq_daily_numbers_projected_parts_object;
+alter table public.hq_daily_numbers drop column if exists projected_parts;
 commit;

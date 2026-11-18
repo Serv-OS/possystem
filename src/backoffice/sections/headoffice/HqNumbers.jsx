@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchDailyNumbers, saveDailyNumbers, fetchSystemDay } from '../../../lib/hq/data.js';
-import { systemFields, resolveDay, typedBoxes, sourceWord, SYSTEM_KEYS } from '../../../lib/hq/systemDay.js';
+import { systemFields, resolveDay, typedBoxes, sourceWord, SYSTEM_KEYS, PART_PREFIX } from '../../../lib/hq/systemDay.js';
 import { primeCostPct } from '../../../lib/hq/primeCost.js';
 import { parseNumbersCsv, CSV_TEMPLATE, CSV_COLUMNS } from '../../../lib/hq/numbersCsv.js';
 import {
@@ -23,7 +23,8 @@ import {
 } from './hqUi';
 
 export const NUMBER_KEYS = ['net_sales', 'cogs', 'labour', 'projected_lunch', 'projected_dinner', 'projected_late', 'reviews_count', 'review_rating', 'turnover_pct', 'morale_score', 'hires_needed'];
-const EMPTY = Object.fromEntries([...NUMBER_KEYS, 'notes'].map((k) => [k, '']));
+// The form's boxes: the plain ones plus one per service period (`part:<key>`, added as the periods arrive).
+const EMPTY = Object.fromEntries([...SYSTEM_KEYS, 'notes'].map((k) => [k, '']));
 const DAYS_BACK = 14;
 
 /** Boxes to a row: blank is null (never a guessed zero), everything else a number. */
@@ -193,7 +194,7 @@ function LogDay({ hq, recent, onSaved }) {
   // The preview reads the boxes the way the save does: an override wins, a blank takes the system figure.
   const resolved = resolveDay(form, fields || {}, siteId, date);
   const prime = primeCostPct({ net: resolved.net_sales, cogs: resolved.cogs, labour: resolved.labour });
-  const overrides = SYSTEM_KEYS.filter((k) => String(form[k] ?? '').trim() !== '').length;
+  const overrides = Object.keys(form).filter((k) => k !== 'notes' && String(form[k] ?? '').trim() !== '').length;
   const save = async () => {
     setSaving(true); setMsg(null); setSaved(null);
     const res = await saveDailyNumbers(resolveDay(form, fields || {}, siteId, date), hq.orgId, hq.userName);
@@ -203,8 +204,16 @@ function LogDay({ hq, recent, onSaved }) {
     setSaved(`Saved ${site?.name || 'the site'} for ${dateText(date, currency)}${overrides ? ` with ${overrides} override${overrides === 1 ? '' : 's'}` : ', all from the system'}.`);
     onSaved();
   };
-  const box = (k, label, format, opts = {}) => <SysBox key={k} label={label} sys={f(k)} value={form[k]} onChange={set(k)} format={format} {...opts} />;
-  const partsTotal = f('projected_lunch')?.total;
+  const box = (k, label, format, opts = {}) => <SysBox key={k} label={label} sys={f(k)} value={form[k] ?? ''} onChange={set(k)} format={format} {...opts} />;
+  // One box per service period the site has set up (Location settings), named as the site named it.
+  const partsFig = f('projected_parts');
+  const periods = partsFig?.periods?.length ? partsFig.periods : Object.entries(partsFig?.value || {}).map(([key, p]) => ({ key, name: p.name }));
+  const partBox = (p) => {
+    const k = `${PART_PREFIX}${p.key}`;
+    const one = partsFig ? { value: partsFig.value?.[p.key]?.amount ?? null, source: partsFig.source, words: '' } : null;
+    return <SysBox key={k} label={p.start ? `${p.name} (${p.start} to ${p.end})` : p.name} sys={one} value={form[k] ?? ''} onChange={set(k)} format={money} />;
+  };
+  const partsNote = partsFig ? `${partsFig.words}${partsFig.total ? ' Change the forecast itself on the rota or under Purchasing, Forecast; type here only to override one period.' : ''}` : null;
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -224,8 +233,9 @@ function LogDay({ hq, recent, onSaved }) {
           {prime === null ? 'Prime cost needs all three' : `Prime cost reads ${prime}%`}
         </div>
       </Group>
-      <Group title="Projected dayparts" note={partsTotal ? `The day's sales forecast is ${money(partsTotal)}. Change the forecast itself on the rota or under Purchasing, Forecast; type here only to override one daypart.` : null}>
-        {box('projected_lunch', 'Lunch', money)}{box('projected_dinner', 'Dinner', money)}{box('projected_late', 'Late night', money)}
+      <Group title="Projected sales by service period" note={partsNote}>
+        {periods.map(partBox)}
+        {!periods.length && sysReady && <div style={{ fontSize: 12.5, color: 'var(--t3)', gridColumn: '1 / -1' }}>No service periods and no forecast for this day.</div>}
       </Group>
       <Group title="Team and guests">
         {box('reviews_count', 'New reviews', (n) => num(n), { inputMode: 'numeric' })}

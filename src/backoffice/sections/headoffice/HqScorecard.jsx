@@ -225,7 +225,7 @@ export default function HqScorecard({ hq, go }) {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Typed />a figure typed into Daily numbers</span>
       </div>
 
-      <SectionHead title="Projected sales by daypart" sub="Lunch, dinner and late night from the day's sales forecast, split by each site's own pattern, or as typed in Daily numbers." />
+      <SectionHead title="Projected sales by service period" sub="The day's sales forecast across each site's own service periods (Location settings), split by the site's pattern, or as typed in Daily numbers." />
       <Dayparts rows={rows} currency={currency} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginTop: 22 }}>
@@ -336,27 +336,31 @@ const PART_WORDS = { lunch: 'Lunch', dinner: 'Dinner', late: 'Late night' };
 /** Only a figure a person typed or pasted wears the tag; one the system filled does not. */
 const isTyped = (source) => source === 'typed' || source === 'csv';
 
+/** Each site's own service periods (Location settings), one colour per period in day order. */
+const PART_PALETTE = ['var(--acc)', 'var(--orn)', 'var(--t3)', 'var(--grn)', 'var(--red)', 'var(--t2)'];
+const partColor = (i, key) => PART_COLORS[key] || PART_PALETTE[i % PART_PALETTE.length];
+
 function Dayparts({ rows, currency }) {
-  const totals = rows.map((r) => (r.projected.lunch || 0) + (r.projected.dinner || 0) + (r.projected.late || 0));
+  const totals = rows.map((r) => (r.parts || []).reduce((a, p) => a + (p.amount || 0), 0));
   const max = Math.max(0, ...totals);
   return (
     <div style={card}>
-      <div style={{ display: 'flex', gap: 14, fontSize: 12, color: 'var(--t3)', marginBottom: 12 }}>
-        {Object.keys(PART_WORDS).map((k) => <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Dot color={PART_COLORS[k]} />{PART_WORDS[k]}</span>)}
-      </div>
       <div style={{ display: 'grid', gap: 10 }}>
         {rows.map((r, i) => {
           const total = totals[i];
-          const has = ['lunch', 'dinner', 'late'].some((k) => r.projected[k] !== null);
+          const parts = r.parts || [];
+          const has = parts.length > 0;
           return (
             <div key={r.id} style={{ display: 'grid', gridTemplateColumns: '160px 1fr 90px', alignItems: 'center', gap: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</div>
               {has && max > 0 ? (
-                <div style={{ display: 'flex', height: 18, borderRadius: 5, overflow: 'hidden', background: 'var(--bg3)', width: '100%' }}>
-                  {['lunch', 'dinner', 'late'].map((k) => {
-                    const v = r.projected[k] || 0;
-                    return v > 0 ? <div key={k} title={`${PART_WORDS[k]} ${exactMoney(v, r.currency || currency)}`} style={{ width: `${(v / max) * 100}%`, background: PART_COLORS[k] }} /> : null;
-                  })}
+                <div>
+                  <div style={{ display: 'flex', height: 18, borderRadius: 5, overflow: 'hidden', background: 'var(--bg3)', width: '100%' }}>
+                    {parts.map((p, pi) => (p.amount > 0 ? <div key={p.key} title={`${p.name} ${exactMoney(p.amount, r.currency || currency)}`} style={{ width: `${(p.amount / max) * 100}%`, background: partColor(pi, p.key) }} /> : null))}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 12px', fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>
+                    {parts.map((p, pi) => <span key={p.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Dot color={partColor(pi, p.key)} />{p.name} <span className="mono" style={mono}>{exactMoney(p.amount, r.currency || currency)}</span></span>)}
+                  </div>
                 </div>
               ) : <div style={{ fontSize: 12, color: 'var(--t4)' }}>No projection logged</div>}
               <div className="mono" style={{ ...mono, fontSize: 13, textAlign: 'right', color: has ? 'var(--t1)' : 'var(--t4)' }}>{has ? exactMoney(total, r.currency || currency) : NA}</div>
