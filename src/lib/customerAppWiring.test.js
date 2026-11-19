@@ -49,7 +49,8 @@ test('the function never trusts a customer id from the body', () => {
 test('the access token IS a loyalty-otp session token: same module, same secret, same env names', () => {
   const fn = read(FN);
   const otp = read('supabase/functions/loyalty-otp/index.ts');
-  assert.ok(fn.includes("import { createSessionToken, verifySessionToken } from '../_shared/loyalty-session.ts';"));
+  // 5.12.78: the app ordering handoff (createHandoffCode / verifyHandoffCode) comes from the same shared module
+  assert.ok(fn.includes("import { createHandoffCode, createSessionToken, verifyHandoffCode, verifySessionToken } from '../_shared/loyalty-session.ts';"));
   const secretLine = "const OTP_SECRET = Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';";
   assert.ok(fn.includes(secretLine), 'the same secret line as loyalty-otp');
   assert.ok(otp.includes(secretLine));

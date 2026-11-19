@@ -116,6 +116,8 @@ export default function AdyenPaymentForm({
             // The fn defaults the country from the venue's Adyen region, which
             // is the authority here (a US venue is US whatever the browser says).
             shopperLocale: typeof navigator !== 'undefined' ? navigator.language : undefined,
+            // 19 Nov 2026: a signed in member sees the cards kept on file for them.
+            shopperReference: shopperReference || undefined,
           });
           pmRes = await supabase.functions.invoke('adyen-checkout', { body: pmReq });
         } catch (e) {
@@ -231,6 +233,11 @@ export default function AdyenPaymentForm({
         for (const [type, conf] of Object.entries(wallets)) {
           paymentMethodsConfiguration[type] = { ...conf, ...walletCallbacksFor(type) };
         }
+        // 19 Nov 2026: a signed in member (shopperReference) gets a "Save for next time" tick on
+        // the card form, unless the caller already keeps every card (storeCard, the QR open tab).
+        if (shopperReference && !storeCard) {
+          paymentMethodsConfiguration.card = { ...(paymentMethodsConfiguration.card || {}), enableStoreDetails: true };
+        }
 
         const checkout = await AdyenCheckout({
           clientKey: cfg.clientKey || undefined,
@@ -252,7 +259,9 @@ export default function AdyenPaymentForm({
                 attempt_id: attemptId,
                 location_id: locationId,
                 ...(captureMethod === 'manual' ? { capture_method: 'manual' } : {}),
-                ...(storeCard && shopperReference ? { store_card: true, shopper_reference: shopperReference } : {}),
+                // The member's id travels on every payment of theirs (a card on file needs it); the
+                // card is KEPT only when the caller keeps every card or the shopper ticked the box.
+                ...(shopperReference ? { shopper_reference: shopperReference, ...((storeCard || state.data.storePaymentMethod === true) ? { store_card: true } : {}) } : {}),
                 amount_minor: amountMinor,
                 currency: String(currency).toUpperCase(),
                 reference,

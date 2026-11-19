@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.78',
+    date: '19 Nov 2026',
+    items: [
+      'Customer app, ordering signed in and cards on file (Peter, 19 Nov 2026: native ordering in the app dropped as a constant burden, "its already built, we need to improve considerably"). (1) Opened from the app, the venue\'s ordering page now knows the member: the app asks the gateway for a two minute signed code (customer-app handoff_start), opens the page with it in the URL fragment (#app=, never sent to a server), and the page swaps it for a fresh member token (handoff_claim) and reads the member\'s summary the way a code sign in does (loyalty-otp refresh). No more name, email, phone and code on every order. A stale code shows the normal page, never an error. (2) A signed in member can keep a card: the payment methods lookup names the member, Adyen answers with the cards kept on file for them ("Visa ending 4242" in the form), the card form gains a "Save for next time" tick, and a payment with a card on file goes as CardOnFile under the member\'s id. A card is never kept without the member\'s id or without the tick. Deploy customer-app and adyen-checkout. No SQL. The app side (Order tab opens the page signed in, nearest venue first) ships as Coffee Boy build 7.',
+    ],
+  },
+  {
     v: '5.12.76',
     date: '19 Nov 2026',
     items: [
