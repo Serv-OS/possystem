@@ -654,3 +654,66 @@ async function readSystemDay(locationId, ymd) {
 
   return ok({ trading, settings, forecastHours, patternChecks, reviews, cardCount, staff, shifts: cfg.shifts, dayStartMin, today, timezone: tz, currency: settings?.currency || null, demoLeftOut: !!tradingRes.data?.demoLeftOut, problems });
 }
+
+// ============================================================================
+// Slice 5 (18 Nov 2026): the Owner app's Head office card, one set of reads.
+// ============================================================================
+
+/** { siteId: orgId } for the sites, from the platform locations rows the login can read; {} on any trouble. */
+export async function fetchSiteOrgs(locationIds) {
+  if (isMock || !supabase) return ok({});
+  const ids = (locationIds || []).filter(Boolean);
+  if (!ids.length) return ok({});
+  try {
+    const { data, error } = await supabase.from('locations').select('id, org_id').in('id', ids);
+    if (error) return ok({});
+    const out = {};
+    for (const r of data || []) if (r?.id) out[r.id] = r.org_id || null;
+    return ok(out);
+  } catch { return ok({}); }
+}
+
+/**
+ * Everything the Owner app's Head office card reads, in one go, for the snapshot's sites:
+ * { data: { orgId, daily, targets, cash, projects, tasks, checkins, isOwner }, absent, error, message }.
+ * `absent` is true when the hub's tables are not there (the card then draws nothing at all).
+ * The projects, targets and check ins belong to the company most of the sites are in (pickOrg).
+ */
+export async function fetchOwnerHq(locationIds, { today, pickOrg, daysBack = 14 } = {}) {
+  if (isMock || !supabase) return offline();
+  const ids = (locationIds || []).filter(Boolean);
+  if (!ids.length) return ok(null);
+  const orgs = await fetchSiteOrgs(ids);
+  const orgId = typeof pickOrg === 'function' ? pickOrg(orgs.data || {}) : null;
+  const from = today ? addYmd(today, -daysBack) : null;
+  // The phone's cash read is the lighter one: the ledger, the counts and the deposits (what cashSummary
+  // reads), never the drawer sessions and till drops the Safe screen lists for posting.
+  const [daily, targets, movements, counts, deposits, clocks, projects, tasks, owner] = await Promise.all([
+    fetchDailyNumbers(ids, from, today || null),
+    fetchTargets(orgId),
+    fetchSafeMovements(ids), fetchSafeCounts(ids), fetchDeposits(ids), fetchVenueClocks(ids),
+    fetchProjects(orgId),
+    fetchTasks(orgId),
+    isCompanyOwner(orgId),
+  ]);
+  if (daily.absent || projects.absent) return { data: null, error: daily.error || projects.error, absent: true, message: NOT_SET_UP };
+  // The owner's inbox only: everyone else reads none and asks for none.
+  const checkins = owner ? await fetchCheckins(orgId, { weeks: 2 }) : ok([]);
+  const cashAbsent = !!(movements.absent || counts.absent || deposits.absent);
+  // Any read that failed is said: the card keeps its last figures and shows the words in grey.
+  const first = [daily, projects, tasks, targets, checkins, ...(cashAbsent ? [] : [movements, counts, deposits])].find((r) => r.error && !r.absent);
+  return {
+    data: {
+      orgId,
+      orgs: orgs.data || {},
+      daily: daily.data || [],
+      targets: targets.absent || targets.error ? [] : (targets.data || []),
+      cash: cashAbsent || movements.error || counts.error || deposits.error ? null : { movements: movements.data || [], counts: counts.data || [], deposits: deposits.data || [], clocks },
+      projects: projects.data || [],
+      tasks: tasks.data || [],
+      checkins: checkins.data || [],
+      isOwner: owner === true,
+    },
+    error: first?.error || null, absent: false, message: first ? (first.message || 'Could not read every head office figure. Tap the arrow to try again.') : null,
+  };
+}

@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.82',
+    date: '18 Nov 2026',
+    items: [
+      'Head office, slice 5: the Owner app (Peter, 18 Nov 2026: "do the owner app tiles next"). The owner phone app gets one Head office card between the company card and the venue cards, read only, following the Today, This week and This month chips. Four tiles: the portfolio\'s prime cost coloured by the company\'s own bands (one line per currency, pounds and dollars are never added together), the cash in the safes with what is waiting to bank and the worst site\'s days unbanked, the internal projects in flight with how many need attention, and, for a company owner, the week\'s check ins with the departments not in yet (everyone else sees the open hires logged on Daily numbers). Under the tiles, every site ranked by prime cost with its COGS, labour and sales and a TYPED tag where a figure was typed, then the projects that are blocked or at risk with the reason. The figures are the Back Office Scorecard\'s own rules, read once per refresh and raced against a timer like the rest of the app. A company whose database has no head office hub sees nothing new; a read that fails keeps the last card and says so in grey. Nothing to deploy, no SQL. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.81',
     date: '18 Nov 2026',
     items: [

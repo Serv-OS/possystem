@@ -69,6 +69,7 @@ import { canStock, stockLine, stockNote } from '../lib/ownerStock';
 import { DEMO_NOTE } from '../../supabase/functions/_shared/demoHistory.js';
 import OwnerDetail from './owner/OwnerDetail';
 import MixBar from './owner/MixBar';
+import OwnerHeadOffice from './owner/OwnerHeadOffice';
 import { money, toneColor, periodChip, periodChipOn } from './owner/style';
 import { headOfficeLineView } from '../lib/headOffice';
 import { localeTimeString } from '../../supabase/functions/_shared/venueDates.js';
@@ -271,6 +272,9 @@ function Dashboard({ theme, onToggleTheme }) {
   // answer itself (shownPeriod), so numbers and labels can never be for different periods.
   const [period, setPeriod] = useState(() => readStoredPeriod(phoneStorage()));
   const [needsUpdate, setNeedsUpdate] = useState(false);
+  // 18 Nov 2026: goes up with every snapshot that lands, so the Head office card re reads with it (the
+  // time above is to the minute, and a retry inside the same minute would otherwise never re read).
+  const [loads, setLoads] = useState(0);
   // 16 Oct 2026: the Net / Gross switch. Both are in every answer, so a tap redraws and never reloads.
   const [basisAsked, setBasisAsked] = useState(() => readStoredBasis(phoneStorage()));
   const pickBasis = useCallback((id) => { storeBasis(phoneStorage(), id); setBasisAsked(id); }, []);
@@ -293,6 +297,7 @@ function Dashboard({ theme, onToggleTheme }) {
       if (d?.error) throw new Error(d.error);
       if (mine !== seq.current) return;
       setData(d);
+      setLoads((n) => n + 1);
       // 5.12.57 (batch 8): on the venue's clock and in its words ('2:05 PM' at a US venue)
       const v0 = d?.locations?.[0];
       setUpdated(localeTimeString(new Date(), { hour: '2-digit', minute: '2-digit', ...(v0?.tz ? { timeZone: v0.tz } : {}) }, v0?.currency || getActiveCurrencyCode()));
@@ -429,6 +434,10 @@ function Dashboard({ theme, onToggleTheme }) {
               bar={mixOn ? cardBar(g.rollup.mix, { hint: true }) : null}
               onOpen={() => openDetail(groupTarget(groups.length > 1 ? g.currency : (r.currency || null), g.rollup.locations))} />
           ))}
+
+          {/* 18 Nov 2026 (head office, slice 5): the Head office card, read only, between the company and
+              the venues. Only once the hub is set up and has a figure; a database without it draws nothing. */}
+          <OwnerHeadOffice snapshot={data} period={shown} reload={loads} />
 
           {/* ── Per-venue cards ── */}
           {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} basis={basis} showDates={shown !== 'today' && !dates}
