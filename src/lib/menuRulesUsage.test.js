@@ -186,3 +186,15 @@ test('sharing a product to another venue carries Sold alone, and option lookups 
   const mpos = read('../surfaces/mpos/MItemDetail.jsx');
   assert.ok(mpos.includes('subitemNameIndex(menuItems)') && !mpos.includes('soldAloneOnly'), 'MPOS 86 sees every sub item');
 });
+
+test('rule 10: the store applies namesPatchForRename to every item edit, before the multi site locks', () => {
+  const src = read('store/index.js');
+  assert.match(src, /import \{[^}]*namesPatchForRename[^}]*\} from '\.\.\/lib\/menuRules'/);
+  const at = src.indexOf('patch = { ...patch, ...namesPatchForRename(current, patch) };');
+  const locks = src.indexOf('patch = msmItemPatch(id, patch, current);');
+  assert.ok(at > 0, 'updateMenuItem carries the names on a rename');
+  assert.ok(locks > at, 'the locks decide after the names are carried, so a locked kitchen name is still dropped');
+  // Nobody fixes the symptom at the screen: the editor's name box still sends menuName alone.
+  const editor = read('backoffice/sections/MenuManager.jsx');
+  assert.match(editor, /f\('menuName', nameDraft\);/);
+});

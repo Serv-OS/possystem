@@ -207,7 +207,7 @@ import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTi
 // 30 Sep 2026 (Peter, Coffee Boy): the till's default order type and the dine in flag number.
 // 5 Nov 2026: the Order details pop up (guests, order type, new customer) rides the same file.
 import { defaultOrderTypeFor, orderFlag, flagTableLabel, flagTicketLabel, cleanFlagNumber, orderCovers, orderIsNewCustomer, cleanOrderDetails } from '../lib/tillOrderType';
-import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
+import { resolveSoldAlone, soldAlonePatchForTypeChange, namesPatchForRename } from '../lib/menuRules';
 import { voidOccupationKey } from '../lib/rowWriteFence';
 // 30 Sep 2026: the void rules (who can be voided, the records a void writes, how a kitchen
 // ticket learns about it) live in lib/voidRules.js so tables, walk ins and the order screens
@@ -2182,7 +2182,12 @@ export const useStore = create((set, get) => ({
   // values back. Resolves with the save's outcome ({ ok, outcome }) so a bulk action can count
   // what really saved. opts.quiet: no toast per row (the bulk strips show one summary).
   updateMenuItem: (id, patch, opts = {}) => {
-    patch = msmItemPatch(id, patch, useStore.getState().menuItems.find(i => i.id === id));
+    // Rule 10 (lib/menuRules.js, 19 Nov 2026): a rename carries the kitchen and receipt names
+    // that only mirrored the old name (or still said "New item"), before the multi site locks
+    // decide what this venue may change.
+    const current = useStore.getState().menuItems.find(i => i.id === id);
+    patch = { ...patch, ...namesPatchForRename(current, patch) };
+    patch = msmItemPatch(id, patch, current);
     if (!patch || !Object.keys(patch).length) return Promise.resolve({ ok: false, outcome: 'managed' });
     const writes = [];      // { id, patch, main?, cascade?, derived? } in the order they go out
     const groupSaves = [];  // { group, base } from the rename cascade
