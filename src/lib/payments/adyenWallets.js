@@ -97,6 +97,7 @@ export function buildPaymentMethodsRequest({
   currency = 'GBP',
   countryCode,
   shopperLocale,
+  shopperReference,
   allowedTypes = CHECKOUT_PAYMENT_TYPES,
 } = {}) {
   const location = String(locationId ?? '').trim();
@@ -108,6 +109,8 @@ export function buildPaymentMethodsRequest({
 
   const country = upper(countryCode);
   const locale = String(shopperLocale ?? '').trim();
+  // 19 Nov 2026: a signed in member's id, so Adyen answers with the cards kept on file for them.
+  const shopper = String(shopperReference ?? '').trim().slice(0, 80);
   const types = (Array.isArray(allowedTypes) ? allowedTypes : [])
     .map((t) => String(t || '').trim())
     .filter(Boolean);
@@ -120,6 +123,7 @@ export function buildPaymentMethodsRequest({
     ...(country.length === 2 ? { countryCode: country } : {}),
     ...(locale ? { shopperLocale: locale } : {}),
     ...(types.length ? { allowed_types: types } : {}),
+    ...(shopper ? { shopper_reference: shopper } : {}),
   };
 }
 
@@ -208,9 +212,8 @@ export function droppedWalletNote(dropped) {
  * are built from, so missingWalletNote can never blame the browser for a
  * wallet we removed ourselves.
  *
- * storedPaymentMethods is deliberately NOT forwarded: no caller sends a
- * shopperReference on this lookup, so Adyen returns none, and passing shopper
- * data straight through to Drop-in would become a live path the day one does.
+ * storedPaymentMethods is forwarded only as the member's own cards (type scheme with an id),
+ * which Adyen returns only for a lookup that named a shopper (19 Nov 2026, the customer app).
  */
 export function resolvePaymentMethods({ data, error } = {}) {
   const config = paymentConfigFrom(data);
@@ -218,7 +221,12 @@ export function resolvePaymentMethods({ data, error } = {}) {
   const { paymentMethods: list, dropped } = usableWalletMethods(raw ? { paymentMethods: raw } : null);
 
   if (data?.ok && raw && list.length) {
-    return { response: { paymentMethods: list }, fallback: false, reason: null, dropped, config };
+    // 19 Nov 2026: the member's cards on file come back ONLY when the lookup named a shopper
+    // (the fn echoes them for that call alone), cards only, so Drop-in offers "Visa ending 4242".
+    const stored = Array.isArray(data?.storedPaymentMethods)
+      ? data.storedPaymentMethods.filter((m) => m && typeof m === 'object' && m.type === 'scheme' && m.id)
+      : [];
+    return { response: { paymentMethods: list, ...(stored.length ? { storedPaymentMethods: stored } : {}) }, fallback: false, reason: null, dropped, config };
   }
 
   const emptied = data?.ok && raw && !list.length;

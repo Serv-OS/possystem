@@ -49,7 +49,7 @@
 // Deploy: npx supabase functions deploy customer-app --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createSessionToken, verifySessionToken } from '../_shared/loyalty-session.ts';
+import { createHandoffCode, createSessionToken, verifyHandoffCode, verifySessionToken } from '../_shared/loyalty-session.ts';
 // @ts-ignore plain JS shared with node tests
 import {
   isTenantId, isUuid, refreshTokenFromBytes, refreshTokenLooksValid, hashRefreshToken, refreshDecision,
@@ -325,6 +325,34 @@ async function theme(body: Record<string, unknown>): Promise<Response> {
   return json(payload, 200, { 'Cache-Control': `public, max-age=${THEME_MAX_AGE_SECONDS}` });
 }
 
+// ── App handoff: a signed in member opens the web ordering page as themselves ──────────
+// 19 Nov 2026 (Peter: the ordering page asked name, email, phone and a code every time it was
+// opened from the app). handoff_start turns the member token into a two minute code; the app puts
+// it in the page URL's fragment; the page calls handoff_claim and gets a fresh member token, then
+// reads its summary from loyalty-otp refresh. The code is signed, not stored: nothing to clean up.
+async function handoffStart(body: Record<string, unknown>) {
+  const m = await memberFromToken(body.token);
+  if ('error' in m) return m.error;
+  const code = await createHandoffCode(m.session.customerId, m.session.companyId, OTP_SECRET);
+  return json({ code, expiresIn: 120 });
+}
+
+async function handoffClaim(body: Record<string, unknown>) {
+  const claim = await verifyHandoffCode(body.code, OTP_SECRET);
+  if (!claim || !isUuid(claim.customerId) || !isUuid(claim.companyId)) {
+    return json({ error: 'That sign in link has expired. Sign in on the page instead.', code: 'handoff_expired' }, 401);
+  }
+  const { data: cust, error } = await opsAdmin
+    .from('customers')
+    .select('id, phone, deleted_at')
+    .eq('id', claim.customerId)
+    .maybeSingle();
+  if (error) return refusal(error, 'ops');
+  if (!cust || cust.deleted_at) return json({ error: REFRESH_WORDS.sign_in_again, code: 'sign_in_again' }, 401);
+  const token = await createSessionToken(cust.id, claim.companyId, cust.phone ?? null, OTP_SECRET);
+  return json({ token, customer: { id: cust.id, phone: cust.phone ?? null }, companyId: claim.companyId });
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -343,8 +371,10 @@ Deno.serve(async (req) => {
       case 'tenant': return await tenant(body);
       case 'venues': return await venues(body);
       case 'theme': return await theme(body);
+      case 'handoff_start': return await handoffStart(body);
+      case 'handoff_claim': return await handoffClaim(body);
       default:
-        return json({ error: 'Unknown action. Use: session_start, session_refresh, session_end, delete_account, tenant, venues, theme' }, 400);
+        return json({ error: 'Unknown action. Use: session_start, session_refresh, session_end, delete_account, tenant, venues, theme, handoff_start, handoff_claim' }, 400);
     }
   } catch (e) {
     console.error('[customer-app] crashed', action, String((e as Error)?.message || e));

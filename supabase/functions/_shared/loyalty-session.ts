@@ -92,3 +92,51 @@ export function memberTokenCoversCheck(issuedAt: unknown, checkClosedAtMs: unkno
   if (!Number.isFinite(i) || !Number.isFinite(c) || i <= 0 || c <= 0) return false;
   return c >= i - CLOCK_SKEW_MS && c <= i + SESSION_TTL_MS + CLOCK_SKEW_MS;
 }
+
+// ── App handoff codes (19 Nov 2026) ──────────────────────────────────────
+// The customer app hands a signed in member to the venue's web ordering page without a second
+// sign in. The app asks the gateway for a CODE (handoff_start), opens the page with it in the
+// URL fragment (#app=<code>, never sent to a server), and the page swaps it for a fresh member
+// token (handoff_claim). A code is the member's ids signed with the same secret as the session
+// tokens, marked as a handoff so it can never be used AS a session token (and a session token can
+// never be claimed as a code), and it lives two minutes.
+const HANDOFF_MAX_AGE_MS = 2 * 60 * 1000;
+
+export async function createHandoffCode(
+  customerId: string,
+  companyId: string,
+  secret: string,
+  now: number = Date.now(),
+): Promise<string> {
+  const payload = `handoff:${customerId}:${companyId}:${now}`;
+  const sig = await crypto.subtle.sign('HMAC', await hmacKey(secret, 'sign'), enc.encode(payload));
+  const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return btoa(payload) + '.' + hex;
+}
+
+export async function verifyHandoffCode(
+  code: unknown,
+  secret: string,
+  now: number = Date.now(),
+): Promise<{ customerId: string; companyId: string } | null> {
+  try {
+    if (typeof code !== 'string' || code.length > 400) return null;
+    const [payloadB64, sig] = code.split('.');
+    if (!payloadB64 || !sig || !/^[0-9a-f]+$/i.test(sig) || sig.length % 2) return null;
+    const payload = atob(payloadB64);
+    const [kind, customerId, companyId, timestampStr] = payload.split(':');
+    if (kind !== 'handoff' || !customerId || !companyId || !timestampStr) return null;
+    const issuedAt = Number(timestampStr);
+    const age = now - issuedAt;
+    if (!Number.isFinite(age) || age < -CLOCK_SKEW_MS || age > HANDOFF_MAX_AGE_MS) return null;
+    const expected = await crypto.subtle.sign('HMAC', await hmacKey(secret, 'sign'), enc.encode(payload));
+    const expectedHex = Array.from(new Uint8Array(expected)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    if (expectedHex.length !== sig.length) return null;
+    let diff = 0;
+    for (let i = 0; i < expectedHex.length; i++) diff |= expectedHex.charCodeAt(i) ^ sig.toLowerCase().charCodeAt(i);
+    if (diff !== 0) return null;
+    return { customerId, companyId };
+  } catch {
+    return null;
+  }
+}
