@@ -7,6 +7,7 @@ import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine'
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveItemPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, mergeCatParentMaps, snapshotCategoriesFor, channelFallbackCentre } from '../lib/productionRouting';
+import { stickerRuns } from '../lib/itemSticker';
 // 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen; Peter: "you need to fix the master
 // thing"). ONE rule answers "am I this venue's master till" (lib/masterTill.js, read here through
 // lib/masterTillDevice.js), and every channel ticket records who routed it and with what
@@ -3736,7 +3737,8 @@ export const useStore = create((set, get) => ({
         const centre = printConfig.centres?.find(c => c.id === centreId);
         return centre?.printer?.name || centre?.name || { pc1:'Hot kitchen', pc2:'Cold section', pc3:'Pizza oven', pc4:'Bar', pc5:'Expo / pass' }[centreId] || 'Kitchen';
       };
-      newTickets.forEach(t => {
+      const stickerRunsHere = stickerRuns(newTickets.map(t => t.items));   // 18 Nov 2026: "2 of 3" across the whole order
+      newTickets.forEach((t, ti) => {
         // v4.6.9: print ALL items — the docket mirrors the KDS, grouping by course
         // with FIRING/HOLD headers (see buildKitchenTicket). A later fireCourse()
         // emits a separate "FIRE COURSE N" marker docket. Revert of the v4.6.8
@@ -3750,6 +3752,7 @@ export const useStore = create((set, get) => ({
           course: t.firedCourses?.[0] ?? 1,
           items: t.items,
           type: 'kitchen',
+          meta: t.meta, stickerRun: stickerRunsHere[ti],
         });
       });
       set(s=>({
@@ -3887,7 +3890,8 @@ export const useStore = create((set, get) => ({
         const centre = printConfig.centres?.find(c => c.id === centreId);
         return centre?.printer?.name || centre?.name || { pc1:'Hot kitchen', pc2:'Cold section', pc3:'Pizza oven', pc4:'Bar', pc5:'Expo / pass' }[centreId] || 'Kitchen';
       };
-      newTickets.forEach(t => {
+      const stickerRunsHere = stickerRuns(newTickets.map(t => t.items));   // 18 Nov 2026: "2 of 3" across the whole order
+      newTickets.forEach((t, ti) => {
         // v4.6.9: print ALL items (see comment at the table branch).
         if (t.items.length) get().routePrintJob({
           centreId: t.centreId,
@@ -3898,6 +3902,7 @@ export const useStore = create((set, get) => ({
           course: t.firedCourses?.[0] ?? 1,
           items: t.items,
           type: 'kitchen',
+          meta: t.meta, stickerRun: stickerRunsHere[ti],
           newCustomer,
         });
       });
@@ -5397,7 +5402,8 @@ export const useStore = create((set, get) => ({
       }));
       if (newTickets.length) {
         set(s => ({ kdsTickets: [...s.kdsTickets, ...newTickets] }));
-        newTickets.forEach(t => {
+        const stickerRunsHere = stickerRuns(newTickets.map(t => t.items));   // 18 Nov 2026: "2 of 3" across the whole round
+        newTickets.forEach((t, ti) => {
           insertKDSTicket(t);
           if (t.items.length) state.routePrintJob?.({
             centreId: t.centreId,
@@ -5408,6 +5414,7 @@ export const useStore = create((set, get) => ({
             course: 1,
             items: t.items,
             type: 'kitchen',
+            meta: t.meta, stickerRun: stickerRunsHere[ti],
           });
         });
       }
@@ -8768,16 +8775,22 @@ export const useStore = create((set, get) => ({
       // 30 Sep 2026: a labelled notice (the "** VOID **" docket) never splits. Split stickers
       // ignore itemLabel and read "ITEM 1 OF 2", so a sticker centre made the voided lattes again.
       if (!isFireMarker && !isTransferNotice && centre?.splitPerItem && !job.itemLabel) {
+        // 18 Nov 2026 (Peter, from a Day Break label): each sticker is built by buildItemStickerDoc
+        // (the channel and order type, "2 of 3", the customer's name big, the item, the time, date
+        // and order number) and "2 of 3" counts across the WHOLE order: the caller passes
+        // job.stickerRun ({ offset, total } from lib/itemSticker.js stickerRuns), so two centres'
+        // stickers still gather one order. A job with no run counts its own units, as before.
         const units = [];
-        printItems.forEach(it => { const q = Math.max(1, Math.round(it.qty || 1)); for (let n = 0; n < q; n++) units.push({ ...it, qty: 1 }); });
-        const total = units.length || 1;
+        printItems.filter(it => !it?.noKitchen).forEach(it => { const q = Math.max(1, Math.round(it.qty || 1)); for (let n = 0; n < q; n++) units.push({ ...it, qty: 1 }); });
+        const run = job.stickerRun && Number(job.stickerRun.total) >= units.length ? job.stickerRun : { offset: 0, total: units.length };
+        const total = Math.max(1, Number(run.total) || units.length || 1);
+        const offset = Math.max(0, Number(run.offset) || 0);
         let allOk = true; let lastJobId = null;
         for (let i = 0; i < units.length; i++) {
-          const r = await printService.printKitchenTicket({
-            table: job.tableLabel || '', server: job.server || '', covers: job.covers || 0,
-            course: job.course || null, centreName: centre?.name || job.printerName || 'Kitchen',
-            items: [units[i]], sentAt: basePrintJob.sentAt, delivery: job.delivery || null,
-            itemLabel: `ITEM ${i + 1} OF ${total}`, reprint: !!job.reprint, newCustomer: job.newCustomer === true,
+          const r = await printService.printItemSticker({
+            meta: job.meta || null, table: job.tableLabel || '', centreName: centre?.name || job.printerName || 'Kitchen',
+            item: units[i], index: offset + i + 1, total, sentAt: basePrintJob.sentAt, delivery: job.delivery || null,
+            reprint: !!job.reprint, newCustomer: job.newCustomer === true,
           }, printerId, { idempotencyKey: `${idempotencyKey}-i${i}` });
           if (!r?.ok) allOk = false; else lastJobId = r.jobId;
         }
@@ -9268,6 +9281,9 @@ export const useStore = create((set, get) => ({
         const c = routingConfig.centres?.find(c => c.id === centreId);
         return c?.printer?.name || c?.name || 'Kitchen';
       };
+      // 18 Nov 2026: "2 of 3" across the whole order, one run per centre in the order they print.
+      const runsInOrder = stickerRuns(Object.values(byCentre));
+      const centreRuns = new Map(Object.keys(byCentre).map((id, i) => [id, runsInOrder[i]]));
       Object.entries(byCentre).forEach(([centreId, items]) => {
         if (!items.length) return;
         // v5.5.129: log per-centre so we can see exactly where the path
@@ -9292,8 +9308,11 @@ export const useStore = create((set, get) => ({
             kitchenName: kitchenLineName(i),
             name: i.name,
             mods: i.mods,
+            ...(i.noKitchen ? { noKitchen: true } : {}),   // 18 Nov 2026: the sticker count and the docket drop the same lines
           })),
           type: 'kitchen',
+          // Paper only (the sticker's words); the kds_tickets row above carries the stamped copy.
+          meta: _kdsMeta || null, stickerRun: centreRuns.get(centreId),
           delivery: deliveryBlock,
           // v5.11.52 (the quiet till): the saved routing says this centre is a kitchen screen
           // with no printer. That is a chosen setup, so routePrintJob keeps its "No printer
