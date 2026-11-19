@@ -149,7 +149,7 @@ export const SIGNALS = Object.freeze({
     title: 'The nightly loyalty code text check did not finish',
     fix: 'Ops SQL editor: select * from loyalty_otp_audit_runs order by id desc limit 1; read errors. Then run it again: select public.loyalty_otp_audit_send();',
   },
-  // 5.12.74 menu boards (Peter, 8 Nov 2026: "the menu boards and a few stores keep quitting - they
+  // 5.12.76 menu boards (Peter, 8 Nov 2026: "the menu boards and a few stores keep quitting - they
   // close down and dont re open"). A paired TV heartbeats every 12 s. One silent for 15 minutes
   // while the venue is serving (a check closed in the last hour) is a dark screen in a trading shop.
   // Staff can fix it in ten seconds once they know; the point of this signal is that somebody knows.

@@ -1,5 +1,5 @@
 // menuBoardUptime.js
-// When a TV refreshes itself (5.12.74, 8 Nov 2026).
+// When a TV refreshes itself (5.12.76, 8 Nov 2026).
 //
 // Peter: "the menu boards and a few stores keep quitting". A Fire TV stick has 1 to 2 GB of memory
 // and a page left up for days grows (video decode buffers, realtime reconnects, image caches).

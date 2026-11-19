@@ -1,9 +1,19 @@
 export const CHANGELOG = [
   {
-    v: '5.12.74',
-    date: '8 Nov 2026',
+    v: '5.12.76',
+    date: '19 Nov 2026',
     items: [
-      'Menu boards stay on (Peter, 8 Nov 2026: "the menu boards and a few stores keep quitting - they close down and dont re open, preston was one"). Four boards were dark that morning (three at Barnsley, one at Leeds) and nobody was told. Cause: the Fire TV app had no answer when the stick killed the page\'s Chrome process for memory (a 1 to 2 GB stick, a looping video, days of uptime), so Android closed the whole app to the Fire TV home screen, and nothing relaunched it. Fire TV app 1.2 (android/menuboard, versionCode 3): the dead page is replaced in place and the renderer is marked as important as the app, so a memory squeeze blinks the board for a second instead of closing it; an app crash relaunches the board (1 s, then 5 s, then a minute between tries, so a bad build can never spin a stick); the board opens when the stick starts (Fire OS 7 as is, Fire OS 8 after a one time ADB grant per stick, steps in android/FIRE_TV_SETUP.md 2a). The sticks pick it up through their own update check (every three hours, one Install press on the remote). The TV page reloads itself once a night, between 03:00 and 06:00 venue time at a minute chosen from the screen id, only after 20 hours up, so a stick\'s memory starts fresh each day and the same board is back within a second (pairing kept). The overnight watchdog gains "A menu board has gone dark": a paired TV silent for 15 minutes at a venue that closed a check in the last hour, one GitHub issue per venue, a warning not a page. Deploy watchdog-status. No SQL.',
+      'Menu boards stay on (Peter, 8 Nov 2026: "the menu boards and a few stores keep quitting - they close down and dont re open, preston was one"). Four boards were dark that morning (three at Barnsley, one at Leeds) and nobody was told. Cause: the Fire TV app had no answer when the stick killed the page\'s Chrome process for memory (a 1 to 2 GB stick, a looping video, days of uptime), so Android closed the whole app to the Fire TV home screen, and nothing relaunched it. Fire TV app 1.2 (android/menuboard, versionCode 3): the dead page is replaced in place and the renderer is marked as important as the app, so a memory squeeze blinks the board for a second instead of closing it; an app crash relaunches the board (1 s, then 5 s, then a minute between tries, so a bad build can never spin a stick); the board opens when the stick starts (Fire OS 7 as is, Fire OS 8 after a one time ADB grant per stick, steps in android/FIRE_TV_SETUP.md 2a). The sticks pick it up through their own update check (every three hours, one Install press on the remote). The TV page reloads itself once a night, between 03:00 and 06:00 venue time at a minute chosen from the screen id, only after 20 hours up, so a stick\'s memory starts fresh each day and the same board is back within a second (pairing kept). The overnight watchdog gains "A menu board has gone dark": a paired TV silent for 15 minutes at a venue that closed a check in the last hour, one GitHub issue per venue, a warning not a page. Deploy watchdog-status. No SQL. Built as 5.12.74 on 8 Nov, held until Peter told the sites, released 19 Nov as 5.12.76.',
+    ],
+  },
+  {
+    v: '5.12.75',
+    date: '13 Nov 2026',
+    items: [
+      "Apple's app reviewer signed in to the Owner app with the demo account and then saw \"Your sign in needs its second step\" where the figures should have been. The sign in screen let them in, and the thing that fetches the figures turned them away.",
+      "In October a login that can only ever see demo venues stopped being asked for the second step. That went into the sign in screen and into the database row rules, but not into the functions the apps call for their data, so the demo login got in and then could not load anything.",
+      "Those functions now ask the same question, of the same rule in the database, so all three layers answer the same thing. Nothing changes for a real login: it is still asked, and a check that fails still turns the caller away, exactly as before.",
+      "Web app and the Owner data function. Nothing to run in the database.",
     ],
   },
   {

@@ -49,7 +49,7 @@ import { readSavedScreen, sameScreen, newPairingMemory, runPairingTick, applyLiv
 import { stampScreenNote } from '../lib/menuBoardNotes';
 import { nightlyReloadDue, localHourMinute, reloadPage, CHECK_MS } from '../lib/menuBoardUptime';
 
-// 5.12.74: when this page was opened. The nightly refresh counts from here (menuBoardUptime.js).
+// 5.12.76: when this page was opened. The nightly refresh counts from here (menuBoardUptime.js).
 const PAGE_UP_SINCE = Date.now();
 
 const TICK_TIMEOUT_MS = 10000;
@@ -396,7 +396,7 @@ export default function MenuBoardSurface() {
     return () => { supabase.removeChannel(ch); clearInterval(poll); clearTimeout(reloadTimer.current); };
   }, [locId, load, effectiveBoardId, reload]);
 
-  // 5.12.74 nightly refresh (Peter, 8 Nov 2026: "the menu boards keep quitting"). A stick's memory
+  // 5.12.76 nightly refresh (Peter, 8 Nov 2026: "the menu boards keep quitting"). A stick's memory
   // grows over days; once a night, at a quiet hour on the venue clock and at this screen's own
   // minute, a page up for 20 hours or more reloads itself. The pairing and the board are in
   // localStorage, so the same board is back within a second or two. Rules: menuBoardUptime.js.

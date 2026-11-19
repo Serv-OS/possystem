@@ -124,7 +124,7 @@ Deno.serve(async (req) => {
     const stockBy = (pick: (r: { pending_old: number; dead: number; held_old: number }) => number): Row[] =>
       stockRows.filter((r) => !demoIds.includes(String(r.location_id))).flatMap((r) => Array.from({ length: Math.max(0, Number(pick(r)) || 0) }, () => ({ location_id: r.location_id })));
 
-    // 5.12.74 menu boards (Peter, 8 Nov 2026: "the menu boards keep quitting"). A paired TV
+    // 5.12.76 menu boards (Peter, 8 Nov 2026: "the menu boards keep quitting"). A paired TV
     // heartbeats every 12 s (mb_screen_heartbeat). One not heard from for board_dark.olderThan
     // minutes while the venue is serving (a check closed in the last board_dark.within minutes)
     // is a dark screen in a trading shop: the Fire TV app has quit or the TV is off. A quiet venue

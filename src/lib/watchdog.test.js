@@ -396,7 +396,7 @@ test('the code text window and words agree with the rules, and run.mjs and watch
   assert.doesNotMatch(words, /[\u2013\u2014]/);
 });
 
-// ── 5.12.74 menu boards: a dark TV in a trading shop ────────────────────────
+// ── 5.12.76 menu boards: a dark TV in a trading shop ────────────────────────
 
 test('a menu board silent while the shop is serving is a morning warning with the venue and the fix, one issue per venue', () => {
   const findings = evaluate({ reachable: true, boardsDark: [{ venue: 'Coffee Boy Preston', count: 2 }, { venue: 'Coffee Boy Leeds', count: 1 }] });
