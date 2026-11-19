@@ -28,6 +28,7 @@ import HqNumbers from './headoffice/HqNumbers';
 import HqSafe from './headoffice/HqSafe';
 import HqTargets from './headoffice/HqTargets';
 import { page, LoadingLine, localYmd } from './headoffice/hqUi';
+import { fetchSiteDays } from '../../lib/hq/data.js';
 
 /**
  * The hub's own context, built once from orgCtx and the sites this login can manage:
@@ -37,8 +38,10 @@ import { page, LoadingLine, localYmd } from './headoffice/hqUi';
  *             rows carry org_id (a ServOS super admin can manage sites of many companies)
  *   today     today's date on the venue clock, 'YYYY-MM-DD'
  *   currency  the active venue's currency for group figures (each site's row carries its own)
+ *   currencyOf(id)  slice 4: a site's own currency (platform locations), else the active venue's,
+ *             so Safe and banking and Targets read money in the picked site's currency
  */
-export function buildHqCtx(orgCtx, locations) {
+export function buildHqCtx(orgCtx, locations, siteCurrencies = {}) {
   const orgId = orgCtx?.venueOrgId || orgCtx?.orgId || null;
   const all = Array.isArray(locations) ? locations.filter((l) => l?.id) : [];
   const carryOrg = all.some((l) => l.org_id);
@@ -51,6 +54,8 @@ export function buildHqCtx(orgCtx, locations) {
     sites,
     today,
     currency,
+    siteCurrencies: siteCurrencies || {},
+    currencyOf: (id) => (siteCurrencies && siteCurrencies[id]) || currency,
     userId: orgCtx?.userId || null,
     userName: orgCtx?.userName || null,
     role: orgCtx?.role || null,
@@ -61,6 +66,7 @@ export function buildHqCtx(orgCtx, locations) {
 
 export default function HeadOffice({ section, orgCtx, setSection }) {
   const [locations, setLocations] = useState(null);
+  const [siteCurrencies, setSiteCurrencies] = useState({});
 
   useEffect(() => {
     let live = true;
@@ -68,9 +74,24 @@ export default function HeadOffice({ section, orgCtx, setSection }) {
     return () => { live = false; };
   }, [orgCtx?.userId, orgCtx?.locationId]);
 
+  // Slice 4: each site's own currency, once per set of sites. The screens keep working on the
+  // active venue's currency until this answers.
+  const siteIds = useMemo(() => (locations || []).map((l) => l?.id).filter(Boolean).join(','), [locations]);
+  useEffect(() => {
+    if (!siteIds) return undefined;
+    let live = true;
+    fetchSiteDays(siteIds.split(',')).then((r) => {
+      if (!live || !r?.data) return;
+      const next = {};
+      for (const [id, s] of Object.entries(r.data)) if (s?.currency) next[id] = s.currency;
+      setSiteCurrencies(next);
+    });
+    return () => { live = false; };
+  }, [siteIds]);
+
   // One object per (login, sites) pair: the screens key their reads on hq.sites, so a rerender of
   // the app above must not hand them a fresh array and make them read again.
-  const hq = useMemo(() => buildHqCtx(orgCtx, locations || []), [orgCtx, locations]);
+  const hq = useMemo(() => buildHqCtx(orgCtx, locations || [], siteCurrencies), [orgCtx, locations, siteCurrencies]);
 
   if (locations === null) return <div style={page}><LoadingLine>Loading</LoadingLine></div>;
   const go = typeof setSection === 'function' ? setSection : () => {};

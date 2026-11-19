@@ -132,6 +132,24 @@ export function splitForecast(total, shares, periods) {
   return out;
 }
 
+/**
+ * Slice 4 (18 Nov 2026): the Scorecard's dayparts before anyone logs the day. The day's sales
+ * forecast total (the owner snapshot's venue.today.forecast) split across the site's own service
+ * periods by the hours saved against it (stock_forecast_hours). With periods but no hours, or with
+ * no periods, the day is one part named Whole day: the Scorecard never guesses a split from nothing
+ * (the till pattern read is the Daily numbers form's, too heavy for every site at once).
+ * [{ key, name, amount }], [] without a forecast.
+ */
+export function forecastParts(total, hours, shifts) {
+  const t = num(total);
+  if (t === null || t <= 0) return [];
+  const periods = servicePeriods(shifts);
+  const shares = patternFromHours(hours, periods);
+  const split = shares ? splitForecast(t, shares, periods) : null;
+  if (!split) return [{ key: WHOLE_DAY_KEY, name: 'Whole day', amount: r2(t) }];
+  return periods.map((p) => ({ key: p.key, name: p.name, amount: split[p.key] ?? 0 }));
+}
+
 const LEGACY = { lunch: /lunch/i, dinner: /dinner|evening/i, late: /late|night/i };
 /** The three older columns from named parts: { lunch, dinner, late }, null where no period carries that name. parts = { key: { name, amount } }. */
 export function legacyParts(parts) {

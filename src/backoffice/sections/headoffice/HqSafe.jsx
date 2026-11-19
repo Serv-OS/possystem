@@ -56,7 +56,8 @@ export default function HqSafe({ hq }) {
   const [msg, setMsg] = useState(null);
   const [saved, setSaved] = useState(null);
   const [busy, setBusy] = useState(false);
-  const currency = hq.currency;
+  // Slice 4: money in the picked site's own currency (a UK and a US site in one company).
+  const currency = (typeof hq.currencyOf === 'function' && hq.currencyOf(siteId)) || hq.currency;
   const key = `${siteId}|${hq.orgId || ''}|${tick}`;
 
   useEffect(() => {

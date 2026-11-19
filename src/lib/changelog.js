@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.81',
+    date: '18 Nov 2026',
+    items: [
+      'Head office, slice 4 (Peter, 18 Nov 2026: "lets get this done"). (1) The Scorecard\'s "Projected sales by service period" tile is no longer blank until someone logs the day: with no day logged for today it shows today\'s sales forecast across each site\'s own service periods, split by the hours saved against the forecast, or as one Whole day part without them (it never guesses a split from nothing), with words under the site name saying which it is; a logged day for today still wins, and an older logged day is used only when today has no forecast at all. (2) A company with a UK site and a US site: Safe and banking now reads money in the picked site\'s own currency, and Targets reads a site override in that site\'s currency and says, on the company band, that a money figure is read as that number in each site\'s own currency. Each site\'s currency comes from its platform location, read once per set of sites. Nothing to deploy, no SQL. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.79',
     date: '17 Nov 2026',
     items: [

@@ -319,6 +319,50 @@ export async function fetchVenueClocks(locationIds) {
   }));
   return out;
 }
+/**
+ * Slice 4 (18 Nov 2026): what the Scorecard and the site pickers need about each site at once:
+ * { [locationId]: { today, shifts, hours, currency } }. today is the site's own business date,
+ * shifts its service periods and currency its own (platform locations, cached per site by
+ * getLocationConfig, which never moves the active venue's currency); hours are the forecast hours
+ * saved for that business day (stock_forecast_hours). Soft: a site a read fails for still answers
+ * with what it has, and the hours read failing leaves every site's hours empty.
+ */
+const _siteDaysInFlight = new Map();
+export async function fetchSiteDays(locationIds) {
+  const ids = [...new Set((locationIds || []).filter(Boolean))].sort();
+  if (!ids.length) return { data: {}, error: null, absent: false, message: null };
+  // The hub context and the Scorecard both ask at mount: one read serves both.
+  const flightKey = ids.join(',');
+  if (_siteDaysInFlight.has(flightKey)) return _siteDaysInFlight.get(flightKey);
+  const p = readSiteDays(ids).finally(() => _siteDaysInFlight.delete(flightKey));
+  _siteDaysInFlight.set(flightKey, p);
+  return p;
+}
+async function readSiteDays(ids) {
+  const out = {};
+  // getLocationConfig(id) moves the Back Office currency and clock only for the ACTIVE venue
+  // (adoptCurrency); a Back Office with no active venue saved would adopt every site read here,
+  // last one wins. That is the existing rule for every per site config read, not this one's.
+  const clocks = await fetchVenueClocks(ids);
+  await Promise.all(ids.map(async (id) => {
+    let cfg = null;
+    try { cfg = await getLocationConfig(id); } catch { cfg = null; }
+    out[id] = { today: clocks[id]?.today || null, shifts: Array.isArray(cfg?.shifts) ? cfg.shifts : [], hours: [], currency: cfg?.currency || null };
+  }));
+  const days = [...new Set(Object.values(out).map((s) => s.today).filter(Boolean))];
+  if (isMock || !supabase || !days.length) return { data: out, error: null, absent: false, message: null };
+  const res = await withTimeout(
+    supabase.from('stock_forecast_hours').select('location_id, business_day, hour, amount').in('location_id', ids).in('business_day', days),
+    15000, 'forecast hours',
+  ).then((r) => r, (e) => ({ error: e }));
+  if (res?.error) return { data: out, error: res.error, absent: false, message: 'Could not read the forecast hours. The dayparts show the whole day.' };
+  for (const h of res.data || []) {
+    const site = out[h.location_id];
+    if (site && site.today === String(h.business_day).slice(0, 10)) site.hours.push({ hour: h.hour, amount: h.amount });
+  }
+  return { data: out, error: null, absent: false, message: null };
+}
+
 /** The business date of an instant on a site's clock ('YYYY-MM-DD'). */
 export function businessDateFor(iso, clock) {
   if (!iso) return null;

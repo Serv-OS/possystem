@@ -39,7 +39,9 @@ export default function HqTargets({ hq }) {
   const [tick, setTick] = useState(0);
   const [siteId, setSiteId] = useState('');
   const [savedKey, setSavedKey] = useState(null);   // which band just saved, so its Saved line survives the reload
-  const currency = hq.currency;
+  // Slice 4: a site override reads money in that site's own currency; the company band in the active venue's.
+  const currency = (siteId && typeof hq.currencyOf === 'function' && hq.currencyOf(siteId)) || hq.currency;
+  const companyCurrencies = useMemo(() => [...new Set((hq.sites || []).map((s) => (typeof hq.currencyOf === 'function' ? hq.currencyOf(s.id) : null)).filter(Boolean))], [hq]);
 
   useEffect(() => {
     let live = true;
@@ -76,6 +78,7 @@ export default function HqTargets({ hq }) {
       {!state.loading && !state.isOwner && <AmberLine>Only a company owner can change targets.</AmberLine>}
       <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 12 }}>
         Green to: the figure is green up to (or from) this number. Amber to: amber up to (or from) this one. Past it the figure is red. Money targets are in {currency}.
+        {companyCurrencies.length > 1 && !siteId && ` This company's sites use ${companyCurrencies.join(' and ')}: a money figure in the company band is read as that number in each site's own currency. Pick a site to give it a band of its own.`}
       </div>
 
       <div style={{ ...card, padding: 0, overflowX: 'auto' }}>

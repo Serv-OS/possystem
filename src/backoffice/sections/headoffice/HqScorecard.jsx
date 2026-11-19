@@ -17,7 +17,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
-import { fetchSnapshot, fetchDailyNumbers, latestBySite, fetchRatings, fetchProjects, fetchTargets, fetchCashForSites, fetchOpsRows, NOT_SET_UP_2 } from '../../../lib/hq/data.js';
+import { fetchSnapshot, fetchDailyNumbers, latestBySite, fetchRatings, fetchProjects, fetchTargets, fetchCashForSites, fetchOpsRows, fetchSiteDays, NOT_SET_UP_2 } from '../../../lib/hq/data.js';
+import { forecastParts, WHOLE_DAY_KEY } from '../../../lib/hq/systemDay.js';
 import { siteRow, rankSites, portfolio } from '../../../lib/hq/primeCost.js';
 import { OPEN_PROJECT_STATUSES } from '../../../lib/hq/departments.js';
 import { resolveTargets, ragOf, bandWords } from '../../../lib/hq/targets.js';
@@ -48,13 +49,27 @@ export function venueForPeriod(venue, period) {
 }
 
 /** The site rows, ranked, with the review card's real rating where the venue runs one, coloured by the company's targets. */
-export function buildRows({ sites, venues, dailyRows, ratings, period, currency = null, targets = [] }) {
+export function buildRows({ sites, venues, dailyRows, ratings, period, currency = null, targets = [], siteDays = null, currencyOf = null }) {
   const latest = latestBySite(dailyRows || []);
   return rankSites((sites || []).map((s) => {
-    const venue = venueForPeriod(venueForSite(venues, s), period);
+    const snapVenue = venueForSite(venues, s);
+    const venue = venueForPeriod(snapVenue, period);
     const row = siteRow({ id: s.id, name: s.name, venue, typed: latest.get(s.id) || null });
-    // A site the snapshot did not answer for has no currency of its own: the active venue's, never a bare dollar.
-    if (!row.currency) row.currency = currency || null;
+    // A site the snapshot did not answer for has no currency of its own: its own from the platform
+    // (slice 4), else the active venue's, never a bare dollar.
+    if (!row.currency) row.currency = (typeof currencyOf === 'function' && currencyOf(s.id)) || currency || null;
+    // Slice 4: the dayparts come from today's logged day when there is one; otherwise today's sales
+    // forecast split by its saved hours (Whole day without them); otherwise the last logged day.
+    const sd = siteDays?.[s.id] || null;
+    const loggedToday = !!(row.typedOn && sd?.today && row.typedOn === sd.today && row.parts.length);
+    // A saved day's parts are 'logged' (or 'csv') whatever split the form used; 'forecast' here means
+    // today's forecast standing in, so the words under the site never call a saved day a forecast.
+    row.partsFrom = row.parts.length ? (row.from.projected === 'csv' ? 'csv' : 'logged') : null;
+    row.partsOn = row.parts.length ? row.typedOn : null;
+    if (!loggedToday) {
+      const fp = forecastParts(snapVenue?.today?.forecast, sd?.hours, sd?.shifts);
+      if (fp.length) { row.parts = fp; row.partsFrom = 'forecast'; row.partsOn = sd?.today || null; }
+    }
     const r = ratings?.[s.id];
     if (r && r.count) { row.rating = r.avg; row.reviews = r.count; row.from = { ...row.from, rating: 'reviews' }; }
     // The colour is the band's (site override, else company, else the built in default), never a fixed 60.
@@ -126,7 +141,8 @@ export default function HqScorecard({ hq, go }) {
       fetchTargets(hq.orgId),
       fetchCashForSites(ids),
       fetchOpsRows(ids, weekStartIso(hq.today), hq.today),
-    ]).then(([snap, daily, ratings, projects, targets, cash, ops]) => {
+      fetchSiteDays(ids),
+    ]).then(([snap, daily, ratings, projects, targets, cash, ops, siteDays]) => {
       if (!live) return;
       if (daily.absent || projects.absent) { setState((s) => ({ ...s, key, absent: true })); return; }
       // Slice 2 tables missing is not the end of the scorecard: one amber line and the old figures.
@@ -143,13 +159,15 @@ export default function HqScorecard({ hq, go }) {
         targets: slice2Absent ? [] : (targets.data || []),
         cash: slice2Absent ? null : (cash.data || null),
         ops: ops.data || null,
+        siteDays: siteDays?.data || null,
+        siteDaysMessage: siteDays?.error ? siteDays.message : null,
       });
     });
     return () => { live = false; };
   }, [period, ids, hq.today, hq.orgId, key]);
   const loading = state.key !== key;
 
-  const rows = useMemo(() => buildRows({ sites: hq.sites, venues: state.venues, dailyRows: state.daily, ratings: state.ratings, period, currency: hq.currency, targets: state.targets }), [hq.sites, hq.currency, state.venues, state.daily, state.ratings, state.targets, period]);
+  const rows = useMemo(() => buildRows({ sites: hq.sites, venues: state.venues, dailyRows: state.daily, ratings: state.ratings, period, currency: hq.currency, targets: state.targets, siteDays: state.siteDays, currencyOf: hq.currencyOf }), [hq.sites, hq.currency, hq.currencyOf, state.siteDays, state.venues, state.daily, state.ratings, state.targets, period]);
   const group = useMemo(() => portfolio(rows), [rows]);
   const extras = useMemo(() => buildExtras({ sites: hq.sites, cash: state.cash, ops: state.ops, today: hq.today }), [hq.sites, state.cash, state.ops, hq.today]);
   const more = useMemo(() => portfolioExtras(extras), [extras]);
@@ -225,7 +243,8 @@ export default function HqScorecard({ hq, go }) {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Typed />a figure typed into Daily numbers</span>
       </div>
 
-      <SectionHead title="Projected sales by service period" sub="The day's sales forecast across each site's own service periods (Location settings), split by the site's pattern, or as typed in Daily numbers." />
+      <SectionHead title="Projected sales by service period" sub="Today's logged day when there is one; otherwise today's sales forecast across each site's own service periods (Location settings), split by the hours saved against it, or the whole day without them." />
+      <AmberLine>{state.siteDaysMessage}</AmberLine>
       <Dayparts rows={rows} currency={currency} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginTop: 22 }}>
@@ -340,6 +359,17 @@ const isTyped = (source) => source === 'typed' || source === 'csv';
 const PART_PALETTE = ['var(--acc)', 'var(--orn)', 'var(--t3)', 'var(--grn)', 'var(--red)', 'var(--t2)'];
 const partColor = (i, key) => PART_COLORS[key] || PART_PALETTE[i % PART_PALETTE.length];
 
+/** Where a site's dayparts came from, in a few words: the logged day or today's forecast. */
+export function partsWords(r) {
+  if (!r?.parts?.length) return '';
+  if (r.partsFrom === 'forecast') {
+    const whole = r.parts.length === 1 && r.parts[0].key === WHOLE_DAY_KEY;
+    return whole ? 'Forecast, whole day: no hours saved against it, or no service periods' : 'Forecast, by the hours saved against it';
+  }
+  if (r.partsFrom === 'csv') return `Pasted for ${r.partsOn || 'a day'}`;
+  return `Logged for ${r.partsOn || 'a day'}`;
+}
+
 function Dayparts({ rows, currency }) {
   const totals = rows.map((r) => (r.parts || []).reduce((a, p) => a + (p.amount || 0), 0));
   const max = Math.max(0, ...totals);
@@ -352,7 +382,10 @@ function Dayparts({ rows, currency }) {
           const has = parts.length > 0;
           return (
             <div key={r.id} style={{ display: 'grid', gridTemplateColumns: '160px 1fr 90px', alignItems: 'center', gap: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</div>
+                {has && <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 2 }}>{partsWords(r)}</div>}
+              </div>
               {has && max > 0 ? (
                 <div>
                   <div style={{ display: 'flex', height: 18, borderRadius: 5, overflow: 'hidden', background: 'var(--bg3)', width: '100%' }}>
@@ -362,7 +395,7 @@ function Dayparts({ rows, currency }) {
                     {parts.map((p, pi) => <span key={p.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Dot color={partColor(pi, p.key)} />{p.name} <span className="mono" style={mono}>{exactMoney(p.amount, r.currency || currency)}</span></span>)}
                   </div>
                 </div>
-              ) : <div style={{ fontSize: 12, color: 'var(--t4)' }}>No projection logged</div>}
+              ) : <div style={{ fontSize: 12, color: 'var(--t4)' }}>No forecast for today and no projection logged</div>}
               <div className="mono" style={{ ...mono, fontSize: 13, textAlign: 'right', color: has ? 'var(--t1)' : 'var(--t4)' }}>{has ? exactMoney(total, r.currency || currency) : NA}</div>
             </div>
           );

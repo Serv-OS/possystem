@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   servicePeriods, periodOf, patternFromHours, patternFromChecks, splitForecast, legacyParts, reviewsForDay, turnoverPct,
-  systemFields, resolveDay, typedBoxes, partsOf, SYSTEM_KEYS,
+  systemFields, resolveDay, typedBoxes, partsOf, SYSTEM_KEYS, forecastParts, WHOLE_DAY_KEY,
 } from './systemDay.js';
 
 const SHIFTS = [
@@ -142,4 +142,19 @@ test('rows from before slice 3: an empty sources map reads as typed, never as bl
   assert.equal(typedBoxes(old).morale_score, '7');
   assert.equal(typedBoxes({ net_sales: 10, source: 'csv', sources: {} }).net_sales, '10');
   assert.equal(typedBoxes({ net_sales: 10, source: 'system', sources: { net_sales: 'till' } }).net_sales, '');
+});
+
+test('forecastParts (slice 4): the Scorecard splits today\'s forecast by saved hours, else the whole day, never a guess', () => {
+  // Hours saved against the forecast: split by them across the site's own periods, pennies on the last.
+  const hours = [{ hour: 8, amount: 100 }, { hour: 12, amount: 200 }, { hour: 19, amount: 100 }];
+  const split = forecastParts(1000, hours, SHIFTS);
+  assert.deepEqual(split.map((p) => [p.key, p.name, p.amount]), [['sh-b', 'Breakfast', 250], ['sh-l', 'Lunch', 500], ['sh-d', 'Dinner', 250], ['sh-n', 'Late night', 0]]);
+  // Periods but no hours: one Whole day part, not an even split.
+  assert.deepEqual(forecastParts(1000, [], SHIFTS), [{ key: WHOLE_DAY_KEY, name: 'Whole day', amount: 1000 }]);
+  // No periods at all: the same whole day.
+  assert.deepEqual(forecastParts('640.5', hours, []), [{ key: WHOLE_DAY_KEY, name: 'Whole day', amount: 640.5 }]);
+  // No forecast: nothing, so the Scorecard falls back to the last logged day.
+  assert.deepEqual(forecastParts(0, hours, SHIFTS), []);
+  assert.deepEqual(forecastParts(null, hours, SHIFTS), []);
+  assert.deepEqual(forecastParts(undefined, null, null), []);
 });
