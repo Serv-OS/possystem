@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isOptionOnlyItem, assignmentGroupId, sizeOrMainOptions, modifierGroupMin, modifierGroupRequired, instructionGroupMin, moveMainProductOptions, resolveSoldAlone, soldAlonePatchForTypeChange, subitemNameIndex, optionOnlyCategoryIds } from './menuRules.js';
+import { namesPatchForRename, isOptionOnlyItem, assignmentGroupId, sizeOrMainOptions, modifierGroupMin, modifierGroupRequired, instructionGroupMin, moveMainProductOptions, resolveSoldAlone, soldAlonePatchForTypeChange, subitemNameIndex, optionOnlyCategoryIds } from './menuRules.js';
 
 // Live rows (Ops DB, Provo).
 const NO_ICE = { id: 'm-1776807172397', name: 'No Ice', type: 'subitem', sold_alone: false, cat: 'cat-1776803885509' };
@@ -310,4 +310,34 @@ test('rule 9: a parent whose sub categories hold only options goes too; snake_ca
   // A cyclic parent id does not loop: the category that holds the option is still left out.
   const loop = [{ id: 'a', parentId: 'b' }, { id: 'b', parentId: 'a' }];
   assert.equal(optionOnlyCategoryIds(loop, [{ id: 'x', type: 'subitem', cat: 'a' }]).has('a'), true);
+});
+
+// Live rows (Ops DB, Coffee Boy Preston, 19 Nov 2026): "+ Item" then a rename in the editor.
+const OREO_RAW = { id: 'm-1790142994036_8e52e0fa', name: 'Oreo Sandwich Filled Donut', menu_name: 'Oreo Sandwich Filled Donut', kitchen_name: 'New item', receipt_name: 'New item' };
+const FRESH = { id: 'm-1', name: 'New item', menuName: 'New item', receiptName: 'New item', kitchenName: 'New item' };
+
+test('rule 10: a rename carries the kitchen and receipt names that only mirrored the old name', () => {
+  // The way every one of the 447 rows was made: born "New item", renamed through the name box.
+  assert.deepEqual(namesPatchForRename(FRESH, { menuName: 'Homer Ring Donut' }), { kitchenName: 'Homer Ring Donut', receiptName: 'Homer Ring Donut' });
+  // A kitchen name that mirrored the old name follows it; snake_case rows read the same.
+  assert.deepEqual(namesPatchForRename({ name: 'Latte', menuName: 'Latte', kitchenName: 'Latte', receiptName: 'LATTE' }, { menuName: 'Flat White' }), { kitchenName: 'Flat White' });
+  assert.deepEqual(namesPatchForRename({ name: 'Latte', menu_name: 'Latte', kitchen_name: 'Latte', receipt_name: 'Latte' }, { menu_name: 'Flat White' }), { kitchenName: 'Flat White', receiptName: 'Flat White' });
+  // A kitchen name somebody typed stays; an empty one follows.
+  assert.deepEqual(namesPatchForRename({ name: 'Latte', menuName: 'Latte', kitchenName: 'LAT', receiptName: '' }, { menuName: 'Flat White' }), { receiptName: 'Flat White' });
+  // A row already wrong (renamed before this rule) heals on its next rename: the placeholder is never an override.
+  assert.deepEqual(namesPatchForRename(OREO_RAW, { menuName: 'Oreo Donut' }), { kitchenName: 'Oreo Donut', receiptName: 'Oreo Donut' });
+  assert.deepEqual(namesPatchForRename({ ...FRESH, kitchenName: 'New item 2', receiptName: 'New size' }, { name: 'Hot' }), { kitchenName: 'Hot', receiptName: 'Hot' });
+});
+
+test('rule 10: an edit that sets the names itself, or does not change the name, is left alone', () => {
+  // The size editor sends all four names in one edit: nothing is added, nothing overwritten.
+  assert.deepEqual(namesPatchForRename(FRESH, { menuName: 'Pint', name: 'Pint', receiptName: 'Pint', kitchenName: 'Pint' }), {});
+  assert.deepEqual(namesPatchForRename(FRESH, { menuName: 'Pint', kitchen_name: 'PNT' }), { receiptName: 'Pint' });
+  // A price edit, the same name again, blanks, and a null name change nothing.
+  assert.deepEqual(namesPatchForRename(OREO_RAW, { price: 3 }), {});
+  assert.deepEqual(namesPatchForRename(OREO_RAW, { menuName: 'Oreo Sandwich Filled Donut' }), {});
+  assert.deepEqual(namesPatchForRename(OREO_RAW, { menuName: '   ' }), {});
+  assert.deepEqual(namesPatchForRename(OREO_RAW, { menuName: null }), {});
+  assert.deepEqual(namesPatchForRename(null, { menuName: 'x' }), {});
+  assert.deepEqual(namesPatchForRename(OREO_RAW, null), {});
 });

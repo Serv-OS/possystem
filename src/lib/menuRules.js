@@ -241,3 +241,38 @@ export function optionOnlyCategoryIds(categories, items) {
   }
   return out;
 }
+
+/**
+ * Rule 10. A rename carries the kitchen and receipt names that only mirrored the old name.
+ *
+ * 19 Nov 2026, Coffee Boy (Peter: "new items added to POS come up on KDS as new item"). "+ Item"
+ * makes a product called "New item" and stamps that into its kitchen and receipt names; the
+ * editor's name box then only changed menuName. So 447 products across 13 venues went to the
+ * kitchen screen and onto customer receipts as "New item" while the till button said "Oreo
+ * Sandwich Filled Donut". The columns always hold a value (both save paths default them to the
+ * display name), so a populated kitchen name is not an override: it is one only when it differs
+ * from the name it was saved beside.
+ *   current  the item as it is now (store shape or raw row)
+ *   patch    the edit about to be applied
+ * Returns the fields to add to the edit: { kitchenName, receiptName } (either, both or none).
+ * An edit that sets a kitchen or receipt name itself, one that does not change the display
+ * name, and a kitchen or receipt name that was really typed (different from the old name and
+ * not the "New item" or "New size" placeholder) are left alone.
+ */
+const PLACEHOLDER_NAME = /^new (item|size)( \d+)?$/i;
+const cleanName = (v) => (v == null ? '' : String(v).trim());
+export function namesPatchForRename(current, patch) {
+  if (!current || !patch || typeof patch !== 'object') return {};
+  const given = (k) => k in patch && patch[k] !== undefined && patch[k] !== null;
+  const next = cleanName(given('menuName') ? patch.menuName : given('menu_name') ? patch.menu_name : given('name') ? patch.name : '');
+  const was = cleanName(current.menuName ?? current.menu_name ?? current.name);
+  if (!next || next === was) return {};
+  const mirrors = (v) => {
+    const s = cleanName(v);
+    return !s || s === was || s === cleanName(current.name) || PLACEHOLDER_NAME.test(s);
+  };
+  const out = {};
+  if (!given('kitchenName') && !given('kitchen_name') && mirrors(current.kitchenName ?? current.kitchen_name)) out.kitchenName = next;
+  if (!given('receiptName') && !given('receipt_name') && mirrors(current.receiptName ?? current.receipt_name)) out.receiptName = next;
+  return out;
+}

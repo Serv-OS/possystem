@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.79',
+    date: '19 Nov 2026',
+    items: [
+      'Kitchen screen and receipts said "New item" (Peter, 19 Nov 2026: "new items added to POS come up on KDS as new item"). "+ Item" in Back Office makes a product called "New item" and stamps that into its kitchen and receipt names; renaming it in the editor only changed the menu name. The till button said "Oreo Sandwich Filled Donut", the kitchen screen and the customer\'s receipt said "New item": 448 products at 13 venues, Coffee Boy sold donuts that way at Preston and Headingley today. Rule 10 in the shared menu rules: a rename now carries the kitchen and receipt names that only mirrored the old name (or still said "New item"); a kitchen or receipt name somebody typed is never touched, and the size editor, which sends all four names at once, is unchanged. SQL 20261204a on Ops repairs the rows already wrong (keeps the old values in a side table, rollback twin, proved on a local Postgres with 12 checks). Tills read the menu at boot and on Push to POS: after the SQL, reload Back Office and push, or let the tills restart. Nothing to deploy.',
+    ],
+  },
+  {
     v: '5.12.78',
     date: '19 Nov 2026',
     items: [
