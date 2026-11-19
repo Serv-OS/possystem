@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.84',
+    date: '19 Nov 2026',
+    items: [
+      'Develop combined with main (housekeeping, no new feature). Develop now carries the two releases that went to main while head office was being built: 5.12.75 (the demo login loads its data) and 5.12.76 (menu boards stay on: nightly page refresh and the dark board watchdog signal). Head office is unchanged. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.83',
     date: '18 Nov 2026',
     items: [
@@ -53,6 +60,13 @@ export const CHANGELOG = [
     date: '16 Nov 2026',
     items: [
       'Head office, a new Back Office area (Peter, 16 Nov 2026, after Mozz Pizza asked for a "MOZZ Leadership App" for their directors: "this is the start of our head office hub ... start building, I only want this on dev for now"). Five screens under a Head office group in the sidebar, for owners and logins that open everything (a login limited to a list of sections never sees it). (1) Scorecard: every site of the company ranked by prime cost (COGS plus labour against net sales, target under 60%), with net sales, change against the last period, morale, open hires, guest rating, cash on hand and turnover, six tiles for the group, projected sales by daypart and a count of projects in flight. Sales and labour come from the tills through the Owner figures, COGS from stock when the site runs it; the rest from Daily numbers. A figure nobody has is n/a, never a zero. (2) Departments: Operations, HR, Finance, Marketing and Store leadership, three tiles each and that department\'s projects. (3) Internal projects: cards with status, department, latest update, owner, site, percent and due date; behind each card the project as a plan with phases, tasks and sub tasks, owners, priority, due dates, blocked reasons and an update feed for the owner. Percent is counted from the tasks done, a project goes At risk by itself when a task is overdue or blocked, and My work lists what is mine or nobody\'s. (4) Weekly check in: six questions (the owner can change them), one send per person, week, department and site; only the owner reads them, and the database refuses everyone else, not just the screen. (5) Daily numbers: log a day per site (cash on hand, new reviews, rating, turnover, morale, hires, projected lunch, dinner and late night, and typed sales, COGS and labour for a day the tills did not see) or paste a CSV in the Mozz column order; a paste with any bad line imports nothing and says which lines. SQL 20261130a on Ops (six hq_ tables, owner only check in rule, rollback twin; proved on a local Postgres with 8 checks, which also closed a hole where another company could hang a task on a project it could not see). Nothing to deploy. Dev only: on develop, not on main.',
+    ],
+  },
+  {
+    v: '5.12.76',
+    date: '19 Nov 2026',
+    items: [
+      'Menu boards stay on (Peter, 8 Nov 2026: "the menu boards and a few stores keep quitting - they close down and dont re open, preston was one"). Four boards were dark that morning (three at Barnsley, one at Leeds) and nobody was told. Cause: the Fire TV app had no answer when the stick killed the page\'s Chrome process for memory (a 1 to 2 GB stick, a looping video, days of uptime), so Android closed the whole app to the Fire TV home screen, and nothing relaunched it. Fire TV app 1.2 (android/menuboard, versionCode 3): the dead page is replaced in place and the renderer is marked as important as the app, so a memory squeeze blinks the board for a second instead of closing it; an app crash relaunches the board (1 s, then 5 s, then a minute between tries, so a bad build can never spin a stick); the board opens when the stick starts (Fire OS 7 as is, Fire OS 8 after a one time ADB grant per stick, steps in android/FIRE_TV_SETUP.md 2a). The sticks pick it up through their own update check (every three hours, one Install press on the remote). The TV page reloads itself once a night, between 03:00 and 06:00 venue time at a minute chosen from the screen id, only after 20 hours up, so a stick\'s memory starts fresh each day and the same board is back within a second (pairing kept). The overnight watchdog gains "A menu board has gone dark": a paired TV silent for 15 minutes at a venue that closed a check in the last hour, one GitHub issue per venue, a warning not a page. Deploy watchdog-status. No SQL. Built as 5.12.74 on 8 Nov, held until Peter told the sites, released 19 Nov as 5.12.76.',
     ],
   },
   {

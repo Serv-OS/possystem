@@ -80,6 +80,28 @@ The app holds the screen awake while it's in front, but also set:
 - Settings → My Fire TV → **Sleep** → set the device not to sleep (where available).
 - Plug the stick into a powered USB/mains source, not the TV's USB (some TVs cut USB power on standby).
 
+### 2a. The board comes back by itself (app 1.2, Nov 2026)
+
+From 1.2 the app no longer closes when the stick runs short of memory (the page is replaced in
+place), relaunches itself after a crash, and opens the board when the stick starts.
+
+Starting on boot works as is on **Fire OS 7** (Fire TV Stick 4K 1st gen, Stick Lite, Cube 2nd gen
+and older). **Fire OS 8** (Stick 4K 2nd gen, 4K Max, Cube 3rd gen) blocks a sideloaded app from
+opening itself from the background until the stick is given one grant over ADB, once per stick:
+
+1. On the stick: Settings, My Fire TV, Developer options, **ADB debugging** ON, and note its IP
+   (Settings, My Fire TV, About, Network).
+2. From a computer with `adb` on the same WiFi:
+   ```
+   adb connect <FIRE_TV_IP>:5555
+   adb shell appops set co.posup.rpos.menuboard SYSTEM_ALERT_WINDOW allow
+   adb disconnect
+   ```
+3. Turn ADB debugging back off if you like. Power the stick off and on: the board should appear
+   without touching the remote.
+
+Which Fire OS a stick runs: Settings, My Fire TV, About, Fire OS version (7.x or 8.x).
+
 ---
 
 ## 3. Updating the app later
