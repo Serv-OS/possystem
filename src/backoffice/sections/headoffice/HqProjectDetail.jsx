@@ -8,12 +8,13 @@
 
 import { useState } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
-import { saveProject, saveTask, deleteTask, addUpdate } from '../../../lib/hq/data.js';
+import { saveProject, saveTask, deleteTask, addUpdate, saveTemplate } from '../../../lib/hq/data.js';
+import { templateFromProject, templateWords } from '../../../lib/hq/templates.js';
 import { groupByPhase, taskTree, progressOf } from '../../../lib/hq/projectRollup.js';
 import { PROJECT_STATUSES, TASK_STATUSES, TASK_PRIORITIES, departmentLabel } from '../../../lib/hq/departments.js';
 import {
   page, card, mono, accBtn, btn, smallBtn, linkBtn, field, disabled, dateText, dateTimeText, siteName,
-  SectionHead, Chip, StatusBadge, DepartmentChip, ProgressBar, AmberLine, TabRow, Sheet, Field,
+  SectionHead, Chip, StatusBadge, DepartmentChip, ProgressBar, AmberLine, TabRow, Sheet, Field, hqHandoff,
 } from './hqUi';
 
 const PRIORITY_TONE = { P0: 'red', P1: 'orn', P2: 't3', P3: 't4' };
@@ -21,9 +22,11 @@ const phaseNames = (phases) => (Array.isArray(phases) ? phases.map((p) => (typeo
 
 export default function HqProjectDetail({ hq, project, tasks, updates, onBack, reload }) {
   const [tab, setTab] = useState('phases');
-  const [msg, setMsg] = useState(null);
+  // Slice 6: a project just made from a template may arrive with one line to say (tasks that did not land).
+  const [msg, setMsg] = useState(() => { const n = hqHandoff.notice || null; hqHandoff.notice = null; return n; });
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(null);      // a task row, or { project_id, parent_task_id, phase } for a new one
+  const [asTemplate, setAsTemplate] = useState(false); // slice 6: the Save as template sheet
   const progress = progressOf(tasks);
   const phases = phaseNames(project.phases);
   const currency = hq.currency;
@@ -62,7 +65,11 @@ export default function HqProjectDetail({ hq, project, tasks, updates, onBack, r
 
   return (
     <div style={page}>
-      <button type="button" style={{ ...linkBtn, display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 12 }} onClick={onBack}><Icon name="back" size={14} />Back to Internal projects</button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+        <button type="button" style={{ ...linkBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={onBack}><Icon name="back" size={14} />Back to Internal projects</button>
+        {/* Slice 6: this project's phases and tasks become a template (due days counted from its start date). */}
+        <button type="button" style={btn} onClick={() => setAsTemplate(true)}>Save as template</button>
+      </div>
       <div style={{ ...card, padding: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ minWidth: 0 }}>
@@ -121,6 +128,11 @@ export default function HqProjectDetail({ hq, project, tasks, updates, onBack, r
       )}
 
       {tab === 'updates' && <Updates hq={hq} project={project} updates={updates} currency={currency} reload={reload} />}
+
+      {asTemplate && (
+        <SaveAsTemplateSheet hq={hq} project={project} tasks={tasks} onClose={() => setAsTemplate(false)}
+          onSaved={(name) => { setAsTemplate(false); setMsg(`Saved as the template "${name}". Find it under Internal projects, Templates.`); }} />
+      )}
 
       {editing && (
         <TaskSheet
@@ -257,3 +269,33 @@ function Updates({ hq, project, updates, currency, reload }) {
   );
 }
 
+
+/** Slice 6: name the template and save this project's phases and tasks as one. */
+function SaveAsTemplateSheet({ hq, project, tasks, onClose, onSaved }) {
+  const [name, setName] = useState(`${project.name} template`);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const preview = templateFromProject(project, tasks, name.trim() || null);
+  const save = async () => {
+    setSaving(true); setMsg(null);
+    const res = await saveTemplate(templateFromProject(project, tasks, name.trim() || null), hq.orgId, hq.userName);
+    setSaving(false);
+    if (res.error) { setMsg(res.message); return; }
+    onSaved(res.data?.name || name);
+  };
+  return (
+    <Sheet title="Save as template" onClose={onClose} width={480}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <Field label="Template name"><input style={field} value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
+        <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.6 }}>
+          {templateWords(preview)}. Due days are counted from this project's start date{project.start_date ? '' : ' (none set, so from its earliest task date)'}. Owners and done marks are not copied. Changing the template later does not change this project.
+        </div>
+        <AmberLine>{msg}</AmberLine>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" style={btn} onClick={onClose}>Cancel</button>
+          <button type="button" style={{ ...accBtn, ...disabled(saving || !name.trim()) }} disabled={saving || !name.trim()} onClick={save}>{saving ? 'Saving' : 'Save template'}</button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}

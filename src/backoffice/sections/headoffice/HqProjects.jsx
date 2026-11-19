@@ -7,13 +7,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
-import { fetchProjects, fetchTasks, fetchUpdates, saveProject, saveTask, addUpdate } from '../../../lib/hq/data.js';
+import { fetchProjects, fetchTasks, fetchUpdates, saveProject, saveTask, addUpdate, applyTemplate } from '../../../lib/hq/data.js';
+import { instantiate, templateWords } from '../../../lib/hq/templates.js';
+import HqTemplates, { useTemplates } from './HqTemplates';
 import { projectCard, statusCounts, myWork } from '../../../lib/hq/projectRollup.js';
 import { DEPARTMENTS, PROJECT_STATUSES } from '../../../lib/hq/departments.js';
 import HqProjectDetail from './HqProjectDetail';
 import {
   page, card, mono, accBtn, btn, smallBtn, field, disabled, dateText, siteName, NA,
-  PageHead, SectionHead, Pill, StatusBadge, DepartmentChip, ProgressBar, AbsentCard, AmberLine, LoadingLine, EmptyCard, Sheet, Field, hqHandoff,
+  PageHead, SectionHead, Pill, StatusBadge, DepartmentChip, ProgressBar, AbsentCard, AmberLine, LoadingLine, EmptyCard, Sheet, Field, TabRow, hqHandoff,
 } from './hqUi';
 
 const FILTERS = [['all', 'All'], ['in_progress', 'In progress'], ['at_risk', 'At risk'], ['blocked', 'Blocked'], ['planning', 'Planning'], ['done', 'Done']];
@@ -47,7 +49,8 @@ export function buildCards(projects, tasks, updates, today) {
 export default function HqProjects({ hq }) {
   const data = useProjectData(hq.orgId);
   const [filter, setFilter] = useState('all');
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(false);   // false, true (blank), or a template to start from (slice 6)
+  const [tab, setTab] = useState('projects');         // slice 6: Projects | Templates
   const [openId, setOpenId] = useState(null);
   const [busyTask, setBusyTask] = useState(null);
   const [msg, setMsg] = useState(null);
@@ -96,6 +99,9 @@ export default function HqProjects({ hq }) {
         sub="Current and future projects from every department. Open a card to post an update for the owner."
         right={<button type="button" style={accBtn} onClick={() => setCreating(true)}>New project</button>}
       />
+      <TabRow style={{ marginBottom: 14 }} value={tab} onChange={setTab} tabs={[['projects', 'Projects'], ['templates', 'Templates']]} />
+      {tab === 'templates' && <HqTemplates hq={hq} onUse={(tpl) => { setTab('projects'); setCreating(tpl); }} />}
+      {tab === 'projects' && (<>
       {data.loading && <LoadingLine>Loading</LoadingLine>}
       <AmberLine>{data.error}</AmberLine>
       <AmberLine>{msg}</AmberLine>
@@ -126,8 +132,9 @@ export default function HqProjects({ hq }) {
         </EmptyCard>
       )}
       <CardGrid cards={shown} sites={hq.sites} currency={hq.currency} onOpen={(c) => setOpenId(c.id)} />
+      </>)}
 
-      {creating && <CreateProjectSheet hq={hq} onClose={() => setCreating(false)} onSaved={(p) => { setCreating(false); data.reload(); if (p?.id) setOpenId(p.id); }} />}
+      {creating && <CreateProjectSheet hq={hq} template={creating === true ? null : creating} onClose={() => setCreating(false)} onSaved={(p, note) => { setCreating(false); data.reload(); if (note) hqHandoff.notice = note; if (p?.id) setOpenId(p.id); else setMsg(note || null); }} />}
     </div>
   );
 }
@@ -185,29 +192,65 @@ export function ownerIdFor(ownerName, hq) {
   return a && b && a === b ? hq.userId : null;
 }
 
-export function CreateProjectSheet({ hq, onClose, onSaved, department = null }) {
+/**
+ * The New project sheet. Slice 6: a template can be picked at the top (or handed in): it fills the
+ * department, description, phases and the due date, and on Create the project gets the template's
+ * tasks with real dates (instantiate + applyTemplate). A blank project saves as before.
+ */
+export function CreateProjectSheet({ hq, onClose, onSaved, department = null, template = null }) {
   const preset = department || hqHandoff.projectDept || 'operations';
   const [f, setF] = useState({ name: '', description: '', department: preset, location_id: '', owner_name: hq.userName || '', status: 'planning', start_date: hq.today, due_date: '', phases: '' });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [tplId, setTplId] = useState(template?.id || '');
+  const tpls = useTemplates(hq.orgId);
+  const list = !template || tpls.templates.some((x) => x.id === template.id) ? tpls.templates : [template, ...tpls.templates];
+  const picked = tplId ? (list.find((t) => t.id === tplId) || (template?.id === tplId ? template : null)) : null;
   useEffect(() => { hqHandoff.projectDept = null; }, []);
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
+  // Picking a template fills the fields it knows; the name stays the person's.
+  const pickTemplate = (id) => {
+    setTplId(id);
+    const t = id ? list.find((x) => x.id === id) : null;
+    if (!t) return;
+    const plan = instantiate(t, { startDate: f.start_date || null });
+    setF((s) => ({ ...s, department: t.department || s.department, description: t.description || '', phases: (plan.project.phases || []).join(', '), due_date: plan.project.due_date || s.due_date }));
+  };
+  useEffect(() => { if (template?.id) pickTemplate(template.id); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async () => {
     setSaving(true); setMsg(null);
-    const res = await saveProject({
+    const fields = {
       name: f.name, description: f.description.trim() || null, department: f.department, location_id: f.location_id || null,
       owner_name: f.owner_name.trim() || null, owner_id: ownerIdFor(f.owner_name, hq), status: f.status,
       start_date: f.start_date || null, due_date: f.due_date || null,
       phases: f.phases.split(',').map((s) => s.trim()).filter(Boolean),
-    }, hq.orgId, hq.userName);
+    };
+    let res;
+    if (picked) {
+      // The template's tasks with real dates; the form's own department, status and phases win.
+      // The form's description stands, even cleared ('' means none; null would mean the template's).
+      const plan = instantiate(picked, { name: fields.name, startDate: fields.start_date, locationId: fields.location_id, ownerName: fields.owner_name, ownerId: fields.owner_id, description: f.description.trim(), dueDate: fields.due_date });
+      plan.project = { ...plan.project, department: fields.department, status: fields.status, phases: fields.phases.length ? fields.phases : plan.project.phases };
+      res = await applyTemplate(plan, hq.orgId, hq.userName);
+    } else {
+      res = await saveProject(fields, hq.orgId, hq.userName);
+    }
     setSaving(false);
-    if (res.error) setMsg(res.message); else onSaved(res.data);
+    if (res.error && !res.data) setMsg(res.message); else onSaved(res.data, res.message || null);
   };
 
   return (
-    <Sheet title="New project" onClose={onClose}>
+    <Sheet title={picked ? `New project from "${picked.name}"` : 'New project'} onClose={onClose}>
       <div style={{ display: 'grid', gap: 12 }}>
+        {!tpls.absent && (list.length > 0 || tpls.loading) && (
+          <Field label="Start from a template">
+            <select style={field} value={tplId} onChange={(e) => pickTemplate(e.target.value)}>
+              <option value="">Blank project</option>
+              {list.map((t) => <option key={t.id} value={t.id}>{t.name} ({templateWords(t)})</option>)}
+            </select>
+          </Field>
+        )}
         <Field label="Name"><input style={field} value={f.name} onChange={set('name')} placeholder="Open the Daybreak kitchen" /></Field>
         <Field label="Description"><textarea style={{ ...field, minHeight: 64, resize: 'vertical' }} value={f.description} onChange={set('description')} /></Field>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -225,6 +268,7 @@ export function CreateProjectSheet({ hq, onClose, onSaved, department = null }) 
           <Field label="Due date"><input type="date" style={field} value={f.due_date} onChange={set('due_date')} /></Field>
         </div>
         <Field label="Phases, comma separated"><input style={field} value={f.phases} onChange={set('phases')} placeholder="Plan, Build, Open" /></Field>
+        {picked && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>The project gets the template's tasks with dates counted from the start date above. Change the template later and this project keeps its own copy.</div>}
         <AmberLine>{msg}</AmberLine>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button type="button" style={btn} onClick={onClose}>Cancel</button>

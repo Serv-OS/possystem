@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.83',
+    date: '18 Nov 2026',
+    items: [
+      'Head office, slice 6: project templates (Peter, 18 Nov 2026: "do the project templates next"). Internal projects gets a Templates tab: build a reusable project with its department, description, length in days, phases and a task tree (each task with a phase, priority, a due day counted from the project\'s start, and sub tasks), or open any project and press Save as template to take its phases and tasks as one. New project now starts from a template: pick it at the top and the department, description, phases and due date fill in; on Create the project gets every task with real dates (parents first, then sub tasks). A project keeps its own copy: changing the template later never changes it. Deleting a template leaves its projects in place. SQL 20261203a on Ops (one table hq_project_templates with the company fence, and hq_projects.template_id; rollback twin; proved on a local Postgres with 4 checks); until it is run the Templates tab shows the calm card and blank projects save as before. Nothing to deploy. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.82',
     date: '18 Nov 2026',
     items: [

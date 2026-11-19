@@ -19,7 +19,7 @@ import { weekStartIso } from '../../../lib/hq/checkinWeek.js';
 import { buildRows, buildExtras, portfolioExtras } from './HqScorecard';
 import HqProjectDetail from './HqProjectDetail';
 import { useProjectData, buildCards, CardGrid, CreateProjectSheet } from './HqProjects';
-import { page, card, mono, accBtn, linkBtn, th, td, toneColor, bigMoney, exactMoney, pct, num, signedPct, NA, addDays, PageHead, SectionHead, StatTile, AbsentCard, AmberLine, LoadingLine, EmptyCard, TabRow } from './hqUi';
+import { page, card, mono, accBtn, linkBtn, th, td, toneColor, bigMoney, exactMoney, pct, num, signedPct, NA, addDays, PageHead, SectionHead, StatTile, AbsentCard, AmberLine, LoadingLine, EmptyCard, TabRow, hqHandoff } from './hqUi';
 
 /** The group's sales against the compared period, from the snapshot venues that have both figures. */
 export function groupVsLast(venues) {
@@ -162,7 +162,7 @@ export default function HqDepartments({ hq, go }) {
         <button type="button" onClick={() => go('hq-projects')} style={{ background: 'none', border: 0, padding: 0, color: 'var(--acc)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }}>Every department's projects</button>
       </div>
 
-      {creating && <CreateProjectSheet hq={hq} department={dept} onClose={() => setCreating(false)} onSaved={(p) => { setCreating(false); data.reload(); if (p?.id) setOpenId(p.id); }} />}
+      {creating && <CreateProjectSheet hq={hq} department={dept} onClose={() => setCreating(false)} onSaved={(p, note) => { setCreating(false); data.reload(); if (note) hqHandoff.notice = note; if (p?.id) setOpenId(p.id); }} />}
     </div>
   );
 }

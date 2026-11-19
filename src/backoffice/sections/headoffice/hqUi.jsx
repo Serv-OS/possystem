@@ -11,7 +11,7 @@ import { shortMoney } from '../../../lib/hq/primeCost.js';
 
 /** A one shot hand off between hub screens: which Daily numbers tab to open, which department
  *  a new project starts in. Read once on mount and cleared by the screen that reads it. */
-export const hqHandoff = { numbersTab: null, projectDept: null };
+export const hqHandoff = { numbersTab: null, projectDept: null, notice: null };   // notice: one line for the next project screen (slice 6)
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 export const mono = { fontFamily: 'var(--font-mono)' };

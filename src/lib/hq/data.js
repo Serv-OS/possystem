@@ -131,6 +131,8 @@ export async function saveProject(project, orgId, byName = null) {
     due_date: project.due_date || null,
     phases: Array.isArray(project.phases) ? project.phases : [],
     archived_at: project.archived_at || null,
+    // Slice 6: only sent when set, so a database without 20261203a still saves a blank project.
+    ...(project.template_id ? { template_id: project.template_id } : {}),
   };
   if (!row.name) return { data: null, error: new Error('name'), absent: false, message: 'Give the project a name.' };
   let res;
@@ -717,3 +719,100 @@ export async function fetchOwnerHq(locationIds, { today, pickOrg, daysBack = 14 
     error: first?.error || null, absent: false, message: first ? (first.message || 'Could not read every head office figure. Tap the arrow to try again.') : null,
   };
 }
+
+// ============================================================================
+// Slice 6 (20261203a): project templates. The shapes are src/lib/hq/templates.js.
+// ============================================================================
+
+export const NOT_SET_UP_6 = 'Project templates are not set up in the database yet. Ask ServOS to run migration 20261203a.';
+const fail6 = (error, what) => (isAbsentError(error)
+  ? { data: null, error, absent: true, message: NOT_SET_UP_6 }
+  : { data: null, error, absent: false, message: `Could not ${what}. Try again.` });
+
+/** The company's templates, newest change first; archived ones only when asked. */
+export async function fetchTemplates(orgId, { includeArchived = false } = {}) {
+  if (isMock || !supabase) return offline();
+  if (!orgId) return ok([]);
+  let q = supabase.from('hq_project_templates').select('*').eq('org_id', orgId).order('updated_at', { ascending: false }).limit(500);
+  if (!includeArchived) q = q.is('archived_at', null);
+  const { data, error } = await q;
+  return error ? fail6(error, 'load the templates') : ok(data || []);
+}
+
+/** Insert or update one template (normalised by the caller: name, department, description, phases, tasks, duration_days, archived_at). */
+export async function saveTemplate(tpl, orgId, byName = null) {
+  if (isMock || !supabase) return offline();
+  const who = await stamp(byName);
+  const row = {
+    org_id: tpl.org_id || orgId,
+    name: String(tpl.name || '').trim(),
+    description: tpl.description || null,
+    department: tpl.department || 'operations',
+    phases: Array.isArray(tpl.phases) ? tpl.phases : [],
+    tasks: Array.isArray(tpl.tasks) ? tpl.tasks : [],
+    duration_days: Number.isFinite(Number(tpl.duration_days)) && tpl.duration_days !== null && tpl.duration_days !== '' ? Math.round(Number(tpl.duration_days)) : null,
+    archived_at: tpl.archived_at || null,
+  };
+  if (!row.name) return { data: null, error: new Error('name'), absent: false, message: 'Give the template a name.' };
+  let res;
+  if (tpl.id) res = await supabase.from('hq_project_templates').update(row).eq('id', tpl.id).select().single();
+  else res = await supabase.from('hq_project_templates').insert({ ...row, created_by: who.id, created_by_name: who.name }).select().single();
+  return res.error ? fail6(res.error, 'save the template') : ok(res.data);
+}
+
+export async function deleteTemplate(id) {
+  if (isMock || !supabase) return offline();
+  const { error } = await supabase.from('hq_project_templates').delete().eq('id', id);
+  return error ? fail6(error, 'delete the template') : ok(true);
+}
+
+/**
+ * Make a project from a template: one hq_projects row, then its tasks in two passes (parents, then
+ * sub tasks with the parents' new ids). `plan` is instantiate()'s answer ({ project, tasks }).
+ * Answers { data: project, error, absent, message, tasksMade, tasksWanted }: a project whose tasks
+ * could not all be written is still there, and the message says how many landed.
+ */
+export async function applyTemplate(plan, orgId, byName = null) {
+  if (isMock || !supabase) return offline();
+  const who = await stamp(byName);
+  const proj = await saveProject(plan.project, orgId, byName);
+  if (proj.error) {
+    // A database without 20261203a has no template_id column: the project still lands, unlinked.
+    if (proj.error.code === '42703' || proj.error.code === 'PGRST204') {
+      const { template_id: _t, ...rest } = plan.project;
+      const again = await saveProject(rest, orgId, byName);
+      if (again.error) return again;
+      proj.data = again.data; proj.error = null;
+    } else return proj;
+  }
+  const project = proj.data;
+  const wanted = plan.tasks || [];
+  const ids = new Map();   // template key -> hq_tasks id
+  let made = 0; let firstError = null;
+  const base = (t) => ({
+    project_id: project.id, org_id: project.org_id || orgId, title: t.title, description: t.description || null, status: 'todo', priority: t.priority || 'P2',
+    phase: t.phase || null, due_date: t.due_date || null, sort_order: Number(t.sort_order) || 0, created_by: who.id, created_by_name: who.name,
+  });
+  // Pass by depth: every row whose parent already has an id (roots first), until none are left.
+  let pending = wanted.slice();
+  while (pending.length) {
+    const ready = pending.filter((t) => !t.parentKey || ids.has(t.parentKey));
+    if (!ready.length) break;   // orphans: a parent that never landed
+    const rows = ready.map((t) => ({ ...base(t), parent_task_id: t.parentKey ? ids.get(t.parentKey) : null }));
+    const { data, error } = await supabase.from('hq_tasks').insert(rows).select('id, title, parent_task_id, sort_order');
+    if (error) { firstError = firstError || error; break; }
+    // Match the answer back to its template key by (parent, sort_order), unique within one pass,
+    // so the match never leans on the order the rows come back in.
+    const byPlace = new Map(ready.map((t) => [`${t.parentKey ? ids.get(t.parentKey) : ''}|${Number(t.sort_order) || 0}`, t.key]));
+    for (const row of data || []) { const k = byPlace.get(`${row.parent_task_id || ''}|${Number(row.sort_order) || 0}`); if (k) ids.set(k, row.id); }
+    made += (data || []).length;
+    pending = pending.filter((t) => !ready.includes(t));
+  }
+  const short = made < wanted.length;
+  return {
+    data: project, error: firstError, absent: false, tasksMade: made, tasksWanted: wanted.length,
+    message: short ? `The project was created but only ${made} of ${wanted.length} tasks were added. Open it and add the rest.` : null,
+  };
+}
+
+/** saveProject carries template_id when the project names one (slice 6). */
