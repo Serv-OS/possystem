@@ -585,6 +585,10 @@ Deno.serve(async (req) => {
         channel: 'Web',
       };
       if (body.shopperLocale || body.shopper_locale) request.shopperLocale = String(body.shopperLocale || body.shopper_locale).slice(0, 16);
+      // 19 Nov 2026: a signed in member's id (the customer app, the web checkout once signed in),
+      // so Adyen lists the cards kept on file for them. Only this lookup echoes them back.
+      const shopperRef = String(body.shopper_reference || '').trim().slice(0, 80);
+      if (shopperRef) request.shopperReference = shopperRef;
       // The caller names the types it can actually mount (scheme, applepay,
       // googlepay, the legacy paywithgoogle). Without it Adyen answers with
       // every method enabled on the account and Drop-in drops the ones we
@@ -631,7 +635,11 @@ Deno.serve(async (req) => {
       // Apple Pay is on offer: make sure the venue's shop address is
       // registered for it (APPLE PAY REGISTERS ITSELF above). Never awaited.
       if (platformLocationId && offersApplePay(methods)) nudgeApplePayDomains(platformLocationId, cfg.env);
-      return json({ paymentMethods: methods, ...publishable, ok: true });
+      // The member's own cards (type scheme with an id), only for a lookup that named them.
+      const stored = shopperRef && Array.isArray(j.storedPaymentMethods)
+        ? (j.storedPaymentMethods as Record<string, unknown>[]).filter((m) => m && m.type === 'scheme' && typeof m.id === 'string')
+        : [];
+      return json({ paymentMethods: methods, ...(stored.length ? { storedPaymentMethods: stored } : {}), ...publishable, ok: true });
     }
 
     if (action === 'create_session') {
@@ -742,10 +750,18 @@ Deno.serve(async (req) => {
       if (body.capture_method === 'manual') {
         payment.additionalData = { ...(payment.additionalData as object || {}), authorisationType: 'PreAuth', manualCapture: 'true' };
       }
-      if (body.store_card && body.shopper_reference) {
-        payment.shopperReference = String(body.shopper_reference).slice(0, 80);
+      // 19 Nov 2026: the member's id goes on every payment of theirs (a card on file is only
+      // found under it); the card is KEPT only when asked (store_card), and a payment WITH a card
+      // on file (Drop-in sends storedPaymentMethodId, the shopper typed the CVC) is CardOnFile.
+      const shopperRef = String(body.shopper_reference || '').trim().slice(0, 80);
+      if (shopperRef) payment.shopperReference = shopperRef;
+      if (body.store_card && shopperRef) {
         payment.storePaymentMethod = true;
         payment.recurringProcessingModel = 'UnscheduledCardOnFile';
+      }
+      const pmIn = body.payment_method as Record<string, unknown> | null;
+      if (shopperRef && pmIn && typeof pmIn === 'object' && typeof pmIn.storedPaymentMethodId === 'string' && !body.store_card) {
+        payment.recurringProcessingModel = 'CardOnFile';
       }
       if (body.browser_info) payment.browserInfo = body.browser_info;
       if (body.shopper_email) payment.shopperEmail = String(body.shopper_email);

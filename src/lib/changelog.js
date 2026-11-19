@@ -1,9 +1,16 @@
 export const CHANGELOG = [
   {
-    v: '5.12.77',
+    v: '5.12.79',
     date: '19 Nov 2026',
     items: [
       'Kitchen screen and receipts said "New item" (Peter, 19 Nov 2026: "new items added to POS come up on KDS as new item"). "+ Item" in Back Office makes a product called "New item" and stamps that into its kitchen and receipt names; renaming it in the editor only changed the menu name. The till button said "Oreo Sandwich Filled Donut", the kitchen screen and the customer\'s receipt said "New item": 448 products at 13 venues, Coffee Boy sold donuts that way at Preston and Headingley today. Rule 10 in the shared menu rules: a rename now carries the kitchen and receipt names that only mirrored the old name (or still said "New item"); a kitchen or receipt name somebody typed is never touched, and the size editor, which sends all four names at once, is unchanged. SQL 20261204a on Ops repairs the rows already wrong (keeps the old values in a side table, rollback twin, proved on a local Postgres with 12 checks). Tills read the menu at boot and on Push to POS: after the SQL, reload Back Office and push, or let the tills restart. Nothing to deploy.',
+    ],
+  },
+  {
+    v: '5.12.78',
+    date: '19 Nov 2026',
+    items: [
+      'Customer app, ordering signed in and cards on file (Peter, 19 Nov 2026: native ordering in the app dropped as a constant burden, "its already built, we need to improve considerably"). (1) Opened from the app, the venue\'s ordering page now knows the member: the app asks the gateway for a two minute signed code (customer-app handoff_start), opens the page with it in the URL fragment (#app=, never sent to a server), and the page swaps it for a fresh member token (handoff_claim) and reads the member\'s summary the way a code sign in does (loyalty-otp refresh). No more name, email, phone and code on every order. A stale code shows the normal page, never an error. (2) A signed in member can keep a card: the payment methods lookup names the member, Adyen answers with the cards kept on file for them ("Visa ending 4242" in the form), the card form gains a "Save for next time" tick, and a payment with a card on file goes as CardOnFile under the member\'s id. A card is never kept without the member\'s id or without the tick. Deploy customer-app and adyen-checkout. No SQL. The app side (Order tab opens the page signed in, nearest venue first) ships as Coffee Boy build 7.',
     ],
   },
   {

@@ -74,6 +74,7 @@ import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
 // page's pre-order choices build exactly the same object (10 Sep 2026).
 import { isLightBackground, sheetThemeFrom } from './sheetTheme';
 import { activeCountry, activeRegionPack } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
+import { handoffCodeFrom, hashWithoutHandoff, claimHandoff } from '../../lib/online/appHandoff.js';
 
 // closedInfo (v5.5.802) — set by CustomerBoot when the venue is CLOSED but the
 // customer tapped through to browse: { reopenAt: Date|null, canOrderAhead: bool }.
@@ -328,6 +329,31 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // OrderTracker; on mismatch we ignore the params so the page renders
   // normally — the URL is shareable but a wrong p doesn't error in front
   // of the customer.
+  // 19 Nov 2026: opened from the customer app as a signed in member (#app=<code> in the fragment,
+  // src/lib/online/appHandoff.js). The code is swapped for a member token at the gateway and the
+  // member's summary is read the way a code sign in reads it; a refused code just shows the normal
+  // page. The fragment is cleared once used so a reload or a share never carries it.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const code = handoffCodeFrom(window.location.hash);
+    if (!code) return;
+    const strip = () => { try { window.history.replaceState(null, '', window.location.pathname + window.location.search + hashWithoutHandoff(window.location.hash)); } catch { /* read only history */ } };
+    (async () => {
+      const base = import.meta.env.VITE_SUPABASE_URL;
+      const state = await claimHandoff({
+        fetchFn: (...a) => fetch(...a),
+        gatewayUrl: `${base}/functions/v1/customer-app`,
+        otpUrl: `${base}/functions/v1/loyalty-otp`,
+        anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        code,
+        locationId: opsLocationId ? String(opsLocationId) : null,
+      });
+      strip();
+      if (state) setLoyalty(state);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opsLocationId]);
+
   useEffect(() => {
     const url = new URL(window.location.href);
     const trackRef = url.searchParams.get('track');

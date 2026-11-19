@@ -1595,6 +1595,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               reference={orderShape?.ref}
               merchantName={location?.name || ''}
               customerEmail={orderShape?.customer?.email}
+              shopperReference={memberCustomerId || undefined} /* 19 Nov 2026: cards on file for a signed in member */
               onSuccess={onPaymentSuccess}
               onError={(e) => setError(e?.message || 'Payment failed')}
             />
