@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.85',
+    date: '20 Nov 2026',
+    items: [
+      'Staff app: a team member can now see and change their own date of birth and NI number (support ticket 20 Nov 2026: "Team members can\'t edit their NI number or date of birth on the app"; Peter: "I cant even see these details in the app"). Before this the app never showed either: the Me tab carried address, emergency contact and bank details only, and the two fields lived in Back Office Team behind owner, admin or payroll details access. Now the Me tab shows both under My details and Edit lets the person type them. The ID number follows the venue (NI number in the UK, SSN last 4 in the US, date of birth only in Ireland). The same rules run in the app and on the server: a real past date giving an age of 13 to 100, and the HMRC National Insurance format (two letters, six digits, a letter A to D, spaces and case forgiven, stored without spaces, shown as AB 12 34 56 C). Replacing an ID number that was already on file raises the manager alert a bank change raises (Manager app and Back Office Operations, never a till); a first fill does not. The new starter checklist gains the step "Add your date of birth and NI number" with an Add button that opens the Me tab; it is for the person only and never blocks a shift claim. The audit row never carries the full NI number. One edge function to deploy: staff-portal. No SQL. Live on main, released from its own branch; the head office hub stays on develop.',
+    ],
+  },
+  {
     v: '5.12.82',
     date: '20 Nov 2026',
     items: [
