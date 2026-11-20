@@ -33,10 +33,11 @@ const urls = { gatewayUrl: 'https://x/functions/v1/customer-app', otpUrl: 'https
 test('a good code becomes the member state the page keeps, read from the refresh', async () => {
   const fetchFn = fakeFetch({
     handoff_claim: { status: 200, json: { token: 'tok1', customer: { id: 'c1', phone: '+447000000000' } } },
-    refresh: { status: 200, json: { verified: true, token: 'tok2', customer: { id: 'c1', name: 'Jo', phone: '+447000000000' }, loyalty: { points_balance: 12 }, gift_cards: [{ code: 'G' }], stamp_cards: [{ id: 's' }] } },
+    // The real refresh reply: the member summary alone, no verified flag, no token (20 Nov 2026).
+    refresh: { status: 200, json: { customer: { id: 'c1', name: 'Jo', email: 'jo@x.y', phone: '+447000000000' }, loyalty: { points_balance: 12 }, gift_cards: [{ code: 'G' }], stamp_cards: [{ id: 's' }] } },
   });
   const state = await claimHandoff({ ...urls, fetchFn, code: CODE, locationId: 'loc1' });
-  assert.deepEqual(state, { phone: '+447000000000', verified: true, customer: { id: 'c1', name: 'Jo', phone: '+447000000000' }, loyalty: { points_balance: 12 }, giftCards: [{ code: 'G' }], stampCards: [{ id: 's' }], token: 'tok2' });
+  assert.deepEqual(state, { phone: '+447000000000', verified: true, customer: { id: 'c1', name: 'Jo', email: 'jo@x.y', phone: '+447000000000' }, loyalty: { points_balance: 12 }, giftCards: [{ code: 'G' }], stampCards: [{ id: 's' }], token: 'tok1' });
   assert.equal(fetchFn.calls[0].body.code, CODE);
   assert.equal(fetchFn.calls[0].headers.apikey, 'anon');
   assert.deepEqual(fetchFn.calls[1].body, { action: 'refresh', token: 'tok1', location_id: 'loc1' });
@@ -48,6 +49,16 @@ test('a refused code is null (the page shows its own sign in); a failed refresh 
   assert.equal(await claimHandoff({ ...urls, fetchFn: fakeFetch({}), code: null }), null);
   const partial = await claimHandoff({ ...urls, fetchFn: fakeFetch({ handoff_claim: { status: 200, json: { token: 'tok1', customer: { id: 'c1', phone: '+1' } } }, refresh: { status: 500, json: {} } }), code: CODE });
   assert.deepEqual(partial, { phone: '+1', verified: true, customer: { id: 'c1', phone: '+1' }, loyalty: null, giftCards: [], stampCards: [], token: 'tok1' });
+});
+
+test('the refresh reply really has no verified flag, so the page must never ask for one', () => {
+  const otp = fs.readFileSync(new URL('../../../supabase/functions/loyalty-otp/index.ts', import.meta.url), 'utf8');
+  const refresh = otp.slice(otp.indexOf("if (action === 'refresh')"), otp.indexOf("if (action === 'update_profile')"));
+  assert.match(refresh, /return json\(await memberAccount\(cust, session\.companyId, provenPhone\)\);/);
+  assert.doesNotMatch(refresh, /verified: true/);
+  const page = fs.readFileSync(new URL('./appHandoff.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(page, /j\.verified/, 'the member summary is accepted on its customer block');
+  assert.match(page, /if \(!res\.ok \|\| !j \|\| !j\.customer\) return base;/);
 });
 
 test('the ordering page claims the code on boot and the gateway offers both actions', () => {
