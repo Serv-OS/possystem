@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.81',
+    date: '20 Nov 2026',
+    items: [
+      'Online ordering on a phone, the page zoomed into every box and then stopped scrolling (Peter, 20 Nov 2026, Coffee Boy Headingley opened from the app: "it zooms in when you click in a box, no way to pinch and zoom back out", "scrolling stops working for no reasons I can see"). iPhone zooms the page into any box whose text is under 16px, and the checkout boxes were 14px; inside the app\'s browser the zoomed page sits in a fixed scroller that then ignores touch. Every box on a customer page (ordering, checkout, QR, gift cards, catering, bookings, account) is now 16px on a touch screen; mouse screens are unchanged. Web only, nothing to deploy, no SQL.',
+    ],
+  },
+  {
     v: '5.12.80',
     date: '20 Nov 2026',
     items: [

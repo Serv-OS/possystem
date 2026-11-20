@@ -33,6 +33,12 @@ import { counterCollect } from '../lib/counterOrder';
 import { Icon } from '../components/ServOSIcons';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
+  // 5.12.81: marks the page as a customer page for globals.css (16px inputs on a touch screen,
+  // so an iPhone never zooms into a box). Removed when the customer page goes away.
+  useEffect(() => {
+    document.documentElement.classList.add('customer-surface');
+    return () => document.documentElement.classList.remove('customer-surface');
+  }, []);
   const [state, setState] = useState({ loading: true, location: null, error: null });
   // v5.5.802: the customer tapped through the closed screen — browse the menu
   // (and order ahead for reopening) while the venue is shut.
