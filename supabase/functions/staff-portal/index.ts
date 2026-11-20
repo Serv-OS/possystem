@@ -24,7 +24,7 @@
 //   shift_claim / shift_drop / swap_cancel / swap_decline / availability_set   (Bearer)
 //                                              v5.11.101 open shifts and swaps (openShifts.ts):
 //                                              every change judged by the database.
-//   update_details{ patch } (Bearer)           Address / emergency contact / bank.
+//   update_details{ patch } (Bearer)           Address / emergency contact / bank / date of birth / ID number (5.12.85).
 //                                              Bank changes are audited AND pinged
 //                                              to the venue activity feed — a bank
 //                                              swap is the classic payroll fraud.
@@ -48,6 +48,8 @@ import { isHeadOffice, HEAD_OFFICE_CLOCK_WORDS } from '../_shared/headOffice.js'
 // 5.12.61: blocked periods for time off (no holiday requests over Christmas). The staff app reads
 // them in the snapshot and a request inside one is refused in words.
 import { blockFor, blockWords, upcomingBlocks } from '../_shared/leaveBlocks.js';
+// 5.12.85: the person's own date of birth and ID number (NI number or SSN last 4), one copy with the app.
+import { niProblem, ssnLast4Problem, dobProblem, normaliseNi, idNumberKind, idDetailsStep, ID_WORDS } from '../_shared/staffIdRules.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -748,6 +750,10 @@ Deno.serve(async (req) => {
           },
           // v5.11.101: the work document follows the venue (Right to Work in the UK, Form I-9 in the US).
           { key: 'rtw', label: `Upload your ${pack.workDocLabel}`, done: !!meta.rtwPath, action: !meta.rtwPath ? 'rtw' : null },
+          // 5.12.85: their date of birth and NI number (SSN last 4 in the US), typed on the Me tab. For
+          // the person only: openOnboardingSteps and the database judge never count it, so it cannot
+          // block a shift claim.
+          { key: 'idDetails', ...idDetailsStep(staff, pack), action: idDetailsStep(staff, pack).done ? null : 'details' },
           // A US venue pays through its payroll provider, which holds bank details: no bank step.
           ...(pack.bankDetails ? [{ key: 'bank', label: 'Add your bank details', done: !!meta.bankMasked || !!staff.bank_account_masked, action: (!meta.bankMasked && !staff.bank_account_masked) ? 'bank' : null }] : []),
           { key: 'posUser', label: 'Till access', done: !!staff.pos_user_id, waiting: !staff.pos_user_id ? 'Your manager sets this up' : null },
@@ -791,6 +797,13 @@ Deno.serve(async (req) => {
           emergencyContact: staff.emergency_contact || null,
           bankMasked: staff.bank_account_masked || null, bankSortCode: staff.bank_sort_code || null,
           bankAccountName: staff.bank_account_name || null,
+          // 5.12.85: their own date of birth and ID number (support ticket 20 Nov 2026: the app never
+          // showed them). The ID number follows the venue: NI number in the UK, SSN last 4 in the US,
+          // none in Ireland. It is their own record, so they see it in full.
+          dob: staff.dob || null,
+          idNumberKind: idNumberKind(pack),
+          niNumber: idNumberKind(pack) === 'ni' ? (staff.ni_number || null) : undefined,
+          ssnLast4: idNumberKind(pack) === 'ssn4' ? (staff.ssn_last4 || null) : undefined,
         },
         // 5.12.38: their published shifts at every site they work at (linked records), each with its site.
         shifts: [
@@ -962,6 +975,35 @@ Deno.serve(async (req) => {
         patch.emergency_contact = (ec.name || ec.phone || ec.relationship)
           ? { name: ec.name || null, phone: ec.phone || null, relationship: ec.relationship || null } : null;
       }
+      // 5.12.85: date of birth and ID number. A bad value is refused with the same words the app
+      // shows; blank clears. Replacing an EXISTING ID number raises the manager alert the bank change
+      // raises (payroll fraud vector); a first fill does not.
+      let idReplaced: string | null = null;
+      if (p.dob !== undefined) {
+        const dobBad = dobProblem(p.dob);
+        if (dobBad) return json({ error: dobBad }, 400);
+        before.dob = staff.dob; patch.dob = String(p.dob || '').trim() || null;
+      }
+      if (p.niNumber !== undefined || p.ssnLast4 !== undefined) {
+        const kind = idNumberKind(regionPack({ currency: (await venueFacts(admin, staff.location_id)).currency }));
+        if (p.niNumber !== undefined && kind !== 'ni') return json({ error: 'This venue does not use a National Insurance number' }, 400);
+        if (p.ssnLast4 !== undefined && kind !== 'ssn4') return json({ error: 'This venue does not use an SSN' }, 400);
+        if (kind === 'ni') {
+          const bad = niProblem(p.niNumber);
+          if (bad) return json({ error: bad }, 400);
+          const next = normaliseNi(p.niNumber) || null;
+          if (staff.ni_number && next && next !== normaliseNi(staff.ni_number)) idReplaced = ID_WORDS.ni;
+          before.ni_number = staff.ni_number ? `****${String(staff.ni_number).slice(-3)}` : null;   // never the full number in the audit row
+          patch.ni_number = next;
+        } else {
+          const bad = ssnLast4Problem(p.ssnLast4);
+          if (bad) return json({ error: bad }, 400);
+          const next = String(p.ssnLast4 || '').replace(/\D/g, '') || null;
+          if (staff.ssn_last4 && next && next !== staff.ssn_last4) idReplaced = ID_WORDS.ssn4;
+          before.ssn_last4 = staff.ssn_last4 || null;
+          patch.ssn_last4 = next;
+        }
+      }
       let bankChanged = false;
       if (p.bank !== undefined && !regionPack({ currency: (await venueFacts(admin, staff.location_id)).currency }).bankDetails) {
         return json({ error: 'Your payroll provider holds your bank details. Ask your manager.' }, 400);
@@ -980,9 +1022,22 @@ Deno.serve(async (req) => {
       if (!Object.keys(patch).length) return json({ error: 'nothing to update' }, 400);
       const { error } = await admin.from('wf_staff').update(patch).eq('id', staff.id);
       if (error) return json({ error: error.message }, 500);
-      await audit(staff, bankChanged ? 'portal.bank_changed' : 'portal.details_changed', before, {
+      await audit(staff, bankChanged ? 'portal.bank_changed' : idReplaced ? 'portal.id_number_changed' : 'portal.details_changed', before, {
         ...patch, bank_account: undefined,  // never the full account number in the audit row
+        ...(patch.ni_number !== undefined ? { ni_number: patch.ni_number ? `****${String(patch.ni_number).slice(-3)}` : null } : {}),
       });
+      if (idReplaced && !bankChanged) {
+        // 5.12.85: an ID number that was already on file has been swapped from the staff app. Same
+        // manager-only alert as a bank change (ops_alerts: Manager app and BO Operations, never a till).
+        try {
+          await admin.from('ops_alerts').insert({
+            location_id: staff.location_id, org_id: staff.org_id, type: 'staff_change', severity: 'major',
+            title: `${staff.name} changed their ${idReplaced}`,
+            body: `Updated from the staff app. Check it against their documents before the next pay run.`,
+            source_type: 'wf_staff', source_id: staff.id, target_role: 'manager',
+          });
+        } catch (e) { console.error('[staff-portal] ops alert:', (e as Error).message); }
+      }
       if (bankChanged) {
         // Bank swaps are THE payroll fraud vector — but that is a MANAGER
         // concern, not a till one (Peter, 6 Aug: "shouldn't go to the POS").
