@@ -43,7 +43,9 @@ export async function venueFacts(admin: Admin, locationId: string): Promise<Venu
 export function regionForApp(v: Venue) {
   const p = regionPack({ currency: v.currency });
   return { country: p.country, currency: p.currency, currencySymbol: p.currencySymbol, locale: p.locale, dateFormat: p.dateFormat,
-    bankDetails: p.bankDetails, workDocLabel: p.workDocLabel, holidayRules: p.holidayRules };
+    bankDetails: p.bankDetails, workDocLabel: p.workDocLabel, holidayRules: p.holidayRules,
+    // 5.12.85: which ID number the Me tab asks for: 'ni' (UK), 'ssn4' (US) or null (Ireland).
+    idNumberKind: p.payrollFields.includes('niNumber') ? 'ni' : p.payrollFields.includes('ssnLast4') ? 'ssn4' : null };
 }
 
 const mapShift = (s: any) => s && ({
