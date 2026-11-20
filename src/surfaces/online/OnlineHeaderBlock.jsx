@@ -141,7 +141,7 @@ export function Sheet({ theme, cardBdr, narrow, title, children, onClose, confir
       display: 'flex', alignItems: narrow ? 'flex-end' : 'center', justifyContent: 'center',
     }}>
       <div role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()} style={{
-        width: '100%', maxWidth: narrow ? '100%' : 520, maxHeight: '92vh', overflowY: 'auto',
+        width: '100%', maxWidth: narrow ? '100%' : 520, maxHeight: 'min(92vh, calc(100% - 12px))', overflowY: 'auto',
         background: theme.bg, color: theme.fg,
         borderRadius: narrow ? '18px 18px 0 0' : 18,
         boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',

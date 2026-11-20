@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.80',
+    date: '20 Nov 2026',
+    items: [
+      'Online ordering, the checkout title was hidden under the browser bar (Peter, 20 Nov 2026, Coffee Boy Headingley opened from the app: "this screen is off the top of the display"). The basket, item, checkout and QR checkout sheets were sized to 94 to 96 percent of the screen, and inside the app\'s browser (and Safari with its bars showing) that is taller than what is visible, so a sheet anchored to the bottom pushed its own top, the title and the drag handle, out of sight. Every customer sheet is now capped at the visible area as well. Web only, nothing to deploy, no SQL.',
+    ],
+  },
+  {
     v: '5.12.79',
     date: '19 Nov 2026',
     items: [

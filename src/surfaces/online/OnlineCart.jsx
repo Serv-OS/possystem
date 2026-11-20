@@ -45,7 +45,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxC
     }}>
       <div onClick={e => e.stopPropagation()} style={{
         width: '100%', maxWidth: 560,
-        maxHeight: '94vh', overflowY: 'auto',
+        maxHeight: 'min(94vh, calc(100% - 12px))', overflowY: 'auto',
         background: theme.bg, color: theme.fg,
         borderRadius: '18px 18px 0 0',
         display: 'flex', flexDirection: 'column',

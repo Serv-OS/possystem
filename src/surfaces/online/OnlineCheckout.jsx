@@ -1538,7 +1538,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }}>
       <div onClick={e => e.stopPropagation()} style={{
         width: '100%', maxWidth: 600,
-        maxHeight: '96vh', overflowY: 'auto',
+        maxHeight: 'min(96vh, calc(100% - 12px))', overflowY: 'auto',
         background: theme.bg, color: theme.fg,
         borderRadius: '18px 18px 0 0',
         boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
