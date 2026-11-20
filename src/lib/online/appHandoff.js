@@ -66,7 +66,11 @@ export async function claimHandoff({ fetchFn, gatewayUrl, otpUrl, anonKey, code,
       body: JSON.stringify({ action: 'refresh', token: claim.token, ...(locationId ? { location_id: locationId } : {}) }),
     });
     const j = await res.json().catch(() => null);
-    if (!res.ok || !j || !j.verified) return base;
+    // 20 Nov 2026: refresh answers in the shape of the member summary (customer, loyalty, gift
+    // cards, stamp cards) with NO verified flag and no token; only a code sign in carries those.
+    // Asking for verified here threw the name, email and points away and kept the phone alone
+    // (Peter: "it hasnt populated my info from the app"). The customer block is the proof.
+    if (!res.ok || !j || !j.customer) return base;
     return {
       phone: j.customer?.phone || base.phone,
       verified: true,

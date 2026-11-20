@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.82',
+    date: '20 Nov 2026',
+    items: [
+      'Ordering page opened from the customer app, the member\'s name, email and points did not arrive (Peter, 20 Nov 2026, Coffee Boy build 7: "it hasnt populated my info from the app", "still didnt pass detail across"). The app\'s code was swapped for a member token correctly, but the page then asked the member summary call (loyalty-otp refresh) for a "verified" flag that only a code sign in carries; the summary answers with the customer, loyalty, gift cards and stamp cards and no flag, so the page threw them away and kept the phone alone. The page now takes the summary on its customer block. Pinned against the gateway\'s real reply shape. Web only, nothing to deploy, no SQL.',
+    ],
+  },
+  {
     v: '5.12.81',
     date: '20 Nov 2026',
     items: [
