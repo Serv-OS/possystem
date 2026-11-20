@@ -27,6 +27,8 @@ import { wfMoneyText, DOC_INFO } from '../lib/regionPack';
 // 5.12.57: paid time off is Holiday (UK) or PTO (US), from the venue's region in the snapshot.
 import { holidayWord } from '../staff/payLaw';
 import { blockFor } from '../../supabase/functions/_shared/leaveBlocks.js';   // 5.12.61: blocked periods (the server refuses too)
+// 5.12.85: date of birth and ID number rules, one copy with the staff-portal (it refuses too).
+import { niProblem, ssnLast4Problem, dobProblem, formatNi, ID_WORDS } from '../../supabase/functions/_shared/staffIdRules.js';
 // MARKER 5.11.102 staff app chat tab
 import { ChatTab } from '../staff/StaffChat';
 import { useTeamChat } from '../staff/useTeamChat';
@@ -49,6 +51,7 @@ async function callPortal(body, jwt) {
 // snapshot's region. Set once per snapshot, read by every date on this surface.
 let LOCALE = 'en-GB';
 const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtDob = iso => new Date(iso + 'T00:00:00').toLocaleDateString(LOCALE, { day: 'numeric', month: 'short', year: 'numeric' });   // 5.12.85: a birthday needs its year
 const fmtStamp = (iso) => iso ? new Date(iso).toLocaleString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
 const hm = h => { const m = Math.round((Number(h) || 0) * 60); return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`; };
 
@@ -555,7 +558,7 @@ function TasksTab({ snap, onChanged, goToMe }) {
                     <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} disabled={uploading} onChange={e => { uploadRtw(e.target.files?.[0]); e.target.value = ''; }} />
                   </label>
                 )}
-                {!st.done && st.action === 'bank' && (
+                {!st.done && (st.action === 'bank' || st.action === 'details') && (
                   <button onClick={goToMe} style={{ background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 999, padding: '6px 13px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Add</button>
                 )}
                 {!st.done && !st.action && st.waiting && <span style={{ fontSize: 10.5, color: 'var(--t4)' }}>{st.waiting}</span>}
@@ -716,6 +719,10 @@ function SheetsTab({ snap }) {
 
 function MeTab({ snap, onSaved, chat }) {
   const me = snap?.me || {};
+  // 5.12.85: which ID number this venue's payroll uses ('ni', 'ssn4' or null). The server says; an
+  // older server that does not is read as the region's answer, and before either the row is not shown.
+  const idKind = me.idNumberKind ?? snap?.region?.idNumberKind ?? null;
+  const idValue = idKind === 'ni' ? me.niNumber : idKind === 'ssn4' ? me.ssnLast4 : null;
   const [editing, setEditing] = useState(null);   // 'details' | 'bank' | null
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -764,11 +771,14 @@ function MeTab({ snap, onSaved, chat }) {
       {saved && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700 }}>{saved}</div>}
 
       <div className="sv-glass" style={glass} ref={detailsRef}>
-        <RowHead title="My details" onEdit={() => { setForm({ address: me.address || '', ecName: me.emergencyContact?.name || '', ecPhone: me.emergencyContact?.phone || '', ecRelation: me.emergencyContact?.relationship || '' }); setEditing(editing === 'details' ? null : 'details'); }} open={editing === 'details'} />
+        <RowHead title="My details" onEdit={() => { setForm({ address: me.address || '', ecName: me.emergencyContact?.name || '', ecPhone: me.emergencyContact?.phone || '', ecRelation: me.emergencyContact?.relationship || '', dob: me.dob || '', idNumber: idKind === 'ni' ? formatNi(me.niNumber || '') : idKind === 'ssn4' ? (me.ssnLast4 || '') : '' }); setErr(''); setEditing(editing === 'details' ? null : 'details'); }} open={editing === 'details'} />
         {editing !== 'details' ? (
           <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.6 }}>
             {me.address || 'No address on file'}<br />
-            Emergency contact: {me.emergencyContact?.name ? `${me.emergencyContact.name} (${me.emergencyContact.relationship || 'contact'}) ${me.emergencyContact.phone || ''}` : 'none on file'}
+            Emergency contact: {me.emergencyContact?.name ? `${me.emergencyContact.name} (${me.emergencyContact.relationship || 'contact'}) ${me.emergencyContact.phone || ''}` : 'none on file'}<br />
+            {/* 5.12.85: their own date of birth and ID number (support ticket 20 Nov 2026: never shown before). */}
+            Date of birth: {me.dob ? fmtDob(me.dob) : 'not on file'}
+            {idKind && <><br />{ID_WORDS[idKind]}: {idValue ? <b className="mono">{idKind === 'ni' ? formatNi(idValue) : `***-**-${idValue}`}</b> : 'not on file'}</>}
           </div>
         ) : (
           <div>
@@ -776,8 +786,21 @@ function MeTab({ snap, onSaved, chat }) {
             <Field label="Emergency contact name" value={form.ecName} onChange={e => setForm(f => ({ ...f, ecName: e.target.value }))} />
             <Field label="Their phone" value={form.ecPhone} onChange={e => setForm(f => ({ ...f, ecPhone: e.target.value }))} inputMode="tel" />
             <Field label="Relationship" value={form.ecRelation} onChange={e => setForm(f => ({ ...f, ecRelation: e.target.value }))} placeholder="e.g. partner, parent" />
+            <Field label="Date of birth" type="date" value={form.dob || ''} onChange={e => setForm(f => ({ ...f, dob: e.target.value }))} />
+            {idKind === 'ni' && <Field label="National Insurance number" value={form.idNumber || ''} onChange={e => setForm(f => ({ ...f, idNumber: e.target.value.toUpperCase().replace(/[^A-Z0-9 ]/g, '').slice(0, 13) }))} placeholder="AB 12 34 56 C" autoCapitalize="characters" autoCorrect="off" spellCheck={false} />}
+            {idKind === 'ssn4' && <Field label="SSN last 4" value={form.idNumber || ''} onChange={e => setForm(f => ({ ...f, idNumber: e.target.value.replace(/\D/g, '').slice(0, 4) }))} inputMode="numeric" placeholder="1234" />}
+            <div style={{ fontSize: 11, color: 'var(--t4)', lineHeight: 1.5, marginBottom: 12 }}>Your manager is told when an {idKind === 'ssn4' ? 'SSN' : 'ID number'} already on file is changed. It protects your pay.</div>
             <ErrLine>{err}</ErrLine>
-            <Primary disabled={busy} onClick={() => save({ address: form.address, emergencyContact: { name: form.ecName, phone: form.ecPhone, relationship: form.ecRelation } })}>{busy ? 'Saving…' : 'Save details'}</Primary>
+            <Primary disabled={busy} onClick={() => {
+              // 5.12.85: the same rules the server applies, so the person sees why before the round trip.
+              const problem = dobProblem(form.dob) || (idKind === 'ni' ? niProblem(form.idNumber) : idKind === 'ssn4' ? ssnLast4Problem(form.idNumber) : null);
+              if (problem) { setErr(problem); return; }
+              save({
+                address: form.address, emergencyContact: { name: form.ecName, phone: form.ecPhone, relationship: form.ecRelation },
+                dob: form.dob || '',
+                ...(idKind === 'ni' ? { niNumber: form.idNumber || '' } : idKind === 'ssn4' ? { ssnLast4: form.idNumber || '' } : {}),
+              });
+            }}>{busy ? 'Saving…' : 'Save details'}</Primary>
           </div>
         )}
       </div>
