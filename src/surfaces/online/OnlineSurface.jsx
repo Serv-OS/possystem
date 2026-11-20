@@ -1647,7 +1647,7 @@ function AllergyPickerModal({ theme, cardBdr, all, active, onClose, onSave }) {
       display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
     }}>
       <div onClick={e => e.stopPropagation()} style={{
-        width: '100%', maxWidth: 520, maxHeight: '92vh', overflowY: 'auto',
+        width: '100%', maxWidth: 520, maxHeight: 'min(92vh, calc(100% - 12px))', overflowY: 'auto',
         background: theme.bg, color: theme.fg,
         borderRadius: '18px 18px 0 0',
         boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
