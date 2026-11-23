@@ -13,8 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   NAV_IA, BETA_ROUTES, MSM_ROUTE, LABEL_WHEN_MULTI, filterNav, routeLabel, stockAccessOf, canOpenRoute, firstAllowedRoute,
-  guardRoute, routesOfRow, allowedKeys, STOCK_GP_ROUTE, STOCK_REPORTS_ROUTE, STOCK_REPORTS_ALIAS, routeGateOk,
-} from './boSections.js';
+  guardRoute, routesOfRow, allowedKeys, STOCK_GP_ROUTE, STOCK_REPORTS_ROUTE, STOCK_REPORTS_ALIAS, routeGateOk, HQ_ROUTES } from './boSections.js';
 import { oneSiteScope } from './stock/siteScope.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
@@ -169,11 +168,11 @@ test('the alias opens Stock and GP only when the company is multi site AND the s
   assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, noReports), false, 'and the old route is closed too: the screen says so');
 });
 
-test('Drop 3 adds exactly six routes and Drop 4a exactly stock-gp: no multi-site-stock, the BETA list is exactly the Multi site menu', () => {
+test('Drop 3 adds exactly six routes and Drop 4a exactly stock-gp: no multi-site-stock, the BETA list is exactly the Multi site menu and the 7 Head office routes', () => {
   assert.ok(!allRoutes.includes('multi-site-stock'), 'Menu > Multi site stock never comes back');
   assert.ok(allRoutes.includes(STOCK_GP_ROUTE));
-  assert.deepEqual([...BETA_ROUTES], [MSM_ROUTE]);
-  assert.equal(allRoutes.length, 103, 'the 93 routes of v5.11.84 plus the 6 of Drop 3 plus stock-gp plus wf-chat (5.11.102) plus marketing-forms (5.12.40) plus website-report (5.12.67)');
+  assert.deepEqual([...BETA_ROUTES], [MSM_ROUTE, ...HQ_ROUTES]);   // 5.12.87: the head office hub released as BETA
+  assert.equal(allRoutes.length, 103 + 7, 'the 93 routes of v5.11.84 plus the 6 of Drop 3 plus stock-gp plus wf-chat (5.11.102) plus marketing-forms (5.12.40) plus website-report (5.12.67) plus the 7 Head office routes (16 Nov 2026, slice 2 adds hq-safe and hq-targets)');
   for (const id of STOCK_GATED) assert.ok(allRoutes.includes(id), id);
   assert.doesNotMatch(read('./boSections.js'), /multi-site-stock/);
   assert.equal(STOCK_GP_ROUTE, 'stock-gp');

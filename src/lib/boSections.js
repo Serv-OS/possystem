@@ -51,6 +51,11 @@ export {
 // collapsible accordion of existing routes.
 export const NAV_IA = [
   { label:'Overview',   icon:'home',      single:'overview' },
+  // 16 Nov 2026, Head office hub (Mozz Pizza's leadership app). No section key of its own: a row with
+  // no key fails closed, so only a login that opens everything (owners, ServOS, an unlimited login)
+  // is shown it. A franchisee with a list never sees it. Adding a 16th key needs the shared rules
+  // and the user_profiles CHECK changed together (boSectionRules.js, 20261008a), not done here.
+  { label:'Head office', icon:'home',     beta:true, children:[['hq-scorecard','Scorecard'],['hq-departments','Departments'],['hq-projects','Internal projects'],['hq-checkin','Weekly check in'],['hq-numbers','Daily numbers'],['hq-safe','Safe and banking'],['hq-targets','Targets']] },
   { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },   // uk only: a US venue reads TAX_LABEL_WHEN_US (Tax)
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-areas','Stock areas'],['stock-transfers','Transfers'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
@@ -177,7 +182,10 @@ export const STOCK_REPORTS_ALIAS = (next, profile) => (next === STOCK_REPORTS_RO
 // ── Beta features (18 Oct 2026, Peter: a small BETA tag next to the feature's name) ────────
 // The routes whose sidebar row, top bar title and page heading carry the BETA tag. The tag is
 // src/components/BetaTag.js; the screens ask isBetaRoute() and render it for these routes only.
-export const BETA_ROUTES = new Set([MSM_ROUTE]);
+// 23 Nov 2026 (Peter, releasing the head office hub: "mark as beta"): every hub route, and the
+// sidebar group itself (NAV row `beta: true`) and the Owner app card, carry the tag.
+export const HQ_ROUTES = Object.freeze(['hq-scorecard', 'hq-departments', 'hq-projects', 'hq-checkin', 'hq-numbers', 'hq-safe', 'hq-targets']);
+export const BETA_ROUTES = new Set([MSM_ROUTE, ...HQ_ROUTES]);
 export function isBetaRoute(routeId) {
   return typeof routeId === 'string' && BETA_ROUTES.has(routeId);
 }
