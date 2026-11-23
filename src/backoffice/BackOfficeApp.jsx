@@ -1181,6 +1181,10 @@ export default function BackOfficeApp() {
           background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)',
           display:'flex', alignItems:'center', justifyContent:'space-between',
           padding:'0 24px', flexShrink:0,
+          // v5.12.88 (Peter, 23 Nov 2026: "team chat hidden behind UI"): the blur makes this bar its
+          // own paint layer, and with no z-index the page's glass cards below, painted later, sat on
+          // top of the Team chat popover. The bar now stacks above the page; dialogs are far higher.
+          position:'relative', zIndex:30,
         }}>
           <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em', display:'flex', alignItems:'center', gap:8 }}>
             {showStockPicker && <StockSitePicker />}

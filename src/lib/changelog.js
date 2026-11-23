@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.88',
+    date: '23 Nov 2026',
+    items: [
+      'Back Office: the Team chat popover opened behind the page (Peter, 23 Nov 2026, screenshot of the Overview: "team chat hidden behind UI", the Tables active and Terminals online cards sat on top of it). The top bar has a glass blur, which makes it its own paint layer, and with no stacking order the glass cards below it, painted later, covered anything the bar opened. The bar now stacks above the page content; dialogs and full screen overlays sit far higher and are unchanged. No SQL.',
+    ],
+  },
+  {
     v: '5.12.87',
     date: '23 Nov 2026',
     items: [
