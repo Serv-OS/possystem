@@ -173,7 +173,7 @@ export function resolveBoardPrice(item, menuId = null) {
 // arrive snake (parent_id, sort_order) on the kiosk and online, and camel
 // (parentId, sortOrder) from the store on the till and the phone; both are read.
 const parentOf = (i) => i.parent_id ?? i.parentId ?? null;
-const orderOf = (i) => i.sort_order ?? i.sortOrder ?? 0;
+const orderOf = (i) => i.sortOrder ?? i.sort_order ?? 0;   // v5.12.86: the edited field first (lib/menuItemOrder.js)
 export function variantChildren(item, allItems) {
   if (!item?.id) return [];
   return (allItems || [])

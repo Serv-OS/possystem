@@ -2224,6 +2224,9 @@ export const useStore = create((set, get) => ({
         // edit set it (lib/menuRules.js rule 7). An item that already is a sub item, and any
         // edit that does not change the type, is never touched.
         const updated = { ...item, ...patch, ...soldAlonePatchForTypeChange(item, patch) };
+        // v5.12.86: the row keeps the database's sort_order beside sortOrder (lib/rowMapping.js spreads
+        // the row). A drag writes sortOrder; the raw column follows so no reader sees the old position.
+        if ('sortOrder' in patch && 'sort_order' in updated) updated.sort_order = patch.sortOrder;
         if (patch.modifierGroups !== undefined && !['subitem','variants','combo','pizza'].includes(updated.type)) {
           updated.type = patch.modifierGroups?.length > 0 ? 'modifiable' : 'simple';
         }
@@ -2491,7 +2494,7 @@ export const useStore = create((set, get) => ({
       const moved    = [...catItems];
       const [item]   = moved.splice(fromIdx, 1);
       moved.splice(toIdx, 0, item);
-      const reindexed = moved.map((it, idx) => ({ ...it, sortOrder: idx }));
+      const reindexed = moved.map((it, idx) => ({ ...it, sortOrder: idx, ...('sort_order' in it ? { sort_order: idx } : {}) }));
       return { menuItems: [...others, ...reindexed] };
     });
   },

@@ -1,5 +1,13 @@
 export const CHANGELOG = [
   {
+    v: '5.12.86',
+    date: '23 Nov 2026',
+    items: [
+      'Menu builder: dragging a product into place now shows the new order at once (Peter, 23 Nov 2026: "they just go into any order... refreshing the page reflects the new layout accurately"). The database was saved right; the screen was not. Since 5.11.111 every screen sorts products by one rule that read the raw sort_order column before the sortOrder field, and a Back Office row carries both (the row mapper spreads the database row), so a drag that changed sortOrder left the old sort_order in charge until a reload. The rule now reads the edited field first, the store keeps the raw column in step with every position edit, and the same two field read in menuPricing follows. Also: a drop on a product tile or spacer no longer also fires the grid\'s catch all, which could send the dragged tile to the end (the category list had this fix in 5.5.956).',
+      'Product editor, Modifiers tab: the list of modifier groups and instruction groups that can be added is always shown. Before, it only appeared on its own with 6 or fewer unassigned groups, so a venue with 7 or more saw an empty panel until they typed in the search box (Peter, 23 Nov 2026: "sometimes it populates and other times it doesn\'t"). First 8 shown, "N more, type to filter" below. No SQL, no edge function. Dev only: on develop, not on main.',
+    ],
+  },
+  {
     v: '5.12.85',
     date: '20 Nov 2026',
     items: [
