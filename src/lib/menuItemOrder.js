@@ -17,7 +17,12 @@ export const UNPLACED = 999;
 
 /** The item's position in its category, UNPLACED when none was ever given. */
 export function itemPosition(it) {
-  const v = it?.sort_order ?? it?.sortOrder;
+  // v5.12.86 (Peter, 23 Nov 2026: "they just go into any order... refreshing the page reflects the new
+  // layout accurately"). A Back Office row carries BOTH fields: the mapper (lib/rowMapping.js) spreads
+  // the database row, so sort_order stays beside sortOrder. A drag patches sortOrder only, and this
+  // read took sort_order first, so the screen kept the OLD order until a reload. The camel field is
+  // the one every edit writes, so it is read first; a raw database row (kiosk, online) has only sort_order.
+  const v = it?.sortOrder ?? it?.sort_order;
   const n = Number(v);
   return v == null || Number.isNaN(n) ? UNPLACED : n;
 }

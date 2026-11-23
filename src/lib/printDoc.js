@@ -20,6 +20,7 @@ import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
 import { receiptRewardLines } from './loyaltyMultiRedeem.js';
 import { isTaxExemptLine } from './giftCardLine.js';
+import { stickerHeader, stickerHeadline, stickerOrderNo, stickerCount, sideBySide } from './itemSticker.js';
 
 /**
  * The reward lines for a check: what the till staged (check.loyaltyRewards, [{ label, amount }]),
@@ -534,6 +535,46 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
   });
 
   b.divider('=').lf(3).cut();
+  return b.toDoc();
+}
+
+/**
+ * One ticket per item (sticker mode), 18 Nov 2026, from a Day Break pizza box label (Peter: "print
+ * separate labels per item so you can gather the order together"). Across the top the channel and
+ * the order type with "2 of 3"; the customer's name big; the item and its changes; then the time,
+ * the date and the order number; the centre's name small at the foot. `meta` is the KDS ticket's
+ * meta (lib/kds/kdsTicket.js buildTicketMeta); without one the table label stands in for the name.
+ * The words come from lib/itemSticker.js.
+ */
+export function buildItemStickerDoc({ meta, table, centreName, item, index, total, sentAt, delivery, reprint, newCustomer }, { cols = 42 } = {}) {
+  const b = new DocBuilder(cols);
+  const { time, date } = datePart(new Date(sentAt || Date.now()));
+
+  b.init().left().normal();
+  b.line(sideBySide(stickerHeader(meta, delivery), stickerCount(index, total), cols));
+
+  // The name prints double width, so half the columns fit on a line.
+  b.bold(true).doubleBoth().text(stickerHeadline(meta, table).slice(0, Math.max(8, Math.floor(cols / 2)))).lf();
+  if (reprint) b.line('** REPRINT **');
+  if (newCustomer) b.line('** NEW CUSTOMER **');
+
+  b.normal().bold(true).doubleHeight();
+  const [nameLine, sizeLine] = docketNameLines(item?.kitchenName || item?.name);
+  b.text(nameLine).lf();
+  if (sizeLine) b.text('  ' + sizeLine).lf();
+  b.normal();
+  if (item?.seat) b.fontB().line(`  Seat ${item.seat}`).fontA();
+  const modLines = Array.isArray(item?.mods) ? item.mods : (item?.mods ? String(item.mods).split(' · ') : []);
+  modLines.forEach(m => {
+    const text = (typeof m === 'string' ? m : (m?.label || '')).trim();
+    if (!text) return;
+    b.red().bold(true).line(`  ${text}`).bold(false).black();
+  });
+  if (item?.notes) b.red().bold(true).underline(true).line(`  ${item.notes}`).bold(false).underline(false).black();
+
+  b.lf().line(sideBySide(`${time}   ${date}`, stickerOrderNo(meta), cols));
+  if (centreName) b.fontB().line(String(centreName)).fontA();
+  b.lf(2).cut();
   return b.toDoc();
 }
 

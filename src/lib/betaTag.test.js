@@ -8,16 +8,19 @@ import fs from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import BetaTag from '../components/BetaTag.js';
-import { BETA_ROUTES, isBetaRoute, MSM_ROUTE, NAV_IA, routesOfRow } from './boSections.js';
+import { BETA_ROUTES, isBetaRoute, MSM_ROUTE, NAV_IA, routesOfRow, HQ_ROUTES } from './boSections.js';
 
 const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
 const allRoutes = NAV_IA.flatMap(routesOfRow);
 
-test('the Multi site menu is the one beta route; every other sidebar route is not', () => {
+test('the Multi site menu and the 7 Head office routes are the beta routes (5.12.87); every other sidebar route is not', () => {
   assert.ok(BETA_ROUTES.has(MSM_ROUTE));
   assert.equal(isBetaRoute(MSM_ROUTE), true);
   assert.equal(isBetaRoute('multi-site-menu'), true);
-  const others = allRoutes.filter((id) => id !== MSM_ROUTE);
+  assert.equal(HQ_ROUTES.length, 7);
+  for (const id of HQ_ROUTES) assert.equal(isBetaRoute(id), true, id);
+  assert.equal(isBetaRoute('hq-scorecard'), true);
+  const others = allRoutes.filter((id) => !BETA_ROUTES.has(id));
   assert.ok(others.length > 50, `${others.length} other routes`);
   for (const id of others) assert.equal(isBetaRoute(id), false, id);
   for (const id of ['menu', 'overview', 'wf-rota', '', null, undefined, 0, {}]) assert.equal(isBetaRoute(id), false, String(id));
@@ -57,9 +60,16 @@ test('Back Office shows the tag for a beta route only: the sidebar child row and
   assert.ok(top > 0);
   assert.match(bo.slice(top, bo.indexOf('</div>', top)), /\{isBetaRoute\(section\) && <BetaTag \/>\}/);
   // Nowhere is the tag rendered without asking the route.
+  // 5.12.87: the one exception is a sidebar GROUP whose row says `beta: true` (Head office, every
+  // route of which is in BETA_ROUTES), so the group header carries the tag too.
   const bare = [...bo.matchAll(/<BetaTag/g)].length;
   const gated = [...bo.matchAll(/isBetaRoute\((id|section)\) && <BetaTag/g)].length;
-  assert.equal(bare, gated, 'every tag in Back Office is behind isBetaRoute()');
+  const group = [...bo.matchAll(/\{sec\.beta && <BetaTag \/>\}/g)].length;
+  assert.equal(group, 1, 'the group header tag, once');
+  assert.equal(bare, gated + group, 'every tag in Back Office is behind isBetaRoute() or the group\'s beta flag');
+  const betaGroups = NAV_IA.filter((r) => r.beta);
+  assert.deepEqual(betaGroups.map((r) => r.label), ['Head office']);
+  for (const id of routesOfRow(betaGroups[0])) assert.ok(BETA_ROUTES.has(id), `${id} is a beta route, so the group may say beta`);
   // The sidebar row shape is unchanged (the section access tests read it).
   assert.match(read('./boSections.js'), /\['multi-site-menu','Multi site menu'\]/);
 });

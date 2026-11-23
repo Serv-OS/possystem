@@ -1351,7 +1351,7 @@ function MenuTab() {
                       onDragOver={e=>{e.preventDefault();if(dragItemId&&dragItemId!==item.id)setOverItemId(item.id);}}
                       onDragLeave={()=>setOverItemId(null)}
                       onDragEnd={()=>{setDragItemId(null);setOverItemId(null);}}
-                      onDrop={e=>{e.preventDefault();reorderGrid(dragItemId,item.id);setDragItemId(null);setOverItemId(null);}}
+                      onDrop={e=>{e.preventDefault();e.stopPropagation();reorderGrid(dragItemId,item.id);setDragItemId(null);setOverItemId(null);}}
                       style={{ position:'relative', borderRadius:14, minHeight:90, opacity:dragItemId===item.id?.3:1,
                         border:`2px dashed ${overItemId===item.id?'var(--acc)':'var(--bdr2)'}`,
                         background:overItemId===item.id?'var(--acc-d)':'var(--bg3)',
@@ -1380,7 +1380,7 @@ function MenuTab() {
                         onDragOver={e=>{ e.preventDefault(); if(dragItemId&&dragItemId!==item.id&&overItemId!==item.id) setOverItemId(item.id); }}
                         onDragLeave={()=>setOverItemId(null)}
                         onDragEnd={()=>{setDragItemId(null);setOverItemId(null);}}
-                        onDrop={e=>{e.preventDefault();reorderGrid(dragItemId,item.id);}}
+                        onDrop={e=>{e.preventDefault();e.stopPropagation();/* v5.12.86: the grid's catch all below used to fire too and send the tile to the end */reorderGrid(dragItemId,item.id);}}
                         onClick={()=>setSelItemId(active?null:item.id)}
                         // v5.9.32: the drop marker is drawn ON the tile, not inserted above
                         // it. As a real element it pushed every tile below down 6px the
@@ -3518,7 +3518,8 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
                 <input style={{ ...inp, paddingLeft:28, fontSize:12 }} value={modSearch} onChange={e=>setModSearch(e.target.value)} placeholder="Search modifier groups to add…"/>
               </div>
-              {(modSearch || filteredMods.length <= 6) && filteredMods.length > 0 && (
+              {/* v5.12.86: always list the groups that can be added. Before, the list only appeared on its own with 6 or fewer unassigned groups, so venues with 7 or more saw an empty panel until they typed. */}
+              {filteredMods.length > 0 && (
                 <div style={{ marginTop:4, border:'1px solid var(--bdr)', borderRadius:8, overflow:'hidden', background:'var(--bg2)' }}>
                   {filteredMods.slice(0,8).map(g => (
                     <div key={g.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', borderBottom:'1px solid var(--bdr)', cursor:'pointer' }} onClick={()=>addMod(g.id)}
@@ -3568,7 +3569,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', display:'flex' }}><Icon name="search" size={14} /></span>
                 <input style={{ ...inp, paddingLeft:28, fontSize:12 }} value={instSearch} onChange={e=>setInstSearch(e.target.value)} placeholder="Search instruction groups to add…"/>
               </div>
-              {(instSearch || filteredInst.length <= 6) && filteredInst.length > 0 && (
+              {filteredInst.length > 0 && (
                 <div style={{ marginTop:4, border:'1px solid var(--bdr)', borderRadius:8, overflow:'hidden', background:'var(--bg2)' }}>
                   {filteredInst.slice(0,6).map(g => (
                     <div key={g.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', borderBottom:'1px solid var(--bdr)', cursor:'pointer' }} onClick={()=>addInst(g.id)}

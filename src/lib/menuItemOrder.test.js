@@ -59,3 +59,17 @@ test('the till and kiosk reads break a tie by id, as the online read always did'
   assert.match(read('../surfaces/KioskApp.jsx'), /from\('menu_items'\)\.select\('\*'\)\.eq\('location_id', locationId\)\.eq\('archived', false\)\.order\('sort_order'\)\.order\('id'\)/);
   assert.match(read('../surfaces/online/OnlineSurface.jsx'), /\.eq\('archived', false\)\.order\('sort_order'\)\.order\('id'\)/);
 });
+
+test('v5.12.86: a Back Office row dragged into place shows there at once: the edited sortOrder beats the stale sort_order the mapper left beside it', () => {
+  // lib/rowMapping.js spreads the database row, so a store row holds both fields. A drag patches
+  // sortOrder only. Before this the raw column was read first and the screen kept the old order
+  // until a page reload (Peter, 23 Nov 2026).
+  const a = { id: 'a', sort_order: 0, sortOrder: 2 };   // dragged from first to third
+  const b = { id: 'b', sort_order: 1, sortOrder: 0 };
+  const c = { id: 'c', sort_order: 2, sortOrder: 1 };
+  assert.deepEqual(sortMenuItems([a, b, c]).map((i) => i.id), ['b', 'c', 'a']);
+  // a raw database row (kiosk, online) has only sort_order and still sorts by it
+  assert.deepEqual(sortMenuItems([{ id: 'x', sort_order: 5 }, { id: 'y', sort_order: 1 }]).map((i) => i.id), ['y', 'x']);
+  // an unplaced row is still last
+  assert.equal(itemPosition({ id: 'z' }), UNPLACED);
+});
