@@ -1,5 +1,13 @@
 export const CHANGELOG = [
   {
+    v: '5.12.92',
+    date: '24 Nov 2026',
+    items: [
+      'Workforce opens again (customer report, 24 Nov 2026: "App Error, Cannot access before initialization" on every Workforce page). 5.12.91 broke it. The new code that reads the PINs in use at the site was placed one line above the line that works out which site you are on, so the screen stopped the moment it drew. It is now below it. Nothing was lost and no data was touched: the pages simply would not open. Tests and the build both passed, because no test draws that screen.',
+      'A new check so this cannot ship again: every source file (1,310 of them) is read on every build, and a value used above the line that makes it stops the build. It is proven against the 5.12.91 file, which it refuses.',
+    ],
+  },
+  {
     v: '5.12.91',
     date: '24 Nov 2026',
     items: [
