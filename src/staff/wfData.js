@@ -182,8 +182,10 @@ export async function textTillPin({ posUserId = null, staff = null, pin, name = 
   if (isMock || !supabase) return { ok: true, mock: true };
   let rec = staff;
   if (!rec && posUserId) {
-    const { data } = await supabase.from('wf_staff').select('name, mobile, location_id').eq('pos_user_id', posUserId).neq('status', 'leaver').limit(1);
-    rec = data?.[0] ? { name: data[0].name, mobile: data[0].mobile, locationId: data[0].location_id } : null;
+    // Exactly one live staff record must hold this till user. With two (records linked by hand long
+    // ago) there is no telling whose mobile is right, so nothing is sent.
+    const { data } = await supabase.from('wf_staff').select('name, mobile, location_id').eq('pos_user_id', posUserId).neq('status', 'leaver').limit(2);
+    rec = data?.length === 1 ? { name: data[0].name, mobile: data[0].mobile, locationId: data[0].location_id } : null;
   }
   if (!rec) return { ok: false, skipped: 'no-record' };
   if (!String(rec.mobile || '').trim()) return { ok: false, skipped: 'no-mobile' };
@@ -858,9 +860,16 @@ const mapAvail = r => ({ id: r.id, staffId: r.staff_id, weekStart: r.week_start,
 export async function loadAvailability(locationId) {
   if (isMock || !supabase) return lsGet('availability');
   if (!locationId) return [];
-  const { data, error } = await supabase.from('wf_availability').select('*').eq('location_id', locationId);
-  if (error) { console.warn('[wf] loadAvailability:', error.message); return []; }
-  return (data || []).map(mapAvail);
+  // 5.12.91: read in pages. A person may now hold a pattern for each of 26 future weeks, and one read
+  // is capped at 1,000 rows, so a big site would silently lose rows (and the rota its clash warnings).
+  const rows = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await supabase.from('wf_availability').select('*').eq('location_id', locationId).order('id').range(from, from + 999);
+    if (error) { console.warn('[wf] loadAvailability:', error.message); break; }
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return rows.map(mapAvail);
 }
 export async function saveAvailability(av, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('availability', av);

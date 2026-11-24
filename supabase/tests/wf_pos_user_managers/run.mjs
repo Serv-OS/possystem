@@ -15,7 +15,12 @@
 //      somebody else's, cannot link a leaver, and gets the other company refusal as an owner would;
 //   5. a staff login and an anonymous session are still refused; an owner and the super admin still
 //      link, relink and unlink;
-//   6. the ROLLBACK puts the owner only door back, and the migration applies again after it.
+//   6. the two holes a review found in the first draft are closed: a manager cannot move a record to
+//      their own site to link it (the site move guard), and cannot free a till user by marking its
+//      holder a leaver; the guard lets through an owner, a manager of both sites, a save that sends
+//      the same site, the service role and the database;
+//   7. the ROLLBACK puts the owner only door back and removes the guard, and the migration applies
+//      again after it.
 // Exit code 0 only when every check holds.
 
 import { spawnSync } from 'node:child_process';
@@ -60,7 +65,10 @@ const id = (p, n) => `${p}-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 const ORG = id('0a000000', 1), ORG2 = id('0a000000', 2);
 const A = id('a0000000', 1), B = id('a0000000', 2), C = id('c0000000', 1);
-const U = { owner: id('10000000', 1), mgr: id('10000000', 4), staff: id('10000000', 5), superAdmin: id('10000000', 6), other: id('10000000', 7), anon: id('10000000', 8) };
+const U = { owner: id('10000000', 1), mgr: id('10000000', 4), staff: id('10000000', 5), superAdmin: id('10000000', 6), other: id('10000000', 7), anon: id('10000000', 8),
+  both: id('10000000', 9),      // a manager at A and at B
+  halfBoth: id('10000000', 10), // a manager at A, only staff at B
+};
 const S = { cara: id('5a000000', 1), pat: id('5a000000', 2), lee: id('5a000000', 3), bo: id('5a000000', 5), dee: id('5a000000', 6) };
 const T = { one: id('7e000000', 1), two: id('7e000000', 2), patsTill: id('7e000000', 3), other: id('7e000000', 4), orgOnly: id('7e000000', 5), atB: id('7e000000', 6) };
 
@@ -91,9 +99,12 @@ try {
          (${lit(U.mgr)}, ${lit(ORG)}, ${lit(A)}, 'Mo Manager', 'mo@example.test', 'manager'),
          (${lit(U.staff)}, ${lit(ORG)}, ${lit(A)}, 'Sam Staff', 'sam@example.test', 'staff'),
          (${lit(U.superAdmin)}, null, null, 'Peter', 'peter@example.test', 'super_admin'),
-         (${lit(U.other)}, ${lit(ORG2)}, ${lit(C)}, 'Otto Other', 'otto@example.test', 'owner');
+         (${lit(U.other)}, ${lit(ORG2)}, ${lit(C)}, 'Otto Other', 'otto@example.test', 'owner'),
+         (${lit(U.both)}, ${lit(ORG)}, ${lit(A)}, 'Bea Both', 'bea@example.test', 'manager'),
+         (${lit(U.halfBoth)}, ${lit(ORG)}, ${lit(A)}, 'Hal Half', 'hal@example.test', 'manager');
        insert into public.user_locations (user_id, location_id, role) values
-         (${lit(U.owner)}, ${lit(A)}, 'owner'), (${lit(U.mgr)}, ${lit(A)}, 'manager'), (${lit(U.staff)}, ${lit(A)}, 'staff'), (${lit(U.other)}, ${lit(C)}, 'owner');
+         (${lit(U.owner)}, ${lit(A)}, 'owner'), (${lit(U.mgr)}, ${lit(A)}, 'manager'), (${lit(U.staff)}, ${lit(A)}, 'staff'), (${lit(U.other)}, ${lit(C)}, 'owner'),
+         (${lit(U.both)}, ${lit(A)}, 'manager'), (${lit(U.both)}, ${lit(B)}, 'manager'), (${lit(U.halfBoth)}, ${lit(A)}, 'manager'), (${lit(U.halfBoth)}, ${lit(B)}, 'staff');
        insert into public.staff_members (id, location_id, org_id, name, pin) values
          (${lit(T.one)}, ${lit(A)}, ${lit(ORG)}, 'Till One', '1111'), (${lit(T.two)}, ${lit(A)}, ${lit(ORG)}, 'Till Two', '2222'),
          (${lit(T.patsTill)}, ${lit(A)}, ${lit(ORG)}, 'Pat P', '3333'), (${lit(T.other)}, ${lit(C)}, ${lit(ORG2)}, 'Till Other', '4444'),
@@ -115,7 +126,7 @@ try {
   console.log('2. the migration');
   {
     const mig = psql({ args: ['-1', '-f', MIGRATION] });
-    ok(mig.stdout.trim().split('\n').pop() === 'wf_staff_set_pos_user|t|t|f', `check row as documented (${mig.stdout.trim().split('\n').pop()})`);
+    ok(mig.stdout.trim().split('\n').pop() === 'wf_staff_set_pos_user|t|t|f|t', `check row as documented (${mig.stdout.trim().split('\n').pop()})`);
     const again = psql({ args: ['-1', '-f', MIGRATION] });
     ok(again.status === 0 && sql(`select count(*) from pg_proc where proname = 'wf_staff_set_pos_user'`) === '1', 'a second run is harmless: still one function');
     ok(sql(`select has_function_privilege('anon', 'public.wf_staff_set_pos_user(uuid,uuid,text)', 'EXECUTE')::text`) === 'false', 'an anonymous session still may not call it');
@@ -158,15 +169,54 @@ try {
     ok(door(U.mgr, S.cara, T.one).status === 0 && posOf(S.cara) === T.one, 'after an owner removed it, a manager can make the first link again');
   }
 
-  console.log('6. rollback');
+  console.log('6. the two holes the review found');
+  {
+    const locOf = (staff) => sql(`select location_id::text from public.wf_staff where id = ${lit(staff)}`);
+    const move = (sub, staff, to, role = 'authenticated') => as(role, `update public.wf_staff set location_id = ${lit(to)} where id = ${lit(staff)}`, { sub });
+    sql(`update public.wf_staff set pos_user_id = null where id = ${lit(S.bo)}`);   // Bo at B, no till user
+    // Hole 1: move Bo to my site, link, move back.
+    const m1 = move(U.mgr, S.bo, A);
+    ok(refused(m1, '42501', /manager of both sites/) && locOf(S.bo) === B, 'a manager of A cannot move a site B record to A');
+    ok(refused(door(U.mgr, S.bo, T.two), '42501', /or a manager of this site/) && posOf(S.bo) === '-', 'so Bo at B cannot be linked by a manager of A');
+    ok(refused(move(U.halfBoth, S.bo, A), '42501', /manager of both sites/) && locOf(S.bo) === B, 'manager at A but only staff at B: still refused');
+    ok(refused(move(U.staff, S.dee, B), '42501', /manager of both sites/) && locOf(S.dee) === A, 'a staff login cannot move a record');
+    const same = as('authenticated', `update public.wf_staff set name = 'Dee D', location_id = ${lit(A)} where id = ${lit(S.dee)}`, { sub: U.mgr });
+    ok(same.status === 0, 'a save that sends the SAME site is not a move and is never refused (the staff form does this)');
+    const other = as('authenticated', `update public.wf_staff set name = 'Dee D' where id = ${lit(S.dee)}`, { sub: U.mgr });
+    ok(other.status === 0, 'a save that does not touch the site is untouched by the guard');
+    ok(move(U.both, S.bo, A).status === 0 && locOf(S.bo) === A, 'a manager of BOTH sites may move a record');
+    ok(move(U.both, S.bo, B).status === 0 && locOf(S.bo) === B, 'and move it back');
+    ok(move(U.owner, S.bo, A).status === 0 && move(U.owner, S.bo, B).status === 0, 'an owner of the company may move a record');
+    ok(move(U.superAdmin, S.bo, A).status === 0 && move(U.superAdmin, S.bo, B).status === 0, 'the super admin may move a record');
+    ok(refused(move(U.other, S.bo, C), '42501', /./) || locOf(S.bo) === B, 'another company\'s owner cannot take a record');
+    const svc = as('service_role', `update public.wf_staff set location_id = ${lit(A)} where id = ${lit(S.bo)}`);
+    ok(svc.status === 0 && locOf(S.bo) === A, 'the service role (the edge functions) may move a record');
+    sql(`update public.wf_staff set location_id = ${lit(B)} where id = ${lit(S.bo)}`);
+    ok(locOf(S.bo) === B, 'the database itself may move a record');
+    // Hole 2: mark the holder a leaver, link their till user to someone else, mark them active again.
+    ok(posOf(S.pat) === T.patsTill, 'Pat holds a till user');
+    ok(as('authenticated', `update public.wf_staff set status = 'leaver' where id = ${lit(S.pat)}`, { sub: U.mgr }).status === 0, 'a manager can mark Pat a leaver (status is theirs to write)');
+    sql(`update public.wf_staff set pos_user_id = null where id = ${lit(S.dee)}`);
+    ok(refused(door(U.mgr, S.dee, T.patsTill), '23505', /already linked to another staff record/) && posOf(S.dee) === '-', 'but still cannot link Pat\'s till user to Dee');
+    sql(`update public.wf_staff set status = 'active' where id = ${lit(S.pat)}`);
+    ok(sql(`select count(*) from public.wf_staff where pos_user_id = ${lit(T.patsTill)}`) === '1', 'one record holds that till user, as before');
+    // An owner keeps the old rule (a leaver's till user can be given to someone else).
+    sql(`update public.wf_staff set status = 'leaver' where id = ${lit(S.pat)}`);
+    ok(door(U.owner, S.dee, T.patsTill).status === 0 && posOf(S.dee) === T.patsTill, 'an owner may still hand a leaver\'s till user to someone else, as before');
+    sql(`update public.wf_staff set pos_user_id = null where id = ${lit(S.dee)}; update public.wf_staff set status = 'active' where id = ${lit(S.pat)};`);
+  }
+
+  console.log('7. rollback');
   {
     const rb = psql({ args: ['-1', '-f', ROLLBACK] });
-    ok(rb.stdout.trim().split('\n').pop() === 'wf_staff_set_pos_user|f', `rollback check row (${rb.stdout.trim().split('\n').pop()})`);
+    ok(rb.stdout.trim().split('\n').pop() === 'wf_staff_set_pos_user|f|f', `rollback check row (${rb.stdout.trim().split('\n').pop()})`);
+    ok(as('authenticated', `update public.wf_staff set location_id = ${lit(A)} where id = ${lit(S.bo)}`, { sub: U.mgr }).status === 0, 'the site move guard is gone with it (as before 20261206a)');
+    sql(`update public.wf_staff set location_id = ${lit(B)} where id = ${lit(S.bo)}`);
     ok(refused(door(U.mgr, S.dee, T.two), '42501', /Only an owner of this company can link/) && posOf(S.dee) === '-', 'a manager is refused again');
     ok(posOf(S.cara) === T.one, 'the link the manager made stays');
     ok(door(U.owner, S.dee, T.two).status === 0 && posOf(S.dee) === T.two, 'an owner still links');
     const mig = psql({ args: ['-1', '-f', MIGRATION] });
-    ok(mig.stdout.trim().split('\n').pop() === 'wf_staff_set_pos_user|t|t|f', 'the migration applies again after the rollback');
+    ok(mig.stdout.trim().split('\n').pop() === 'wf_staff_set_pos_user|t|t|f|t', 'the migration applies again after the rollback');
   }
 } finally {
   stop();

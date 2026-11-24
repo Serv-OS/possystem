@@ -9,13 +9,29 @@
 --   a MANAGER of the person's own site (user_locations role 'manager' at wf_staff.location_id)
 --   may make the FIRST link for someone who has no till user yet, to a till user of the SAME site.
 -- A manager still cannot change or remove a link that already exists, link a till user from
--- another site, or act at a site they do not manage. Those stay with an owner, so the identity
--- fence from 20261104a holds: nobody can be pointed at somebody else's till user by a manager.
--- The second sign in step, the leaver check, the "already linked to another record" check and the
--- wf_audit row are exactly as before.
+-- another site, link a till user that ANY other staff record holds (a leaver's included), or act
+-- at a site they do not manage. Those stay with an owner. The second sign in step, the leaver
+-- check and the wf_audit row are exactly as before.
+--
+-- What "somebody else's till user" means here: one that another staff record is linked to. A
+-- manager can already add, rename and re-PIN the till users of their own site on the Team page,
+-- so a till user with no staff record yet is theirs to link, as it is theirs to edit.
+--
+-- TWO HOLES A REVIEW FOUND IN THE FIRST DRAFT, BOTH CLOSED HERE (and both in the harness):
+--   1. "Own site" was read from wf_staff.location_id, which any Back Office login of the company
+--      could change with a plain update. A manager of site A could move a site B record to A,
+--      link it, and move it back. NEW: a guard on that one column (wf_staff_location_guard). A
+--      staff record changes site only for an owner or admin of the company, or a login that is
+--      manager or above at BOTH the old and the new site. No screen moves a record between sites
+--      today (a second site is a second record, through its own door), so nothing in the app
+--      changes; a save that sends the same site is not a move and is never refused.
+--   2. The "already linked to another record" check skips leavers, and status is manager
+--      writable: mark the holder a leaver, link, mark them active again. NEW: on the manager path
+--      a till user that any other record holds is refused, leaver or not.
 --
 -- Proven on a local PostgreSQL by supabase/tests/wf_pos_user_managers/run.mjs.
--- One function replaced, no table, column, policy or trigger changes. Safe to run twice.
+-- One function replaced, one small guard function and its trigger added. No table, column,
+-- policy or grant changes. Safe to run twice.
 
 set client_min_messages = warning;
 
@@ -102,6 +118,12 @@ begin
     if v_manager and not v_trusted and sm.location_id is distinct from st.location_id then
       raise exception 'A manager can only link a till user of this site' using errcode = '42501';
     end if;
+    -- A manager may not take a till user that ANY other record holds. The owner check below skips
+    -- leavers, and a manager can write status, so for a manager a leaver's till user counts too.
+    if v_manager and not v_trusted
+       and exists (select 1 from public.wf_staff w where w.pos_user_id = p_pos_user_id and w.id <> st.id) then
+      raise exception 'That till user is already linked to another staff record' using errcode = '23505';
+    end if;
     select w.id into v_other from public.wf_staff w
      where w.pos_user_id = p_pos_user_id and w.id <> st.id and w.status <> 'leaver' limit 1;
     if found then
@@ -124,12 +146,67 @@ grant execute on function public.wf_staff_set_pos_user(uuid, uuid, text) to auth
 comment on function public.wf_staff_set_pos_user(uuid, uuid, text) is
   'The one door for wf_staff.pos_user_id: an owner of the company (user_profiles owner of the org, user_locations owner or admin at a venue of it, or a super admin), the service role, or the database. Since 20261206a a manager of the person''s own site may make the FIRST link, to a till user of that site. Writes a wf_audit row.';
 
+-- -- The guard: a staff record changes site only for someone trusted at both sites ---------------
+create or replace function public.wf_staff_location_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp as $f$
+declare
+  v_role text := coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '');
+  v_uid uuid := auth.uid();
+begin
+  -- Not a move (a save that sends the same site): nothing to judge.
+  if new.location_id is not distinct from old.location_id then
+    return new;
+  end if;
+  -- The edge functions, and the database itself (the SQL editor, a migration, pg_cron).
+  if v_role = 'service_role' then
+    return new;
+  end if;
+  if v_role = '' and session_user::text not in ('authenticator', 'anon', 'authenticated') then
+    return new;
+  end if;
+  if v_uid is null or public.is_anon_session() then
+    raise exception 'Sign in to Back Office first' using errcode = '42501';
+  end if;
+  -- An owner or admin of the company (the same test the till link door uses), or the super admin.
+  if public.is_super_admin()
+     or exists (select 1 from public.user_profiles p
+                 where p.id = v_uid and p.role = 'owner' and p.org_id is not null and p.org_id = old.org_id)
+     or exists (select 1 from public.user_locations ul
+                  join public.locations l on l.id = ul.location_id
+                 where ul.user_id = v_uid and lower(coalesce(ul.role, '')) in ('owner', 'admin') and l.org_id = old.org_id) then
+    return new;
+  end if;
+  -- Otherwise: manager or above at BOTH the site they are leaving and the site they are joining.
+  if exists (select 1 from public.user_locations ul
+              where ul.user_id = v_uid and ul.location_id = old.location_id
+                and lower(coalesce(ul.role, '')) in ('owner', 'admin', 'manager'))
+     and exists (select 1 from public.user_locations ul
+                  where ul.user_id = v_uid and ul.location_id = new.location_id
+                    and lower(coalesce(ul.role, '')) in ('owner', 'admin', 'manager')) then
+    return new;
+  end if;
+  raise exception 'Moving a staff record to another site needs an owner of this company, or a manager of both sites' using errcode = '42501';
+end
+$f$;
+revoke all on function public.wf_staff_location_guard() from public, anon, authenticated, service_role;
+comment on function public.wf_staff_location_guard() is
+  'A staff record changes site (wf_staff.location_id) only for an owner or admin of the company, the super admin, a login that is manager or above at both sites, the service role or the database. 20261206a.';
+
+drop trigger if exists wf_staff_location_guard_trg on public.wf_staff;
+create trigger wf_staff_location_guard_trg
+  before update of location_id on public.wf_staff
+  for each row execute function public.wf_staff_location_guard();
+
 notify pgrst, 'reload schema';
 
--- Check: one row, wf_staff_set_pos_user | t | t | f
+-- Check: one row, wf_staff_set_pos_user | t | t | f | t
 select p.proname,
        position('v_manager' in pg_get_functiondef(p.oid)) > 0 as manager_rule,
        has_function_privilege('authenticated', p.oid, 'EXECUTE') as logins_may_call,
-       has_function_privilege('anon', p.oid, 'EXECUTE') as anon_may_call
+       has_function_privilege('anon', p.oid, 'EXECUTE') as anon_may_call,
+       exists (select 1 from pg_trigger t where t.tgrelid = 'public.wf_staff'::regclass and t.tgname = 'wf_staff_location_guard_trg' and not t.tgisinternal) as location_guard
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public' and p.proname = 'wf_staff_set_pos_user';

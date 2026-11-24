@@ -2,7 +2,9 @@
 --
 -- Undoes 20261206a: puts wf_staff_set_pos_user back exactly as 20261104a made it (owners only).
 -- Links managers made while 20261206a was in place stay as they are; they are ordinary links.
--- After this, a manager who presses "Set as POS user" is refused again.
+-- After this, a manager who presses "Set as POS user" is refused again. The guard on moving a staff
+-- record between sites (wf_staff_location_guard) is removed with it, so any Back Office login of
+-- the company can change a record's site again, as before 20261206a.
 
 set client_min_messages = warning;
 
@@ -89,9 +91,13 @@ grant execute on function public.wf_staff_set_pos_user(uuid, uuid, text) to auth
 comment on function public.wf_staff_set_pos_user(uuid, uuid, text) is
   'The one door for wf_staff.pos_user_id: an owner of the company (user_profiles owner of the org, user_locations owner or admin at a venue of it, or a super admin), the service role, or the database. Writes a wf_audit row. 20261104a.';
 
+drop trigger if exists wf_staff_location_guard_trg on public.wf_staff;
+drop function if exists public.wf_staff_location_guard();
+
 notify pgrst, 'reload schema';
 
--- Check: one row, wf_staff_set_pos_user | f
-select p.proname, position('v_manager' in pg_get_functiondef(p.oid)) > 0 as manager_rule
+-- Check: one row, wf_staff_set_pos_user | f | f
+select p.proname, position('v_manager' in pg_get_functiondef(p.oid)) > 0 as manager_rule,
+       exists (select 1 from pg_trigger t where t.tgrelid = 'public.wf_staff'::regclass and t.tgname = 'wf_staff_location_guard_trg' and not t.tgisinternal) as location_guard
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public' and p.proname = 'wf_staff_set_pos_user';

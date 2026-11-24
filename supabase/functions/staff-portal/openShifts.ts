@@ -183,7 +183,9 @@ async function availabilityChangeDate(admin: Admin, staff: any, v: Venue, settin
 async function availabilityForApp(admin: Admin, staff: any, v: Venue, settings: any, rows: any[]) {
   const now = availabilityInEffect(rows, v.todayIso);
   const changesFrom = await availabilityChangeDate(admin, staff, v, settings);
-  const next = pendingAvailability(rows, v.todayIso)[0] ?? null;
+  // The one change an older app shows: the first week that can still be changed (a week already on the
+  // rota is locked, and since 5.12.91 earlier filed weeks are kept, so the soonest row may be one).
+  const next = pendingAvailability(rows, v.todayIso).find((r: any) => String(r.week_start ?? r.weekStart) >= changesFrom) ?? null;
   return {
     perDay: now?.perDay ?? [],
     changesFrom,
@@ -217,7 +219,10 @@ async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, re
   const [{ data: sh }, { data: lv }, { data: av }, { data: vs }, { data: onb }] = await Promise.all([
     admin.from('wf_shifts').select(SHIFT_COLS).in('staff_id', ids).in('status', ['draft', 'published']).gte('shift_date', mon).lte('shift_date', sun).limit(5000),
     admin.from('wf_time_off').select('staff_id, status, start_date, end_date').in('staff_id', ids).eq('status', 'approved').lte('start_date', shift.date).gte('end_date', shift.date),
-    admin.from('wf_availability').select('staff_id, per_day, week_start, updated_at, created_at').in('staff_id', ids).limit(5000),
+    // 5.12.91: only patterns that can be in effect on the shift's day (people may now hold a pattern for
+    // each of 26 future weeks, and a read is capped at 1,000 rows), newest week first.
+    admin.from('wf_availability').select('staff_id, per_day, week_start, updated_at, created_at').in('staff_id', ids)
+      .or(`week_start.is.null,week_start.lte.${shift.date}`).order('week_start', { ascending: false, nullsFirst: false }).limit(5000),
     admin.from('wf_venue_settings').select('settings').eq('location_id', shift.locationId).maybeSingle(),
     admin.from('wf_onboarding').select('staff_id, meta, steps, created_at').in('staff_id', ids).order('created_at', { ascending: false }),
   ]);
@@ -285,6 +290,13 @@ export async function handleSwapAction(admin: Admin, staff: any, action: string,
       ? await admin.from('wf_availability').update({ per_day: perDay, recurring: true, updated_at: new Date().toISOString() }).eq('id', same.id).eq('staff_id', staff.id)
       : await admin.from('wf_availability').insert({ location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, recurring: true, week_start: week, per_day: perDay });
     if (w.error) return err(500, w.error.message);
+    // Tidy: a dated pattern that a later one has already replaced (both started before today) can never
+    // be in effect again. Removing them keeps a person to one base pattern, the one in effect and the
+    // future weeks, however long they have worked here.
+    const past = (rows ?? []).filter((r: any) => r.week_start && r.week_start <= v0.todayIso).map((r: any) => String(r.week_start)).sort();
+    const inEffect = past.length ? past[past.length - 1] : null;
+    const dead = inEffect ? (rows ?? []).filter((r: any) => r.week_start && r.week_start < inEffect).map((r: any) => r.id) : [];
+    if (dead.length) await admin.from('wf_availability').delete().in('id', dead).eq('staff_id', staff.id);
     const { error } = await writeWfAudit(admin, staff.location_id, staff.org_id, 'availability.set', {
       actorId: null, actorName: `${staff.name} (staff app)`, entity: 'wf_availability', entityId: String(staff.id), after: { per_day: perDay, week_start: week },
     });
