@@ -14,6 +14,8 @@ import * as wf from '../../../staff/wfData';
 import { activeRegionPack, DOC_INFO } from '../../../lib/regionPack';
 import { localeDateString } from '../../../lib/venueDates';
 import { HIDDEN_WORDS } from '../../../staff/privateDetails';
+// 5.12.89 (HR feedback, 23 Nov 2026): a rejection carries its reason, and any document can be asked for again.
+import { rejectNoteProblem, askedWords } from '../../../../supabase/functions/_shared/docRequests.js';
 
 /** Open a stored document via a short-lived signed URL (private bucket). */
 function ViewDocLink({ path }) {
@@ -69,6 +71,8 @@ function docStatus(doc) {
 const STATUS_TONE = { valid: 'green', expiring: 'amber', expired: 'red', missing: 'grey', pending: 'amber', rejected: 'red' };
 const STATUS_LBL = { valid: 'Valid', expiring: 'Expiring', expired: 'Expired', missing: 'Missing', pending: 'Pending review', rejected: 'Rejected' };
 const NEEDS_ATTENTION = new Set(['expiring', 'expired', 'missing', 'pending', 'rejected']);
+// 5.12.89: the states a document can be asked for again in (Resend / Request on the row).
+const CAN_ASK_AGAIN = new Set(['expiring', 'expired', 'missing', 'rejected']);
 
 /** Required docs for a staff member: the region's work documents (UK: Right to Work; US: Form I-9
  *  and Form W-4), plus the SIA licence when the role requires it at a venue that uses it. */
@@ -85,6 +89,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [reviewing, setReviewing] = useState(null); // { doc, member }
+  const [asking, setAsking] = useState('');         // the row id a Resend is in flight for
   const rolesMap = (roles && roles.map) || {};
 
   useEffect(() => {
@@ -143,14 +148,35 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
     }
   }
 
-  async function handleReview({ issuedOn, expiry, verdict }) {
-    const { doc } = reviewing;
+  async function handleReview({ issuedOn, expiry, verdict, note }) {
+    const { doc, member } = reviewing;
     setReviewing(null);
     try {
+      // 5.12.89 (HR feedback, 23 Nov 2026): a rejection goes through the server with its reason. The
+      // person is emailed why, their staff app asks for a new upload, and the toast says what they
+      // were actually told. Before this a rejection told nobody and could not be asked for again.
+      if (verdict === 'reject') {
+        const r = await wf.requestDocument({ docId: doc.id, verdict: 'reject', note });
+        if (r?.doc) setDocs(prev => prev.map(d => (d.id === doc.id ? r.doc : d)));
+        showToast(askedWords({ name: member?.name, rejected: true, answer: r, hasEmail: !!member?.email }), r?.emailed ? 'success' : 'info');
+        return;
+      }
       const saved = await wf.reviewDocument(doc.id, { issuedOn, expiry, verdict });
       setDocs(prev => prev.map(d => (d.id === doc.id ? saved : d)));
-      showToast(verdict === 'approve' ? 'Document approved' : verdict === 'reject' ? 'Document rejected — ask them to re-upload' : 'Sent back for review', verdict === 'approve' ? 'success' : 'info');
+      showToast(verdict === 'approve' ? 'Document approved' : 'Sent back for review', verdict === 'approve' ? 'success' : 'info');
     } catch (err) { showToast((err && err.message) || 'Could not save review', 'error'); }
+  }
+
+  // 5.12.89: Resend. Ask for a document again (rejected, expired, expiring, or required and never
+  // sent). The person is emailed and their staff app asks for it until a new file arrives.
+  async function handleAskAgain(doc, member) {
+    setAsking(doc.id);
+    try {
+      const r = await wf.requestDocument(doc._placeholder ? { staffId: member.id, type: doc.type } : { docId: doc.id });
+      if (r?.doc) setDocs(prev => (prev.some(d => d.id === r.doc.id) ? prev.map(d => (d.id === r.doc.id ? r.doc : d)) : [...prev, r.doc]));
+      showToast(askedWords({ name: member?.name, answer: r, hasEmail: !!member?.email }), r?.emailed ? 'success' : 'info');
+    } catch (err) { showToast((err && err.message) || 'Could not ask for the document', 'error'); }
+    finally { setAsking(''); }
   }
 
   async function handleDelete(doc) {
@@ -244,13 +270,26 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
                           <span style={{ fontWeight: 600 }}>{DOC_LABEL[d.type] || d.type}</span>
                           {req && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: 'var(--t4)', fontFamily: 'var(--font-mono)' }}>REQ</span>}
                         </td>
-                        <td style={td}><Badge tone={STATUS_TONE[st]}>{STATUS_LBL[st]}</Badge></td>
+                        <td style={td}>
+                          <Badge tone={STATUS_TONE[st]}>{STATUS_LBL[st]}</Badge>
+                          {/* 5.12.89: why it was rejected, and when it was last asked for again. */}
+                          {st === 'rejected' && d.reviewNote && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4, maxWidth: 260, lineHeight: 1.4 }}>Reason: {d.reviewNote}</div>}
+                          {d.requestedAt && st !== 'pending' && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 3 }}>Asked again {fmtDate(String(d.requestedAt).slice(0, 10))}</div>}
+                        </td>
                         <td style={td} className="mono" >{fmtDate(d.issuedOn)}</td>
                         <td style={td} className="mono">{fmtDate(d.expiry)}</td>
                         <td style={td}>
                           {d.fileUrl ? <ViewDocLink path={d.fileUrl} /> : <span style={{ color: 'var(--t4)' }}>—</span>}
                         </td>
                         <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {/* 5.12.89: ask for it again. Not while an upload is waiting for review. */}
+                          {CAN_ASK_AGAIN.has(st) && (
+                            <button className="btn btn-ghost btn-xs" style={{ marginRight: 6 }} disabled={asking === d.id}
+                              title={member.email ? `Email ${member.name} and ask for it in their staff app` : `Ask for it in ${member.name}'s staff app (no email on file)`}
+                              onClick={() => handleAskAgain(d, member)}>
+                              <Icon name="status" size={12} /> {asking === d.id ? 'Asking…' : d._placeholder ? 'Request' : 'Resend'}
+                            </button>
+                          )}
                           {!d._placeholder && (<>
                             {st === 'pending'
                               ? <button className="btn btn-acc btn-xs" onClick={() => setReviewing({ doc: d, member })}>Review</button>
@@ -295,8 +334,14 @@ function ReviewDocModal({ doc, member, onClose, onSave }) {
   const [issuedOn, setIssuedOn] = useState(doc.issuedOn || '');
   const [expiry, setExpiry] = useState(doc.expiry || '');
   const [busy, setBusy] = useState(false);
+  // 5.12.89 (HR feedback, 23 Nov 2026): Reject opens a reason box. The reason is required: it is
+  // what the person reads in the email and in their staff app, so they know what to send instead.
+  const [rejecting, setRejecting] = useState(false);
+  const [note, setNote] = useState('');
+  const [noteErr, setNoteErr] = useState('');
   const pending = doc.status === 'pending';
-  const act = async (verdict) => { setBusy(true); try { await onSave({ issuedOn, expiry, verdict }); } finally { setBusy(false); } };
+  const act = async (verdict) => { setBusy(true); try { await onSave({ issuedOn, expiry, verdict, note }); } finally { setBusy(false); } };
+  const reject = () => { const bad = rejectNoteProblem(note); if (bad) { setNoteErr(bad); return; } act('reject'); };
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box" style={{ maxWidth: 440 }}>
@@ -315,12 +360,27 @@ function ReviewDocModal({ doc, member, onClose, onSave }) {
             <input type="date" style={inputStyle} value={expiry} onChange={e => setExpiry(e.target.value)} />
           </div>
         </div>
+        {rejecting && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Why is it rejected?</label>
+            <textarea autoFocus style={{ ...inputStyle, height: 84, padding: '10px 12px', resize: 'vertical', lineHeight: 1.45 }} maxLength={500}
+              value={note} onChange={e => { setNote(e.target.value); setNoteErr(''); }}
+              placeholder="e.g. The photo is blurred. Please send a clear photo of the photo page of your passport." />
+            <div style={{ fontSize: 11.5, color: noteErr ? 'var(--red)' : 'var(--t4)', marginTop: 5, lineHeight: 1.45 }}>
+              {noteErr || `${member?.name ? member.name.split(' ')[0] : 'They'} will read this in an email and in their staff app, with a button to upload it again.`}
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          {pending
-            ? <button className="btn btn-ghost" disabled={busy} style={{ color: 'var(--red)' }} onClick={() => act('reject')}>Reject</button>
-            : <button className="btn btn-ghost" disabled={busy} onClick={() => act('pending')} title="Clear the approval so it goes through review again">Send back to review</button>}
-          <button className="btn btn-acc" disabled={busy} onClick={() => act('approve')}><Icon name="check" size={14} /> {busy ? 'Saving…' : pending ? 'Approve' : 'Save'}</button>
+          <button className="btn btn-ghost" onClick={rejecting ? () => { setRejecting(false); setNoteErr(''); } : onClose}>{rejecting ? 'Back' : 'Cancel'}</button>
+          {rejecting ? (
+            <button className="btn btn-acc" disabled={busy} style={{ background: 'var(--red)', borderColor: 'var(--red)' }} onClick={reject}>{busy ? 'Rejecting…' : 'Reject and ask again'}</button>
+          ) : (<>
+            {/* 5.12.89: any document that is not already rejected can be rejected with a reason (it was pending only). */}
+            {doc.status !== 'rejected' && <button className="btn btn-ghost" disabled={busy} style={{ color: 'var(--red)' }} onClick={() => setRejecting(true)}>Reject</button>}
+            {!pending && <button className="btn btn-ghost" disabled={busy} onClick={() => act('pending')} title="Clear the approval so it goes through review again">Send back to review</button>}
+            <button className="btn btn-acc" disabled={busy} onClick={() => act('approve')}><Icon name="check" size={14} /> {busy ? 'Saving…' : pending ? 'Approve' : 'Save'}</button>
+          </>)}
         </div>
       </div>
     </div>

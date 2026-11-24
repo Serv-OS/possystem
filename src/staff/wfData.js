@@ -145,6 +145,17 @@ export async function offboardStaff(staffId) {
   return invokeFn('staff-portal', { action: 'offboard', staff_id: staffId });
 }
 
+/**
+ * 5.12.89 (Peter, 23 Nov 2026): a leaver comes back. The mirror of offboardStaff, on the server: the
+ * SAME record is made active again (its documents, timesheets and holiday ledger are theirs again)
+ * and their own till user is switched back on unless somebody now uses that PIN. Back Office access
+ * is not given back. Answers { till: 'restored' | 'pin_taken' | 'none' | 'failed' | 'unchanged' }.
+ */
+export async function reinstateStaff(staffId) {
+  if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i] = { ...a[i], status: 'active', leaverDate: null }; lsSet('staff', a); } return { ok: true, mock: true, till: 'none' }; }
+  return invokeFn('staff-portal', { action: 'reinstate', staff_id: staffId });
+}
+
 /** Email a staff member that training has been assigned to them. */
 export async function notifyTrainingAssigned(staffId, moduleName, due) {
   if (isMock || !supabase) return { ok: true, mock: true };
@@ -245,6 +256,23 @@ export async function loadStaff(locationId) {
   const rates = await loadSiteRates(locationId);
   return (data || []).map((r) => mapStaff({ ...r, rate_override: rates.byId[String(r.id)] ?? null }));
 }
+/**
+ * 5.12.89 (HR feedback, 23 Nov 2026: "no way to view archived staff"): the site's leavers, newest
+ * first. loadStaff leaves them out of every working list (rota, payroll, compliance); this is the
+ * one read that shows them, for the Leavers list on the Staff page. The same columns and the same
+ * privacy rule as loadStaff (no ID numbers or bank details here).
+ */
+export async function loadLeavers(locationId) {
+  if (isMock || !supabase) return [];
+  if (!locationId) return [];
+  const read = (cols) => supabase.from('wf_staff').select(cols)
+    .eq('location_id', locationId).eq('status', 'leaver').order('leaver_date', { ascending: false, nullsFirst: false }).limit(1000);
+  let { data, error } = await read(STAFF_COLS + ',location_id,person_id,leaver_date');
+  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(STAFF_COLS + ',location_id,leaver_date'));
+  if (error) { console.warn('[wf] loadLeavers:', error.message); return []; }
+  return (data || []).map(r => ({ ...mapStaff(r), leaverDate: r.leaver_date || null }));
+}
+
 export async function saveStaff(member, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('staff', { ...member, status: member.status || 'active' });
   if (!locationId) throw new Error('No location selected');
@@ -348,9 +376,10 @@ export async function loadCompanyStaffRecords(orgId) {
   if (isMock || !supabase || !orgId) return [];
   const read = (cols) => supabase.from('wf_staff').select(cols).eq('org_id', orgId).limit(2000);
   // 5.12.59: no rate_override here; the Sites panel asks the door for each site (loadSiteRates).
-  let { data, error } = await read('id, name, email, mobile, location_id, person_id, role_key, status');
+  // 5.12.89: leaver_date too, so "already on the system" can say when they left.
+  let { data, error } = await read('id, name, email, mobile, location_id, person_id, role_key, status, leaver_date');
   // Before 20261111a there is no person_id: nobody is linked yet, the suggestions still show.
-  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read('id, name, email, mobile, location_id, role_key, status'));
+  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read('id, name, email, mobile, location_id, role_key, status, leaver_date'));
   if (error) { console.warn('[wf] loadCompanyStaffRecords:', error.message); return []; }
   return data || [];
 }
@@ -798,6 +827,17 @@ export async function saveAvailability(av, locationId, orgId) {
   return mapAvail(data);
 }
 
+/** 5.12.89: one person's own timesheets, newest first (a leaver's profile: the site wide read may
+ *  no longer reach back far enough to hold theirs). */
+export async function loadTimesheetsFor(staffId, limit = 40) {
+  if (isMock || !supabase) return lsGet('timesheets').filter(t => t.staffId === staffId).slice(0, limit);
+  if (!staffId) return [];
+  const { data, error } = await supabase.from('wf_timesheets').select('*').eq('staff_id', staffId)
+    .order('clock_in', { ascending: false, nullsFirst: false }).limit(limit);
+  if (error) { console.warn('[wf] loadTimesheetsFor:', error.message); return []; }
+  return (data || []).map(mapTs);
+}
+
 // ============================================================================
 // HOLIDAY ACCRUAL (wf_holiday_accrual — append-only ledger; balance = sum)
 // ============================================================================
@@ -808,6 +848,20 @@ export async function loadAccrual(locationId) {
   const { data, error } = await supabase.from('wf_holiday_accrual').select('id,staff_id,kind,accrued_hours,created_at').eq('location_id', locationId).order('created_at', { ascending: false }).limit(5000);
   if (error) { console.warn('[wf] loadAccrual:', error.message); return []; }
   return (data || []).map(mapAccrual);
+}
+/**
+ * 5.12.89 (HR feedback, 23 Nov 2026): the Adjust balance box. holidaySources reads the person's
+ * recent ledger here and the same person's balances at the company's other sites; adjustHoliday
+ * writes a correction, or with fromStaffId moves hours over from that record (one line out there,
+ * one line in here). Both run in workforce-compute: an owner, admin or manager of the site only.
+ */
+export async function holidaySources(locationId, staffId) {
+  if (isMock || !supabase) return { ok: true, mock: true, balance: accrualBalances(lsGet('accrual'))[staffId] || 0, sources: [], hidden: 0, ledger: [] };
+  return invokeFn('workforce-compute', { action: 'accrual.sources', location_id: locationId, staff_id: staffId });
+}
+export async function adjustHoliday(locationId, { staffId, hours, note, fromStaffId = null }) {
+  if (isMock || !supabase) { lsUpsert('accrual', { staffId, kind: 'adjustment', accruedHours: Number(hours) || 0, createdAt: new Date().toISOString() }); return { ok: true, mock: true }; }
+  return invokeFn('workforce-compute', { action: 'accrual.adjust', location_id: locationId, staff_id: staffId, hours, note, from_staff_id: fromStaffId });
 }
 /** Per-staff balance (hours) derived from the ledger. */
 export function accrualBalances(rows) {
@@ -838,7 +892,8 @@ export async function loadTroncLines(runId) {
 // ============================================================================
 // DOCUMENTS (wf_documents — compliance vault)
 // ============================================================================
-const mapDoc = r => ({ id: r.id, staffId: r.staff_id, type: r.type, fileUrl: r.file_url, status: r.status, issuedOn: r.issued_on, expiry: r.expiry, verifiedBy: r.verified_by, verifiedAt: r.verified_at });
+// 5.12.89: reviewNote (why it was rejected) and requestedAt (a manager pressed Resend) arrive with 20261205a.
+const mapDoc = r => ({ id: r.id, staffId: r.staff_id, type: r.type, fileUrl: r.file_url, status: r.status, issuedOn: r.issued_on, expiry: r.expiry, verifiedBy: r.verified_by, verifiedAt: r.verified_at, reviewNote: r.review_note || null, requestedAt: r.requested_at || null });
 export async function loadDocuments(locationId) {
   if (isMock || !supabase) return lsGet('documents');
   if (!locationId) return [];
@@ -911,15 +966,41 @@ export async function reviewDocument(id, { issuedOn, expiry, verdict = 'approve'
   }
   let reviewer = null;
   try { const { data } = await supabase.auth.getUser(); reviewer = data?.user?.id || null; } catch { /* anonymous */ }
-  const { data, error } = await supabase.from('wf_documents').update({
+  const base = {
     issued_on: issuedOn || null,
     expiry: expiry || null,
     status,
     verified_by: stamp ? reviewer : null,
     verified_at: stamp,
-  }).eq('id', id).select().single();
+  };
+  // 5.12.89: an approval answers any "send it again", so the reason and the Resend stamp are cleared.
+  // The columns arrive with 20261205a; before it has run the write is made without them.
+  const write = (row) => supabase.from('wf_documents').update(row).eq('id', id).select().single();
+  let { data, error } = await write(verdict === 'approve' ? { ...base, review_note: null, requested_at: null, requested_by: null } : base);
+  if (error && verdict === 'approve' && /review_note|requested_at|requested_by|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await write(base));
   if (error) throw new Error(error.message);
   return mapDoc(data);
+}
+
+/**
+ * 5.12.89 (HR feedback, 23 Nov 2026): ask a team member for a document again, through staff-portal
+ * so the row, the email and the audit line are one action.
+ *   { docId, verdict: 'reject', note }   the review refused it: the reason is required
+ *   { docId, note? }                     Resend on a held document
+ *   { staffId, type }                    a required document that was never sent
+ * Answers { doc, reason, emailed, sentTo, hasLogin, kept }: kept is false until 20261205a has run
+ * (the reason was emailed but could not be stored on the row).
+ */
+export async function requestDocument({ docId = null, staffId = null, type = null, verdict = null, note = '' } = {}) {
+  if (isMock || !supabase) {
+    const a = lsGet('documents'); const i = a.findIndex(x => x.id === docId);
+    const stamp = new Date().toISOString();
+    if (i >= 0) { a[i] = { ...a[i], ...(verdict === 'reject' ? { status: 'rejected' } : {}), reviewNote: note || a[i].reviewNote || null, requestedAt: stamp }; lsSet('documents', a); return { ok: true, mock: true, doc: a[i], emailed: false, hasLogin: false, kept: true }; }
+    const doc = lsUpsert('documents', { staffId, type, status: 'missing', fileUrl: null, issuedOn: null, expiry: null, requestedAt: stamp });
+    return { ok: true, mock: true, doc, emailed: false, hasLogin: false, kept: true };
+  }
+  const r = await invokeFn('staff-portal', { action: 'request_document', doc_id: docId, staff_id: staffId, type, verdict, note });
+  return { ...r, doc: r?.doc ? mapDoc(r.doc) : null };
 }
 
 // ============================================================================

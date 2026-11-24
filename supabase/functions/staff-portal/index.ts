@@ -1,6 +1,7 @@
 // supabase/functions/staff-portal/index.ts
 // MARKER 5.11.101 staff-portal open shifts and swaps
 // MARKER 5.11.102 staff-portal push beside the texts (through _shared/staffNotify.ts)
+// MARKER 5.12.89 staff-portal request_document reinstate doc_submit postcode
 //
 // The staff self-service app (?mode=staff) — server side. Staff see their own
 // shifts, announcements, timesheets and details from their own phone, so the
@@ -24,6 +25,12 @@
 //   shift_claim / shift_drop / swap_cancel / swap_decline / availability_set   (Bearer)
 //                                              v5.11.101 open shifts and swaps (openShifts.ts):
 //                                              every change judged by the database.
+//   request_document { doc_id | staff_id+type, verdict?, note? }   BO-authenticated (5.12.89). Asks the person
+//                                              for a document again (rejected, expired or just Resend): stamps
+//                                              the row, emails them with the reason, shows in their Tasks.
+//   reinstate     { staff_id }                 BO-authenticated (5.12.89). A leaver comes back: the same record,
+//                                              with its documents, timesheets and holiday ledger.
+//   doc_upload_url / doc_submit (Bearer)       5.12.89: the person uploads a document they were asked for again.
 //   update_details{ patch } (Bearer)           Address / emergency contact / bank / date of birth / ID number (5.12.85).
 //                                              Bank changes are audited AND pinged
 //                                              to the venue activity feed — a bank
@@ -50,6 +57,11 @@ import { isHeadOffice, HEAD_OFFICE_CLOCK_WORDS } from '../_shared/headOffice.js'
 import { blockFor, blockWords, upcomingBlocks } from '../_shared/leaveBlocks.js';
 // 5.12.85: the person's own date of birth and ID number (NI number or SSN last 4), one copy with the app.
 import { niProblem, ssnLast4Problem, dobProblem, normaliseNi, idNumberKind, idDetailsStep, ID_WORDS } from '../_shared/staffIdRules.js';
+// 5.12.89 (HR feedback, 23 Nov 2026): documents asked for again, with the manager's reason; a changed
+// UK address needs its postcode. One copy each with the app.
+import { docRequestsFor, requestReason, requestWords, requestEmail, rejectNoteProblem, cleanNote, docFileName } from '../_shared/docRequests.js';
+import { addressChangeProblem } from '../_shared/staffAddress.js';
+import { docLabel } from '../_shared/regionPack.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -216,6 +228,21 @@ async function callerManagesLocation(req: Request, locationId: string): Promise<
   if (!['owner', 'admin', 'manager'].includes(role)) return { ok: false };
   const { data: prof } = await admin.from('user_profiles').select('display_name, email').eq('id', uid).maybeSingle();
   return { ok: true, id: uid, name: prof?.display_name || prof?.email || 'Manager' };
+}
+
+/** 5.12.89: an owner, admin or manager of the venue, or the ServOS super admin (support acting for
+ *  a venue it has no site row at). For the two 5.12.89 Back Office actions; invite and offboard keep
+ *  the stricter rule above. */
+async function callerManagesOrSuper(req: Request, locationId: string): Promise<{ ok: boolean; name?: string; id?: string }> {
+  const c = await callerManagesLocation(req, locationId);
+  if (c.ok) return c;
+  const jwt = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!jwt) return { ok: false };
+  const { data, error } = await admin.auth.getUser(jwt);
+  if (error || !data?.user || (data.user as any).is_anonymous) return { ok: false };
+  const { data: prof } = await admin.from('user_profiles').select('role, display_name, email').eq('id', data.user.id).maybeSingle();
+  if (prof?.role !== 'super_admin') return { ok: false };
+  return { ok: true, id: data.user.id, name: prof.display_name || prof.email || 'ServOS support' };
 }
 
 async function sendInviteEmail(staff: any, token: string, resend: boolean) {
@@ -426,6 +453,116 @@ Deno.serve(async (req) => {
 
       await audit(staffRow, 'staff.offboarded', { status: staffRow.status }, { by: caller.name, ...done });
       return json({ ok: true, ...done });
+    }
+
+    // ── request_document (5.12.89): ask a team member for a document again. BO-authorised.
+    //    HR feedback, 23 Nov 2026: a rejected Right to Work upload could not be asked for again and
+    //    the person was never told why. One door for the three cases:
+    //      verdict 'reject'  the review just refused it: the reason is required and kept on the row
+    //      a held document   Resend: stamps requested_at so the staff app asks again
+    //      staff_id + type   a required document that was never sent: makes the empty row and asks
+    //    The row is written here (not from the browser) so the stamp, the email and the audit line
+    //    are one action. Before 20261205a has run the three new columns do not exist: the write is
+    //    retried without them, and the reason still reaches the person in the email. ──
+    if (action === 'request_document') {
+      const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
+      const reject = body.verdict === 'reject';
+      const note = cleanNote(body.note);
+      if (reject) { const bad = rejectNoteProblem(note); if (bad) return json({ error: bad }, 400); }
+      let doc: any = null;
+      if (body.doc_id) {
+        const { data } = await admin.from('wf_documents').select('*').eq('id', String(body.doc_id)).maybeSingle();
+        doc = data;
+        if (!doc) return json({ error: 'document not found' }, 404);
+      }
+      const staffId = doc ? doc.staff_id : String(body.staff_id || '');
+      const { data: staffRow } = await admin.from('wf_staff').select('*').eq('id', staffId).maybeSingle();
+      if (!staffRow) return json({ error: 'staff member not found' }, 404);
+      const locationId = doc ? doc.location_id : staffRow.location_id;
+      const caller = await callerManagesOrSuper(req, locationId);
+      if (!caller.ok) return json({ error: 'Only an owner or manager of this venue can ask for documents' }, 403);
+      if (staffRow.status === 'leaver') return json({ error: 'They have left. Reinstate them first.' }, 400);
+      const venue = await venueFacts(admin, locationId);
+      const nowIso = new Date().toISOString();
+      const missingCols = (e: any) => /review_note|requested_at|requested_by|42703|PGRST204/i.test(`${e?.code || ''} ${e?.message || ''}`);
+      let kept = true;   // did the reason and the stamp reach the row (20261205a run)?
+      if (!doc) {
+        const type = String(body.type || '').replace(/[^a-z0-9]/gi, '').slice(0, 40);
+        if (!type) return json({ error: 'document type required' }, 400);
+        const { data: held } = await admin.from('wf_documents').select('*').eq('staff_id', staffRow.id).eq('type', type).eq('location_id', locationId)
+          .order('created_at', { ascending: false }).limit(1);
+        doc = held?.[0] ?? null;
+        if (!doc) {
+          const base = { location_id: locationId, org_id: staffRow.org_id, staff_id: staffRow.id, type, status: 'missing' };
+          let ins = await admin.from('wf_documents').insert({ ...base, requested_at: nowIso, requested_by: caller.id, review_note: note || null }).select().single();
+          if (ins.error && missingCols(ins.error)) { kept = false; ins = await admin.from('wf_documents').insert(base).select().single(); }
+          if (ins.error) return json({ error: ins.error.message }, 500);
+          doc = ins.data;
+        }
+      }
+      if (doc.status === 'pending' && !reject) return json({ error: 'They have already sent this one. Review it first.' }, 400);
+      const before = { status: doc.status, review_note: doc.review_note ?? null, requested_at: doc.requested_at ?? null };
+      const base: Record<string, unknown> = reject
+        ? { status: 'rejected', verified_by: caller.id, verified_at: nowIso, updated_at: nowIso }
+        : { updated_at: nowIso };
+      const extra: Record<string, unknown> = { requested_at: nowIso, requested_by: caller.id, ...(reject || note ? { review_note: note || null } : {}) };
+      let up = await admin.from('wf_documents').update({ ...base, ...extra }).eq('id', doc.id).select().single();
+      if (up.error && missingCols(up.error)) { kept = false; up = await admin.from('wf_documents').update(base).eq('id', doc.id).select().single(); }
+      if (up.error) return json({ error: up.error.message }, 500);
+      doc = up.data;
+      const reason = reject ? 'rejected' : (requestReason(doc, venue.todayIso) || (doc.file_url ? 'requested' : 'missing'));
+      const label = docLabel(doc.type);
+      // Tell them. No email on file is not an error: the staff app still asks, and the answer says so.
+      let emailed = false;
+      if (staffRow.email) {
+        try {
+          const mail = requestEmail({ first: String(staffRow.name || 'there').split(' ')[0], label, reason, note: note || doc.review_note || '', url: `${APP_BASE}/?mode=staff`, venueName: venue.name });
+          const res = await fetch(`${SUPABASE_URL}/functions/v1/send-receipt`, {
+            method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${SERVICE_ROLE}` },
+            body: JSON.stringify({ location_id: locationId, to: staffRow.email, subject: mail.subject, html: mail.html, text: mail.text }),
+          });
+          emailed = res.ok;
+          if (!res.ok) console.error(`[staff-portal] request_document email: ${res.status}`);
+        } catch (e) { console.error('[staff-portal] request_document email:', (e as Error).message); }
+      }
+      await audit(staffRow, reject ? 'document.rejected' : 'document.requested', before, { by: caller.name, doc_id: doc.id, type: doc.type, reason, note: note || null, emailed });
+      return json({ ok: true, doc, reason, emailed, sentTo: emailed ? staffRow.email : null, hasLogin: !!staffRow.portal_user_id, kept });
+    }
+
+    // ── reinstate (5.12.89): a leaver comes back. BO-authorised, the mirror of offboard.
+    //    Peter, 23 Nov 2026: "we need a way to reinstate someone and if they are already on that
+    //    company/locations system, it needs to say so and do a reinstatement". The SAME record comes
+    //    back, so their documents, timesheets, onboarding and holiday ledger are theirs again.
+    //      the HR record   active, leaver date cleared
+    //      the staff app   works again by itself (it only refuses leavers)
+    //      the till        their own till user is switched back on, unless somebody now uses that PIN
+    //      Back Office     NOT given back: offboarding removed it and it is granted on the Team page
+    if (action === 'reinstate') {
+      const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
+      const { data: staffRow } = await admin.from('wf_staff').select('*').eq('id', body.staff_id).maybeSingle();
+      if (!staffRow) return json({ error: 'staff member not found' }, 404);
+      const caller = await callerManagesOrSuper(req, staffRow.location_id);
+      if (!caller.ok) return json({ error: 'Only an owner or manager of this venue can reinstate staff' }, 403);
+      if (staffRow.status !== 'leaver') return json({ ok: true, already: true, till: 'unchanged' });
+      const { error: hrErr } = await admin.from('wf_staff').update({ status: 'active', leaver_date: null }).eq('id', staffRow.id);
+      if (hrErr) return json({ error: hrErr.message }, 500);
+      let till = 'none';
+      if (staffRow.pos_user_id) {
+        const { data: member } = await admin.from('staff_members').select('id, location_id, pin, active').eq('id', staffRow.pos_user_id).maybeSingle();
+        if (member && member.active === false) {
+          // Two people on one PIN makes till sign in ambiguous: never switch a clashing PIN back on.
+          const { data: clash } = member.pin
+            ? await admin.from('staff_members').select('id').eq('location_id', member.location_id).eq('pin', member.pin).eq('active', true).neq('id', member.id).limit(1)
+            : { data: [] as any[] };
+          if (clash?.length) till = 'pin_taken';
+          else {
+            const { error } = await admin.from('staff_members').update({ active: true }).eq('id', member.id);
+            till = error ? 'failed' : 'restored';
+          }
+        } else if (member) till = 'restored';
+      }
+      await audit(staffRow, 'staff.reinstated', { status: 'leaver', leaver_date: staffRow.leaver_date }, { by: caller.name, till });
+      return json({ ok: true, till, leftOn: staffRow.leaver_date || null });
     }
 
     // ── accept_invite: the emailed link lands here with their chosen password ──
@@ -724,6 +861,17 @@ Deno.serve(async (req) => {
       try { swapPart = await swapsSnapshot(admin, staff, venue); }
       catch (e) { console.error('[staff-portal] swaps snapshot:', (e as Error).message); }
       const accruedHours = (accrual ?? []).reduce((a: number, r: any) => a + (Number(r.accrued_hours) || 0), 0);
+      // 5.12.89: documents they are asked to send again (rejected with the manager's reason, expired,
+      // or a manager pressed Resend), at every site they work at. Isolated: never takes the app down.
+      let docRequests: any[] = [];
+      try {
+        const { data: myDocs, error: docErr } = await admin.from('wf_documents').select('*').in('staff_id', myIds).limit(200);
+        if (docErr) throw new Error(docErr.message);
+        docRequests = docRequestsFor(myDocs ?? [], venue.todayIso).map((r: any) => {
+          const label = docLabel(r.type);
+          return { ...r, label, ...requestWords(r.reason, label) };
+        });
+      } catch (e) { console.error('[staff-portal] document requests:', (e as Error).message); }
       const payRate = staff.rate_override != null
         ? { kind: 'hourly', rate: Number(staff.rate_override), source: 'personal' }
         : roleRow?.base_rate != null
@@ -813,6 +961,7 @@ Deno.serve(async (req) => {
         timesheets: (ts ?? []).map((t: any) => ({ in: t.clock_in, out: t.clock_out, breakMins: t.break_taken || 0, hours: t.actual_hours != null ? Number(t.actual_hours) : null, pay: t.pay_amount != null ? Number(t.pay_amount) : null, status: t.status, site: t.site ?? null })),
         announcements,
         onboarding,
+        docRequests,
         training,
         leave: {
           accruedHours: Math.round(accruedHours * 100) / 100,
@@ -964,11 +1113,57 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // ── 5.12.89: a document they were asked for again (rejected, expired, or Resend), from their
+    //    phone. The same two steps as the first Right to Work upload, for any document of theirs:
+    //    a signed upload address, then the row goes back to 'pending' for a manager to review. The
+    //    reason and the Resend stamp are cleared: it has been answered. ──
+    if (action === 'doc_upload_url' || action === 'doc_submit') {
+      const sctxDoc = await clockContext(staff);
+      const mine = new Set(sctxDoc.records.map((r) => r.id));
+      const { data: doc } = await admin.from('wf_documents').select('*').eq('id', String(body.doc_id || '')).maybeSingle();
+      if (!doc || !mine.has(doc.staff_id)) return json({ error: 'document not found' }, 404);
+      const folder = `${doc.location_id}/${doc.staff_id}/`;
+      if (action === 'doc_upload_url') {
+        const path = `${folder}${docFileName(doc.type, Date.now(), body.ext)}`;
+        const { data, error } = await admin.storage.from('wf-documents').createSignedUploadUrl(path);
+        if (error) return json({ error: error.message }, 500);
+        return json({ ok: true, path, uploadUrl: data.signedUrl, token: data.token });
+      }
+      const path = String(body.path || '');
+      if (!path.startsWith(folder) || path.includes('..')) return json({ error: 'invalid path' }, 400);
+      const nowIso = new Date().toISOString();
+      const base = { file_url: path, status: 'pending', verified_by: null, verified_at: null, updated_at: nowIso };
+      let w = await admin.from('wf_documents').update({ ...base, review_note: null, requested_at: null, requested_by: null }).eq('id', doc.id);
+      if (w.error && /review_note|requested_at|requested_by|42703|PGRST204/i.test(`${w.error.code || ''} ${w.error.message || ''}`)) {
+        w = await admin.from('wf_documents').update(base).eq('id', doc.id);
+      }
+      if (w.error) return json({ error: w.error.message }, 500);
+      // The work document also feeds onboarding: keep its evidence pointing at the newest file.
+      const workDoc = regionPack({ currency: (await venueFacts(admin, doc.location_id)).currency }).requiredDocs[0];
+      if (doc.type === workDoc) {
+        const { data: onbRow } = await admin.from('wf_onboarding').select('*').eq('staff_id', doc.staff_id)
+          .order('created_at', { ascending: false }).limit(1);
+        if (onbRow?.[0]) {
+          const meta = { ...(onbRow[0].meta || {}), rtwPath: path };
+          await admin.from('wf_onboarding').update({ meta }).eq('id', onbRow[0].id);
+        }
+      }
+      await audit(staff, 'portal.document_uploaded', { status: doc.status, file_url: doc.file_url }, { doc_id: doc.id, type: doc.type, path });
+      return json({ ok: true });
+    }
+
     if (action === 'update_details') {
       const p = body.patch || {};
       const patch: Record<string, unknown> = {};
       const before: Record<string, unknown> = {};
-      if (p.address !== undefined) { before.address = staff.address; patch.address = String(p.address || '').slice(0, 500) || null; }
+      if (p.address !== undefined) {
+        // 5.12.89 (HR feedback, 23 Nov 2026): a CHANGED UK address must carry its postcode (payroll
+        // needs it). An unchanged old address is never refused, so the rest of the form still saves.
+        const nextAddress = String(p.address || '').trim().slice(0, 500);
+        const addrBad = addressChangeProblem(nextAddress, staff.address, regionPack({ currency: (await venueFacts(admin, staff.location_id)).currency }).country);
+        if (addrBad) return json({ error: addrBad }, 400);
+        before.address = staff.address; patch.address = nextAddress || null;
+      }
       if (p.emergencyContact !== undefined) {
         before.emergency_contact = staff.emergency_contact;
         const ec = p.emergencyContact || {};
