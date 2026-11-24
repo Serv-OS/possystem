@@ -16,13 +16,14 @@
 
 import { supabase, isMock } from '../lib/supabase';
 import { aiRequestInit } from '../lib/aiRequest';
-import { toE164 as regionToE164, venueMoney, activeCountry } from '../lib/regionPack';
+import { toE164 as regionToE164, venueMoney, activeCountry, docFilePrefix } from '../lib/regionPack';
 import { getActiveCurrencyCode } from '../lib/currency';
 import { localeDateString, zoneOr } from '../lib/venueDates';
 import { reportSave } from '../lib/saveHealth';
 import { ROLES as SEED_ROLES } from './seed';
 import { templatesForVenue } from './docTemplates';
 import { loadSiteRates } from './privateDetails';
+import { pinMessage } from './pinRules';
 
 const orgCache = {};
 
@@ -94,7 +95,9 @@ const DOCS_BUCKET = 'wf-documents';
 export async function uploadWfDocument(file, locationId, staffId, type) {
   if (isMock || !supabase || !locationId) return { path: null, name: file?.name || null };
   const ext = (String(file.name).split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const safeType = String(type || 'doc').replace(/[^a-z0-9]/gi, '');
+  // 5.12.91: the file name prefix comes from the region pack, so a share code or visa check is stored
+  // under a name the identity file rule (20261121a) already keeps private.
+  const safeType = docFilePrefix(type);
   const path = `${locationId}/${staffId || 'general'}/${safeType}-${Date.now()}.${ext}`;
   const { error } = await supabase.storage.from(DOCS_BUCKET).upload(path, file, { upsert: false, contentType: file.type });
   if (error) throw new Error(error.message);
@@ -154,6 +157,44 @@ export async function offboardStaff(staffId) {
 export async function reinstateStaff(staffId) {
   if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i] = { ...a[i], status: 'active', leaverDate: null }; lsSet('staff', a); } return { ok: true, mock: true, till: 'none' }; }
   return invokeFn('staff-portal', { action: 'reinstate', staff_id: staffId });
+}
+
+/**
+ * 5.12.91: the PINs active till users at a site hold, read from the database. The Back Office store
+ * only has them after the Team page has been opened, so a check against the store alone let two
+ * people end up on one PIN. Answers [{ id, name, pin }]; [] when it cannot be read (mock, no site).
+ */
+export async function loadTillPins(locationId) {
+  if (isMock || !supabase || !locationId) return [];
+  const { data, error } = await supabase.from('staff_members').select('id, name, pin, active').eq('location_id', locationId).eq('active', true);
+  if (error) { console.warn('[wf] loadTillPins:', error.message); return []; }
+  return (data || []).filter(m => m.pin).map(m => ({ id: m.id, name: m.name, pin: String(m.pin), active: true }));
+}
+
+/**
+ * 5.12.91 (HR feedback batch 2, 24 Nov 2026): text someone their till PIN. By text only, never by
+ * email: it goes to the mobile on their own Workforce record. Give `staff` ({ name, mobile,
+ * locationId }) when the caller has the record, or `posUserId` to find the record the till user is
+ * linked to. Answers { ok } or { ok: false, skipped: 'no-record' | 'no-mobile' }; throws if the text
+ * itself fails.
+ */
+export async function textTillPin({ posUserId = null, staff = null, pin, name = '', venueName = '' } = {}) {
+  if (isMock || !supabase) return { ok: true, mock: true };
+  let rec = staff;
+  if (!rec && posUserId) {
+    // Exactly one live staff record must hold this till user. With two (records linked by hand long
+    // ago) there is no telling whose mobile is right, so nothing is sent.
+    const { data } = await supabase.from('wf_staff').select('name, mobile, location_id').eq('pos_user_id', posUserId).neq('status', 'leaver').limit(2);
+    rec = data?.length === 1 ? { name: data[0].name, mobile: data[0].mobile, locationId: data[0].location_id } : null;
+  }
+  if (!rec) return { ok: false, skipped: 'no-record' };
+  if (!String(rec.mobile || '').trim()) return { ok: false, skipped: 'no-mobile' };
+  let venue = venueName;
+  if (!venue && rec.locationId) {
+    const { data: loc } = await supabase.from('locations').select('name').eq('id', rec.locationId).maybeSingle();
+    venue = loc?.name || '';
+  }
+  return sendStaffSms(rec.mobile, pinMessage({ name: name || rec.name, pin, venueName: venue }), rec.locationId, 'custom');
 }
 
 /** Email a staff member that training has been assigned to them. */
@@ -819,9 +860,16 @@ const mapAvail = r => ({ id: r.id, staffId: r.staff_id, weekStart: r.week_start,
 export async function loadAvailability(locationId) {
   if (isMock || !supabase) return lsGet('availability');
   if (!locationId) return [];
-  const { data, error } = await supabase.from('wf_availability').select('*').eq('location_id', locationId);
-  if (error) { console.warn('[wf] loadAvailability:', error.message); return []; }
-  return (data || []).map(mapAvail);
+  // 5.12.91: read in pages. A person may now hold a pattern for each of 26 future weeks, and one read
+  // is capped at 1,000 rows, so a big site would silently lose rows (and the rota its clash warnings).
+  const rows = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await supabase.from('wf_availability').select('*').eq('location_id', locationId).order('id').range(from, from + 999);
+    if (error) { console.warn('[wf] loadAvailability:', error.message); break; }
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return rows.map(mapAvail);
 }
 export async function saveAvailability(av, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('availability', av);

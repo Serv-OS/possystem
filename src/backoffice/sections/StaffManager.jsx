@@ -16,6 +16,10 @@ import TillSitesPanel from './TillSitesPanel';
 import { stockApi } from '../../lib/stock/stockApi';
 import { STOCK_CONTROL_CHOICES, stockControlLine, canChangeStockControl, savedWords } from '../../lib/stock/stockControlWords';
 import { Icon } from '../../components/ServOSIcons';
+// 5.12.91 (HR feedback batch 2, 24 Nov 2026): a PIN can be generated (free at the site, not an easy
+// guess) and texted to the mobile on the person's Workforce record.
+import { generatePin, takenPins, pinSentWords } from '../../staff/pinRules';
+import { textTillPin } from '../../staff/wfData';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -258,6 +262,15 @@ export default function StaffManager({ orgCtx = null } = {}) {
   const [showAdd, setShowAdd] = useState(false);
   const [showPin, setShowPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
+  const [pinShown, setPinShown] = useState(false);   // a generated PIN is shown as digits so it can be read out
+  const [textingPin, setTextingPin] = useState(false);
+  const textPin = async (member) => {
+    if (!member?.pin || textingPin) return;
+    setTextingPin(true);
+    try { const r = await textTillPin({ posUserId: member.id, pin: member.pin, name: member.name }); showToast(pinSentWords(member.name, r), r?.ok ? 'success' : 'info'); }
+    catch (e) { showToast(pinSentWords(member.name, e instanceof Error ? e : new Error(String(e))), 'error'); }
+    finally { setTextingPin(false); }
+  };
   const [pinError, setPinError] = useState(''); // v5.5.292: duplicate PIN warning
   const [newForm, setNewForm] = useState({ name:'', role:'Server', color:'#3b82f6', pin:'', permissions:[] });
 
@@ -874,11 +887,12 @@ export default function StaffManager({ orgCtx = null } = {}) {
                 {sel.pin ? (
                   <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                     <span style={{ fontSize:12, color:'var(--grn)', fontWeight:700 }}>✓ PIN set</span>
-                    <button onClick={()=>{ setShowPin(sel.id); setPinInput(''); }} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>Change</button>
+                    <button onClick={()=>textPin(sel)} disabled={textingPin} title="Text this PIN to the mobile on their Workforce staff record" style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>{textingPin ? 'Sending…' : 'Text PIN'}</button>
+                    <button onClick={()=>{ setShowPin(sel.id); setPinInput(''); setPinShown(false); }} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>Change</button>
                     <button onClick={()=>save(sel.id,{pin:''})} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:600 }}>Clear</button>
                   </div>
                 ) : (
-                  <button onClick={()=>{ setShowPin(sel.id); setPinInput(''); }} style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}>Set PIN</button>
+                  <button onClick={()=>{ setShowPin(sel.id); setPinInput(''); setPinShown(false); }} style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}>Set PIN</button>
                 )}
               </div>
               {sel.pin && <div style={{ display:'flex', gap:6 }}>{Array(4).fill(null).map((_,i)=><div key={i} style={{ width:16, height:16, borderRadius:'50%', background:'var(--t3)' }}/>)}</div>}
@@ -1129,7 +1143,7 @@ export default function StaffManager({ orgCtx = null } = {}) {
             <div style={{ display:'flex', gap:8, justifyContent:'center', marginBottom:16 }}>
               {Array(4).fill(null).map((_,i)=>(
                 <div key={i} style={{ width:44, height:54, borderRadius:10, border:`2px solid ${i<pinInput.length?(isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)'):'var(--bdr2)'}`, background:i<pinInput.length?(isPinTaken(pinInput,showPin)?'var(--red-d)':'var(--acc-d)'):'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, fontWeight:800, color:isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)' }}>
-                  {i<pinInput.length?'●':''}
+                  {i<pinInput.length?(pinShown?pinInput[i]:'●'):''}
                 </div>
               ))}
             </div>
@@ -1139,6 +1153,11 @@ export default function StaffManager({ orgCtx = null } = {}) {
                 This PIN is already used by {getPinOwner(pinInput,showPin)?.name || 'another staff member'}
               </div>
             )}
+            {/* 5.12.91: pick one for me. Shown as digits so the manager can read it out or text it. */}
+            <div style={{ display:'flex', justifyContent:'center', gap:8, marginBottom:12 }}>
+              <button onClick={()=>{ setPinInput(generatePin(takenPins(staffMembers, showPin))); setPinShown(true); setPinError(''); }} style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t1)', fontSize:12, fontWeight:700 }}>Generate a PIN</button>
+              {pinInput.length>0 && <button onClick={()=>setPinShown(v=>!v)} style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'transparent', border:'1px solid var(--bdr2)', color:'var(--t3)', fontSize:12 }}>{pinShown?'Hide':'Show'}</button>}
+            </div>
             {/* Numpad */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:12 }}>
               {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((k,i)=>(

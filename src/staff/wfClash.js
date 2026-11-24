@@ -52,6 +52,12 @@ export function availabilityOn(availability, staffId, dateIso) {
   return p?.state || 'available';
 }
 
+/** 5.12.91: the whole entry for that weekday ({ day, state, note? }), or null when nothing is said. */
+export function availabilityEntryOn(availability, staffId, dateIso) {
+  const row = availabilityInEffect(availabilityRowsOf(availability, staffId), dateIso);
+  return row?.perDay?.find(x => x.day === dayIdx(dateIso)) || null;
+}
+
 const LEAVE_LBL = { holiday: 'on holiday', sick: 'off sick', unpaid: 'on unpaid leave', parental: 'on parental leave' };
 const DAY_PLURAL = ['Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays', 'Sundays'];
 
@@ -67,6 +73,11 @@ export function clashWarnings({ staffName, staffId, dateIso, timeOff, availabili
   if (leave) out.push(`${first} is ${LEAVE_LBL[leave.type] || 'on approved leave'} that day`);
   if (availabilityOn(availability, staffId, dateIso) === 'unavailable') {
     out.push(`${first} is marked unavailable on ${DAY_PLURAL[dayIdx(dateIso)]}`);
+  }
+  // 5.12.91: Part of the day is still available, but the manager should see which part.
+  const entry = availabilityEntryOn(availability, staffId, dateIso);
+  if (entry?.state === 'partial') {
+    out.push(`${first} can only work part of the day on ${DAY_PLURAL[dayIdx(dateIso)]}${entry.note ? `: ${entry.note}` : ''}`);
   }
   return out;
 }

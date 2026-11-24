@@ -23,7 +23,7 @@ function assignmentState(a) {
   return ['Assigned', 'grey'];
 }
 
-export default function WfTraining({ ctx, staff, roles, showToast }) {
+export default function WfTraining({ ctx, staff, leavers = [], roles, showToast }) {
   const [mods, setMods] = useState([]);
   const [assigns, setAssigns] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -52,6 +52,12 @@ export default function WfTraining({ ctx, staff, roles, showToast }) {
     return m;
   }, [assigns]);
   const staffById = useMemo(() => Object.fromEntries((staff || []).map(s => [s.id, s])), [staff]);
+  // 5.12.91 (HR feedback batch 2, 24 Nov 2026: former employees still showed as Assigned, one of them
+  // as "Unknown"). Training given to someone who has since left is kept, but shown apart under
+  // Leavers with their name, and it no longer counts in the module's complete and overdue numbers.
+  const leaverById = useMemo(() => Object.fromEntries((leavers || []).map(s => [s.id, s])), [leavers]);
+  const hasLeft = a => !staffById[a.staffId] && (!!leaverById[a.staffId] || (staff || []).length > 0);
+  const [leftOpen, setLeftOpen] = useState({});   // module id: is its Leavers list open
 
   async function saveModule(mod) {
     try {
@@ -93,7 +99,9 @@ export default function WfTraining({ ctx, staff, roles, showToast }) {
       ) : (
         <div style={{ display: 'grid', gap: 14 }}>
           {mods.map(mod => {
-            const list = byModule.get(mod.id) || [];
+            const every = byModule.get(mod.id) || [];
+            const list = every.filter(a => !hasLeft(a));
+            const left = every.filter(hasLeft);
             const complete = list.filter(a => a.status === 'complete').length;
             const overdue = list.filter(a => a.status !== 'complete' && a.dueDate && a.dueDate < todayIso()).length;
             return (
@@ -138,6 +146,31 @@ export default function WfTraining({ ctx, staff, roles, showToast }) {
                       })}
                     </tbody>
                   </table>
+                )}
+                {left.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn btn-ghost btn-xs" onClick={() => setLeftOpen(o => ({ ...o, [mod.id]: !o[mod.id] }))}>
+                      {leftOpen[mod.id] ? 'Hide' : 'Show'} leavers ({left.length})
+                    </button>
+                    {leftOpen[mod.id] && (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                        <tbody>
+                          {left.map(a => {
+                            const p = leaverById[a.staffId];
+                            const [lbl, tone] = a.status === 'complete' ? ['Complete', 'green'] : ['Not finished', 'grey'];
+                            return (
+                              <tr key={a.id}>
+                                <td style={{ ...td, color: 'var(--t3)' }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600 }}><span style={{ width: 24, height: 24, borderRadius: 7, background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'grid', placeItems: 'center', fontSize: 9.5, fontWeight: 700, color: 'var(--t4)' }}>{initials(p?.name || '')}</span>{p?.name || 'Former team member'}</span></td>
+                                <td style={{ ...td, color: 'var(--t4)', fontSize: 12 }}>{p?.leaverDate ? `Left ${fmtDate(String(p.leaverDate).slice(0, 10))}` : 'Left'}</td>
+                                <td style={{ ...td, color: 'var(--t4)' }} className="mono">{(a.tasksDone || []).length}/{mod.tasks.length}</td>
+                                <td style={td}><Badge tone={tone}>{lbl}</Badge></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
                 )}
               </Card>
             );

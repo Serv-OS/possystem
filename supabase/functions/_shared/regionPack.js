@@ -19,13 +19,23 @@
 
 /** @typedef {'UK'|'US'|'IE'} Country */
 
-const UK_DOCS = ['RTW', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other'];
+// 5.12.91 (HR feedback batch 2, 24 Nov 2026): Share Code, Home Office / Visa check and Term dates are
+// their own UK document types (someone on a student visa needs all three kept up to date). They
+// were all being filed under Right to Work, so nobody could tell which paper was held or expiring.
+const UK_DOCS = ['RTW', 'shareCode', 'visaCheck', 'termDates', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other'];
 const US_DOCS = ['I9', 'W4', 'foodHandler', 'allergenTraining', 'firstAid', 'other'];
 const IE_DOCS = ['RTW', 'foodHygieneL2', 'allergenTraining', 'firstAid', 'other'];
 
 /** Every document type any region uses, with its label and its group (compliance or training). */
 export const DOC_INFO = {
   RTW: { label: 'Right to Work', group: 'compliance' },
+  // file: the stored file's name prefix. Identity papers open only for owners, admins and logins with
+  // Can see payroll details, and that rule reads the file NAME (20261121a: RTW-, I9-, passport-,
+  // visa-, id-). A share code and a visa check are identity papers, so they are stored under a
+  // prefix the rule already knows. No database change is needed for the new types.
+  shareCode: { label: 'Share Code', group: 'compliance', file: 'id' },
+  visaCheck: { label: 'Home Office / Visa check', group: 'compliance', file: 'visa' },
+  termDates: { label: 'Term dates', group: 'compliance' },
   SIA: { label: 'SIA Licence', group: 'compliance' },
   I9: { label: 'Form I-9 (work eligibility)', group: 'compliance' },
   W4: { label: 'Form W-4 (tax withholding)', group: 'compliance' },
@@ -109,6 +119,13 @@ export function regionPack(venue) {
 /** Is this pay period type allowed for the venue? */
 export function payPeriodAllowed(venue, type) {
   return PACKS[regionOf(venue)].payPeriods.includes(String(type || ''));
+}
+
+/** The stored file's name prefix for a document type: the type itself, unless DOC_INFO gives one
+ *  (so identity papers keep their private rule). Letters and digits only. */
+export function docFilePrefix(type) {
+  const safe = String(DOC_INFO[type]?.file || type || 'doc').replace(/[^a-z0-9]/gi, '');
+  return safe || 'doc';
 }
 
 /** A document type's label ('I9' reads "Form I-9 (work eligibility)"). Unknown types read as given. */

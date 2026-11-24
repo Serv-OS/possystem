@@ -9,7 +9,7 @@
 import { getActiveCurrencyCode } from './currency';
 import { regionPack, regionOf, toE164 as toE164For, wfMoneyText, fmtDateNumeric } from '../../supabase/functions/_shared/regionPack.js';
 
-export { regionPack, regionOf, DOC_INFO, docLabel, payPeriodAllowed, fmtDateNumeric, wfMoneyText } from '../../supabase/functions/_shared/regionPack.js';
+export { regionPack, regionOf, DOC_INFO, docLabel, docFilePrefix, payPeriodAllowed, fmtDateNumeric, wfMoneyText } from '../../supabase/functions/_shared/regionPack.js';
 
 /** The pack for the venue this screen is on. */
 export function activeRegionPack() {
