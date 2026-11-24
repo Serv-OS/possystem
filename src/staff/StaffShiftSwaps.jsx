@@ -16,12 +16,17 @@
 import { useState } from 'react';
 import { openShiftsEmptyWords } from '../../supabase/functions/_shared/openShiftsHidden.js';
 import { dayText, timeText } from './staffDates';
+// 5.12.91: Part of the day and future weeks, one copy of the rules with the staff-portal.
+import { weekOf, dayWords, allAvailable } from '../../supabase/functions/_shared/availabilityChoices.js';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
 const small = { background: 'none', border: '1px solid var(--bdr)', borderRadius: 999, padding: '6px 13px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' };
 const solid = { ...small, background: 'var(--acc)', border: 'none', color: '#fff' };
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-const STATES = [['available', 'Available'], ['preferred', 'Preferred'], ['unavailable', 'Unavailable']];
+const STATES = [['available', 'Available'], ['preferred', 'Preferred'], ['partial', 'Part day'], ['unavailable', 'Unavailable']];
+// 5.12.91 (HR feedback batch 2, 24 Nov 2026): Preferred is purple, as in the Back Office. It was the
+// same green as Available, so people could not tell the two apart.
+const AV_COLOR = { available: 'var(--acc)', preferred: 'var(--pur)', partial: 'var(--amber)', unavailable: 'var(--red)' };
 const STATUS_WORDS = { open: 'Waiting for someone to take it', pending: 'Waiting for a manager', approved: 'Done', declined: 'Declined', cancelled: 'Cancelled', claimed: 'Taken', denied: 'Declined' };
 const STATUS_TONE = { open: 'var(--t3)', pending: 'var(--amber)', approved: 'var(--grn)', declined: 'var(--red)', cancelled: 'var(--t4)' };
 
@@ -154,61 +159,124 @@ export function SwapsSection({ swaps, locale, call, onChanged }) {
 
 /** My weekly availability (Monday to Sunday). */
 export function AvailabilityCard({ availability, call, onChanged }) {
-  // 5.12.61: the editor opens on the change already filed for the next rota period, if any, else today's pattern.
-  const fromSnap = () => DAYS.map((_, i) => ((availability?.pending?.perDay || availability?.perDay) || []).find(d => Number(d.day) === i)?.state || 'available');
+  // 5.12.61: a change never lands on a week already on the rota; the first week that can be set is
+  // the next rota period (availability.changesFrom).
+  // 5.12.91 (HR feedback batch 2, 24 Nov 2026): a pattern can be set for any week up to 26 weeks
+  // ahead (students know their timetable months ahead), each applying from its week until the next
+  // week that has one. A day can be Part of the day, with one of the site's own options. An older
+  // server sends no `weeks` or `options`: the card then works as it did (one change, three choices).
+  const weeks = Array.isArray(availability?.weeks) ? availability.weeks : [];
+  const options = Array.isArray(availability?.options) ? availability.options : [];
+  const upcoming = Array.isArray(availability?.upcoming) ? availability.upcoming
+    : availability?.pending ? [{ from: availability.pending.from, perDay: weekOf(availability.pending.perDay), locked: false }] : [];
+  const states = STATES.filter(([k]) => k !== 'partial' || options.length > 0);
+  const now = weekOf(availability?.perDay);
+  // The pattern a week starts from when nothing is filed for it: the one in effect that week.
+  // A Part day whose option the site has since removed takes the first option that is offered now (the
+  // server would refuse the old one, even on a save that only touched another day). With no options at
+  // all (an older server) a Part day is shown as Available, the nearest thing that server accepts.
+  const fit = (pattern) => pattern.map(e => {
+    if (e.state !== 'partial') return e;
+    if (!options.length) return { day: e.day, state: 'available' };
+    const match = options.find(o => o.toLowerCase() === String(e.note || '').toLowerCase());
+    return { ...e, note: match || options[0] };
+  });
+  const patternFor = (week) => {
+    const exact = upcoming.find(u => u.from === week);
+    if (exact) return fit(weekOf(exact.perDay));
+    const before = upcoming.filter(u => u.from < week).pop();
+    return fit(weekOf(before ? before.perDay : availability?.perDay));
+  };
+  const firstWeek = weeks[0] || availability?.changesFrom || '';
   const [editing, setEditing] = useState(false);
-  const [days, setDays] = useState(fromSnap);
+  const [week, setWeek] = useState(firstWeek);
+  const [days, setDays] = useState(() => patternFor(firstWeek));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [saved, setSaved] = useState('');
-  const current = fromSnap();
-  // 5.12.61: a change applies from the next rota period (availability.changesFrom, words from the
-  // server); a change already filed for then shows as "From ...".
-  const pending = availability?.pending || null;
-  const pendingDays = DAYS.map((_, i) => (pending?.perDay || []).find(d => Number(d.day) === i)?.state || 'available');
   const fromWords = (ymd) => dayText(ymd, { weekday: true });
+  const open = (w) => { setWeek(w); setDays(patternFor(w)); setEditing(true); setErr(''); setSaved(''); };
+  const setDay = (i, patch) => setDays(cur => cur.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const pick = (i, k) => setDay(i, k === 'partial' ? { state: k, note: days[i].note || options[0] || '' } : { state: k, note: undefined });
   const save = async () => {
     setBusy(true); setErr(''); setSaved('');
     try {
-      const r = await call({ action: 'availability_set', per_day: days.map((state, day) => ({ day, state })) });
+      const per_day = days.map((d, day) => (d.state === 'partial' ? { day, state: d.state, note: d.note } : { day, state: d.state }));
+      const r = await call({ action: 'availability_set', per_day, ...(weeks.length ? { week_start: week } : {}) });
       setEditing(false); setSaved(r?.changesFrom ? `Saved. Applies from ${fromWords(r.changesFrom)}. Your manager sees it on the rota.` : 'Saved. Your manager sees it on the rota.');
       await onChanged();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
+  const remove = async (w) => {
+    setBusy(true); setErr(''); setSaved('');
+    try { await call({ action: 'availability_clear', week_start: w }); setSaved(`Removed. The week of ${fromWords(w)} follows the pattern before it.`); await onChanged(); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const lines = (pattern) => (allAvailable(pattern) ? 'Available every day.'
+    : pattern.map((e, i) => (e.state === 'available' ? null : <div key={i}>{DAYS[i]}: <b style={{ color: AV_COLOR[e.state] || 'var(--grn)' }}>{dayWords(e)}</b></div>)));
   return (
     <div className="sv-glass" style={{ ...glass, marginTop: 6 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <span style={{ fontSize: 13.5, fontWeight: 800 }}>My availability</span>
-        <button onClick={() => { setDays(fromSnap()); setEditing(e => !e); setErr(''); setSaved(''); }} style={{ ...small, color: editing ? 'var(--t3)' : 'var(--acc)', padding: '5px 12px' }}>{editing ? 'Cancel' : 'Edit'}</button>
+        <button onClick={() => { if (editing) { setEditing(false); setErr(''); } else open(firstWeek); }} style={{ ...small, color: editing ? 'var(--t3)' : 'var(--acc)', padding: '5px 12px' }}>{editing ? 'Cancel' : weeks.length ? 'Set a week' : 'Edit'}</button>
       </div>
       {saved && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>{saved}</div>}
       {!editing ? (
         <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.7 }}>
-          {current.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (current[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: current[i] === 'unavailable' ? 'var(--red)' : 'var(--grn)' }}>{current[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
-          {pending && (
-            <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--bdr)' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)' }}>From {fromWords(pending.from)}</div>
-              {pendingDays.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (pendingDays[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: pendingDays[i] === 'unavailable' ? 'var(--red)' : 'var(--grn)' }}>{pendingDays[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
+          <ErrLine>{err}</ErrLine>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t4)' }}>Now</div>
+          {lines(now)}
+          {upcoming.map(u => (
+            <div key={u.from} style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--bdr)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ flex: 1, fontSize: 11, fontWeight: 700, color: 'var(--amber)' }}>From {fromWords(u.from)}</span>
+                {u.locked ? <span style={{ fontSize: 10.5, color: 'var(--t4)' }}>On the rota, ask your manager to change it</span>
+                  : weeks.length > 0 && <>
+                    <button onClick={() => open(u.from)} disabled={busy} style={{ ...small, padding: '3px 10px', fontSize: 11, color: 'var(--acc)' }}>Edit</button>
+                    <button onClick={() => remove(u.from)} disabled={busy} style={{ ...small, padding: '3px 10px', fontSize: 11, color: 'var(--t3)' }}>Remove</button>
+                  </>}
+              </div>
+              {lines(weekOf(u.perDay))}
             </div>
-          )}
+          ))}
+          {weeks.length > 0 && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>Know your timetable ahead? Tap Set a week for each week it changes. Each one carries on until the next week you set.</div>}
         </div>
       ) : (
         <div>
-          {availability?.words && <div style={{ fontSize: 11.5, color: 'var(--amber)', fontWeight: 700, lineHeight: 1.5, marginBottom: 6 }}>{availability.words}</div>}
+          {weeks.length > 0 ? (
+            <label style={{ display: 'block', marginBottom: 10 }}>
+              <span style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', marginBottom: 5, letterSpacing: '.04em', textTransform: 'uppercase' }}>From the week starting</span>
+              <select value={week} onChange={e => { setWeek(e.target.value); setDays(patternFor(e.target.value)); }}
+                style={{ width: '100%', padding: '11px 12px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit' }}>
+                {weeks.map(w => <option key={w} value={w}>{fromWords(w)}{upcoming.some(u => u.from === w) ? ' (already set)' : ''}</option>)}
+              </select>
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--t4)', marginTop: 5, lineHeight: 1.5 }}>It applies from that week until the next week you set. Weeks already on the rota cannot be changed here.</span>
+            </label>
+          ) : availability?.words && <div style={{ fontSize: 11.5, color: 'var(--amber)', fontWeight: 700, lineHeight: 1.5, marginBottom: 6 }}>{availability.words}</div>}
           {DAYS.map((d, i) => (
-            <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderTop: i ? '1px solid var(--bdr)' : 'none' }}>
-              <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{d}</span>
-              <div style={{ display: 'flex', gap: 4 }}>
-                {STATES.map(([k, lbl]) => (
-                  <button key={k} onClick={() => setDays(cur => cur.map((x, j) => (j === i ? k : x)))}
-                    style={{ ...small, padding: '5px 9px', fontSize: 11, background: days[i] === k ? (k === 'unavailable' ? 'var(--red)' : 'var(--acc)') : 'transparent', color: days[i] === k ? '#fff' : 'var(--t2)', border: days[i] === k ? 'none' : '1px solid var(--bdr)' }}>{lbl}</button>
-                ))}
+            <div key={d} style={{ padding: '7px 0', borderTop: i ? '1px solid var(--bdr)' : 'none' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ flex: '1 0 84px', fontSize: 13, fontWeight: 600 }}>{d}</span>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {states.map(([k, lbl]) => (
+                    <button key={k} onClick={() => pick(i, k)}
+                      style={{ ...small, padding: '5px 9px', fontSize: 11, background: days[i].state === k ? AV_COLOR[k] : 'transparent', color: days[i].state === k ? '#fff' : 'var(--t2)', border: days[i].state === k ? '1px solid transparent' : '1px solid var(--bdr)' }}>{lbl}</button>
+                  ))}
+                </div>
               </div>
+              {days[i].state === 'partial' && (
+                <select value={days[i].note || ''} onChange={e => setDay(i, { note: e.target.value })} aria-label={`${d}: which part of the day`}
+                  style={{ width: '100%', marginTop: 6, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit' }}>
+                  {options.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              )}
             </div>
           ))}
           <ErrLine>{err}</ErrLine>
           <button onClick={save} disabled={busy} style={{ ...solid, width: '100%', padding: '12px 14px', fontSize: 14, marginTop: 8, opacity: busy ? 0.6 : 1 }}>{busy ? 'Saving…' : 'Save availability'}</button>
-          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>Unavailable days stop you claiming open shifts on those days.</div>
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.6 }}>
+            <b style={{ color: 'var(--acc)' }}>Available</b>: any time that day. <b style={{ color: 'var(--pur)' }}>Preferred</b>: you would like to work that day.{options.length > 0 && <> <b style={{ color: 'var(--amber)' }}>Part day</b>: you can work some of it, pick when.</>} <b style={{ color: 'var(--red)' }}>Unavailable</b>: you cannot work, and cannot claim open shifts that day.
+          </div>
         </div>
       )}
     </div>

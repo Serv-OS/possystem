@@ -15,7 +15,9 @@ import { Icon } from '../../components/ServOSIcons';
 // 5.12.57: no seed numbers on any screen (the dashboard read the seed forecast and rates, so it
 // always said 0 and All clear); positions are the site's own.
 import { isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
-import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation, loadLeavers, reinstateStaff, loadTimesheetsFor } from '../../staff/wfData';
+import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation, loadLeavers, reinstateStaff, loadTimesheetsFor, textTillPin, loadTillPins } from '../../staff/wfData';
+// 5.12.91 (HR feedback batch 2): a till PIN can be generated and texted, and set up from Onboarding.
+import { generatePin, takenPins, pinSentWords } from '../../staff/pinRules';
 // 5.12.89 (HR feedback and Peter, 23 Nov 2026): leavers can be seen and reinstated, adding someone who
 // is already on the system says so, and an address with no postcode is flagged.
 import { existingMatches, hasMatch, reinstatedWords } from '../../staff/reinstate';
@@ -88,6 +90,15 @@ export default function Workforce({ section, orgCtx }) {
   const [existing, setExisting] = useState(null);        // { data, found }
   const [draft, setDraft] = useState(null);              // the typed form, given back when that box is cancelled
   const [reinstating, setReinstating] = useState('');
+  // 5.12.91: the PINs in use at the site, read from the database when the till access box opens (the
+  // store only has them once the Team page has been opened).
+  const [tillPins, setTillPins] = useState([]);
+  useEffect(() => {
+    if (!posFor) return undefined;
+    let live = true;
+    loadTillPins(locationId).then(rows => { if (live) setTillPins(rows || []); }).catch(() => {});
+    return () => { live = false; };
+  }, [posFor, locationId]);
 
   // Workforce is scoped to the location selected in the Back Office (bottom-left
   // switcher). Multi-site rollups live in Reports, not here.
@@ -151,6 +162,8 @@ export default function Workforce({ section, orgCtx }) {
   // change without a reload — deleted positions must leave dropdowns at once.
   const sectionProps = {
     ctx, staff: staffView, privateHidden: !privateOk, roles, sections, settings, week, showToast,
+    leavers,               // 5.12.91: Training and Compliance show people who have left apart from the team
+    onSetPos: setPosFor,   // 5.12.91: Onboarding gives till access without leaving the page
     onSettingsSaved: setSettings,
     onRolesChanged: (list) => { const map = {}; (list || []).forEach(r => { map[r.key] = r; }); setRoles({ list: list || [], map }); },
   };
@@ -261,7 +274,7 @@ export default function Workforce({ section, orgCtx }) {
     }
   };
 
-  const setAsPosUser = async (s, { pin, role }) => {
+  const setAsPosUser = async (s, { pin, role, sendText = false }) => {
     // v5.6.2 — this used to be a DOUBLE silent failure: the staff_members
     // upsert's error was never read (supabase-js returns errors, it does not
     // throw), markPosUser console.warn'd its own, and then the success toast
@@ -277,7 +290,9 @@ export default function Workforce({ section, orgCtx }) {
     const id = crypto.randomUUID();
     // Same duplicate-PIN guard the Team page has — two people on one PIN makes
     // till login ambiguous, and the DB would accept it.
-    const clash = (useStore.getState().staffMembers || []).find(m => m.active !== false && m.pin && m.pin === pin);
+    // 5.12.91: checked against the database as well as the store (which is empty until Team is opened).
+    const fresh = await loadTillPins(locationId).catch(() => []);
+    const clash = [...fresh, ...(useStore.getState().staffMembers || [])].find(m => m.active !== false && m.pin && String(m.pin) === pin);
     if (clash) {
       setPosFor(null);
       showToast?.(`That PIN is already used by ${clash.name} — pick another`, 'error');
@@ -299,7 +314,13 @@ export default function Workforce({ section, orgCtx }) {
     }
     setStaff(st => st.map(x => x.id === s.id ? { ...x, posUserId: id, posRole: role } : x));
     setPosFor(null);
-    showToast?.(`${s.name} added as a POS user — see Team`);
+    // 5.12.91: text them the PIN when the manager ticked it (to the mobile on their own record only).
+    let sent = '', textOk = true;
+    if (sendText) {
+      try { const r = await textTillPin({ staff: { name: s.name, mobile: s.mobile, locationId }, pin, venueName: orgCtx?.locationName || '' }); textOk = !!r?.ok; sent = ` ${pinSentWords(s.name, r)}`; }
+      catch (e) { textOk = false; sent = ` ${pinSentWords(s.name, e instanceof Error ? e : new Error(String(e)))}`; }
+    }
+    showToast?.(`${s.name} added as a POS user.${sent}`, textOk ? 'success' : 'info');
   };
 
   return (
@@ -339,7 +360,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'compliance' && <WfCompliance {...sectionProps} />}
       {key === 'training' && <WfTraining {...sectionProps} />}
       {key === 'timeoff' && <WfLeave {...sectionProps} />}
-      {key === 'onboarding' && <WfOnboarding {...sectionProps} leavers={leavers} />}
+      {key === 'onboarding' && <WfOnboarding {...sectionProps} />}
       {key === 'announce' && <WfAnnouncements {...sectionProps} />}
       {key === 'settings' && <WfSettings {...sectionProps} />}
       {key === 'chat' && <WfChat ctx={{ venueOrgId: orgCtx?.venueOrgId || null }} showToast={showToast} />}
@@ -352,7 +373,7 @@ export default function Workforce({ section, orgCtx }) {
       {viewing && <StaffDetailModal staff={viewing} privateOk={privateOk} onReinstate={reinstate} reinstating={reinstating === viewing.id} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
       {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} draft={editing ? null : draft} privateOk={privateOk} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); setDraft(null); }} onSave={(d) => { setDraft(null); saveMember(d); }} />}
-      {posFor && <PosUserModal staff={posFor} roles={rolesMap} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
+      {posFor && <PosUserModal staff={posFor} roles={rolesMap} taken={[...new Set([...takenPins(tillPins), ...takenPins(useStore.getState().staffMembers)])]} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
       </>}
     </div>
   );
@@ -1183,23 +1204,39 @@ function ContractPanel({ s, role, onb, loading, ctx, showToast, onCase }) {
   );
 }
 
-function PosUserModal({ staff, roles = {}, onClose, onSave }) {
+function PosUserModal({ staff, roles = {}, taken = [], onClose, onSave }) {
   const [pin, setPin] = useState('');
+  // 5.12.91 (HR feedback batch 2, 24 Nov 2026): Generate picks a PIN nobody at the site has and that
+  // is not an easy guess, and the PIN can be texted to the mobile on their record (never emailed).
+  const hasMobile = !!String(staff.mobile || '').trim();
+  const [sendText, setSendText] = useState(hasMobile);
+  const clash = /^\d{4}$/.test(pin) && taken.includes(pin);
   // 5.12.57: a US kitchen calls the role Dishwasher (UK: Kitchen Porter, as before); the default is
   // the person's own position at this site when it is a till role, never a sample position.
   const POS_ROLES = ['Manager', 'Supervisor', 'Bartender', 'Server', 'Host', 'Chef', activeRegionPack().country === 'US' ? 'Dishwasher' : 'Kitchen Porter'];
   const [role, setRole] = useState(() => { const lbl = roles[staff.role]?.lbl; return lbl && POS_ROLES.includes(lbl) ? lbl : 'Server'; });
-  const valid = /^\d{4}$/.test(pin);
+  const valid = /^\d{4}$/.test(pin) && !clash;
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-box" style={{ maxWidth: 400 }}>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Set {staff.name} as a POS user</div>
         <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>Creates a till login on the Team page. They'll use this 4-digit PIN to clock in and operate the POS.</div>
         <div style={{ marginBottom: 12 }}><label style={labelStyle}>POS role</label><select style={inputStyle} value={role} onChange={e => setRole(e.target.value)}>{POS_ROLES.map(r => <option key={r} value={r}>{r}</option>)}</select></div>
-        <div style={{ marginBottom: 16 }}><label style={labelStyle}>4-digit PIN</label><input style={{ ...inputStyle, letterSpacing: 6, fontFamily: 'var(--font-mono)', fontSize: 18 }} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="0000" inputMode="numeric" /></div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>4-digit PIN</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input style={{ ...inputStyle, letterSpacing: 6, fontFamily: 'var(--font-mono)', fontSize: 18, ...(clash ? { borderColor: 'var(--red)' } : {}) }} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="0000" inputMode="numeric" />
+            <button type="button" className="btn btn-ghost" style={{ flexShrink: 0 }} onClick={() => setPin(generatePin(taken))} title="Pick a PIN nobody else at this site has"><Icon name="sparkle" size={14} /> Generate</button>
+          </div>
+          {clash && <div style={{ fontSize: 11.5, color: 'var(--red)', marginTop: 5 }}>Someone at this site already has that PIN. Pick another or press Generate.</div>}
+        </div>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, marginBottom: 16, fontSize: 12.5, color: hasMobile ? 'var(--t2)' : 'var(--t4)', lineHeight: 1.45, cursor: hasMobile ? 'pointer' : 'default' }}>
+          <input type="checkbox" checked={sendText && hasMobile} disabled={!hasMobile} onChange={e => setSendText(e.target.checked)} style={{ marginTop: 2 }} />
+          <span>{hasMobile ? <>Text the PIN to {staff.name.split(' ')[0]} on <b className="mono">{staff.mobile}</b></> : 'No mobile on their staff record, so the PIN cannot be texted. Tell them yourself.'}</span>
+        </label>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" disabled={!valid} onClick={() => onSave({ pin, role })}>Create POS user</button>
+          <button className="btn btn-acc" disabled={!valid} onClick={() => onSave({ pin, role, sendText: sendText && hasMobile })}>Create POS user</button>
         </div>
       </div>
     </div>

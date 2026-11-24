@@ -131,7 +131,7 @@ export function PickTemplateModal({ kind, member, role, ctx, title, cta, onClose
   );
 }
 
-export default function WfOnboarding({ ctx, staff = [], leavers = [], roles, sections, settings, week, showToast }) {
+export default function WfOnboarding({ ctx, staff = [], leavers = [], roles, sections, settings, week, showToast, onSetPos }) {
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [picking, setPicking] = useState(false);
@@ -243,7 +243,7 @@ export default function WfOnboarding({ ctx, staff = [], leavers = [], roles, sec
           : <EmptyState icon="team" title="No one onboarding" body={candidates.length ? (activeRegionPack().country === 'US' ? `Start onboarding a new hire to email their offer, collect their ${activeRegionPack().workDocLabel} and get the contract signed.` : 'Start onboarding a new hire to email their offer, collect Right to Work, get the contract signed and capture bank details.') : 'Add a staff member first, then onboard them here.'} cta={candidates.length ? 'Start onboarding' : undefined} onCta={candidates.length ? () => setPicking(true) : undefined} />
       ) : (
         <div style={{ display: 'grid', gap: 14 }}>
-          {shown.map(c => <OnboardingCard key={c.id} c={c} member={nameOf(c.staffId)} rolesMap={rolesMap} ctx={ctx} showToast={showToast} markStep={markStep} patchCase={patchCase} onStaffChanged={reload} />)}
+          {shown.map(c => <OnboardingCard key={c.id} c={c} member={nameOf(c.staffId)} rolesMap={rolesMap} ctx={ctx} showToast={showToast} markStep={markStep} patchCase={patchCase} onStaffChanged={reload} onSetPos={onSetPos} />)}
         </div>
       )}
 
@@ -285,7 +285,7 @@ function ArchivedCases({ cases, leaverById, rolesMap }) {
   );
 }
 
-function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCase, onStaffChanged }) {
+function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCase, onStaffChanged, onSetPos }) {
   const meta = c.meta || {};
   const stepStatus = k => (c.steps || []).find(s => s.key === k)?.status || 'pending';
   const posDone = !!member.posUserId || stepStatus('posUser') === 'complete';
@@ -335,8 +335,13 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
           <BankAction c={c} member={member} ctx={ctx} showToast={showToast} markStep={markStep} done={stepStatus('bank') === 'complete'} />
         </StepRow> : null}
 
-        <StepRow done={posDone} label="POS access" hint={posDone ? 'Till user created' : 'Set them up from Staff → Set as POS user'}>
-          {posDone ? <Badge tone="green">Done</Badge> : <span style={{ fontSize: 12, color: 'var(--t4)' }}>In Staff</span>}
+        {/* 5.12.91 (HR feedback batch 2, 24 Nov 2026): till access is given here. It used to say "In Staff"
+            and send the manager to another page. The same box as Staff, Set as POS user: role, a PIN
+            (Generate picks a free one) and a tick to text it to them. */}
+        <StepRow done={posDone} label="POS access" hint={posDone ? 'Till user created' : 'Give them a till login and PIN. Generate picks a PIN for you and can text it to them.'}>
+          {posDone ? <Badge tone="green">Done</Badge>
+            : onSetPos && member?.id ? <button className="btn btn-acc btn-sm" onClick={() => onSetPos(member)}><Icon name="plus" size={13} /> Set up till access</button>
+            : <span style={{ fontSize: 12, color: 'var(--t4)' }}>In Staff</span>}
         </StepRow>
       </div>
     </Card>

@@ -18,6 +18,8 @@ import { countHidden } from '../_shared/openShiftsHidden.js';
 import { isHeadOffice, HEAD_OFFICE_SHIFT_WORDS } from '../_shared/headOffice.js';
 // 5.12.61: availability is versioned by week_start; a staff app change applies from the next rota period.
 import { availabilityChangesFrom, changesFromWords, availabilityInEffect, pendingAvailability } from '../_shared/availabilityWhen.js';
+// 5.12.91 (HR feedback batch 2): Part of the day with the site's own options, and patterns for future weeks.
+import { partDayOptions, cleanPerDay, weekChoices, weekProblem, upcomingPatterns } from '../_shared/availabilityChoices.js';
 import { workweekStartDow } from '../_shared/venueDates.js';
 
 type Admin = any;
@@ -76,7 +78,7 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
     admin.from('wf_staff').select('id, name, role_key, status, location_id').eq('location_id', loc).eq('status', 'active').limit(1000),
     admin.from('wf_roles').select('key, label').eq('location_id', loc),
     admin.from('wf_venue_settings').select('settings').eq('location_id', loc).maybeSingle(),
-    admin.from('wf_availability').select('per_day, week_start, updated_at, created_at').eq('staff_id', staff.id).limit(50),
+    admin.from('wf_availability').select('per_day, week_start, updated_at, created_at').eq('staff_id', staff.id).limit(200),
     admin.from('wf_time_off').select('status, start_date, end_date').eq('staff_id', staff.id).eq('status', 'approved'),
     admin.from('wf_onboarding').select('meta, steps').eq('staff_id', staff.id).order('created_at', { ascending: false }).limit(1),
   ]);
@@ -181,12 +183,20 @@ async function availabilityChangeDate(admin: Admin, staff: any, v: Venue, settin
 async function availabilityForApp(admin: Admin, staff: any, v: Venue, settings: any, rows: any[]) {
   const now = availabilityInEffect(rows, v.todayIso);
   const changesFrom = await availabilityChangeDate(admin, staff, v, settings);
-  const next = pendingAvailability(rows, v.todayIso)[0] ?? null;
+  // The one change an older app shows: the first week that can still be changed (a week already on the
+  // rota is locked, and since 5.12.91 earlier filed weeks are kept, so the soonest row may be one).
+  const next = pendingAvailability(rows, v.todayIso).find((r: any) => String(r.week_start ?? r.weekStart) >= changesFrom) ?? null;
   return {
     perDay: now?.perDay ?? [],
     changesFrom,
     words: changesFromWords(changesFrom, v.currency),
     pending: next ? { from: String(next.week_start ?? next.weekStart), perDay: next.perDay } : null,
+    // 5.12.91: every pattern filed for a later week (soonest first; locked = that week is already on
+    // the rota), the weeks one can be filed for, and the site's Part of the day options. An older
+    // app reads `pending` as before.
+    upcoming: upcomingPatterns(rows, v.todayIso, changesFrom),
+    weeks: weekChoices(changesFrom),
+    options: partDayOptions(settings),
   };
 }
 
@@ -209,7 +219,10 @@ async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, re
   const [{ data: sh }, { data: lv }, { data: av }, { data: vs }, { data: onb }] = await Promise.all([
     admin.from('wf_shifts').select(SHIFT_COLS).in('staff_id', ids).in('status', ['draft', 'published']).gte('shift_date', mon).lte('shift_date', sun).limit(5000),
     admin.from('wf_time_off').select('staff_id, status, start_date, end_date').in('staff_id', ids).eq('status', 'approved').lte('start_date', shift.date).gte('end_date', shift.date),
-    admin.from('wf_availability').select('staff_id, per_day, week_start, updated_at, created_at').in('staff_id', ids).limit(5000),
+    // 5.12.91: only patterns that can be in effect on the shift's day (people may now hold a pattern for
+    // each of 26 future weeks, and a read is capped at 1,000 rows), newest week first.
+    admin.from('wf_availability').select('staff_id, per_day, week_start, updated_at, created_at').in('staff_id', ids)
+      .or(`week_start.is.null,week_start.lte.${shift.date}`).order('week_start', { ascending: false, nullsFirst: false }).limit(5000),
     admin.from('wf_venue_settings').select('settings').eq('location_id', shift.locationId).maybeSingle(),
     admin.from('wf_onboarding').select('staff_id, meta, steps, created_at').in('staff_id', ids).order('created_at', { ascending: false }),
   ]);
@@ -236,39 +249,59 @@ async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, re
   }));
 }
 
-const DAY_STATES = new Set(['available', 'preferred', 'unavailable']);
 
 /** The staff app's swap and availability actions. null when the action is not one of these. */
 export async function handleSwapAction(admin: Admin, staff: any, action: string, body: any): Promise<{ status: number; body: any } | null> {
-  if (!['shift_claim', 'shift_drop', 'swap_cancel', 'swap_decline', 'availability_set'].includes(action)) return null;
+  if (!['shift_claim', 'shift_drop', 'swap_cancel', 'swap_decline', 'availability_set', 'availability_clear'].includes(action)) return null;
 
-  if (action === 'availability_set') {
-    const raw = Array.isArray(body.per_day) ? body.per_day : null;
-    if (!raw) return err(400, 'Pick a choice for each day');
-    const perDay = raw.map((d: any) => ({ day: Number(d?.day), state: String(d?.state || '') }))
-      .filter((d: any) => Number.isInteger(d.day) && d.day >= 0 && d.day <= 6 && DAY_STATES.has(d.state));
-    if (perDay.length !== raw.length || new Set(perDay.map((d: any) => d.day)).size !== perDay.length) return err(400, 'Pick a choice for each day');
-    perDay.sort((a: any, b: any) => a.day - b.day);
-    // 5.12.61: the change never lands on a week already on the rota. It is filed with week_start =
-    // the next rota period; the pattern in effect until then stays as it is. One pending change at a
-    // time: an earlier one for another week is replaced.
+  if (action === 'availability_set' || action === 'availability_clear') {
+    // 5.12.61: a change never lands on a week already on the rota: the first week that can be
+    // touched is the next rota period (changesFrom).
+    // 5.12.91 (HR feedback batch 2, 24 Nov 2026): a pattern can be filed for ANY week from then up to
+    // 26 weeks ahead (students know their timetable months ahead), so earlier filed weeks are no
+    // longer thrown away when another is saved. Each pattern applies from its week until the next
+    // week that has one. A day can also be Part of the day, with one of the site's own options.
     const v0 = await venueFacts(admin, staff.location_id);
     const { data: vs0 } = await admin.from('wf_venue_settings').select('settings').eq('location_id', staff.location_id).maybeSingle();
-    const changesFrom = await availabilityChangeDate(admin, staff, v0, (vs0 as any)?.settings ?? {});
+    const settings0 = (vs0 as any)?.settings ?? {};
+    const changesFrom = await availabilityChangeDate(admin, staff, v0, settings0);
     if (!changesFrom) return err(500, 'Could not work out the next rota period');
-    const { data: rows } = await admin.from('wf_availability').select('id, week_start').eq('staff_id', staff.id).limit(50);
-    const stale = (rows ?? []).filter((r: any) => r.week_start && r.week_start > v0.todayIso && r.week_start !== changesFrom).map((r: any) => r.id);
-    if (stale.length) await admin.from('wf_availability').delete().in('id', stale).eq('staff_id', staff.id);
-    const same = (rows ?? []).find((r: any) => r.week_start === changesFrom);
+    const week = body.week_start ? String(body.week_start).slice(0, 10) : changesFrom;
+    const weekBad = weekProblem(week, changesFrom);
+    if (weekBad) return err(400, weekBad);
+    const { data: rows } = await admin.from('wf_availability').select('id, week_start').eq('staff_id', staff.id).limit(200);
+    const same = (rows ?? []).find((r: any) => r.week_start === week);
+
+    if (action === 'availability_clear') {
+      if (!same) return { status: 200, body: { ok: true, cleared: false, week } };
+      const del = await admin.from('wf_availability').delete().eq('id', same.id).eq('staff_id', staff.id);
+      if (del.error) return err(500, del.error.message);
+      const { error } = await writeWfAudit(admin, staff.location_id, staff.org_id, 'availability.cleared', {
+        actorId: null, actorName: `${staff.name} (staff app)`, entity: 'wf_availability', entityId: String(staff.id), after: { week_start: week },
+      });
+      if (error) console.error(`[staff-portal] audit availability.cleared: ${error}`);
+      return { status: 200, body: { ok: true, cleared: true, week } };
+    }
+
+    const checked = cleanPerDay(body.per_day, partDayOptions(settings0));
+    if (checked.error) return err(400, checked.error);
+    const perDay = checked.perDay;
     const w = same
       ? await admin.from('wf_availability').update({ per_day: perDay, recurring: true, updated_at: new Date().toISOString() }).eq('id', same.id).eq('staff_id', staff.id)
-      : await admin.from('wf_availability').insert({ location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, recurring: true, week_start: changesFrom, per_day: perDay });
+      : await admin.from('wf_availability').insert({ location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, recurring: true, week_start: week, per_day: perDay });
     if (w.error) return err(500, w.error.message);
+    // Tidy: a dated pattern that a later one has already replaced (both started before today) can never
+    // be in effect again. Removing them keeps a person to one base pattern, the one in effect and the
+    // future weeks, however long they have worked here.
+    const past = (rows ?? []).filter((r: any) => r.week_start && r.week_start <= v0.todayIso).map((r: any) => String(r.week_start)).sort();
+    const inEffect = past.length ? past[past.length - 1] : null;
+    const dead = inEffect ? (rows ?? []).filter((r: any) => r.week_start && r.week_start < inEffect).map((r: any) => r.id) : [];
+    if (dead.length) await admin.from('wf_availability').delete().in('id', dead).eq('staff_id', staff.id);
     const { error } = await writeWfAudit(admin, staff.location_id, staff.org_id, 'availability.set', {
-      actorId: null, actorName: `${staff.name} (staff app)`, entity: 'wf_availability', entityId: String(staff.id), after: { per_day: perDay, week_start: changesFrom },
+      actorId: null, actorName: `${staff.name} (staff app)`, entity: 'wf_availability', entityId: String(staff.id), after: { per_day: perDay, week_start: week },
     });
     if (error) console.error(`[staff-portal] audit availability.set: ${error}`);
-    return { status: 200, body: { ok: true, perDay, changesFrom, words: changesFromWords(changesFrom, v0.currency) } };
+    return { status: 200, body: { ok: true, perDay, changesFrom: week, words: changesFromWords(week, v0.currency) } };
   }
 
   const v = await venueFacts(admin, staff.location_id);
