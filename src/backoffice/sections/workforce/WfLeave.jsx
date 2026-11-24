@@ -492,7 +492,7 @@ function PartDayOptions({ options, onSave }) {
         <input style={{ ...inputStyle, maxWidth: 220, height: 36 }} value={text} maxLength={MAX_OPTION_LENGTH} placeholder="e.g. From 3pm" disabled={list.length >= MAX_PART_DAY_OPTIONS}
           onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
         <button className="btn btn-ghost btn-sm" disabled={!text.trim() || list.length >= MAX_PART_DAY_OPTIONS} onClick={add}><Icon name="plus" size={13} /> Add</button>
-        {dirty && <button className="btn btn-acc btn-sm" disabled={busy} onClick={async () => { setBusy(true); try { await onSave(list); } finally { setBusy(false); } }}>{busy ? 'Saving…' : 'Save options'}</button>}
+        {dirty && <button className="btn btn-acc btn-sm" disabled={busy} onClick={async () => { setBusy(true); try { await onSave(list); setList(partDayOptions({ availabilityOptions: list })); } finally { setBusy(false); } }}>{busy ? 'Saving…' : 'Save options'}</button>}
         {dirty && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setList(options)}>Undo</button>}
       </div>
     </div>

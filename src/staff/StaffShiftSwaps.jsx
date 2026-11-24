@@ -172,11 +172,20 @@ export function AvailabilityCard({ availability, call, onChanged }) {
   const states = STATES.filter(([k]) => k !== 'partial' || options.length > 0);
   const now = weekOf(availability?.perDay);
   // The pattern a week starts from when nothing is filed for it: the one in effect that week.
+  // A Part day whose option the site has since removed takes the first option that is offered now (the
+  // server would refuse the old one, even on a save that only touched another day). With no options at
+  // all (an older server) a Part day is shown as Available, the nearest thing that server accepts.
+  const fit = (pattern) => pattern.map(e => {
+    if (e.state !== 'partial') return e;
+    if (!options.length) return { day: e.day, state: 'available' };
+    const match = options.find(o => o.toLowerCase() === String(e.note || '').toLowerCase());
+    return { ...e, note: match || options[0] };
+  });
   const patternFor = (week) => {
     const exact = upcoming.find(u => u.from === week);
-    if (exact) return weekOf(exact.perDay);
+    if (exact) return fit(weekOf(exact.perDay));
     const before = upcoming.filter(u => u.from < week).pop();
-    return weekOf(before ? before.perDay : availability?.perDay);
+    return fit(weekOf(before ? before.perDay : availability?.perDay));
   };
   const firstWeek = weeks[0] || availability?.changesFrom || '';
   const [editing, setEditing] = useState(false);
@@ -209,7 +218,7 @@ export function AvailabilityCard({ availability, call, onChanged }) {
     <div className="sv-glass" style={{ ...glass, marginTop: 6 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <span style={{ fontSize: 13.5, fontWeight: 800 }}>My availability</span>
-        <button onClick={() => (editing ? setEditing(false) : open(firstWeek))} style={{ ...small, color: editing ? 'var(--t3)' : 'var(--acc)', padding: '5px 12px' }}>{editing ? 'Cancel' : weeks.length ? 'Set a week' : 'Edit'}</button>
+        <button onClick={() => { if (editing) { setEditing(false); setErr(''); } else open(firstWeek); }} style={{ ...small, color: editing ? 'var(--t3)' : 'var(--acc)', padding: '5px 12px' }}>{editing ? 'Cancel' : weeks.length ? 'Set a week' : 'Edit'}</button>
       </div>
       {saved && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>{saved}</div>}
       {!editing ? (

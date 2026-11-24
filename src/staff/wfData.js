@@ -160,6 +160,18 @@ export async function reinstateStaff(staffId) {
 }
 
 /**
+ * 5.12.91: the PINs active till users at a site hold, read from the database. The Back Office store
+ * only has them after the Team page has been opened, so a check against the store alone let two
+ * people end up on one PIN. Answers [{ id, name, pin }]; [] when it cannot be read (mock, no site).
+ */
+export async function loadTillPins(locationId) {
+  if (isMock || !supabase || !locationId) return [];
+  const { data, error } = await supabase.from('staff_members').select('id, name, pin, active').eq('location_id', locationId).eq('active', true);
+  if (error) { console.warn('[wf] loadTillPins:', error.message); return []; }
+  return (data || []).filter(m => m.pin).map(m => ({ id: m.id, name: m.name, pin: String(m.pin), active: true }));
+}
+
+/**
  * 5.12.91 (HR feedback batch 2, 24 Nov 2026): text someone their till PIN. By text only, never by
  * email: it goes to the mobile on their own Workforce record. Give `staff` ({ name, mobile,
  * locationId }) when the caller has the record, or `posUserId` to find the record the till user is

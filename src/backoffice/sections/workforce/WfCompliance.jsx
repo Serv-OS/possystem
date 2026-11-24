@@ -221,7 +221,8 @@ export default function WfCompliance({ ctx, staff, leavers = [], roles, sections
 
   if (loading) return <LoadingCard label="Loading documents…" />;
 
-  if (!staff || staff.length === 0) {
+  // 5.12.91: a site with no current team but documents kept for leavers still gets the page (for the Leavers view).
+  if ((!staff || staff.length === 0) && leaversWithDocs.length === 0) {
     return (
       <EmptyState
         icon="team"
@@ -247,7 +248,7 @@ export default function WfCompliance({ ctx, staff, leavers = [], roles, sections
       <AttentionBanner count={attentionCount} />
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-        {[['all', `Everyone (${viewCounts.all})`], ['attention', `Needs attention (${viewCounts.attention})`], ['pending', `Pending review (${viewCounts.pending})`], ['rejected', `Rejected (${viewCounts.rejected})`], ['leavers', `Leavers (${leaversWithDocs.length})`]].map(([k, lbl]) => (
+        {[['all', `All documents (${viewCounts.all})`], ['attention', `Needs attention (${viewCounts.attention})`], ['pending', `Pending review (${viewCounts.pending})`], ['rejected', `Rejected (${viewCounts.rejected})`], ['leavers', `Leavers (${leaversWithDocs.length})`]].map(([k, lbl]) => (
           <button key={k} onClick={() => setView(k)} className={view === k ? 'btn btn-acc btn-sm' : 'btn btn-ghost btn-sm'}>{lbl}</button>
         ))}
       </div>
@@ -394,7 +395,7 @@ function LeaverDocs({ leavers, byStaff, rolesMap }) {
               <span style={{ marginLeft: 'auto' }}><Badge tone="grey">{member.leaverDate ? `Left ${fmtDate(String(member.leaverDate).slice(0, 10))}` : 'Left'}</Badge></span>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr><th style={th}>Document</th><th style={th}>Status when they left</th><th style={th}>Issued</th><th style={th}>Expiry</th><th style={th}>File</th></tr></thead>
+              <thead><tr><th style={th}>Document</th><th style={th}>Status</th><th style={th}>Issued</th><th style={th}>Expiry</th><th style={th}>File</th></tr></thead>
               <tbody>
                 {rows.map(d => { const st = docStatus(d); return (
                   <tr key={d.id}>

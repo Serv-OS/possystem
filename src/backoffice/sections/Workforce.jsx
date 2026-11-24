@@ -15,7 +15,7 @@ import { Icon } from '../../components/ServOSIcons';
 // 5.12.57: no seed numbers on any screen (the dashboard read the seed forecast and rates, so it
 // always said 0 and All clear); positions are the site's own.
 import { isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
-import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation, loadLeavers, reinstateStaff, loadTimesheetsFor, textTillPin } from '../../staff/wfData';
+import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation, loadLeavers, reinstateStaff, loadTimesheetsFor, textTillPin, loadTillPins } from '../../staff/wfData';
 // 5.12.91 (HR feedback batch 2): a till PIN can be generated and texted, and set up from Onboarding.
 import { generatePin, takenPins, pinSentWords } from '../../staff/pinRules';
 // 5.12.89 (HR feedback and Peter, 23 Nov 2026): leavers can be seen and reinstated, adding someone who
@@ -90,6 +90,15 @@ export default function Workforce({ section, orgCtx }) {
   const [existing, setExisting] = useState(null);        // { data, found }
   const [draft, setDraft] = useState(null);              // the typed form, given back when that box is cancelled
   const [reinstating, setReinstating] = useState('');
+  // 5.12.91: the PINs in use at the site, read from the database when the till access box opens (the
+  // store only has them once the Team page has been opened).
+  const [tillPins, setTillPins] = useState([]);
+  useEffect(() => {
+    if (!posFor) return undefined;
+    let live = true;
+    loadTillPins(locationId).then(rows => { if (live) setTillPins(rows || []); }).catch(() => {});
+    return () => { live = false; };
+  }, [posFor, locationId]);
 
   // Workforce is scoped to the location selected in the Back Office (bottom-left
   // switcher). Multi-site rollups live in Reports, not here.
@@ -281,7 +290,9 @@ export default function Workforce({ section, orgCtx }) {
     const id = crypto.randomUUID();
     // Same duplicate-PIN guard the Team page has — two people on one PIN makes
     // till login ambiguous, and the DB would accept it.
-    const clash = (useStore.getState().staffMembers || []).find(m => m.active !== false && m.pin && m.pin === pin);
+    // 5.12.91: checked against the database as well as the store (which is empty until Team is opened).
+    const fresh = await loadTillPins(locationId).catch(() => []);
+    const clash = [...fresh, ...(useStore.getState().staffMembers || [])].find(m => m.active !== false && m.pin && String(m.pin) === pin);
     if (clash) {
       setPosFor(null);
       showToast?.(`That PIN is already used by ${clash.name} — pick another`, 'error');
@@ -304,12 +315,12 @@ export default function Workforce({ section, orgCtx }) {
     setStaff(st => st.map(x => x.id === s.id ? { ...x, posUserId: id, posRole: role } : x));
     setPosFor(null);
     // 5.12.91: text them the PIN when the manager ticked it (to the mobile on their own record only).
-    let sent = '';
+    let sent = '', textOk = true;
     if (sendText) {
-      try { sent = ` ${pinSentWords(s.name, await textTillPin({ staff: { name: s.name, mobile: s.mobile, locationId }, pin, venueName: orgCtx?.locationName || '' }))}`; }
-      catch (e) { sent = ` ${pinSentWords(s.name, e instanceof Error ? e : new Error(String(e)))}`; }
+      try { const r = await textTillPin({ staff: { name: s.name, mobile: s.mobile, locationId }, pin, venueName: orgCtx?.locationName || '' }); textOk = !!r?.ok; sent = ` ${pinSentWords(s.name, r)}`; }
+      catch (e) { textOk = false; sent = ` ${pinSentWords(s.name, e instanceof Error ? e : new Error(String(e)))}`; }
     }
-    showToast?.(`${s.name} added as a POS user.${sent}`, 'success');
+    showToast?.(`${s.name} added as a POS user.${sent}`, textOk ? 'success' : 'info');
   };
 
   return (
@@ -362,7 +373,7 @@ export default function Workforce({ section, orgCtx }) {
       {viewing && <StaffDetailModal staff={viewing} privateOk={privateOk} onReinstate={reinstate} reinstating={reinstating === viewing.id} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
       {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} draft={editing ? null : draft} privateOk={privateOk} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); setDraft(null); }} onSave={(d) => { setDraft(null); saveMember(d); }} />}
-      {posFor && <PosUserModal staff={posFor} roles={rolesMap} taken={takenPins(useStore.getState().staffMembers)} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
+      {posFor && <PosUserModal staff={posFor} roles={rolesMap} taken={[...new Set([...takenPins(tillPins), ...takenPins(useStore.getState().staffMembers)])]} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
       </>}
     </div>
   );
