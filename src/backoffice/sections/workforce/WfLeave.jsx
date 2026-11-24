@@ -22,6 +22,8 @@ import { availabilityInEffect, pendingAvailability } from '../../../../supabase/
 // 5.12.57: one word for paid time off (Holiday or PTO), and the UK statutory texts only under UK rules.
 import { holidayWord, holidayWordLower, ukHoliday } from '../../../staff/payLaw';
 import { ptoRules } from '../../../../supabase/functions/_shared/usPto.js';
+// 5.12.89 (HR feedback, 23 Nov 2026): a balance changed by hand, or brought over from another site.
+import { adjustProblem, transferProblem } from '../../../../supabase/functions/_shared/holidayAdjust.js';
 
 // 5.12.57: built when the screen draws, for the venue it is on. It was built once when the file
 // loaded, so the tab kept the first venue's word after a switch between a UK and a US site.
@@ -66,6 +68,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, sh
   const [dayPicks, setDayPicks] = useState({});
   const [rangeShifts, setRangeShifts] = useState([]);
   const [running, setRunning] = useState(false);
+  const [adjusting, setAdjusting] = useState(null);   // 5.12.89: the person whose balance is being adjusted
 
   const staffById = useMemo(() => Object.fromEntries(staff.map(s => [s.id, s])), [staff]);
   const balances = useMemo(() => wf.accrualBalances(accrual), [accrual]);
@@ -213,10 +216,14 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, sh
         </>
       )}
       {tab === 'balances' && (
-        <BalancesSection pack={pack} settings={settings} staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
+        <BalancesSection pack={pack} settings={settings} staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} onAdjust={setAdjusting} />
       )}
       {tab === 'avail' && (
         <AvailSection staff={staff} roles={roles} avail={avail} todayIso={todayIso} onSave={saveAvailRow} />
+      )}
+      {adjusting && (
+        <AdjustBalanceModal person={adjusting} ctx={ctx} pack={pack} onClose={() => setAdjusting(null)}
+          onDone={async (words) => { setAdjusting(null); showToast?.(words, 'success'); try { setAccrual(await wf.loadAccrual(ctx?.locationId)); } catch { /* the next load shows it */ } }} />
       )}
 
       {reqOpen && (
@@ -341,7 +348,7 @@ function LeaveSection({ pack, ptoOff = false, leave, staffById, roles, balances,
 }
 
 // ── Section: Holiday balances ────────────────────────────────────────────────
-function BalancesSection({ pack, settings, staff, roles, balances, accrual, leave, timesheets, running, onRun }) {
+function BalancesSection({ pack, settings, staff, roles, balances, accrual, leave, timesheets, running, onRun, onAdjust }) {
   // 5.12.57: the UK statutory texts (12.07%, 28 days, the 52 week method) only under UK holiday rules.
   const uk = ukHoliday(pack);
   const pto = ptoRules(settings?.settings || null);
@@ -357,6 +364,14 @@ function BalancesSection({ pack, settings, staff, roles, balances, accrual, leav
   }
   const rolesMap = roles?.map || {};
   const thisYear = new Date().getFullYear();
+  // 5.12.89: what was earned (every ledger line that is not time taken) and what was changed by hand,
+  // per person. `balances` is the whole ledger: earned, less time taken, with adjustments.
+  const earnedHrs = {}, adjustedHrs = {};
+  (accrual || []).forEach(r => {
+    const h = Number(r.accruedHours || 0);
+    if (r.kind !== 'taken') earnedHrs[r.staffId] = (earnedHrs[r.staffId] || 0) + h;
+    if (r.kind === 'adjustment') adjustedHrs[r.staffId] = (adjustedHrs[r.staffId] || 0) + h;
+  });
   // approved holiday DAYS taken this year, per staff
   const takenDays = {};
   (leave || []).forEach(l => {
@@ -380,6 +395,7 @@ function BalancesSection({ pack, settings, staff, roles, balances, accrual, leav
             <th style={{ ...th, textAlign: 'right' }}>Accrued / allowance</th>
             <th style={{ ...th, textAlign: 'right' }}>Taken</th>
             <th style={{ ...th, textAlign: 'right' }}>Remaining</th>
+            <th style={{ ...th, textAlign: 'right' }}></th>
           </tr></thead>
           <tbody>
             {staff.map(s => {
@@ -387,14 +403,19 @@ function BalancesSection({ pack, settings, staff, roles, balances, accrual, leav
               const taken = takenDays[s.id] || 0;
               let basis, accruedCol, takenCol, remainingCol;
               if (hourly) {
-                const hrs = balances[s.id] || 0;
+                // 5.12.89: Remaining is the ledger itself (earned, less time taken, with adjustments), which is
+                // what an approval spends. It used to be the ledger LESS the days taken this year, so paid
+                // holiday already taken off the ledger was taken off a second time and Remaining read low.
+                const net = balances[s.id] || 0;
+                const hrs = earnedHrs[s.id] || 0;
+                const adj = adjustedHrs[s.id] || 0;
                 const avg = avgHoursPerDay((timesheets || []).filter(t => t.staffId === s.id)) || 0;
                 const accruedDays = avg > 0 ? hrs / avg : 0;
-                const remDays = Math.max(0, accruedDays - taken);
+                const remDays = avg > 0 ? net / avg : 0;
                 basis = uk ? <Badge tone="blue">Hourly · 12.07%</Badge> : <Badge tone="blue">{pto.on ? `Hourly · 1 h per ${pto.every} h` : 'Hourly · PTO off'}</Badge>;
-                accruedCol = <span className="mono">{hrs.toFixed(1)}h{avg > 0 ? <span style={{ color: 'var(--t4)' }}> · ≈{accruedDays.toFixed(1)}d</span> : ''}</span>;
+                accruedCol = <span className="mono">{hrs.toFixed(1)}h{avg > 0 ? <span style={{ color: 'var(--t4)' }}> · ≈{accruedDays.toFixed(1)}d</span> : ''}{Math.abs(adj) >= 0.005 && <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 2 }}>incl. {adj > 0 ? '+' : ''}{adj.toFixed(1)}h adjusted</div>}</span>;
                 takenCol = <span className="mono" style={{ color: 'var(--t3)' }}>{taken.toFixed(1)}d</span>;
-                remainingCol = <span className="mono" style={{ fontWeight: 700 }}>{avg > 0 ? `${remDays.toFixed(1)}d` : '—'}</span>;
+                remainingCol = <span className="mono" style={{ fontWeight: 700, color: net < -0.005 ? 'var(--red)' : 'var(--t1)' }}>{net.toFixed(1)}h{avg > 0 ? <span style={{ color: net < -0.005 ? 'var(--red)' : 'var(--t4)', fontWeight: 400 }}> · ≈{remDays.toFixed(1)}d</span> : ''}</span>;
               } else {
                 // 5.12.57: the 28 statutory days are a UK rule; at a US venue only a policy set on the record counts.
                 const allowance = s.holidayEntitlementDays != null ? Number(s.holidayEntitlementDays) : uk ? FIXED_HOLIDAY_DAYS : null;
@@ -411,6 +432,11 @@ function BalancesSection({ pack, settings, staff, roles, balances, accrual, leav
                   <td style={{ ...td, textAlign: 'right' }}>{accruedCol}</td>
                   <td style={{ ...td, textAlign: 'right' }}>{takenCol}</td>
                   <td style={{ ...td, textAlign: 'right' }}>{remainingCol}</td>
+                  <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {hourly && onAdjust
+                      ? <button className="btn btn-ghost btn-xs" onClick={() => onAdjust(s)} title="Correct this balance, or bring hours over from another site">Adjust</button>
+                      : <span style={{ fontSize: 11, color: 'var(--t4)' }}>Set on their record</span>}
+                  </td>
                 </tr>
               );
             })}
@@ -418,6 +444,137 @@ function BalancesSection({ pack, settings, staff, roles, balances, accrual, leav
         </table>
       </div>
     </Card>
+  );
+}
+
+// ── 5.12.89 (HR feedback, 23 Nov 2026): Adjust a holiday balance ─────────────
+// Someone moved from one site to another and their accrued holiday stayed at the old site; the only
+// button was Run accrual. Two ways to change a balance, both written by the server as new ledger
+// lines with who, when and why (nothing is edited or deleted):
+//   Add or take away     a correction, with a reason
+//   Bring over           hours from the same person's record at another site of the company
+//                        (a line out there, a line in here; never more than the old site holds)
+const KIND_WORDS = { accrual: 'Earned', taken: 'Time off', payout: 'Paid out', adjustment: 'Adjusted' };
+function AdjustBalanceModal({ person, ctx, pack, onClose, onDone }) {
+  const word = holidayWordLower(pack);
+  const [info, setInfo] = useState(null);       // { balance, sources, hidden, ledger }
+  const [loadErr, setLoadErr] = useState('');
+  const [mode, setMode] = useState('adjust');   // 'adjust' | 'move'
+  const [sign, setSign] = useState(1);
+  const [hours, setHours] = useState('');
+  const [note, setNote] = useState('');
+  const [fromId, setFromId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const serverWords = (e) => /unknown action/i.test(String(e?.message || '')) ? 'This needs the 5.12.89 server update, which is not live yet.' : (e?.message || 'That did not save. Try again.');
+  useEffect(() => {
+    let live = true;
+    wf.holidaySources(ctx?.locationId, person.id)
+      .then(r => { if (!live) return; setInfo(r); const first = (r?.sources || []).find(x => x.balance > 0); if (first) setFromId(first.staff_id); })
+      .catch(e => { if (live) setLoadErr(serverWords(e)); });
+    return () => { live = false; };
+  }, [person.id, ctx?.locationId]);
+  const sources = info?.sources || [];
+  const src = sources.find(x => x.staff_id === fromId) || null;
+  const h = Number(hours);
+  const save = async () => {
+    const bad = mode === 'move'
+      ? (!src ? 'Choose the site to bring hours over from.' : transferProblem({ hours: h, sourceBalance: src.balance, sourceSite: src.site }))
+      : adjustProblem({ hours: sign * h, note });
+    if (bad) { setErr(bad); return; }
+    setBusy(true); setErr('');
+    try {
+      if (mode === 'move') {
+        const r = await wf.adjustHoliday(ctx?.locationId, { staffId: person.id, hours: h, note, fromStaffId: src.staff_id });
+        await onDone(`${Number(r?.moved ?? h).toFixed(1)} hours brought over from ${src.site} for ${person.name}.`);
+      } else {
+        await wf.adjustHoliday(ctx?.locationId, { staffId: person.id, hours: sign * h, note });
+        await onDone(`${person.name}'s ${word} balance ${sign > 0 ? 'increased' : 'reduced'} by ${Math.abs(h).toFixed(1)} hours.`);
+      }
+    } catch (e) { setErr(serverWords(e)); setBusy(false); }
+  };
+  const tabBtn = (k, lbl) => <button key={k} onClick={() => { setMode(k); setErr(''); }} className={mode === k ? 'btn btn-acc btn-sm' : 'btn btn-ghost btn-sm'}>{lbl}</button>;
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && !busy && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 520, maxHeight: '88vh', overflowY: 'auto' }}>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>Adjust {word} balance</div>
+        <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 3, marginBottom: 14 }}>
+          {person.name}{info ? <> · balance now <b className="mono" style={{ color: 'var(--t1)' }}>{Number(info.balance || 0).toFixed(1)}h</b></> : null}
+        </div>
+        {loadErr ? <div style={{ fontSize: 13, color: 'var(--red)', marginBottom: 14 }}>{loadErr}</div> : !info ? <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 14 }}>Loading…</div> : (<>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>{tabBtn('adjust', 'Add or take away')}{tabBtn('move', 'Bring over from another site')}</div>
+
+          {mode === 'adjust' ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 12, marginBottom: 12 }}>
+              <div>
+                <label style={labelStyle}>Change</label>
+                <select style={inputStyle} value={sign} onChange={e => setSign(Number(e.target.value))}>
+                  <option value={1}>Add hours</option>
+                  <option value={-1}>Take away hours</option>
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>Hours</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} inputMode="decimal" value={hours} onChange={e => { setHours(e.target.value.replace(/[^0-9.]/g, '').slice(0, 7)); setErr(''); }} placeholder="e.g. 14.5" />
+              </div>
+            </div>
+          ) : sources.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.6, marginBottom: 14, padding: '10px 12px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+              No record for {person.name} was found at another site you manage. Records are matched by email, mobile, or name with date of birth, so check those are the same on both records.
+              {info.hidden > 0 ? ` ${info.hidden} matching record${info.hidden === 1 ? ' is' : 's are'} at a site you do not have access to: ask an owner.` : ''} You can still use Add or take away with a reason.
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px', gap: 12, marginBottom: 12 }}>
+              <div>
+                <label style={labelStyle}>From</label>
+                <select style={inputStyle} value={fromId} onChange={e => { setFromId(e.target.value); setErr(''); }}>
+                  {sources.map(x => <option key={x.staff_id} value={x.staff_id}>{x.site}: {Number(x.balance).toFixed(1)}h{x.leaver ? ' (left)' : ''}</option>)}
+                </select>
+                {src && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 5 }}>{src.name} at {src.site}, matched by {src.why}.{info.hidden > 0 ? ` ${info.hidden} more at a site you cannot see.` : ''}</div>}
+              </div>
+              <div>
+                <label style={labelStyle}>Hours</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} inputMode="decimal" value={hours} onChange={e => { setHours(e.target.value.replace(/[^0-9.]/g, '').slice(0, 7)); setErr(''); }} placeholder={src ? Number(src.balance).toFixed(1) : '0.0'} />
+                {src && src.balance > 0 && <button type="button" className="btn btn-ghost btn-xs" style={{ marginTop: 5 }} onClick={() => { setHours(String(Number(src.balance).toFixed(2))); setErr(''); }}>All {Number(src.balance).toFixed(1)}h</button>}
+              </div>
+            </div>
+          )}
+
+          {(mode === 'adjust' || sources.length > 0) && (
+            <div style={{ marginBottom: 14 }}>
+              <label style={labelStyle}>Reason {mode === 'move' && <span style={{ color: 'var(--t4)', textTransform: 'none', letterSpacing: 0 }}>(optional)</span>}</label>
+              <input style={inputStyle} value={note} maxLength={200} onChange={e => { setNote(e.target.value); setErr(''); }} placeholder={mode === 'move' ? 'e.g. Moved site on 1 Nov' : 'e.g. Balance carried over from the old system'} />
+              <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 5, lineHeight: 1.45 }}>
+                {mode === 'move' ? 'Hours come off the old site and go onto this one. Both sites keep a line saying where they went.' : 'Saved as its own line with your name and the date. Nothing already on the record is changed.'}
+              </div>
+            </div>
+          )}
+          {err && <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--red)', marginBottom: 12 }}>{err}</div>}
+
+          {(info.ledger || []).length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ ...labelStyle, marginBottom: 6 }}>Latest lines on the record</div>
+              <div style={{ border: '1px solid var(--inset-border)', borderRadius: 12, overflow: 'hidden' }}>
+                {info.ledger.slice(0, 8).map(l => (
+                  <div key={l.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '7px 11px', borderBottom: '1px solid var(--bdr)', fontSize: 12 }}>
+                    <span className="mono" style={{ color: 'var(--t4)', width: 62, flexShrink: 0 }}>{fmtDate(String(l.at || '').slice(0, 10))}</span>
+                    <span style={{ width: 62, flexShrink: 0, color: 'var(--t3)' }}>{KIND_WORDS[l.kind] || l.kind}</span>
+                    <span style={{ flex: 1, minWidth: 0, color: 'var(--t3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.note || ''}>{l.note || ''}</span>
+                    <span className="mono" style={{ fontWeight: 700, color: l.hours < 0 ? 'var(--red)' : 'var(--t1)' }}>{l.hours > 0 ? '+' : ''}{Number(l.hours).toFixed(2)}h</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>)}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
+          {info && (mode === 'adjust' || sources.length > 0) && (
+            <button className="btn btn-acc" disabled={busy || !hours} onClick={save}><Icon name="check" size={14} /> {busy ? 'Saving…' : mode === 'move' ? 'Bring over' : sign > 0 ? 'Add hours' : 'Take away hours'}</button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

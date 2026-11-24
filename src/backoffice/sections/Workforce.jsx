@@ -8,14 +8,19 @@
 //     states until populated. POS-sourced numbers (sales, clock-ins, tips) wire
 //     to the POS in the hardening pass.
 
-import { useState, useEffect, useMemo, Fragment } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { useStore } from '../../store';
 import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 // 5.12.57: no seed numbers on any screen (the dashboard read the seed forecast and rates, so it
 // always said 0 and All clear); positions are the site's own.
 import { isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
-import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation } from '../../staff/wfData';
+import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation, loadLeavers, reinstateStaff, loadTimesheetsFor } from '../../staff/wfData';
+// 5.12.89 (HR feedback and Peter, 23 Nov 2026): leavers can be seen and reinstated, adding someone who
+// is already on the system says so, and an address with no postcode is flagged.
+import { existingMatches, hasMatch, reinstatedWords } from '../../staff/reinstate';
+import { splitAddress, joinAddress, normalisePostcode, addressIncomplete, fromLookup, postcodeWord, postcodeExample, postcodeRequired } from '../../../supabase/functions/_shared/staffAddress.js';
+import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { buildWeek } from '../../staff/wfWeek';
 import { otherSites, linkCandidates, sitesToAdd, linkErrorWords } from '../../staff/peopleAcrossSites';
 import WfRota from './workforce/WfRota';
@@ -76,6 +81,13 @@ export default function Workforce({ section, orgCtx }) {
   const [editing, setEditing] = useState(null); // staff record being edited (HR + rate override)
   const [viewing, setViewing] = useState(null); // staff record whose detail profile is open
   const [posFor, setPosFor] = useState(null); // staff being promoted to a POS user
+  // 5.12.89: the site's leavers (kept out of every working list), which list the Staff page shows,
+  // and the "already on the system" box that Add staff member opens before it makes a second record.
+  const [leavers, setLeavers] = useState([]);
+  const [staffTab, setStaffTab] = useState('current');   // 'current' | 'leavers'
+  const [existing, setExisting] = useState(null);        // { data, found }
+  const [draft, setDraft] = useState(null);              // the typed form, given back when that box is cancelled
+  const [reinstating, setReinstating] = useState('');
 
   // Workforce is scoped to the location selected in the Back Office (bottom-left
   // switcher). Multi-site rollups live in Reports, not here.
@@ -107,6 +119,8 @@ export default function Workforce({ section, orgCtx }) {
     let alive = true;
     setLoading(true);
     loadStaff(locationId).then(rows => { if (alive) { setStaff(rows); setLoading(false); } });
+    setLeavers([]); setStaffTab('current');
+    loadLeavers(locationId).then(rows => { if (alive) setLeavers(rows || []); }).catch(() => {});
     Promise.all([loadRoles(locationId, orgCtx?.orgId), loadSections(locationId), loadSettings(locationId)])
       .then(([r, s, set]) => { if (alive) { if (r) setRoles(r); if (s) setSections(s); if (set) setSettings(set); } })
       .catch(() => {});
@@ -149,8 +163,39 @@ export default function Workforce({ section, orgCtx }) {
 
   // Add or edit an HR record (incl. per-employee pay-rate override): optimistic,
   // persist to wf_staff, roll back on failure.
-  const saveMember = async (data) => {
+  const reloadPeople = async () => {
+    const [current, gone] = await Promise.all([loadStaff(locationId), loadLeavers(locationId)]);
+    setStaff(current); setLeavers(gone || []);
+  };
+  // 5.12.89 (Peter, 23 Nov 2026: "we need a way to reinstate someone"): the same record comes back,
+  // with its documents, timesheets and holiday ledger. The server does it (the mirror of offboard).
+  const reinstate = async (person) => {
+    if (!person?.id) return;
+    if (!confirm(`Bring ${person.name || 'this person'} back onto the team?\n\nThe same record comes back, with their documents, timesheets and holiday balance. Their till PIN is switched back on if nobody else uses it now. Back Office access is not given back.`)) return;
+    setReinstating(person.id);
+    try {
+      const r = await reinstateStaff(person.id);
+      await reloadPeople();
+      setViewing(null); setExisting(null); setStaffTab('current');
+      showToast?.(reinstatedWords(person.name, r), 'success');
+    } catch (e) { showToast?.(`Not reinstated: ${e.message || 'the change was rejected'}`, 'error'); }
+    finally { setReinstating(''); }
+  };
+
+  const saveMember = async (data, opts = {}) => {
     setAddOpen(false); setEditing(null);
+    // 5.12.89 (Peter: "if they are already on that company/locations system, it needs to say so and do
+    // a reinstatement"): before a NEW record is made, look for the same email, mobile or name among
+    // the company's records, leavers included. A match opens a box that says so; the manager decides.
+    // The check never blocks adding someone: if it cannot be read, the record is made as before.
+    if (!data.id && !opts.skipCheck && orgCtx?.orgId) {
+      try {
+        const [records, sites] = await Promise.all([loadCompanyStaffRecords(orgCtx.orgId), loadCompanySites(orgCtx.orgId)]);
+        const names = Object.fromEntries((sites || []).map(x => [x.id, x.name]));
+        const found = existingMatches(data, records, locationId, names);
+        if (hasMatch(found)) { setExisting({ data, found }); return; }
+      } catch (e) { console.warn('[wf] already on the system check:', e?.message || e); }
+    }
     if (data.id) { // edit
       const prev = staff;
       setStaff(st => st.map(x => x.id === data.id ? { ...x, ...data } : x));
@@ -209,6 +254,7 @@ export default function Workforce({ section, orgCtx }) {
       if (r?.posDeactivated) bits.push('till PIN deactivated');
       if (r?.boVenueRevoked) bits.push(r?.boLoginDisabled ? 'Back Office login disabled' : 'Back Office access to this venue removed');
       showToast?.(`Archived as a leaver${bits.length ? ` · ${bits.join(' · ')}` : ''}`, 'success');
+      loadLeavers(locationId).then(rows => setLeavers(rows || [])).catch(() => {});   // 5.12.89: they show under Leavers at once
     } catch (e) {
       setStaff(prev);
       showToast?.(`NOT archived — ${e.message || 'the change was rejected'}`, 'error');
@@ -273,9 +319,19 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'dashboard' && <WfDashboard {...sectionProps} />}
       {/* 5.12.56: head office staff are salaried and never clock in, so they never go on the rota (no rota cost at the site). */}
       {key === 'rota' && <WfRota {...sectionProps} staff={rotaStaffOf(staff, settings)} />}
+      {/* 5.12.89 (HR feedback, 23 Nov 2026: "no way to view archived staff"): the team, or the people who have left. */}
+      {key === 'staff' && !loading && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+          {[['current', `Current team (${staff.length})`], ['leavers', `Leavers (${leavers.length})`]].map(([k, lbl]) => (
+            <button key={k} onClick={() => setStaffTab(k)} className={staffTab === k ? 'btn btn-acc btn-sm' : 'btn btn-ghost btn-sm'}>{lbl}</button>
+          ))}
+        </div>
+      )}
       {key === 'staff' && (loading
         ? <Card style={{ textAlign: 'center', padding: 44, color: 'var(--t3)' }}>Loading staff…</Card>
-        : <WfStaff staff={staffView} roles={rolesMap} holidayHours={holidayHours} headOffice={headOfficeSwitchOn(settings)} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
+        : staffTab === 'leavers'
+          ? <WfLeavers leavers={leavers} roles={rolesMap} busyId={reinstating} onView={setViewing} onReinstate={reinstate} />
+          : <WfStaff staff={staffView} roles={rolesMap} holidayHours={holidayHours} headOffice={headOfficeSwitchOn(settings)} onAdd={() => setAddOpen(true)} onView={setViewing} onEdit={setEditing} onSetPos={setPosFor} onRemove={removeStaff} />)}
       {key === 'timesheets' && <WfTimesheets {...sectionProps} />}
       {key === 'payroll' && <WfPayroll {...sectionProps} />}
       {key === 'pay' && <WfPay {...sectionProps} />}
@@ -283,14 +339,19 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'compliance' && <WfCompliance {...sectionProps} />}
       {key === 'training' && <WfTraining {...sectionProps} />}
       {key === 'timeoff' && <WfLeave {...sectionProps} />}
-      {key === 'onboarding' && <WfOnboarding {...sectionProps} />}
+      {key === 'onboarding' && <WfOnboarding {...sectionProps} leavers={leavers} />}
       {key === 'announce' && <WfAnnouncements {...sectionProps} />}
       {key === 'settings' && <WfSettings {...sectionProps} />}
       {key === 'chat' && <WfChat ctx={{ venueOrgId: orgCtx?.venueOrgId || null }} showToast={showToast} />}
 
-      {viewing && <StaffDetailModal staff={viewing} privateOk={privateOk} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
+      {existing && <ExistingPersonModal found={existing.found} data={existing.data} locName={locName} busy={!!reinstating}
+        onClose={() => { setDraft(existing.data); setExisting(null); setAddOpen(true); }}
+        onAddNew={() => { const d = existing.data; setExisting(null); saveMember(d, { skipCheck: true }); }}
+        onOpen={(id) => { const person = staffView.find(x => x.id === id); setExisting(null); if (person) setViewing(person); }}
+        onReinstate={(m) => reinstate(leavers.find(x => x.id === m.id) || { id: m.id, name: m.name })} />}
+      {viewing && <StaffDetailModal staff={viewing} privateOk={privateOk} onReinstate={reinstate} reinstating={reinstating === viewing.id} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
-      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} privateOk={privateOk} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
+      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} draft={editing ? null : draft} privateOk={privateOk} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); setDraft(null); }} onSave={(d) => { setDraft(null); saveMember(d); }} />}
       {posFor && <PosUserModal staff={posFor} roles={rolesMap} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
       </>}
     </div>
@@ -362,31 +423,129 @@ function WfStaff({ staff, roles = {}, holidayHours = {}, headOffice = false, onA
   );
 }
 
+// 5.12.89 (HR feedback, 23 Nov 2026: "no way to view archived staff"; Peter: "we need a way to reinstate
+// someone"). The people who have left this site, newest first. Their record is kept as it was: open
+// it to read their details, documents and timesheets, or reinstate them.
+const dayWords = (iso) => iso ? localeDateString(new Date(String(iso).slice(0, 10) + 'T00:00:00'), { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+function WfLeavers({ leavers, roles = {}, busyId = '', onView, onReinstate }) {
+  if (!leavers.length) return <EmptyState icon="team" title="No leavers" body="When you archive someone they move here. Their record, documents and timesheets are kept, and you can reinstate them if they come back." />;
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr>{['Name', 'Position', 'Started', 'Left', 'Mobile', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
+        <tbody>
+          {leavers.map(s => (
+            <tr key={s.id}>
+              <td style={td}><button onClick={() => onView?.(s)} title="View their record" style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}><span style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10.5, fontWeight: 700, color: 'var(--t3)' }}>{initials(s.name)}</span><span style={{ fontWeight: 600, color: 'var(--t2)' }}>{s.name}</span></button></td>
+              <td style={td}><RoleChip role={s.role} roles={roles} /></td>
+              <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t3)' }}>{dayWords(s.startDate) || 'Not set'}</td>
+              <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t2)' }}>{dayWords(s.leaverDate) || 'Not set'}</td>
+              <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--t3)' }}>{s.mobile || 'None'}</td>
+              <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                <button className="btn btn-ghost btn-xs" onClick={() => onView?.(s)}>View</button>{' '}
+                <button className="btn btn-acc btn-xs" disabled={!!busyId} onClick={() => onReinstate?.(s)}>{busyId === s.id ? 'Reinstating…' : 'Reinstate'}</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+// 5.12.89 (Peter, 23 Nov 2026: "if they are already on that company/locations system, it needs to say so
+// and do a reinstatement"). Add staff member found the same email, mobile or name on the company's
+// records. It says who and where, and the manager decides: reinstate the leaver (the same record comes
+// back), open the person who is already on the team, or make a new record after all.
+function ExistingPersonModal({ found, data, locName, busy, onClose, onAddNew, onOpen, onReinstate }) {
+  const here = found.hereActive, gone = found.hereLeaver, others = found.elsewhere || [];
+  const first = (n) => String(n || 'them').split(' ')[0];
+  const title = here ? 'Already on the team' : gone ? 'Already on the system' : 'Already on the system at another site';
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={{ maxWidth: 500 }}>
+        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>{title}</div>
+        <div style={{ fontSize: 13.5, color: 'var(--t2)', lineHeight: 1.6 }}>
+          {here ? (
+            <><b>{here.name}</b> is already on the team at {locName} ({here.why}). Adding {data.name || 'them'} again would make a second record for the same person.</>
+          ) : gone ? (
+            <><b>{gone.name}</b> worked at {locName} and left{gone.leftOn ? ` on ${dayWords(gone.leftOn)}` : ''} ({gone.why}). Reinstate them to bring the same record back, with their documents, timesheets and holiday balance.</>
+          ) : (
+            <>Someone who looks like <b>{data.name || 'this person'}</b> is on your company's records at another site.</>
+          )}
+        </div>
+        {others.length > 0 && (
+          <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+            <div style={{ ...labelStyle, marginBottom: 8 }}>{here || gone ? 'Also at another site' : 'On the system at'}</div>
+            {others.slice(0, 5).map(m => (
+              <div key={m.id} style={{ fontSize: 13, color: 'var(--t1)', lineHeight: 1.7 }}>
+                <b>{m.name}</b>, {m.site}: {m.leaver ? `left${m.leftOn ? ` on ${dayWords(m.leftOn)}` : ''}` : 'on the team'} <span style={{ color: 'var(--t4)' }}>({m.why})</span>
+              </div>
+            ))}
+            {!here && !gone && (
+              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 8, lineHeight: 1.55 }}>
+                {others.some(m => !m.leaver)
+                  ? 'If they work at both sites, open their profile at the other site and use Sites, Also works at. That keeps one person with one PIN. Or add a separate record here.'
+                  : 'Adding them here makes a new record at this site. Their holiday balance can be brought over afterwards: Time off, Holiday balances, Adjust.'}
+              </div>
+            )}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', marginTop: 20 }}>
+          <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
+          {here ? (<>
+            <button className="btn btn-ghost" disabled={busy} onClick={onAddNew}>Add a second record anyway</button>
+            <button className="btn btn-acc" disabled={busy} onClick={() => onOpen(here.id)}>Open {first(here.name)}'s profile</button>
+          </>) : gone ? (<>
+            <button className="btn btn-ghost" disabled={busy} onClick={onAddNew}>Add as a new person</button>
+            <button className="btn btn-acc" disabled={busy} onClick={() => onReinstate(gone)}>{busy ? 'Reinstating…' : `Reinstate ${first(gone.name)}`}</button>
+          </>) : (
+            <button className="btn btn-acc" disabled={busy} onClick={onAddNew}>Add them here</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const inputStyle = { width: '100%', background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '10px 12px', height: 42, fontSize: 13, color: 'var(--t1)', fontFamily: 'inherit', outline: 'none' };
 const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 6 };
 
-function AddStaffModal({ locName, staff, privateOk = true, roles = {}, sections = [], headOffice = false, onClose, onSave }) {
-  const isEdit = !!staff;
+function AddStaffModal({ locName, staff: staffProp, draft = null, privateOk = true, roles = {}, sections = [], headOffice = false, onClose, onSave }) {
+  const isEdit = !!staffProp;
+  // 5.12.89: a new person's form that was typed, then stopped by the "already on the system" box and
+  // cancelled, opens again as it was typed (it used to be thrown away). Read like a record, saved as new.
+  const staff = staffProp || draft;
+  const prefilled = !!staff;
   const roleOpts = Object.entries(roles);
-  const ec = (isEdit && staff.emergencyContact) || {};
+  const ec = (prefilled && staff.emergencyContact) || {};
   const pack = activeRegionPack();
   const usFields = pack.payrollFields.includes('ssnLast4');
-  const [f, setF] = useState(isEdit
-    ? { name: staff.name || '', role: staff.role && roles[staff.role] ? staff.role : '', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '', ...(usFields ? { ssnLast4: staff.ssnLast4 || '', payrollEmployeeId: staff.payrollEmployeeId || '' } : {}) }
-    : { name: '', role: roleOpts[0]?.[0] || '', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '', ...(usFields ? { ssnLast4: '', payrollEmployeeId: '' } : {}) });
+  const [f, setF] = useState(prefilled
+    ? { name: staff.name || '', role: staff.role && roles[staff.role] ? staff.role : '', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: splitAddress(staff.address, pack.country).street, postcode: splitAddress(staff.address, pack.country).postcode, niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '', ...(usFields ? { ssnLast4: staff.ssnLast4 || '', payrollEmployeeId: staff.payrollEmployeeId || '' } : {}) }
+    : { name: '', role: roleOpts[0]?.[0] || '', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', postcode: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '', ...(usFields ? { ssnLast4: '', payrollEmployeeId: '' } : {}) });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   // 5.12.56: head office (Workforce settings, Head office staff). Only carried while the switch is on,
   // so a site that never turned it on never writes the two columns.
-  const [ho, setHo] = useState({ on: !!(isEdit && staff.headOffice), salary: isEdit && staff.salaryAnnual != null ? String(staff.salaryAnnual) : '' });
+  const [ho, setHo] = useState({ on: !!(prefilled && staff.headOffice), salary: prefilled && staff.salaryAnnual != null ? String(staff.salaryAnnual) : '' });
   // v5.5.993 — which sections this person works in. Never settable before,
   // so the column was empty everywhere and anything keyed on it was dead.
-  const [secIds, setSecIds] = useState((isEdit && Array.isArray(staff.sectionIds)) ? staff.sectionIds : []);
+  const [secIds, setSecIds] = useState((prefilled && Array.isArray(staff.sectionIds)) ? staff.sectionIds : []);
   const toggleSec = (id) => setSecIds(cur => cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
   // 5.12.58: a real position of this site is needed (its pay rate and rota come from it).
+  // 5.12.89: a postcode that is typed must be a real one (a blank one is flagged, never refused here:
+  // HR often adds a starter before they know it, and the staff app asks the person for it).
+  const pcBad = !!String(f.postcode || '').trim() && !normalisePostcode(f.postcode, pack.country);
+  const pickedStreet = useRef(null);   // the search sets the box to line 1 only: keep the town too
   const valid = f.name.trim().length > 1 && !!f.role && !!roles[f.role];
+  const canSave = valid && !pcBad;
   const roleRate = roles[f.role]?.rate;
   const submit = () => {
-    const { ecName, ecPhone, ecRelation, ...rest } = f;
+    const { ecName, ecPhone, ecRelation, postcode, ...rest } = f;
+    // 5.12.89: one stored address, postcode last. Untouched boxes keep the address exactly as stored.
+    const was = splitAddress(staff?.address, pack.country);
+    const untouched = prefilled && String(f.address || '').trim() === was.street && String(postcode || '').trim().toUpperCase() === was.postcode;
+    rest.address = untouched ? (staff.address || '') : joinAddress(f.address, postcode, pack.country);
     const emergencyContact = (ecName || ecPhone || ecRelation) ? { name: ecName || null, phone: ecPhone || null, relationship: ecRelation || null } : null;
     const payload = { ...rest, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride), emergencyContact, sectionIds: secIds };
     if (headOffice) { payload.headOffice = ho.on; payload.salaryAnnual = ho.salary === '' ? null : Number(ho.salary); }
@@ -457,7 +616,28 @@ function AddStaffModal({ locName, staff, privateOk = true, roles = {}, sections 
           <div><label style={labelStyle}>Email</label><input style={inputStyle} value={f.email} onChange={e => set('email', e.target.value)} placeholder="name@email.com" /></div>
           <div><label style={labelStyle}>Date of birth</label><input style={inputStyle} type="date" value={f.dob} onChange={e => set('dob', e.target.value)} /></div>
           <div><label style={labelStyle}>Start date</label><input style={inputStyle} type="date" value={f.startDate} onChange={e => set('startDate', e.target.value)} /></div>
-          <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Home address</label><input style={inputStyle} value={f.address} onChange={e => set('address', e.target.value)} placeholder={pack.country === 'US' ? 'Street, city, state, ZIP' : 'House, street, town, postcode'} /></div>
+          {/* 5.12.89 (HR feedback, 23 Nov 2026; Peter: "search and auto populate"): the address is searched
+              for and the postcode has its own box, so it is never left off. */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px', gap: 11 }}>
+              <div>
+                <label style={labelStyle}>Home address</label>
+                <AddressAutocomplete value={f.address} inputStyle={inputStyle} country={pack.country === 'US' ? 'us' : pack.country === 'IE' ? 'ie' : 'gb'}
+                  placeholder={pack.country === 'US' ? 'Start typing: street, city, state' : 'Start typing: house, street, town'}
+                  onSelect={(found) => { const got = fromLookup(found, pack.country); pickedStreet.current = got.street || null; setF(p => (got.street ? { ...p, address: got.street, postcode: got.postcode } : p)); }}
+                  onChangeText={(text) => { const keep = pickedStreet.current; pickedStreet.current = null; set('address', keep || text); }} />
+              </div>
+              <div>
+                <label style={labelStyle}>{postcodeWord(pack.country)}</label>
+                <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', ...(pcBad ? { borderColor: 'var(--red)' } : {}) }} value={f.postcode} onChange={e => set('postcode', e.target.value.toUpperCase().slice(0, 10))} placeholder={postcodeExample(pack.country)} />
+              </div>
+            </div>
+            {pcBad
+              ? <div style={{ fontSize: 10.5, color: 'var(--red)', marginTop: 4 }}>That {postcodeWord(pack.country)} does not look right. It should look like {postcodeExample(pack.country)}.</div>
+              : String(f.address || '').trim() && !String(f.postcode || '').trim() && postcodeRequired(pack.country)
+                ? <div style={{ fontSize: 10.5, color: 'var(--amber)', marginTop: 4 }}>No postcode yet. Payroll needs it: add it here, or they can add it in the staff app.</div>
+                : null}
+          </div>
           {usFields ? (<>
             <div><label style={labelStyle}>SSN (last 4 only)</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} value={f.ssnLast4} onChange={e => set('ssnLast4', e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder={isEdit && !privateOk ? 'Hidden: type 4 digits to replace' : '1234'} inputMode="numeric" />
               <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Never the whole number.</div></div>
@@ -474,7 +654,7 @@ function AddStaffModal({ locName, staff, privateOk = true, roles = {}, sections 
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 20 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" disabled={!valid} onClick={submit}>{isEdit ? 'Save changes' : 'Add staff member'}</button>
+          <button className="btn btn-acc" disabled={!canSave} onClick={submit}>{isEdit ? 'Save changes' : 'Add staff member'}</button>
         </div>
       </div>
     </div>
@@ -507,7 +687,19 @@ function DetailDocView({ path }) {
 }
 
 // Staff profile — HR record + payroll bank + contract + documents + timesheets.
-function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToast, onClose, onEdit, onSetPos, onPatch, onPeopleChanged }) {
+function StaffDetailModal({ staff: s0, privateOk: privateOk0 = true, roles = {}, ctx, showToast, onClose, onEdit, onSetPos, onPatch, onPeopleChanged, onReinstate, reinstating = false }) {
+  // 5.12.89: a leaver's record opens read only (details, documents, timesheets) with Reinstate. Their
+  // ID numbers come through the same database door as everyone's, asked for this one record.
+  const leaver = s0.status === 'leaver';
+  const [privOne, setPrivOne] = useState(null);
+  useEffect(() => {
+    if (!leaver) return undefined;
+    let live = true;
+    loadPrivateDetails([s0.id]).then(r => { if (live) setPrivOne(r); }).catch(() => {});
+    return () => { live = false; };
+  }, [s0.id, leaver]);
+  const s = leaver && privOne?.byId?.[s0.id] ? { ...s0, ...privOne.byId[s0.id] } : s0;
+  const privateOk = leaver ? !!(privOne && privOne.loaded !== false && !privOne.hidden) : privateOk0;
   const role = roles[s.role];
   const [data, setData] = useState({ docs: [], timesheets: [], onb: null, holidayHrs: 0, loading: true });
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -516,7 +708,9 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
     (async () => {
       const [docs, ts, onbs, accrual] = await Promise.all([
         loadDocuments(ctx.locationId).catch(() => []),
-        loadTimesheets(ctx.locationId, (() => { const d = new Date(); d.setDate(d.getDate() - 104 * 7); return d.toISOString().slice(0, 10); })(), new Date().toISOString().slice(0, 10)).catch(() => []),
+        // 5.12.89: a leaver's own timesheets are read by person (the site wide read may not reach back to them).
+        leaver ? loadTimesheetsFor(s.id, 40).catch(() => [])
+          : loadTimesheets(ctx.locationId, (() => { const d = new Date(); d.setDate(d.getDate() - 104 * 7); return d.toISOString().slice(0, 10); })(), new Date().toISOString().slice(0, 10)).catch(() => []),
         loadOnboarding(ctx.locationId).catch(() => []),
         loadAccrual(ctx.locationId).catch(() => []),
       ]);
@@ -524,7 +718,7 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
       const bal = accrualBalances(accrual || []);
       setData({
         docs: (docs || []).filter(d => d.staffId === s.id),
-        timesheets: (ts || []).filter(t => t.staffId === s.id).slice(0, 6),
+        timesheets: (ts || []).filter(t => t.staffId === s.id).slice(0, leaver ? 40 : 6),
         // v5.6.9 — heal before judging. The RAW row's status/steps were stamped
         // before the evidence existed (POS access granted, bank added from the
         // staff app…), so this badge said "In progress" on a finished case —
@@ -543,11 +737,14 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
   const pack = activeRegionPack();
   const fields = [
     ['Position', role?.lbl || s.role || '—'], ['Pay rate', payRate],
-    ['Contract', CONTRACT_LABEL[s.contractType] || s.contractType || '—'], ['Status', s.status || 'active'],
+    ['Contract', CONTRACT_LABEL[s.contractType] || s.contractType || '—'], ['Status', leaver ? `Leaver${s.leaverDate ? `, left ${dayWords(s.leaverDate)}` : ''}` : (s.status || 'active')],
     ['Mobile', s.mobile || '—'], ['Email', s.email || '—'],
     // 5.12.57: a US site reads its dates month first (11/03/2026); a UK one reads them as before
     ['Date of birth', (pack.country === 'US' ? dateNumeric(s.dob) : s.dob) || '—'], ['Start date', (pack.country === 'US' ? dateNumeric(s.startDate) : s.startDate) || '—'],
-    ['Address', s.address || '—'],
+    // 5.12.89 (HR feedback, 23 Nov 2026): an address with no postcode is flagged (payroll needs it).
+    ['Address', !s.address ? '—' : addressIncomplete(s.address, pack.country)
+      ? <>{s.address}<div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--amber)', marginTop: 3 }}>Address incomplete: no postcode.{leaver ? '' : ' Edit details to add it, or ask them to add it in the staff app.'}</div></>
+      : s.address],
     ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
     // v5.11.101: the payroll fields follow the venue (UK: NI number; US: SSN last 4 and the payroll id).
     // 5.12.57: hidden unless this login may see ID numbers (owner, admin, Can see payroll details).
@@ -564,8 +761,16 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
             <div style={{ fontSize: 18, fontWeight: 700 }}>{s.name}</div>
             <div style={{ marginTop: 2 }}><RoleChip role={s.role} roles={roles} /></div>
           </div>
-          {s.posUserId ? <Badge tone="green">POS user ✓</Badge> : <button className="btn btn-ghost btn-xs" onClick={() => onSetPos?.(s)}>Set as POS user</button>}
+          {leaver ? <Badge tone="grey">Leaver</Badge> : s.posUserId ? <Badge tone="green">POS user ✓</Badge> : <button className="btn btn-ghost btn-xs" onClick={() => onSetPos?.(s)}>Set as POS user</button>}
         </div>
+        {leaver && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)', marginBottom: 16, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 200, fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.5 }}>
+              <b>{s.name} has left{s.leaverDate ? ` (${dayWords(s.leaverDate)})` : ''}.</b> This record is read only. Reinstate them to bring it back as it was.
+            </div>
+            <button className="btn btn-acc btn-sm" disabled={reinstating} onClick={() => onReinstate?.(s)}>{reinstating ? 'Reinstating…' : 'Reinstate'}</button>
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 18px', marginBottom: 18 }}>
           {fields.map(([k, v]) => (
@@ -584,11 +789,12 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
           </div>
         </div>
 
-        {pack.bankDetails ? <>
+        {leaver ? null : pack.bankDetails ? <>
           <SectionTitle>Bank details (for payroll)</SectionTitle>
           <BankPanel s={s} ctx={ctx} showToast={showToast} onPatch={onPatch} />
         </> : <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 16 }}>Bank details are held by your payroll provider for a US venue, so they are not kept here.</div>}
 
+        {!leaver && <>
         <SectionTitle>Contract</SectionTitle>
         <ContractPanel s={s} role={role} onb={data.onb} loading={data.loading} ctx={ctx} showToast={showToast}
           onCase={(c) => setData(d => ({ ...d, onb: c }))} />
@@ -611,6 +817,7 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
 
         <SectionTitle>Sites</SectionTitle>
         <SitesPanel s={s} ctx={ctx} roles={roles} showToast={showToast} onChanged={onPeopleChanged} />
+        </>}
 
         <SectionTitle>Documents</SectionTitle>
         {data.loading ? <Muted>Loading…</Muted> : data.docs.length === 0 ? <Muted>No documents on file.</Muted> : (
@@ -638,8 +845,8 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
           </table>
         )}
 
-        <SectionTitle>Recent timesheets</SectionTitle>
-        {data.loading ? <Muted>Loading…</Muted> : data.timesheets.length === 0 ? <Muted>No timesheets yet — they appear once this person clocks in.</Muted> : (
+        <SectionTitle>{leaver ? 'Timesheets' : 'Recent timesheets'}</SectionTitle>
+        {data.loading ? <Muted>Loading…</Muted> : data.timesheets.length === 0 ? <Muted>{leaver ? 'No timesheets on record.' : 'No timesheets yet. They appear once this person clocks in.'}</Muted> : (
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 8 }}>
             <thead><tr><th style={th}>Date</th><th style={{ ...th, textAlign: 'right' }}>Hours</th><th style={th}>Status</th><th style={{ ...th, textAlign: 'right' }}>Pay</th></tr></thead>
             <tbody>
@@ -657,7 +864,9 @@ function StaffDetailModal({ staff: s, privateOk = true, roles = {}, ctx, showToa
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 18 }}>
           <button className="btn btn-ghost" onClick={onClose}>Close</button>
-          <button className="btn btn-acc" onClick={() => onEdit?.(s)}><Icon name="edit" size={14} /> Edit details</button>
+          {leaver
+            ? <button className="btn btn-acc" disabled={reinstating} onClick={() => onReinstate?.(s)}>{reinstating ? 'Reinstating…' : 'Reinstate'}</button>
+            : <button className="btn btn-acc" onClick={() => onEdit?.(s)}><Icon name="edit" size={14} /> Edit details</button>}
         </div>
       </div>
     </div>

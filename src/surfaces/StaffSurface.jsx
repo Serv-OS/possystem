@@ -29,6 +29,10 @@ import { holidayWord } from '../staff/payLaw';
 import { blockFor } from '../../supabase/functions/_shared/leaveBlocks.js';   // 5.12.61: blocked periods (the server refuses too)
 // 5.12.85: date of birth and ID number rules, one copy with the staff-portal (it refuses too).
 import { niProblem, ssnLast4Problem, dobProblem, formatNi, ID_WORDS } from '../../supabase/functions/_shared/staffIdRules.js';
+// 5.12.89 (HR feedback, 23 Nov 2026): the home address is searched for and has its own postcode box
+// (one copy of the rules with the staff-portal, which refuses too).
+import { splitAddress, joinAddress, addressProblem, addressIncomplete, fromLookup, postcodeWord, postcodeExample, postcodeRequired } from '../../supabase/functions/_shared/staffAddress.js';
+import AddressAutocomplete from '../components/AddressAutocomplete';
 // MARKER 5.11.102 staff app chat tab
 import { ChatTab } from '../staff/StaffChat';
 import { useTeamChat } from '../staff/useTeamChat';
@@ -211,7 +215,8 @@ export default function StaffSurface() {
   // Outstanding work drives the Tasks badge: unfinished onboarding steps +
   // training modules not yet confirmed.
   const outstanding = (snap?.onboarding?.open ? snap.onboarding.steps.filter(x => !x.done).length : 0)
-    + (snap?.training || []).filter(t => t.status !== 'complete').length;
+    + (snap?.training || []).filter(t => t.status !== 'complete').length
+    + (snap?.docRequests || []).length;   // 5.12.89: documents a manager asked for again
   const overdueCount = (snap?.training || []).filter(t => t.overdue).length;
   return (
     <Shell
@@ -524,6 +529,28 @@ function TasksTab({ snap, onChanged, goToMe }) {
     finally { setUploading(false); }
   };
 
+  // 5.12.89 (HR feedback, 23 Nov 2026): documents they are asked to send again: rejected (with the
+  // manager's reason), expired, or a manager pressed Resend. The same two steps as the first upload;
+  // the row goes back to "waiting for review" and leaves this list.
+  const requests = snap?.docRequests || [];
+  const [uploadingDoc, setUploadingDoc] = useState('');
+  const [sentDoc, setSentDoc] = useState('');
+  const uploadDoc = async (req, file) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { setErr('The file must be under 10MB'); return; }
+    setUploadingDoc(req.id); setErr(''); setSentDoc('');
+    try {
+      const ext = (String(file.name).split('.').pop() || 'jpg').toLowerCase();
+      const { path, token } = await withJwt({ action: 'doc_upload_url', doc_id: req.id, ext });
+      const { error } = await supabase.storage.from('wf-documents').uploadToSignedUrl(path, token, file);
+      if (error) throw new Error(error.message);
+      await withJwt({ action: 'doc_submit', doc_id: req.id, path });
+      setSentDoc(`${req.label || 'Document'} sent. A manager will check it.`);
+      await onChanged();
+    } catch (e) { setErr(e.message); }
+    finally { setUploadingDoc(''); }
+  };
+
   const tick = async (assignmentId, taskId, done) => {
     setBusyTask(`${assignmentId}:${taskId}`); setErr('');
     try { await withJwt({ action: 'training_tick', assignment_id: assignmentId, task_id: taskId, done }); await onChanged(); }
@@ -531,12 +558,40 @@ function TasksTab({ snap, onChanged, goToMe }) {
     finally { setBusyTask(''); }
   };
 
-  if (!onb?.open && !training.length) {
-    return <div className="sv-glass" style={glass}>Nothing to do right now. Onboarding steps and training modules appear here when they're assigned to you.</div>;
+  if (!onb?.open && !training.length && !requests.length) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {sentDoc && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700 }}>{sentDoc}</div>}
+        <div className="sv-glass" style={glass}>Nothing to do right now. Onboarding steps and training modules appear here when they're assigned to you.</div>
+      </div>
+    );
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <ErrLine>{err}</ErrLine>
+      {sentDoc && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700 }}>{sentDoc}</div>}
+
+      {requests.length > 0 && (
+        <div className="sv-glass" style={{ ...glass, border: '1px solid var(--red-b)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 10 }}>{requests.length === 1 ? 'A document to send again' : 'Documents to send again'}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {requests.map(rq => (
+              <div key={rq.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>{rq.title}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 2, lineHeight: 1.45 }}>{rq.body}</div>
+                  {rq.note && <div style={{ fontSize: 12.5, color: 'var(--t2)', marginTop: 6, padding: '8px 10px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', lineHeight: 1.45 }}><b>Your manager said:</b> {rq.note}</div>}
+                </div>
+                <label style={{ background: 'var(--acc)', color: '#fff', borderRadius: 999, padding: '6px 13px', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0, opacity: uploadingDoc && uploadingDoc !== rq.id ? 0.5 : 1 }}>
+                  {uploadingDoc === rq.id ? 'Uploading…' : 'Upload'}
+                  <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} disabled={!!uploadingDoc} onChange={e => { uploadDoc(rq, e.target.files?.[0]); e.target.value = ''; }} />
+                </label>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 10, lineHeight: 1.5 }}>A clear photo or a PDF, under 10MB. A manager checks it before it counts.</div>
+        </div>
+      )}
 
       {onb?.open && (
         <div className="sv-glass" style={glass}>
@@ -729,6 +784,12 @@ function MeTab({ snap, onSaved, chat }) {
   const [saved, setSaved] = useState('');
   const [form, setForm] = useState({});
   const detailsRef = useScrollIntoViewWhen(editing === 'details');
+  // 5.12.89 (HR feedback, 23 Nov 2026: people typed a street and no postcode; Peter: "search and auto
+  // populate"). The address is searched for (the same lookup the delivery checkout uses), fills the
+  // address and the postcode, and both can still be typed by hand. A UK address needs its postcode.
+  const country = snap?.region?.country || 'UK';
+  const pcWord = postcodeWord(country);
+  const pickedStreet = useRef(null);   // the search sets the box to line 1 only: keep the town too
   const bankRef = useScrollIntoViewWhen(editing === 'bank');
 
   const save = async (patch) => {
@@ -771,10 +832,11 @@ function MeTab({ snap, onSaved, chat }) {
       {saved && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700 }}>{saved}</div>}
 
       <div className="sv-glass" style={glass} ref={detailsRef}>
-        <RowHead title="My details" onEdit={() => { setForm({ address: me.address || '', ecName: me.emergencyContact?.name || '', ecPhone: me.emergencyContact?.phone || '', ecRelation: me.emergencyContact?.relationship || '', dob: me.dob || '', idNumber: idKind === 'ni' ? formatNi(me.niNumber || '') : idKind === 'ssn4' ? (me.ssnLast4 || '') : '' }); setErr(''); setEditing(editing === 'details' ? null : 'details'); }} open={editing === 'details'} />
+        <RowHead title="My details" onEdit={() => { setForm({ street: splitAddress(me.address, country).street, postcode: splitAddress(me.address, country).postcode, ecName: me.emergencyContact?.name || '', ecPhone: me.emergencyContact?.phone || '', ecRelation: me.emergencyContact?.relationship || '', dob: me.dob || '', idNumber: idKind === 'ni' ? formatNi(me.niNumber || '') : idKind === 'ssn4' ? (me.ssnLast4 || '') : '' }); setErr(''); setEditing(editing === 'details' ? null : 'details'); }} open={editing === 'details'} />
         {editing !== 'details' ? (
           <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.6 }}>
             {me.address || 'No address on file'}<br />
+            {addressIncomplete(me.address, country) && <><span style={{ color: 'var(--amber)', fontWeight: 700 }}>Your address has no postcode. Tap Edit and add it: payroll needs it.</span><br /></>}
             Emergency contact: {me.emergencyContact?.name ? `${me.emergencyContact.name} (${me.emergencyContact.relationship || 'contact'}) ${me.emergencyContact.phone || ''}` : 'none on file'}<br />
             {/* 5.12.85: their own date of birth and ID number (support ticket 20 Nov 2026: never shown before). */}
             Date of birth: {me.dob ? fmtDob(me.dob) : 'not on file'}
@@ -782,7 +844,28 @@ function MeTab({ snap, onSaved, chat }) {
           </div>
         ) : (
           <div>
-            <Field label="Home address" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} />
+            <div style={{ marginBottom: 12 }}>
+              <span style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', marginBottom: 5, letterSpacing: '.04em', textTransform: 'uppercase' }}>Home address</span>
+              <AddressAutocomplete
+                value={form.street || ''}
+                country={country === 'US' ? 'us' : country === 'IE' ? 'ie' : 'gb'}
+                placeholder="Start typing your address to search"
+                inputStyle={{ width: '100%', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit', boxSizing: 'border-box' }}
+                onSelect={(found) => {
+                  const got = fromLookup(found, country);
+                  pickedStreet.current = got.street || null;
+                  // A pick replaces the postcode too: a result with none clears the box, so a new street is
+                  // never saved with the old postcode.
+                  setForm(f => (got.street ? { ...f, street: got.street, postcode: got.postcode } : f));
+                }}
+                onChangeText={(text) => {
+                  const keep = pickedStreet.current; pickedStreet.current = null;
+                  setForm(f => ({ ...f, street: keep || text }));
+                }}
+              />
+              <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 5, lineHeight: 1.45 }}>House number, street and town. Pick your address from the list, or type it in full.</div>
+            </div>
+            <Field label={`${pcWord}${postcodeRequired(country) ? '' : ' (optional)'}`} value={form.postcode || ''} onChange={e => setForm(f => ({ ...f, postcode: e.target.value.toUpperCase().slice(0, 10) }))} placeholder={postcodeExample(country)} autoCapitalize="characters" autoCorrect="off" spellCheck={false} autoComplete="postal-code" />
             <Field label="Emergency contact name" value={form.ecName} onChange={e => setForm(f => ({ ...f, ecName: e.target.value }))} />
             <Field label="Their phone" value={form.ecPhone} onChange={e => setForm(f => ({ ...f, ecPhone: e.target.value }))} inputMode="tel" />
             <Field label="Relationship" value={form.ecRelation} onChange={e => setForm(f => ({ ...f, ecRelation: e.target.value }))} placeholder="e.g. partner, parent" />
@@ -793,10 +876,16 @@ function MeTab({ snap, onSaved, chat }) {
             <ErrLine>{err}</ErrLine>
             <Primary disabled={busy} onClick={() => {
               // 5.12.85: the same rules the server applies, so the person sees why before the round trip.
-              const problem = dobProblem(form.dob) || (idKind === 'ni' ? niProblem(form.idNumber) : idKind === 'ssn4' ? ssnLast4Problem(form.idNumber) : null);
+              // The address is checked, and sent, only when it has changed (the server's rule too): someone
+              // with an old address and no postcode can still save their emergency contact. The amber line
+              // above keeps asking them for the postcode.
+              const nextAddress = joinAddress(form.street, form.postcode, country);
+              const before = splitAddress(me.address, country);
+              const addressChanged = String(form.street || '').trim() !== before.street || String(form.postcode || '').trim().toUpperCase() !== before.postcode;
+              const problem = (addressChanged ? addressProblem(form.street, form.postcode, country) : null) || dobProblem(form.dob) || (idKind === 'ni' ? niProblem(form.idNumber) : idKind === 'ssn4' ? ssnLast4Problem(form.idNumber) : null);
               if (problem) { setErr(problem); return; }
               save({
-                address: form.address, emergencyContact: { name: form.ecName, phone: form.ecPhone, relationship: form.ecRelation },
+                ...(addressChanged ? { address: nextAddress } : {}), emergencyContact: { name: form.ecName, phone: form.ecPhone, relationship: form.ecRelation },
                 dob: form.dob || '',
                 ...(idKind === 'ni' ? { niNumber: form.idNumber || '' } : idKind === 'ssn4' ? { ssnLast4: form.idNumber || '' } : {}),
               });

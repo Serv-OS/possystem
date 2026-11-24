@@ -1,5 +1,6 @@
 // supabase/functions/workforce-compute
 // MARKER 5.11.101 workforce-compute premiums and region
+// MARKER 5.12.89 workforce-compute accrual.adjust accrual.sources
 //
 // Server-side compute for pay-critical Workforce maths. The client NEVER
 // computes money for persistence — it calls this function, which runs with the
@@ -12,6 +13,10 @@
 //                  writes wf_tronc_runs + wf_tronc_lines + a tamper-evident audit.
 //   accrual.run  { location_id }                    → 12.07% (or venue rate) of
 //                  approved timesheet hours → wf_holiday_accrual (idempotent).
+//   accrual.sources { location_id, staff_id }       → (5.12.89) the person's ledger here and their
+//                  balances at the company's other sites, for the Adjust balance box.
+//   accrual.adjust  { location_id, staff_id, hours, note, from_staff_id? } → (5.12.89) a hand
+//                  correction, or hours brought over from another site (two ledger lines).
 //   pay.period   { location_id }                    → per-staff pay from approved
 //                  timesheets (read-only summary).
 //   labour       { location_id, from, to }          → daily closed_checks revenue.
@@ -32,6 +37,8 @@ import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime
 import { headOfficeOn, isHeadOffice, headOfficePay } from '../_shared/headOffice.js';
 // 5.12.57: a US tip pool leaves managers and exempt positions out (FLSA).
 import { tipPoolExclusion } from '../_shared/usTipPool.js';
+// 5.12.89 (HR feedback, 23 Nov 2026): a holiday balance changed by hand or brought over from another site.
+import { adjustProblem, transferProblem, samePersonRecords, transferNotes, ledgerBalance } from '../_shared/holidayAdjust.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -299,6 +306,100 @@ Deno.serve(async (req) => {
         return json({ ok: true, accrued: toInsert.length, hours: totalHrs, rate });
       }
       return json({ ok: true, accrued: 0, hours: 0, rate });
+    }
+
+    // ── HOLIDAY BALANCE BY HAND (5.12.89) ─────────────────────────────────────
+    // HR feedback, 23 Nov 2026: someone moved from one site to another and their accrued holiday
+    // stayed at the old site; the only button was Run accrual. The ledger has always allowed kind
+    // 'adjustment' and nothing wrote one. Two actions:
+    //   accrual.sources  the person's recent ledger here, and the SAME person's balances at the
+    //                    company's other sites (linked record, same email, same mobile, or same
+    //                    name with the same date of birth; leavers count). Only sites this login
+    //                    can reach are offered; the rest are counted, not shown.
+    //   accrual.adjust   a correction (+ or - hours, a reason is required), or with from_staff_id
+    //                    a move: one line out at the old site and one line in here, written in ONE
+    //                    insert so both land or neither does. Never more than the old site holds.
+    // Money adjacent, so an owner, admin or manager of this site only (site membership alone is
+    // not enough), and every change is a new ledger line plus an audit row: nothing is edited.
+    if (action === 'accrual.sources' || action === 'accrual.adjust') {
+      const [{ data: ulRole }, { data: profRole }, { data: hereLoc }] = await Promise.all([
+        admin.from('user_locations').select('role').eq('user_id', user.id).eq('location_id', location_id).limit(1),
+        admin.from('user_profiles').select('role, full_name, email').eq('id', user.id).maybeSingle(),
+        admin.from('locations').select('name').eq('id', location_id).maybeSingle(),
+      ]);
+      const isSuper = (profRole as any)?.role === 'super_admin';
+      const myRole = String((ulRole as any)?.[0]?.role || '').toLowerCase();
+      if (!isSuper && !['owner', 'admin', 'manager'].includes(myRole)) return json({ error: 'Only an owner or manager of this site can change a holiday balance.' }, 403);
+      const { data: me } = await admin.from('wf_staff').select('*').eq('id', String(body.staff_id || '')).maybeSingle();
+      if (!me || me.location_id !== location_id) return json({ error: 'That person is not on this site.' }, 404);
+      const hereName = String((hereLoc as any)?.name || 'this site');
+
+      const { data: orgRecs } = await admin.from('wf_staff').select('*').eq('org_id', me.org_id).limit(5000);
+      const same = samePersonRecords(me, orgRecs ?? []).filter((r: any) => r.location_id !== location_id);
+      // Hours leave the other site, so this login must be an owner, admin or manager THERE as well
+      // (being on that site's list is not enough to take hours off it).
+      const reach = new Set<string>();
+      const otherLocs = [...new Set(same.map((r: any) => String(r.location_id)))];
+      if (isSuper) otherLocs.forEach((l) => reach.add(l));
+      else if (otherLocs.length) {
+        const { data: myRows } = await admin.from('user_locations').select('location_id, role').eq('user_id', user.id).in('location_id', otherLocs);
+        (myRows ?? []).forEach((r: any) => { if (['owner', 'admin', 'manager'].includes(String(r.role || '').toLowerCase())) reach.add(String(r.location_id)); });
+      }
+      const usable = same.filter((r: any) => reach.has(String(r.location_id)));
+      const [{ data: locRows }, { data: led }, { data: mine }] = await Promise.all([
+        usable.length ? admin.from('locations').select('id, name, currency').in('id', [...reach]) : Promise.resolve({ data: [] as any[] }),
+        usable.length ? admin.from('wf_holiday_accrual').select('staff_id, accrued_hours').in('staff_id', usable.map((r: any) => r.id)).limit(20000) : Promise.resolve({ data: [] as any[] }),
+        admin.from('wf_holiday_accrual').select('id, kind, accrued_hours, note, created_at').eq('staff_id', me.id).order('created_at', { ascending: false }).limit(2000),
+      ]);
+      const locOf: Record<string, any> = {}; (locRows ?? []).forEach((l: any) => { locOf[l.id] = l; });
+      const sources = usable.map((r: any) => ({
+        staff_id: r.id, name: r.name, location_id: r.location_id, site: locOf[r.location_id]?.name || 'Another site',
+        currency: String(locOf[r.location_id]?.currency || cur).toUpperCase(),
+        leaver: r.status === 'leaver', left_on: r.leaver_date || null, why: r.why,
+        balance: ledgerBalance((led ?? []).filter((x: any) => x.staff_id === r.id)),
+      })).sort((a: any, b: any) => b.balance - a.balance);
+      const balance = ledgerBalance(mine ?? []);
+
+      if (action === 'accrual.sources') {
+        return json({
+          ok: true, balance, sources, hidden: same.length - usable.length,
+          ledger: (mine ?? []).slice(0, 25).map((x: any) => ({ id: x.id, kind: x.kind, hours: Number(x.accrued_hours || 0), note: x.note || null, at: x.created_at })),
+        });
+      }
+
+      const actorName = String((profRole as any)?.full_name || (profRole as any)?.email || 'A manager');
+      const note = String(body.note || '').trim().replace(/\s+/g, ' ').slice(0, 300);
+      const hours = round2(Number(body.hours));
+      if (body.from_staff_id) {
+        const src = sources.find((x: any) => x.staff_id === String(body.from_staff_id));
+        if (!src) return json({ error: 'That record is not the same person at a site you can reach.' }, 400);
+        const bad = transferProblem({ hours, sourceBalance: src.balance, sourceSite: src.site });
+        if (bad) return json({ error: bad }, 400);
+        const notes = transferNotes({ hours, fromSite: src.site, toSite: hereName, note });
+        const { data: wrote, error } = await admin.from('wf_holiday_accrual').insert([
+          { location_id: src.location_id, org_id: me.org_id, staff_id: src.staff_id, kind: 'adjustment', accrued_hours: -hours, currency: src.currency, note: `${notes.out} (by ${actorName})`.slice(0, 500) },
+          { location_id, org_id: org, staff_id: me.id, kind: 'adjustment', accrued_hours: hours, currency: cur, note: `${notes.in} (by ${actorName})`.slice(0, 500) },
+        ]).select('id');
+        if (error) return json({ error: error.message }, 500);
+        // Two moves pressed at the same moment both pass the check above. Read the old site again:
+        // if this move left it overdrawn, take both of its lines back out and refuse.
+        const { data: after } = await admin.from('wf_holiday_accrual').select('accrued_hours').eq('staff_id', src.staff_id).limit(20000);
+        if (ledgerBalance(after ?? []) < -0.005) {
+          await admin.from('wf_holiday_accrual').delete().in('id', (wrote ?? []).map((w: any) => w.id));
+          return json({ error: `Someone else moved hours from ${src.site} at the same moment, so there are not enough left. Open Adjust again to see the balance.` }, 409);
+        }
+        await writeAudit(location_id, org, 'accrual.adjust', { actorId: user.id, entity: 'wf_staff', entityId: me.id, reason: notes.in, after: { hours, from_staff_id: src.staff_id, from_location_id: src.location_id, balance: round2(balance + hours) } });
+        await writeAudit(src.location_id, me.org_id, 'accrual.adjust', { actorId: user.id, entity: 'wf_staff', entityId: src.staff_id, reason: notes.out, after: { hours: -hours, to_staff_id: me.id, to_location_id: location_id, balance: round2(src.balance - hours) } });
+        return json({ ok: true, moved: hours, from: src.site, balance: round2(balance + hours), source_balance: round2(src.balance - hours) });
+      }
+      const bad = adjustProblem({ hours, note });
+      if (bad) return json({ error: bad }, 400);
+      const { error } = await admin.from('wf_holiday_accrual').insert({
+        location_id, org_id: org, staff_id: me.id, kind: 'adjustment', accrued_hours: hours, currency: cur, note: `${note} (by ${actorName})`.slice(0, 500),
+      });
+      if (error) return json({ error: error.message }, 500);
+      await writeAudit(location_id, org, 'accrual.adjust', { actorId: user.id, entity: 'wf_staff', entityId: me.id, reason: `${hours > 0 ? '+' : ''}${hours.toFixed(2)}h: ${note}`, after: { hours, balance: round2(balance + hours) } });
+      return json({ ok: true, adjusted: hours, balance: round2(balance + hours) });
     }
 
     // ── TIME OFF DECISION — approve (paid/unpaid) or deny, with the ledger ───
