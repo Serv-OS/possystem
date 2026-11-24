@@ -16,6 +16,7 @@ import { OTHER_SECTION, orphanSectionTables, tablesForSectionView, effectiveSect
 import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 import { Icon } from '../components/ServOSIcons';
 import { activeCountry } from '../lib/regionPack';   // 5.12.57: phone example follows the venue
+import { openChecksOf, floorStatus, checksToPick } from '../lib/tableChecks';   // 24 Nov 2026: more than one check on a table
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)', label:'Available' },
@@ -336,10 +337,15 @@ function TableNode({ table, onClick }) {
     : bk ? 'reserved'
     : (table.status === 'reserved' && !session) ? 'available'  // stale persisted status, no live booking
     : table.status;
-  const sm = STATUS[displayStatus] || STATUS.available;
+  // 24 Nov 2026 (lib/tableChecks.js rule 3): the first check is closed but another is still open.
+  // The table is not free, whatever a booking or its own status says.
+  const otherChecks = openChecksOf(tables, table.id);
+  const heldByChecks = !session && otherChecks.length > 0;
+  const shownStatus = heldByChecks ? 'occupied' : displayStatus;
+  const sm = STATUS[shownStatus] || STATUS.available;
   const timeSeated = session?.seatedAt ? fmt(session.seatedAt) : null;
   const isRound = table.shape === 'rd';
-  const childCount = tables.filter(t => t.parentId === table.id).length;
+  const checkCount = otherChecks.length + (session ? 1 : 0);
 
   return (
     <div onClick={onClick} style={{
@@ -360,9 +366,15 @@ function TableNode({ table, onClick }) {
       </div>
 
       {/* Status / session info */}
-      {displayStatus === 'available' && (
+      {shownStatus === 'available' && (
         <div style={{ fontSize:9, color:sm.color, marginTop:2, fontWeight:600 }}>
           {table.maxCovers} covers
+        </div>
+      )}
+
+      {heldByChecks && (
+        <div style={{ fontSize:9, color:sm.color, marginTop:2, fontWeight:600 }}>
+          {otherChecks.length === 1 ? otherChecks[0].label : `${otherChecks.length} checks`} open
         </div>
       )}
 
@@ -372,7 +384,7 @@ function TableNode({ table, onClick }) {
         </div>
       )}
 
-      {displayStatus === 'joined' && joined && (
+      {!heldByChecks && displayStatus === 'joined' && joined && (
         <div style={{ fontSize:9, color:sm.color, marginTop:2, fontWeight:600, lineHeight:1.25 }}>
           {joined.primaryLabel ? `Bill on ${joined.primaryLabel}` : 'Joined party'}
         </div>
@@ -394,7 +406,7 @@ function TableNode({ table, onClick }) {
         </>
       )}
 
-      {bk && !session && (
+      {bk && !session && !heldByChecks && (
         <>
           <div style={{ fontSize:9, color:sm.color, marginTop:2, lineHeight:1.3, fontWeight:600 }}>
             {bk.startTime}
@@ -415,9 +427,9 @@ function TableNode({ table, onClick }) {
       {/* Status dot */}
       <div style={{ width:6, height:6, borderRadius:'50%', background:sm.color, position:'absolute', top:5, right:5 }}/>
       {/* Split checks badge */}
-      {childCount > 0 && (
+      {checkCount > 1 && (
         <div style={{ position:'absolute', top:4, left:5, fontSize:9, fontWeight:800, padding:'1px 5px', borderRadius:8, background:'var(--acc)', color:'#0b0c10', lineHeight:1.4 }}>
-          {childCount+1} checks
+          {checkCount} checks
         </div>
       )}
       {/* v5.9.4: deleted from the floor plan in Back Office while this order was open. Kept so the
@@ -434,7 +446,7 @@ function TableNode({ table, onClick }) {
 // ─── Main Tables Surface ─────────────────────────────────────────────────────
 export default function TablesSurface() {
   const compact = useCompact();
-  const { tables, seatTable, openTableInPOS, clearTable, setReservation, setSurface, showToast, staff, locationSections, deviceConfig, setSessionCustomer,
+  const { tables, seatTable, openTableInPOS, startNewCheck, clearTable, setReservation, setSurface, showToast, staff, locationSections, deviceConfig, setSessionCustomer,
     // v5.6.27: Table Bookings seams — "reserved" is derived from live bookings
     bookings, upcomingBookingForTable, seatBooking, cancelBooking, packages } = useStore();
   const [selected, setSelected]   = useState(null);
@@ -480,6 +492,9 @@ export default function TablesSurface() {
   // only meaningful while the table has no session)
   const selectedBk = selectedTable && !selectedTable.session
     ? upcomingBookingForTable?.(selectedTable.id) : null;
+  // 24 Nov 2026: the selected table's first check is closed but another check is still open on
+  // it (lib/tableChecks.js rule 3). It is not free: no Seat, no Reserve, its checks instead.
+  const heldChecks = selectedTable && !selectedTable.session ? openChecksOf(tables, selectedTable.id) : [];
 
   // v4.6.56: filter hidden sections from the tab list. Hidden flag set in Back Office.
   // Sections (lib/sectionPlan.js): a table whose section is not in the list (removed, renamed id,
@@ -498,25 +513,32 @@ export default function TablesSurface() {
   // never the dead persisted status. Booked tables leave the available count so
   // the legend buckets stay mutually exclusive.
   const reservedIds = new Set(
-    tables.filter(t => !t.parentId && !t.session && upcomingBookingForTable?.(t.id)).map(t => t.id)
+    tables.filter(t => !t.parentId && !t.session && upcomingBookingForTable?.(t.id) && openChecksOf(tables, t.id).length === 0).map(t => t.id)
   );
   const counts = {
     // stale persisted 'reserved' (no session, no live booking) reads as available
-    available: tables.filter(t=>(t.status==='available' || (t.status==='reserved' && !t.session)) && !reservedIds.has(t.id)).length,
+    available: tables.filter(t=>(t.status==='available' || (t.status==='reserved' && !t.session)) && !reservedIds.has(t.id) && floorStatus(t, tables)!=='occupied').length,
     open:      tables.filter(t=>t.status==='open').length,
-    occupied:  tables.filter(t=>t.status==='occupied').length,
+    occupied:  tables.filter(t=>floorStatus(t, tables)==='occupied').length,
     reserved:  reservedIds.size,
   };
 
   // Helper — open a table, showing check selector if it has splits
   const openTable = (table) => {
-    const hasChildren = tables.some(t => t.parentId === table.id);
-    if (hasChildren) {
+    // 24 Nov 2026: the checks staff can pick (lib/tableChecks.js checksToPick). One check opens
+    // straight away, even when it is not the table's first (the first one was paid already).
+    const picks = checksToPick(tables, table);
+    if (picks.length > 1) {
       setCheckSelectorTable(table);
       setShowCheckSelector(true);
     } else {
-      openTableInPOS(table.id);
+      openTableInPOS(picks[0]?.id || table.id);
     }
+  };
+  // New check (Peter, 24 Nov 2026): the till opens for a separate check on this table. The check
+  // is made when staff press Send or Pay, so backing out leaves nothing on the table.
+  const newCheck = (table) => {
+    if (startNewCheck(table.id)) setSelected(null);
   };
 
   const handleTableClick = (table) => {
@@ -629,8 +651,11 @@ export default function TablesSurface() {
         {/* ── Orders list view ─────────────────────────────── */}
         {(view==='mine' || view==='all') && (() => {
           const now = Date.now();
+          // 24 Nov 2026: a check whose table's first check is closed has no parent row to sit
+          // under, so it gets a row of its own (it was hidden from this list before).
+          const parentHasCheck = (t) => !!tables.find(p => p.id === t.parentId)?.session;
           const activeTables = tables.filter(t =>
-            (t.status==='open'||t.status==='occupied') && t.session && !t.parentId
+            (t.status==='open'||t.status==='occupied') && t.session && (!t.parentId || !parentHasCheck(t))
           ).filter(t =>
             view==='all' || t.session.server===staff?.name
           ).sort((a,b) => (b.session.seatedAt||0) - (a.session.seatedAt||0));
@@ -683,7 +708,7 @@ export default function TablesSurface() {
                   const seatedMins = Math.floor((now - (session.seatedAt||now)) / 60000);
                   const lastActivity = session.sentAt ? new Date(session.sentAt).getTime() : (session.seatedAt||now);
                   const idleMins = Math.floor((now - lastActivity) / 60000);
-                  const childChecks = tables.filter(t => t.parentId === table.id);
+                  const childChecks = openChecksOf(tables, table.id);
                   const hasChildren = childChecks.length > 0;
                   // Combined total across all checks
                   const allChecks = [table, ...childChecks];
@@ -886,7 +911,9 @@ export default function TablesSurface() {
                 const session = selectedTable.session;
                 // v5.6.27: a live booking claiming a session-less table shows
                 // as Reserved regardless of the persisted status
-                const sm = (selectedBk && !session)
+                const sm = heldChecks.length > 0
+                  ? STATUS.occupied
+                  : (selectedBk && !session)
                   ? STATUS.reserved
                   : (selectedTable.status === 'reserved' && !session)
                   ? STATUS.available   // stale persisted status, no live booking
@@ -993,7 +1020,13 @@ export default function TablesSurface() {
                       </div>
                     )}
 
-                    {selectedBk && !session && (
+                    {heldChecks.length > 0 && (
+                      <div style={{ background:'var(--bg3)', borderRadius:10, padding:'10px 12px', fontSize:12, color:'var(--t2)' }}>
+                        The first check is closed. Still open: <b>{heldChecks.map(c => c.label).join(', ')}</b>
+                      </div>
+                    )}
+
+                    {selectedBk && !session && heldChecks.length === 0 && (
                       <div style={{ background:'var(--bg3)', borderRadius:10, padding:'10px 12px' }}>
                         {/* 10 Sep 2026: an online guest is still paying. The table is held,
                             the booking is not confirmed, and nothing has been paid. */}
@@ -1084,13 +1117,23 @@ export default function TablesSurface() {
 
             {/* Actions */}
             <div style={{ padding:16, display:'flex', flexDirection:'column', gap:8 }}>
-              {!selectedTable.session && !selectedBk && (selectedTable.status==='available' || selectedTable.status==='reserved') && (
+              {heldChecks.length > 0 && (
+                <>
+                  <button className="btn btn-acc btn-full" onClick={()=>handleAction('open_pos')} style={{ height:44, fontSize:14 }}>
+                    {heldChecks.length > 1 ? `Select check (${heldChecks.length} open) →` : `Open ${heldChecks[0].label} →`}
+                  </button>
+                  <button className="btn btn-ghost btn-full" onClick={()=>newCheck(selectedTable)}>
+                    <Icon name="plus" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />New check
+                  </button>
+                </>
+              )}
+              {heldChecks.length === 0 && !selectedTable.session && !selectedBk && (selectedTable.status==='available' || selectedTable.status==='reserved') && (
                 <>
                   <button className="btn btn-acc btn-full" onClick={()=>handleAction('seat')} style={{ height:44, fontSize:14 }}>Seat guests →</button>
                   <button className="btn btn-ghost btn-full" onClick={()=>setShowReservation(true)}>Reserve table</button>
                 </>
               )}
-              {!selectedTable.session && selectedBk && (
+              {heldChecks.length === 0 && !selectedTable.session && selectedBk && (
                 <>
                   {/* v5.6.27: seat THROUGH the booking — opens the session on the
                       primary table, carries guest + allergens, pre-loads package lines */}
@@ -1114,20 +1157,23 @@ export default function TablesSurface() {
                 </>
               )}
               {selectedTable.status==='occupied' && (() => {
-                const childChecks = tables.filter(t => t.parentId === selectedTable.id);
-                const hasChildren = childChecks.length > 0;
+                const picks = checksToPick(tables, selectedTable);
                 return (
                   <>
-                    {hasChildren ? (
+                    {picks.length > 1 ? (
                       <button className="btn btn-acc btn-full" onClick={()=>{
                         setCheckSelectorTable(selectedTable);
                         setShowCheckSelector(true);
                       }} style={{ height:44, fontSize:14 }}>
-                        Select check ({childChecks.length+1} open) →
+                        Select check ({picks.length} open) →
                       </button>
                     ) : (
                       <button className="btn btn-acc btn-full" onClick={()=>handleAction('open_pos')} style={{ height:44, fontSize:14 }}>Add to order →</button>
                     )}
+                    {/* 24 Nov 2026 (Peter): another check on the same table, under Add to order. */}
+                    <button className="btn btn-ghost btn-full" onClick={()=>newCheck(selectedTable)}>
+                      <Icon name="plus" size={14} style={{ display:'inline-block', verticalAlign:'-2px', marginRight:4 }} />New check
+                    </button>
                     <button className="btn btn-ghost btn-full" style={{ borderColor:'var(--grn-b)', color:'var(--grn)' }}
                       onClick={()=>handleAction('open_pos')}>Take payment</button>
                     {/* v5.5.644: "Force close" removed — it called clearTable with no

@@ -52,6 +52,7 @@ import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
 import OrderDetailsModal from '../components/OrderDetailsModal';   // 5 Nov 2026: one pop up (flag number, guests, order type, new customer)
 import { needsOrderDetails, orderFlag, orderCovers, flagTableLabel, defaultOrderTypeFor } from '../lib/tillOrderType';
+import { newCheckTarget } from '../lib/tableChecks';   // 24 Nov 2026: New check from the floor plan
 // 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
 import { promptsOnTypeChange, sendsWithoutPrompt } from '../lib/customerDetailsRule';
 import { money, getActiveCurrencyCode } from '../lib/currency';
@@ -97,6 +98,7 @@ export default function POSSurface() {
     loadCurrentDrawerSession, signOutAfterCashUp,
     getPOSItems, getPOSTotals, getPOSOrderNote, quoteDelivery,
     activeTableId, tables, clearTable, clearDraftItems, clearWalkIn, setActiveTableId, recordWalkInClosed,
+    newCheckFor, startNewCheck, cancelNewCheck,   // 24 Nov 2026: an order being taken for a new check on a table
     orderType, setOrderType, customer, setCustomer, setAllergens, clearCustomer, setSessionCustomer,
     orderQueue, showToast,
     pendingItem, setPendingItem, clearPendingItem,
@@ -401,11 +403,12 @@ export default function POSSurface() {
   // here without one of those (a held order handed back, a surface switch, a cache written by
   // an older build). Never while a table is open or the cart has items.
   useEffect(() => {
-    if (activeTableId || walkInOrder?.items?.length) return;
+    // 24 Nov 2026: nor while an order is being taken for a new check on a table (it is dine in).
+    if (activeTableId || newCheckFor || walkInOrder?.items?.length) return;
     const start = defaultOrderTypeFor(deviceConfig);
     if (start !== orderType) setOrderType(start);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceConfig?.defaultOrderType, deviceConfig?.enabledOrderTypes, activeTableId, walkInOrder?.items?.length]);
+  }, [deviceConfig?.defaultOrderType, deviceConfig?.enabledOrderTypes, activeTableId, walkInOrder?.items?.length, !!newCheckFor]);
 
   // Set of category ids linked to the active deviceMenuId via menu_category_links.
   // Used to extend the cat-strip filter so cats appear in linked menus too.
@@ -902,7 +905,32 @@ export default function POSSurface() {
   // 5 Nov 2026 (Peter): "I want one screen that has this info and each one can be turned off and
   // on": the flag is one part of the Order details pop up, with the guests, the order type and
   // "New customer?" (needsOrderDetails says which parts are still to ask, or null).
+  // 24 Nov 2026: an order taken for a new check on a table (New check on the floor plan) has its
+  // table already, so Send and Pay look at it BEFORE the pop up below and never ask it for a
+  // flag, guests or an order type.
+  const forNewCheck = !activeTableId && newCheckFor ? newCheckFor : null;
   const detailsNeeded = needsOrderDetails({ deviceConfig, orderType, activeTableId, walkInOrder });
+  // Make the check now, at Send or Pay (lib/tableChecks.js newCheckTarget decides where, fresh:
+  // the table may have been paid on another till since New check was tapped). Returns the new
+  // check's table, or null when the table has gone (the order stays here as a walk in).
+  const placeNewCheck = () => {
+    const st = useStore.getState();
+    const target = newCheckTarget(st.tables, st.newCheckFor?.tableId);
+    if (!target) {
+      st.cancelNewCheck();
+      showToast('That table is no longer on the floor. The order is still here.', 'error');
+      return null;
+    }
+    const cust = st.customer;
+    if (target.action === 'split') st.splitTableCheck(target.tableId, items, st.staff?.name);
+    else st.seatTableWithItems(target.tableId, items, { server: st.staff?.name || 'Server', covers: 1 });
+    const after = useStore.getState();
+    const made = after.tables.find(t => t.id === after.activeTableId);
+    if (!made) return null;
+    // The customer staff attached to the order goes onto the check with it.
+    if (cust && (cust.name || cust.phone)) after.setSessionCustomer(made.id, cust);
+    return made;
+  };
   const walkInFlag = !activeTableId ? orderFlag(walkInOrder, orderType) : null;
   // Pay: the allergen gate, then checkout (the flag, when needed, is asked before this).
   const proceedToCheckout = () => {
@@ -911,6 +939,8 @@ export default function POSSurface() {
     else setShowCheckout(true);
   };
   const openCheckout = () => {
+    // A new check is made first, then paid like any table check (paying fires its unsent lines).
+    if (forNewCheck) { if (!items.length || !placeNewCheck()) return; proceedToCheckout(); return; }
     if (detailsNeeded) { setDetailsFor('pay'); return; }
     proceedToCheckout();
   };
@@ -950,6 +980,21 @@ export default function POSSurface() {
     // Walk-in with no table
     if (!activeTableId) {
       if (!items.length) { showToast('No items on order', 'error'); return; }
+      // 24 Nov 2026 (Peter, Provo): New check on the floor plan. The order becomes a separate
+      // check on that table and goes to the kitchen, the same steps the Send screen's
+      // "New separate check" runs. No pop up and no picker: the table is already chosen.
+      if (useStore.getState().newCheckFor) {
+        const made = placeNewCheck();
+        if (!made) return;
+        const st = useStore.getState();
+        setShowCheckout(false);
+        st.sendToKitchen();
+        st.clearWalkIn();
+        setActiveTableId(null);
+        setSurface('tables');
+        showToast(`${made.label} sent to kitchen`, 'success');
+        return;
+      }
       // 30 Sep 2026 / 5 Nov 2026: the Order details pop up first (profile switches);
       // onDetailsEntered then sends as Table <n> or comes back here.
       if (!afterDetails && detailsNeeded) { setDetailsFor('send'); return; }
@@ -1531,7 +1576,7 @@ export default function POSSurface() {
                 <div style={{fontSize:compact?12:15,fontWeight:800,color:'var(--t1)',letterSpacing:'-.01em',display:'flex',alignItems:'center',gap:6}}>
                   {activeTable.label}
                   {activeTable.parentId && (
-                    <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--acc)',color:'#0b0c10'}}>Check 2</span>
+                    <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,background:'var(--acc)',color:'#0b0c10'}}>Check {/-(\d+)$/.exec(String(activeTable.id))?.[1] || 2}</span>
                   )}
                   <Icon name="edit" size={11} style={{color:'var(--t4)'}} />
                 </div>
@@ -1593,8 +1638,20 @@ export default function POSSurface() {
                   </div>
                 );
               })()}
+              {/* 24 Nov 2026: an order for a new check on a table. The table is named where the
+                  order types sit (a check on a table is dine in, so there is no type to pick). */}
+              {forNewCheck && (
+                <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',borderRadius:13,background:'var(--acc-d)',border:'1.5px solid var(--acc-b)'}}>
+                  <Icon name="plus" size={15} stroke={2} style={{color:'var(--acc)',flexShrink:0}} />
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:compact?12:14,fontWeight:800,color:'var(--t1)'}}>New check on {forNewCheck.label}</div>
+                    <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>Add items, then Send or Pay</div>
+                  </div>
+                  <button onClick={()=>{ cancelNewCheck(); if (!items.length) setSurface('tables'); }} style={{fontSize:12,fontWeight:700,color:'var(--t3)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:'4px 0',flexShrink:0}}>Cancel</button>
+                </div>
+              )}
               {/* v5.5.357 ServOS: recessed segmented track (reference .seg) — active tab raised in glass + signal-green icon */}
-              <div style={{display:'flex',gap:4,padding:4,borderRadius:13,background:'var(--inset)',border:'1px solid var(--inset-border)',marginBottom:orderType==='dine-in'?0:8}}>
+              {!forNewCheck && <div style={{display:'flex',gap:4,padding:4,borderRadius:13,background:'var(--inset)',border:'1px solid var(--inset-border)',marginBottom:orderType==='dine-in'?0:8}}>
                 {visibleOrderTypes.map(([t,ic,l])=>{
                   const on=orderType===t;
                   const iconName=t==='dine-in'?'dinein':t==='takeaway'?'takeaway':t==='collection'?'collect':t==='delivery'?'delivery':t==='drive-thru'?'drivethru':'dinein';
@@ -1604,7 +1661,7 @@ export default function POSSurface() {
                   </button>
                   );
                 })}
-              </div>
+              </div>}
               {customerRow()}
             </>
           )}
@@ -1613,7 +1670,7 @@ export default function POSSurface() {
         {/* Order label row */}
         <div style={{padding:'6px 12px 3px',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
           <span style={{fontSize:10,fontWeight:800,color:'var(--t4)',textTransform:'uppercase',letterSpacing:'.08em'}}>
-            {activeTable?`${activeTable.label}`:walkInFlag?flagTableLabel(walkInFlag):orderTypeLabel} · {staff?.name}
+            {activeTable?`${activeTable.label}`:forNewCheck?`New check on ${forNewCheck.label}`:walkInFlag?flagTableLabel(walkInFlag):orderTypeLabel} · {staff?.name}
           </span>
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             {items.length>0&&(
@@ -1630,7 +1687,7 @@ export default function POSSurface() {
                 longer wipes a whole occupied table's order. Walk-in carts still
                 clear fully. */}
             {items.length>0&&(
-              <button onClick={()=>activeTableId?clearDraftItems(activeTableId):clearWalkIn()} style={{fontSize:11,fontWeight:700,color:'var(--t4)',cursor:'pointer',background:'none',border:'none',fontFamily:'inherit',padding:0,transition:'color .12s'}}
+              <button onClick={()=>{ if (activeTableId) { clearDraftItems(activeTableId); return; } const keep = forNewCheck?.tableId; clearWalkIn(); if (keep) startNewCheck(keep); }} style={{fontSize:11,fontWeight:700,color:'var(--t4)',cursor:'pointer',background:'none',border:'none',fontFamily:'inherit',padding:0,transition:'color .12s'}}
                 onMouseEnter={e=>e.currentTarget.style.color='var(--red)'}
                 onMouseLeave={e=>e.currentTarget.style.color='var(--t4)'}>Clear</button>
             )}
@@ -2559,7 +2616,7 @@ export default function POSSurface() {
           covers={covers}
           customer={customer}
           onClose={()=>setShowReview(false)}
-          onCheckout={()=>{ setShowReview(false); if(items.length>0) { if (detailsNeeded) setDetailsFor('pay'); else setShowCheckout(true); } }}
+          onCheckout={()=>{ setShowReview(false); if(items.length>0) { if (forNewCheck) { if (placeNewCheck()) setShowCheckout(true); } else if (detailsNeeded) setDetailsFor('pay'); else setShowCheckout(true); } }}
           onPrint={()=>{ setShowReview(false); setShowReceipt(true); }}
         />
       )}

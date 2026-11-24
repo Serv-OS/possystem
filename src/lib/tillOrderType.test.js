@@ -182,7 +182,7 @@ test('store: the default applies at boot and profile apply, after every walk in,
   has(src, "if (!get().activeTableId && !get().walkInOrder?.items?.length) {\n      const startType = defaultOrderTypeFor(finalConfig);", 'setDeviceConfig');
   // clearWalkIn goes back to the default, not always dine in.
   // v5.11.78 round 1: it also drops the delivery quote (a fee an opened order brought must not stay).
-  has(src, "clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null, deliveryQuote:null }))", 'clearWalkIn');
+  has(src, "clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null, deliveryQuote:null, newCheckFor:null }))", 'clearWalkIn');
   // Floor tables still open as dine in (Peter: real tables must stay dine in).
   assert.ok((src.match(/surface:'pos', orderType:'dine-in'/g) || []).length >= 4, 'table opens set dine-in');
   has(src, "set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', walkInOrder:null, customer:null });", 'openTable stays dine-in');
@@ -215,7 +215,7 @@ test('POSSurface: the pop up is asked before Send and before Pay, and cannot be 
   has(src, "if (walkInFlag) {\n        setShowCheckout(false);\n        sendToKitchen();\n        clearWalkIn();\n        showToast(`${flagTableLabel(walkInFlag)} sent`, 'success');\n        return;\n      }", 'a flagged order sends straight through');
   has(src, "if (sendsWithoutPrompt({ orderType: typeNow, mode: takeawayCustomerDetails, hasName: !!customerNow?.name })) {", 'the no prompt send reads the fresh type');
   has(src, "if (detailsNeeded) { setDetailsFor('pay'); return; }", 'Pay asks first');
-  has(src, "onCheckout={()=>{ setShowReview(false); if(items.length>0) { if (detailsNeeded) setDetailsFor('pay'); else setShowCheckout(true); } }}", 'Review checkout asks first');
+  has(src, "onCheckout={()=>{ setShowReview(false); if(items.length>0) { if (forNewCheck) { if (placeNewCheck()) setShowCheckout(true); } else if (detailsNeeded) setDetailsFor('pay'); else setShowCheckout(true); } }}", 'Review checkout asks first');
   has(src, "{detailsFor && <OrderDetailsModal action={detailsFor} deviceConfig={deviceConfig} ask={detailsNeeded} orderType={orderType} enabledOrderTypes={allowedOrderTypes} walkInOrder={walkInOrder} onConfirm={onDetailsEntered} onClose={()=>setDetailsFor(null)}/>}", 'modal render');
   // The counter choice on the send modal answers the pop up first too.
   has(src, "if (needsOrderDetails({ deviceConfig, orderType: 'dine-in', activeTableId: null, walkInOrder: store.walkInOrder })) { setDetailsFor('send'); return; }", 'counter order asks');

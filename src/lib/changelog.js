@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.93',
+    date: '24 Nov 2026',
+    items: [
+      'Floor plan: New check (Peter, Provo, 24 Nov 2026: "how do we open another check on the same table?"). Select an occupied table and there is a New check button under Add to order. The till opens showing "New check on T6"; add the items and press Send or Pay, and they go on a separate check (T6.2, then T6.3) with its own bill. Until now the only way to do this was the "How is this order being served?" screen, and a site whose Customer details setting is Not needed never sees that screen, so those sites had no way at all. The check is made when you press Send or Pay, so backing out with Cancel leaves nothing on the table.',
+      'Paying the first check no longer takes the other checks off the floor. Before this, when T6 was paid while T6.2 was still open, T6.2 was dropped from the till that took the payment and the table showed as free. Now T6.2 stays, the table stays amber and reads "T6.2 open", and selecting it offers Open T6.2 and New check. The table frees itself when the last check is paid. All open orders lists such a check on its own row (it was hidden).',
+      'Check numbers: a new check takes the lowest number not in use. The old rule counted the checks, so with T6.2 paid and T6.3 still open the next check was numbered 3 again and landed on top of the live T6.3. The badge on the order screen now shows the real number (it always said "Check 2").',
+      'Checked by hand in the test till: New check then Send, New check then Pay, paying check 1 before check 2, paying all three in turn (the table went free), and Cancel. Not yet tried on a live till with two devices.',
+    ],
+  },
+  {
     v: '5.12.92',
     date: '24 Nov 2026',
     items: [
