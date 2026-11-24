@@ -75,6 +75,30 @@ test('server: only a CHANGED UK address with no postcode is refused', () => {
 
 test('an address the search found fills both boxes', () => {
   assert.deepEqual(fromLookup({ line1: '12 High Street', city: 'Leeds', postcode: 'ls1 4ap' }), { street: '12 High Street, Leeds', postcode: 'LS1 4AP' });
-  assert.deepEqual(fromLookup({ full: '12 High Street, Leeds, LS1 4AP' }), { street: '12 High Street, Leeds', postcode: '' });
+  assert.deepEqual(fromLookup({ full: '12 High Street, Leeds, LS1 4AP, United Kingdom' }), { street: '12 High Street, Leeds', postcode: 'LS1 4AP' });
+  // A result with no full postcode fills none (the form then clears the old one).
+  assert.deepEqual(fromLookup({ line1: '12 High Street', city: 'Leeds', postcode: 'LS1' }), { street: '12 High Street, Leeds', postcode: '' });
+  // US: the state is kept (review, 23 Nov 2026: line 1 and city alone dropped "UT").
+  assert.deepEqual(fromLookup({ line1: '123 Main Street', city: 'Salt Lake City', postcode: '84101', full: '123 Main Street, Salt Lake City, Utah 84101, United States' }, 'US'),
+    { street: '123 Main Street, Salt Lake City, Utah', postcode: '84101' });
   assert.deepEqual(fromLookup(null), { street: '', postcode: '' });
+});
+
+test('review fixes: line breaks, double spaces, a country after the postcode, and US state and ZIP', () => {
+  assert.deepEqual(splitAddress('12 High Street\nLeeds\nLS1 4AP'), { street: '12 High Street\nLeeds', postcode: 'LS1 4AP' });
+  assert.equal(addressChangeProblem(joinAddress('12 High Street\nLeeds', 'LS1 4AP'), ''), null);
+  assert.deepEqual(splitAddress('12 High Street, Leeds LS1  4AP'), { street: '12 High Street, Leeds', postcode: 'LS1 4AP' });
+  assert.deepEqual(splitAddress('12 High Street, Leeds, LS1 4AP, UK'), { street: '12 High Street, Leeds', postcode: 'LS1 4AP' });
+  assert.deepEqual(splitAddress('12 High Street, Leeds, LS1 4AP, United Kingdom.'), { street: '12 High Street, Leeds', postcode: 'LS1 4AP' });
+  assert.equal(addressIncomplete('12 High Street, Leeds, LS1 4AP, UK'), false);
+  // A postcode alone is not an address.
+  assert.match(addressChangeProblem('LS1 4AP', ''), /street/);
+  // US: "PO Box 12345" is not a ZIP code; the ZIP follows the state with a space and round trips unchanged.
+  assert.deepEqual(splitAddress('PO Box 12345', 'US'), { street: 'PO Box 12345', postcode: '' });
+  assert.deepEqual(splitAddress('12 Main St, PO Box 12345', 'US'), { street: '12 Main St, PO Box 12345', postcode: '' });
+  const us = '500 S Main St, Salt Lake City, UT 84101';
+  assert.equal(joinAddress(splitAddress(us, 'US').street, splitAddress(us, 'US').postcode, 'US'), us);
+  assert.equal(joinAddress('500 S Main St', '84101', 'US'), '500 S Main St, 84101');
+  assert.deepEqual(splitAddress('500 S Main St, 84101', 'US'), { street: '500 S Main St', postcode: '84101' });
+  assert.deepEqual(splitAddress('500 S Main St, Salt Lake City, Utah 84101, United States', 'US'), { street: '500 S Main St, Salt Lake City, Utah', postcode: '84101' });
 });

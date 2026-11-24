@@ -86,6 +86,7 @@ export default function Workforce({ section, orgCtx }) {
   const [leavers, setLeavers] = useState([]);
   const [staffTab, setStaffTab] = useState('current');   // 'current' | 'leavers'
   const [existing, setExisting] = useState(null);        // { data, found }
+  const [draft, setDraft] = useState(null);              // the typed form, given back when that box is cancelled
   const [reinstating, setReinstating] = useState('');
 
   // Workforce is scoped to the location selected in the Back Office (bottom-left
@@ -344,13 +345,13 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'chat' && <WfChat ctx={{ venueOrgId: orgCtx?.venueOrgId || null }} showToast={showToast} />}
 
       {existing && <ExistingPersonModal found={existing.found} data={existing.data} locName={locName} busy={!!reinstating}
-        onClose={() => setExisting(null)}
+        onClose={() => { setDraft(existing.data); setExisting(null); setAddOpen(true); }}
         onAddNew={() => { const d = existing.data; setExisting(null); saveMember(d, { skipCheck: true }); }}
         onOpen={(id) => { const person = staffView.find(x => x.id === id); setExisting(null); if (person) setViewing(person); }}
         onReinstate={(m) => reinstate(leavers.find(x => x.id === m.id) || { id: m.id, name: m.name })} />}
       {viewing && <StaffDetailModal staff={viewing} privateOk={privateOk} onReinstate={reinstate} reinstating={reinstating === viewing.id} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
-      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} privateOk={privateOk} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
+      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} draft={editing ? null : draft} privateOk={privateOk} roles={rolesMap} sections={sections} headOffice={headOfficeSwitchOn(settings)} onClose={() => { setAddOpen(false); setEditing(null); setDraft(null); }} onSave={(d) => { setDraft(null); saveMember(d); }} />}
       {posFor && <PosUserModal staff={posFor} roles={rolesMap} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
       </>}
     </div>
@@ -510,22 +511,26 @@ function ExistingPersonModal({ found, data, locName, busy, onClose, onAddNew, on
 const inputStyle = { width: '100%', background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '10px 12px', height: 42, fontSize: 13, color: 'var(--t1)', fontFamily: 'inherit', outline: 'none' };
 const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 6 };
 
-function AddStaffModal({ locName, staff, privateOk = true, roles = {}, sections = [], headOffice = false, onClose, onSave }) {
-  const isEdit = !!staff;
+function AddStaffModal({ locName, staff: staffProp, draft = null, privateOk = true, roles = {}, sections = [], headOffice = false, onClose, onSave }) {
+  const isEdit = !!staffProp;
+  // 5.12.89: a new person's form that was typed, then stopped by the "already on the system" box and
+  // cancelled, opens again as it was typed (it used to be thrown away). Read like a record, saved as new.
+  const staff = staffProp || draft;
+  const prefilled = !!staff;
   const roleOpts = Object.entries(roles);
-  const ec = (isEdit && staff.emergencyContact) || {};
+  const ec = (prefilled && staff.emergencyContact) || {};
   const pack = activeRegionPack();
   const usFields = pack.payrollFields.includes('ssnLast4');
-  const [f, setF] = useState(isEdit
+  const [f, setF] = useState(prefilled
     ? { name: staff.name || '', role: staff.role && roles[staff.role] ? staff.role : '', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: splitAddress(staff.address, pack.country).street, postcode: splitAddress(staff.address, pack.country).postcode, niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '', ...(usFields ? { ssnLast4: staff.ssnLast4 || '', payrollEmployeeId: staff.payrollEmployeeId || '' } : {}) }
     : { name: '', role: roleOpts[0]?.[0] || '', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', postcode: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '', ...(usFields ? { ssnLast4: '', payrollEmployeeId: '' } : {}) });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   // 5.12.56: head office (Workforce settings, Head office staff). Only carried while the switch is on,
   // so a site that never turned it on never writes the two columns.
-  const [ho, setHo] = useState({ on: !!(isEdit && staff.headOffice), salary: isEdit && staff.salaryAnnual != null ? String(staff.salaryAnnual) : '' });
+  const [ho, setHo] = useState({ on: !!(prefilled && staff.headOffice), salary: prefilled && staff.salaryAnnual != null ? String(staff.salaryAnnual) : '' });
   // v5.5.993 — which sections this person works in. Never settable before,
   // so the column was empty everywhere and anything keyed on it was dead.
-  const [secIds, setSecIds] = useState((isEdit && Array.isArray(staff.sectionIds)) ? staff.sectionIds : []);
+  const [secIds, setSecIds] = useState((prefilled && Array.isArray(staff.sectionIds)) ? staff.sectionIds : []);
   const toggleSec = (id) => setSecIds(cur => cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
   // 5.12.58: a real position of this site is needed (its pay rate and rota come from it).
   // 5.12.89: a postcode that is typed must be a real one (a blank one is flagged, never refused here:
@@ -537,7 +542,10 @@ function AddStaffModal({ locName, staff, privateOk = true, roles = {}, sections 
   const roleRate = roles[f.role]?.rate;
   const submit = () => {
     const { ecName, ecPhone, ecRelation, postcode, ...rest } = f;
-    rest.address = joinAddress(f.address, postcode, pack.country);   // 5.12.89: one stored address, postcode last
+    // 5.12.89: one stored address, postcode last. Untouched boxes keep the address exactly as stored.
+    const was = splitAddress(staff?.address, pack.country);
+    const untouched = prefilled && String(f.address || '').trim() === was.street && String(postcode || '').trim().toUpperCase() === was.postcode;
+    rest.address = untouched ? (staff.address || '') : joinAddress(f.address, postcode, pack.country);
     const emergencyContact = (ecName || ecPhone || ecRelation) ? { name: ecName || null, phone: ecPhone || null, relationship: ecRelation || null } : null;
     const payload = { ...rest, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride), emergencyContact, sectionIds: secIds };
     if (headOffice) { payload.headOffice = ho.on; payload.salaryAnnual = ho.salary === '' ? null : Number(ho.salary); }
@@ -616,7 +624,7 @@ function AddStaffModal({ locName, staff, privateOk = true, roles = {}, sections 
                 <label style={labelStyle}>Home address</label>
                 <AddressAutocomplete value={f.address} inputStyle={inputStyle} country={pack.country === 'US' ? 'us' : pack.country === 'IE' ? 'ie' : 'gb'}
                   placeholder={pack.country === 'US' ? 'Start typing: street, city, state' : 'Start typing: house, street, town'}
-                  onSelect={(found) => { const got = fromLookup(found, pack.country); pickedStreet.current = got.street || null; setF(p => ({ ...p, address: got.street || p.address, postcode: got.postcode || p.postcode })); }}
+                  onSelect={(found) => { const got = fromLookup(found, pack.country); pickedStreet.current = got.street || null; setF(p => (got.street ? { ...p, address: got.street, postcode: got.postcode } : p)); }}
                   onChangeText={(text) => { const keep = pickedStreet.current; pickedStreet.current = null; set('address', keep || text); }} />
               </div>
               <div>

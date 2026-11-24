@@ -854,7 +854,9 @@ function MeTab({ snap, onSaved, chat }) {
                 onSelect={(found) => {
                   const got = fromLookup(found, country);
                   pickedStreet.current = got.street || null;
-                  setForm(f => ({ ...f, street: got.street || f.street, postcode: got.postcode || f.postcode }));
+                  // A pick replaces the postcode too: a result with none clears the box, so a new street is
+                  // never saved with the old postcode.
+                  setForm(f => (got.street ? { ...f, street: got.street, postcode: got.postcode } : f));
                 }}
                 onChangeText={(text) => {
                   const keep = pickedStreet.current; pickedStreet.current = null;
@@ -874,10 +876,16 @@ function MeTab({ snap, onSaved, chat }) {
             <ErrLine>{err}</ErrLine>
             <Primary disabled={busy} onClick={() => {
               // 5.12.85: the same rules the server applies, so the person sees why before the round trip.
-              const problem = addressProblem(form.street, form.postcode, country) || dobProblem(form.dob) || (idKind === 'ni' ? niProblem(form.idNumber) : idKind === 'ssn4' ? ssnLast4Problem(form.idNumber) : null);
+              // The address is checked, and sent, only when it has changed (the server's rule too): someone
+              // with an old address and no postcode can still save their emergency contact. The amber line
+              // above keeps asking them for the postcode.
+              const nextAddress = joinAddress(form.street, form.postcode, country);
+              const before = splitAddress(me.address, country);
+              const addressChanged = String(form.street || '').trim() !== before.street || String(form.postcode || '').trim().toUpperCase() !== before.postcode;
+              const problem = (addressChanged ? addressProblem(form.street, form.postcode, country) : null) || dobProblem(form.dob) || (idKind === 'ni' ? niProblem(form.idNumber) : idKind === 'ssn4' ? ssnLast4Problem(form.idNumber) : null);
               if (problem) { setErr(problem); return; }
               save({
-                address: joinAddress(form.street, form.postcode, country), emergencyContact: { name: form.ecName, phone: form.ecPhone, relationship: form.ecRelation },
+                ...(addressChanged ? { address: nextAddress } : {}), emergencyContact: { name: form.ecName, phone: form.ecPhone, relationship: form.ecRelation },
                 dob: form.dob || '',
                 ...(idKind === 'ni' ? { niNumber: form.idNumber || '' } : idKind === 'ssn4' ? { ssnLast4: form.idNumber || '' } : {}),
               });

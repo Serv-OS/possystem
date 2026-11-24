@@ -907,8 +907,12 @@ export async function saveDocument(doc, locationId, orgId) {
   const row = { location_id: locationId, org_id: org, staff_id: doc.staffId, type: doc.type, file_url: doc.fileUrl || null, status: doc.status || 'missing', issued_on: doc.issuedOn || null, expiry: doc.expiry || null };
   const real = doc.id && !String(doc.id).startsWith('tmp-') && !String(doc.id).startsWith('wf-');
   if (real) row.id = doc.id;
-  const q = real ? supabase.from('wf_documents').upsert(row, { onConflict: 'id' }) : supabase.from('wf_documents').insert(row);
-  const { data, error } = await q.select().single();
+  // 5.12.89: a manager saving the document answers any "send it again" (they have the paper in hand),
+  // so the reason and the Resend stamp are cleared and the staff app stops asking. The columns arrive
+  // with 20261205a; before it has run the write is made without them.
+  const write = (r) => (real ? supabase.from('wf_documents').upsert(r, { onConflict: 'id' }) : supabase.from('wf_documents').insert(r)).select().single();
+  let { data, error } = await write({ ...row, review_note: null, requested_at: null, requested_by: null });
+  if (error && /review_note|requested_at|requested_by|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await write(row));
   if (error) throw new Error(error.message);
   return mapDoc(data);
 }

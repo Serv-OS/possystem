@@ -71,6 +71,8 @@ function docStatus(doc) {
 const STATUS_TONE = { valid: 'green', expiring: 'amber', expired: 'red', missing: 'grey', pending: 'amber', rejected: 'red' };
 const STATUS_LBL = { valid: 'Valid', expiring: 'Expiring', expired: 'Expired', missing: 'Missing', pending: 'Pending review', rejected: 'Rejected' };
 const NEEDS_ATTENTION = new Set(['expiring', 'expired', 'missing', 'pending', 'rejected']);
+// 5.12.89: what a staff-portal from before 5.12.89 answers to the new request_document action.
+const OLD_SERVER = /not signed in|unknown action/i;
 // 5.12.89: the states a document can be asked for again in (Resend / Request on the row).
 const CAN_ASK_AGAIN = new Set(['expiring', 'expired', 'missing', 'rejected']);
 
@@ -156,7 +158,17 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
       // person is emailed why, their staff app asks for a new upload, and the toast says what they
       // were actually told. Before this a rejection told nobody and could not be asked for again.
       if (verdict === 'reject') {
-        const r = await wf.requestDocument({ docId: doc.id, verdict: 'reject', note });
+        let r;
+        try { r = await wf.requestDocument({ docId: doc.id, verdict: 'reject', note }); }
+        catch (e) {
+          // The server half of 5.12.89 is not live yet (it answers "not signed in" or "unknown action"
+          // to an action it does not know): reject the old way, and say plainly nobody was told.
+          if (!OLD_SERVER.test(String(e?.message || ''))) throw e;
+          const saved = await wf.reviewDocument(doc.id, { issuedOn, expiry, verdict: 'reject' });
+          setDocs(prev => prev.map(d => (d.id === doc.id ? saved : d)));
+          showToast(`Rejected. ${member?.name ? member.name.split(' ')[0] : 'They'} has NOT been told: the 5.12.89 server update is not live yet, so tell them yourself.`, 'info');
+          return;
+        }
         if (r?.doc) setDocs(prev => prev.map(d => (d.id === doc.id ? r.doc : d)));
         showToast(askedWords({ name: member?.name, rejected: true, answer: r, hasEmail: !!member?.email }), r?.emailed ? 'success' : 'info');
         return;
@@ -175,7 +187,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
       const r = await wf.requestDocument(doc._placeholder ? { staffId: member.id, type: doc.type } : { docId: doc.id });
       if (r?.doc) setDocs(prev => (prev.some(d => d.id === r.doc.id) ? prev.map(d => (d.id === r.doc.id ? r.doc : d)) : [...prev, r.doc]));
       showToast(askedWords({ name: member?.name, answer: r, hasEmail: !!member?.email }), r?.emailed ? 'success' : 'info');
-    } catch (err) { showToast((err && err.message) || 'Could not ask for the document', 'error'); }
+    } catch (err) { showToast(OLD_SERVER.test(String(err?.message || '')) ? 'Asking again needs the 5.12.89 server update, which is not live yet.' : ((err && err.message) || 'Could not ask for the document'), 'error'); }
     finally { setAsking(''); }
   }
 
@@ -221,7 +233,9 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
         {(staff || []).map(member => {
           const rows = rowsFor(member);
           const role = rolesMap[member.role];
-          const flagged = rows.some(d => d._placeholder && requiredTypes(member, rolesMap).includes(d.type));
+          // 5.12.89: a required document that has been Requested is a real row now, and still missing:
+          // it keeps the red flag until a file arrives (the flag used to count placeholders only).
+          const flagged = rows.some(d => requiredTypes(member, rolesMap).includes(d.type) && docStatus(d) === 'missing');
           return (
             <Card key={member.id} style={flagged ? { borderColor: 'var(--red-b)' } : undefined}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>

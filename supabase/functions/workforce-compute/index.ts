@@ -324,7 +324,7 @@ Deno.serve(async (req) => {
     if (action === 'accrual.sources' || action === 'accrual.adjust') {
       const [{ data: ulRole }, { data: profRole }, { data: hereLoc }] = await Promise.all([
         admin.from('user_locations').select('role').eq('user_id', user.id).eq('location_id', location_id).limit(1),
-        admin.from('user_profiles').select('role, display_name, email').eq('id', user.id).maybeSingle(),
+        admin.from('user_profiles').select('role, full_name, email').eq('id', user.id).maybeSingle(),
         admin.from('locations').select('name').eq('id', location_id).maybeSingle(),
       ]);
       const isSuper = (profRole as any)?.role === 'super_admin';
@@ -336,9 +336,14 @@ Deno.serve(async (req) => {
 
       const { data: orgRecs } = await admin.from('wf_staff').select('*').eq('org_id', me.org_id).limit(5000);
       const same = samePersonRecords(me, orgRecs ?? []).filter((r: any) => r.location_id !== location_id);
+      // Hours leave the other site, so this login must be an owner, admin or manager THERE as well
+      // (being on that site's list is not enough to take hours off it).
       const reach = new Set<string>();
-      for (const l of [...new Set(same.map((r: any) => String(r.location_id)))]) {
-        if (isSuper || await assertAccess(user, l)) reach.add(l);
+      const otherLocs = [...new Set(same.map((r: any) => String(r.location_id)))];
+      if (isSuper) otherLocs.forEach((l) => reach.add(l));
+      else if (otherLocs.length) {
+        const { data: myRows } = await admin.from('user_locations').select('location_id, role').eq('user_id', user.id).in('location_id', otherLocs);
+        (myRows ?? []).forEach((r: any) => { if (['owner', 'admin', 'manager'].includes(String(r.role || '').toLowerCase())) reach.add(String(r.location_id)); });
       }
       const usable = same.filter((r: any) => reach.has(String(r.location_id)));
       const [{ data: locRows }, { data: led }, { data: mine }] = await Promise.all([
@@ -362,7 +367,7 @@ Deno.serve(async (req) => {
         });
       }
 
-      const actorName = String((profRole as any)?.display_name || (profRole as any)?.email || 'A manager');
+      const actorName = String((profRole as any)?.full_name || (profRole as any)?.email || 'A manager');
       const note = String(body.note || '').trim().replace(/\s+/g, ' ').slice(0, 300);
       const hours = round2(Number(body.hours));
       if (body.from_staff_id) {
@@ -371,11 +376,18 @@ Deno.serve(async (req) => {
         const bad = transferProblem({ hours, sourceBalance: src.balance, sourceSite: src.site });
         if (bad) return json({ error: bad }, 400);
         const notes = transferNotes({ hours, fromSite: src.site, toSite: hereName, note });
-        const { error } = await admin.from('wf_holiday_accrual').insert([
+        const { data: wrote, error } = await admin.from('wf_holiday_accrual').insert([
           { location_id: src.location_id, org_id: me.org_id, staff_id: src.staff_id, kind: 'adjustment', accrued_hours: -hours, currency: src.currency, note: `${notes.out} (by ${actorName})`.slice(0, 500) },
           { location_id, org_id: org, staff_id: me.id, kind: 'adjustment', accrued_hours: hours, currency: cur, note: `${notes.in} (by ${actorName})`.slice(0, 500) },
-        ]);
+        ]).select('id');
         if (error) return json({ error: error.message }, 500);
+        // Two moves pressed at the same moment both pass the check above. Read the old site again:
+        // if this move left it overdrawn, take both of its lines back out and refuse.
+        const { data: after } = await admin.from('wf_holiday_accrual').select('accrued_hours').eq('staff_id', src.staff_id).limit(20000);
+        if (ledgerBalance(after ?? []) < -0.005) {
+          await admin.from('wf_holiday_accrual').delete().in('id', (wrote ?? []).map((w: any) => w.id));
+          return json({ error: `Someone else moved hours from ${src.site} at the same moment, so there are not enough left. Open Adjust again to see the balance.` }, 409);
+        }
         await writeAudit(location_id, org, 'accrual.adjust', { actorId: user.id, entity: 'wf_staff', entityId: me.id, reason: notes.in, after: { hours, from_staff_id: src.staff_id, from_location_id: src.location_id, balance: round2(balance + hours) } });
         await writeAudit(src.location_id, me.org_id, 'accrual.adjust', { actorId: user.id, entity: 'wf_staff', entityId: src.staff_id, reason: notes.out, after: { hours: -hours, to_staff_id: me.id, to_location_id: location_id, balance: round2(src.balance - hours) } });
         return json({ ok: true, moved: hours, from: src.site, balance: round2(balance + hours), source_balance: round2(src.balance - hours) });

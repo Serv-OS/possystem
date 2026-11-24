@@ -12,9 +12,18 @@
 // country: 'UK' | 'US' | 'IE' (the region pack's country). UK: the postcode is required and checked.
 // US and Ireland: the ZIP code or Eircode is optional, and checked when typed.
 
-const UK_ONE = '(?:GIR ?0AA|[A-PR-UWYZ][A-HK-Y]?[0-9][A-Z0-9]? ?[0-9][ABD-HJLNP-UW-Z]{2})';
+const UK_ONE = '(?:GIR\\s*0AA|[A-PR-UWYZ][A-HK-Y]?[0-9][A-Z0-9]?\\s*[0-9][ABD-HJLNP-UW-Z]{2})';
 const US_ONE = '(?:[0-9]{5}(?:-[0-9]{4})?)';
-const IE_ONE = '(?:(?:[AC-FHKNPRTV-Y][0-9]{2}|D6W) ?[0-9AC-FHKNPRTV-Y]{4})';
+const IE_ONE = '(?:(?:[AC-FHKNPRTV-Y][0-9]{2}|D6W)\\s*[0-9AC-FHKNPRTV-Y]{4})';
+// A country written after the postcode ("..., LS1 4AP, UK") is not part of the address we keep.
+const COUNTRY_TAIL = '(?:[\\s,.]*(?:U\\.?K\\.?|United Kingdom|Great Britain|GB|England|Scotland|Wales|Northern Ireland|Republic of Ireland|Ireland|U\\.?S\\.?A?\\.?|United States(?: of America)?))?';
+// US: is the last part of the address a state ("UT", "Utah", "New York")? Then the ZIP follows it
+// with a space; anything else ("PO Box 12345") is not a ZIP code.
+const usStateTail = (head) => {
+  if (!head.includes(',')) return false;
+  const seg = head.split(',').pop().trim();
+  return /^[A-Za-z][A-Za-z .]*$/.test(seg) && !/\bbox\b/i.test(seg);
+};
 const ONE = { UK: UK_ONE, US: US_ONE, IE: IE_ONE };
 const oneOf = (country) => ONE[country] || UK_ONE;
 
@@ -46,11 +55,15 @@ export function normalisePostcode(raw, country = 'UK') {
 export function splitAddress(address, country = 'UK') {
   const text = String(address || '').trim();
   if (!text) return { street: '', postcode: '' };
-  const m = text.match(new RegExp(`^(.*?)[\\s,]*\\b(${oneOf(country)})[\\s,.]*$`, 'i'));
+  const m = text.match(new RegExp(`^([\\s\\S]*?)([\\s,]*)\\b(${oneOf(country)})${COUNTRY_TAIL}[\\s,.]*$`, 'i'));
   if (!m) return { street: text, postcode: '' };
-  const postcode = normalisePostcode(m[2], country);
+  const postcode = normalisePostcode(m[3], country);
   if (!postcode) return { street: text, postcode: '' };
-  return { street: m[1].replace(/[\s,]+$/, '').trim(), postcode };
+  const street = m[1].replace(/[\s,]+$/, '').trim();
+  // US: five digits at the end are a ZIP code only after a comma or after the state. "PO Box 12345"
+  // and a bare five digit house number are left alone.
+  if (country === 'US' && !m[2].includes(',') && !usStateTail(street)) return { street: text, postcode: '' };
+  return { street, postcode };
 }
 
 /** The two boxes as the stored address ("12 High Street, Leeds, LS1 4AP"). */
@@ -60,6 +73,8 @@ export function joinAddress(street, postcode, country = 'UK') {
   // Typed the postcode into the address box as well: keep one copy.
   const base = pc ? splitAddress(st, country) : null;
   const lines = base && base.postcode === pc ? base.street : st;
+  // US: the ZIP follows the state with a space ("..., Salt Lake City, UT 84101"), as it is written there.
+  if (country === 'US' && lines && pc && usStateTail(lines)) return `${lines} ${pc}`;
   return [lines, pc].filter(Boolean).join(', ');
 }
 
@@ -90,14 +105,19 @@ export function addressChangeProblem(next, prev, country = 'UK') {
   const n = String(next || '').trim();
   if (!n || n === String(prev || '').trim()) return null;
   if (!postcodeRequired(country)) return null;
-  return splitAddress(n, country).postcode ? null : `Add your postcode to your address. It should end like ${postcodeExample(country)}.`;
+  const parts = splitAddress(n, country);
+  if (!parts.postcode) return `Add your postcode to your address. It should end like ${postcodeExample(country)}.`;
+  return parts.street ? null : 'Add your house number and street as well.';
 }
 
 /** An address the search found ({ line1, city, postcode, full }) as the two boxes. */
 export function fromLookup(found, country = 'UK') {
   if (!found) return { street: '', postcode: '' };
-  const postcode = normalisePostcode(found.postcode, country);
-  const street = [found.line1, found.city].map((x) => String(x || '').trim()).filter(Boolean).join(', ')
-    || splitAddress(found.full || found.label || '', country).street;
+  const whole = splitAddress(found.full || found.label || '', country);
+  const postcode = normalisePostcode(found.postcode, country) || whole.postcode;
+  // US: the search's own full address carries the state ("..., Salt Lake City, Utah 84101"); line 1
+  // and city alone would drop it.
+  if (country === 'US' && whole.postcode && whole.street) return { street: whole.street, postcode };
+  const street = [found.line1, found.city].map((x) => String(x || '').trim()).filter(Boolean).join(', ') || whole.street;
   return { street, postcode };
 }

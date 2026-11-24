@@ -226,8 +226,10 @@ async function callerManagesLocation(req: Request, locationId: string): Promise<
   // Inviting mints a credential — membership alone is not enough.
   const role = String(ul[0].role || '').toLowerCase();
   if (!['owner', 'admin', 'manager'].includes(role)) return { ok: false };
-  const { data: prof } = await admin.from('user_profiles').select('display_name, email').eq('id', uid).maybeSingle();
-  return { ok: true, id: uid, name: prof?.display_name || prof?.email || 'Manager' };
+  // 5.12.89: the column is full_name. It was read as display_name, which does not exist, so the read
+  // failed and every audit line said "Manager".
+  const { data: prof } = await admin.from('user_profiles').select('full_name, email').eq('id', uid).maybeSingle();
+  return { ok: true, id: uid, name: prof?.full_name || prof?.email || 'Manager' };
 }
 
 /** 5.12.89: an owner, admin or manager of the venue, or the ServOS super admin (support acting for
@@ -240,9 +242,9 @@ async function callerManagesOrSuper(req: Request, locationId: string): Promise<{
   if (!jwt) return { ok: false };
   const { data, error } = await admin.auth.getUser(jwt);
   if (error || !data?.user || (data.user as any).is_anonymous) return { ok: false };
-  const { data: prof } = await admin.from('user_profiles').select('role, display_name, email').eq('id', data.user.id).maybeSingle();
+  const { data: prof } = await admin.from('user_profiles').select('role, full_name, email').eq('id', data.user.id).maybeSingle();
   if (prof?.role !== 'super_admin') return { ok: false };
-  return { ok: true, id: data.user.id, name: prof.display_name || prof.email || 'ServOS support' };
+  return { ok: true, id: data.user.id, name: prof.full_name || prof.email || 'ServOS support' };
 }
 
 async function sendInviteEmail(staff: any, token: string, resend: boolean) {
@@ -1122,6 +1124,10 @@ Deno.serve(async (req) => {
       const mine = new Set(sctxDoc.records.map((r) => r.id));
       const { data: doc } = await admin.from('wf_documents').select('*').eq('id', String(body.doc_id || '')).maybeSingle();
       if (!doc || !mine.has(doc.staff_id)) return json({ error: 'document not found' }, 404);
+      // Only a document that is being asked for (rejected, expired, or a manager pressed Resend). An
+      // approved, in date document cannot be swapped or sent back to review from the phone.
+      const docVenue = await venueFacts(admin, doc.location_id);
+      if (!requestReason(doc, docVenue.todayIso)) return json({ error: 'This document is not being asked for. Ask your manager if you need to replace it.' }, 400);
       const folder = `${doc.location_id}/${doc.staff_id}/`;
       if (action === 'doc_upload_url') {
         const path = `${folder}${docFileName(doc.type, Date.now(), body.ext)}`;
@@ -1139,7 +1145,7 @@ Deno.serve(async (req) => {
       }
       if (w.error) return json({ error: w.error.message }, 500);
       // The work document also feeds onboarding: keep its evidence pointing at the newest file.
-      const workDoc = regionPack({ currency: (await venueFacts(admin, doc.location_id)).currency }).requiredDocs[0];
+      const workDoc = regionPack({ currency: docVenue.currency }).requiredDocs[0];
       if (doc.type === workDoc) {
         const { data: onbRow } = await admin.from('wf_onboarding').select('*').eq('staff_id', doc.staff_id)
           .order('created_at', { ascending: false }).limit(1);
