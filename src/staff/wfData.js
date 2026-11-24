@@ -320,7 +320,15 @@ export async function saveStaff(member, locationId, orgId) {
   // 5.12.55: the primary location (holiday and PTO) is set once, when the record is made; after that only
   // the Sites panel changes it (setPrimaryLocation), so a save at another site never moves it.
   else row.primary_venue_id = locationId;
-  const q = real ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' }) : supabase.from('wf_staff').insert(row);
+  // 5.12.90 (Peter, 23 Nov 2026: "Couldn't save Gina Lee: permission denied for table wf_staff"). An
+  // edit was sent as an upsert (insert, on conflict update). Postgres only allows that when the login
+  // may READ every column it writes, and since 20261120a and 20261121a the NI number, SSN last 4 and
+  // the personal pay rate can be written but not read back by a Back Office login. So every edit of an
+  // existing person was refused, while adding a new person worked. An edit is now a plain update of
+  // that one record, which needs no read of the private columns. Proven on the live database with
+  // EXPLAIN only (nothing written): the upsert is refused, the update and the insert are allowed.
+  const { id: _editId, ...changes } = row;
+  const q = real ? supabase.from('wf_staff').update(changes).eq('id', member.id) : supabase.from('wf_staff').insert(row);
   // 5.12.57: read back named columns only (a select of every column is refused once 20261120a hides the
   // private ones). The private ones the form sent are kept on the answer so the screen still shows them.
   const { data, error } = await q.select(`${STAFF_COLS},location_id,payroll_employee_id,person_id,head_office,salary_annual`).single();

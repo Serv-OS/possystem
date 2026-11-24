@@ -1,5 +1,12 @@
 export const CHANGELOG = [
   {
+    v: '5.12.90',
+    date: '23 Nov 2026',
+    items: [
+      'Workforce, Staff: editing an existing team member saves again (Peter, 23 Nov 2026, testing 5.12.89: "Couldn\'t save Gina Lee: permission denied for table wf_staff"). Adding a new person worked; every edit of an existing one was refused. The edit was sent as "insert, or update if it is already there", and the database only allows that when the login may read back every column it writes. Since the privacy updates (20261120a and 20261121a) a Back Office login can write the NI number, SSN last 4 and personal pay rate but not read them back, so the whole save was refused. An edit is now a plain update of that one record. Checked on the live database without writing anything: the old form is refused, the new form and adding a new person are allowed. Not caused by 5.12.89: the save code was the same before it.',
+    ],
+  },
+  {
     v: '5.12.89',
     date: '23 Nov 2026',
     items: [
