@@ -1,12 +1,15 @@
 import { useStore } from '../store';
 import { money } from '../lib/currency';
 import { Icon } from './ServOSIcons';
+import { checksToPick } from '../lib/tableChecks';
 
 export default function CheckSelectorModal({ parentTable, onSelect, onClose }) {
   const { tables } = useStore();
 
-  const children = tables.filter(t => t.parentId === parentTable.id);
-  const allChecks = [parentTable, ...children];
+  // 24 Nov 2026: read the table fresh and list only checks that are open (lib/tableChecks.js).
+  // A table whose first check is paid no longer shows it here as an empty check.
+  const parent = tables.find(t => t.id === parentTable.id) || parentTable;
+  const allChecks = checksToPick(tables, parent);
 
   const totalRevenue = allChecks.reduce((s,t) => s + (t.session?.subtotal||0), 0);
 
@@ -24,7 +27,7 @@ export default function CheckSelectorModal({ parentTable, onSelect, onClose }) {
         <div style={{ padding:'16px 20px 12px', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
           <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)' }}>{parentTable.label}</div>
           <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
-            {allChecks.length} checks open · {money(totalRevenue)} total · {parentTable.session?.covers} covers
+            {allChecks.length} check{allChecks.length === 1 ? '' : 's'} open · {money(totalRevenue)} total{parent.session?.covers ? ` · ${parent.session.covers} covers` : ''}
           </div>
         </div>
 

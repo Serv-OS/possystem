@@ -182,7 +182,7 @@ test('a placed order\'s delivery fee counts only while that order is on the till
   assert.equal(quoteForWalkIn(live, null), live);
   assert.equal(quoteForWalkIn(null, opened), null);
   const store = readRepo('src/store/index.js');
-  assert.match(store, /clearWalkIn: \(\) => set\(s => \(\{ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor\(s\.deviceConfig\), pendingLoyaltyReward:null, deliveryQuote:null \}\)\),/);
+  assert.match(store, /clearWalkIn: \(\) => set\(s => \(\{ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor\(s\.deviceConfig\), pendingLoyaltyReward:null, deliveryQuote:null, newCheckFor:null \}\)\),/);
   assert.match(store, /deliveryQuote: quoteForWalkIn\(get\(\)\.deliveryQuote, activeTableId \? null : walkInOrder\),/, 'getPOSTotals');
   const close = between(store, 'recordWalkInClosed: (walkInOrder', 'refundCheck: async');
   assert.match(close, /deliveryQuote: quoteForWalkIn\(get\(\)\.deliveryQuote, walkInOrder\),/, 'the VAT the close books');

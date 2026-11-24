@@ -51,6 +51,7 @@ import { lockedItemPatch, lockedGroupPatch, lockedOptionPatch, droppedWords } fr
 import { withTimeout } from '../lib/withTimeout';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
+import { nextCheckNumber, checkIdFor, checkLabelFor, afterCheckDropped, newCheckTarget } from '../lib/tableChecks';
 import { propagateScopedEdit, propagateModifierGroupEdit, setMenuItemScope, fetchArchivedMenuItems, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, fetchClosedCheckCardRow, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
@@ -2791,6 +2792,7 @@ export const useStore = create((set, get) => ({
       set({ allergens: [...customer.allergens] });
       get().showToast?.(`Allergen filter applied — ${customer.name} is allergic to ${customer.allergens.join(', ')}`, 'info');
     }
+    set({ newCheckFor:null });   // 24 Nov 2026: an order taken for a new check has landed on its table
     set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', walkInOrder:null, customer:null });
     get().showToast(`Items moved to ${get().tables.find(t=>t.id===tableId)?.label}`, 'success');
   },
@@ -2804,7 +2806,7 @@ export const useStore = create((set, get) => ({
         const subtotal = items.reduce((s,i)=>s+i.price*i.qty, 0);
         return { ...t, session: { ...t.session, items, subtotal, total: subtotal*1.125 } };
       }),
-      walkInOrder: null, customer: null,
+      walkInOrder: null, customer: null, newCheckFor: null,
     }));
     set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
     get().showToast(`Items merged into ${get().tables.find(t=>t.id===tableId)?.label}`, 'success');
@@ -2815,11 +2817,11 @@ export const useStore = create((set, get) => ({
     const parent = get().tables.find(t => t.id === parentTableId);
     if (!parent) return;
 
-    // Determine child label: T1 → T1.2, T1.2 → T1.3, etc.
-    const existingChildren = get().tables.filter(t => t.parentId === parentTableId);
-    const checkNum = existingChildren.length + 2;
-    const childLabel = `${parent.label}.${checkNum}`;
-    const childId = `${parentTableId}-${checkNum}`;
+    // The check number is the lowest one free (lib/tableChecks.js rule 1). Counting the children
+    // reused a number once an earlier check had been paid, and the new check landed on a live id.
+    const checkNum = nextCheckNumber(get().tables, parentTableId);
+    const childLabel = checkLabelFor(parent.label, checkNum);
+    const childId = checkIdFor(parentTableId, checkNum);
 
     const childSession = {
       id: newSessionOrderId(),
@@ -2853,16 +2855,35 @@ export const useStore = create((set, get) => ({
       tables: [
         ...s.tables.map(t => {
           if (t.id !== parentTableId) return t;
+          const childIds = [...new Set([...(t.childIds||[]), childId])];
+          // 24 Nov 2026: the first check is only rewritten when lines really left it. A table
+          // whose first check is already paid has no session, and must not be handed an empty one.
+          if (!t.session || parentItems.length === (t.session.items || []).length) return { ...t, childIds };
           const session = { ...t.session, items: parentItems, subtotal: parentSub, total: parentSub*1.125 };
-          return { ...t, session, childIds: [...(t.childIds||[]), childId] };
+          return { ...t, session, childIds };
         }),
         childTable,
       ],
-      walkInOrder: null, customer: null,
+      walkInOrder: null, customer: null, newCheckFor: null,
       activeTableId: childId, surface: 'pos', orderType: 'dine-in',
     }));
-    get().showToast(`Check 2 created — ${childLabel}`, 'success');
+    get().showToast(`Check ${checkNum} created: ${childLabel}`, 'success');
   },
+
+  // 24 Nov 2026 (Peter, Provo: "how do we open another check on the same table?"). New check on
+  // the floor plan: the till opens as an order with no table, marked for this table. Nothing is
+  // written to the table yet, so staff who back out leave no empty check behind. Send or Pay
+  // then makes the check (POSSurface, through newCheckTarget and splitTableCheck).
+  newCheckFor: null,   // { tableId, label } while an order is being taken for a new check
+  startNewCheck: (tableId) => {
+    const t = get().tables.find(x => x.id === tableId && !x.parentId);
+    if (!t) return false;
+    // A QR tab on the table is left alone: the new check is a separate till check beside it.
+    if (!newCheckTarget(get().tables, tableId)) return false;
+    set({ newCheckFor: { tableId, label: t.label || tableId }, activeTableId: null, surface: 'pos', orderType: 'dine-in' });
+    return true;
+  },
+  cancelNewCheck: () => set({ newCheckFor: null }),
 
   // Open an already-seated table (go to its POS)
   openTableInPOS: (tableId) => {
@@ -2876,7 +2897,7 @@ export const useStore = create((set, get) => ({
       get().showToast('QR tab — close it from Orders Hub → Open QR tabs (captures the card hold + saves to history)', 'info');
       return;
     }
-    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
+    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', newCheckFor:null });
   },
 
   // Save a table session without sending to kitchen — creates session if needed (seats the table)
@@ -2976,35 +2997,11 @@ export const useStore = create((set, get) => ({
   // Extracted from clearTable so the terminal-job reconciler can drop a table it has
   // closed WITHOUT re-recording the check. Idempotent — a table already gone is a no-op.
   _dropTableFromFloor: (tableId) => {
-    const table = get().tables.find(t => t.id === tableId);
-
-    if (table?.parentId) {
-      // Child table (T1.2) — remove it, update parent childIds
-      set(s => {
-        const remaining = s.tables.filter(t => t.id !== tableId);
-        const parent = remaining.find(t => t.id === table.parentId);
-        const newChildIds = (parent?.childIds || []).filter(id => id !== tableId);
-        // If parent has no more children and no active session, set to available
-        const parentHasSession = parent?.session?.items?.some(i => !i.voided);
-        return {
-          tables: remaining.map(t => {
-            if (t.id !== table.parentId) return t;
-            if (newChildIds.length === 0 && !parentHasSession) {
-              return { ...t, status:'available', session:null, childIds:[] };
-            }
-            return { ...t, childIds: newChildIds };
-          }),
-        };
-      });
-    } else {
-      // Parent table — clear it and all its children
-      const childIds = table?.childIds || [];
-      set(s => ({
-        tables: s.tables
-          .filter(t => !childIds.includes(t.id))
-          .map(t => t.id === tableId ? { ...t, status:'available', session:null, childIds:[] } : t),
-      }));
-    }
+    // lib/tableChecks.js afterCheckDropped: a child check is removed (its parent is freed when it
+    // was the last one and the parent holds no lines); a first check is cleared and every other
+    // check that still holds lines STAYS. Until 24 Nov 2026 closing the first check dropped all
+    // the others, so an unpaid T6.2 left the floor when T6 was paid.
+    set(s => ({ tables: afterCheckDropped(s.tables, tableId) }));
     set(s => ({ activeTableId: s.activeTableId === tableId ? null : s.activeTableId }));
   },
 
@@ -3166,7 +3163,7 @@ export const useStore = create((set, get) => ({
 
   // ── Active table context ───────────────────
   activeTableId: null,
-  setActiveTableId: id => set({ activeTableId:id }),
+  setActiveTableId: id => set(id ? { activeTableId:id, newCheckFor:null } : { activeTableId:id }),
 
   getActiveTable: () => get().tables.find(t => t.id === get().activeTableId) || null,
 
@@ -4255,7 +4252,7 @@ export const useStore = create((set, get) => ({
   // not always dine in. Floor tables still open as dine in (openTable and friends).
   // v5.11.78 round 1: and the delivery quote. A fee an order brought with it (Orders, a catering pay
   // later order) stayed on the till after Clear, and the next delivery sale charged it.
-  clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null, deliveryQuote:null })),
+  clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null, deliveryQuote:null, newCheckFor:null })),
   // 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed for a dine in walk in order
   // (OrderDetailsModal, lib/tillOrderType.js). Lives on the order, so Send and Pay both see it
   // and the prompt never shows twice. Digits only, or cleared.
