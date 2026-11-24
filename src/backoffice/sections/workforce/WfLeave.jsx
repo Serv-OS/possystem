@@ -24,6 +24,9 @@ import { holidayWord, holidayWordLower, ukHoliday } from '../../../staff/payLaw'
 import { ptoRules } from '../../../../supabase/functions/_shared/usPto.js';
 // 5.12.89 (HR feedback, 23 Nov 2026): a balance changed by hand, or brought over from another site.
 import { adjustProblem, transferProblem } from '../../../../supabase/functions/_shared/holidayAdjust.js';
+// 5.12.91 (HR feedback batch 2, 24 Nov 2026): Part of the day with the site's own options, and patterns
+// staff have filed for future weeks. One copy of the rules with the staff-portal.
+import { partDayOptions, cleanOptions, dayWords, MAX_PART_DAY_OPTIONS, MAX_OPTION_LENGTH } from '../../../../supabase/functions/_shared/availabilityChoices.js';
 
 // 5.12.57: built when the screen draws, for the venue it is on. It was built once when the file
 // loaded, so the tab kept the first venue's word after a switch between a UK and a US site.
@@ -43,6 +46,7 @@ const AV_STATES = [
   { key: 'available', lbl: 'Available', tone: 'green' },
   { key: 'unavailable', lbl: 'Off', tone: 'red' },
   { key: 'preferred', lbl: 'Prefers', tone: 'blue' },
+  { key: 'partial', lbl: 'Part day', tone: 'amber' },   // 5.12.91: can work part of the day; the option says which
 ];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -197,6 +201,18 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, sh
     }
   }
 
+  // 5.12.91: the site's Part of the day options live in its Workforce settings (settings.availabilityOptions).
+  async function saveAvailOptions(list) {
+    const next = { ...(settings || {}), settings: { ...(settings?.settings || {}), availabilityOptions: cleanOptions(list) } };
+    try {
+      const saved = await wf.saveSettings(next, ctx?.locationId, ctx?.orgId);
+      onSettingsSaved?.(saved || next);
+      showToast?.('Part of the day options saved. Staff see them in the app straight away.', 'success');
+    } catch (e) {
+      showToast?.(e.message || 'Could not save the options', 'error');
+    }
+  }
+
   if (loading) return <LoadingCard label="Loading time off…" />;
 
   return (
@@ -219,7 +235,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, sh
         <BalancesSection pack={pack} settings={settings} staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} onAdjust={setAdjusting} />
       )}
       {tab === 'avail' && (
-        <AvailSection staff={staff} roles={roles} avail={avail} todayIso={todayIso} onSave={saveAvailRow} />
+        <AvailSection staff={staff} roles={roles} avail={avail} todayIso={todayIso} onSave={saveAvailRow} options={partDayOptions(settings?.settings)} onSaveOptions={saveAvailOptions} />
       )}
       {adjusting && (
         <AdjustBalanceModal person={adjusting} ctx={ctx} pack={pack} onClose={() => setAdjusting(null)}
@@ -447,6 +463,42 @@ function BalancesSection({ pack, settings, staff, roles, balances, accrual, leav
   );
 }
 
+// 5.12.91 (HR feedback batch 2, 24 Nov 2026): the choices staff get when they pick Part of the day
+// ("AM shift", "From 5pm"). The site's own list, edited here; the staff app and the server read it.
+function PartDayOptions({ options, onSave }) {
+  const [list, setList] = useState(options);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const key = options.join('|');
+  useEffect(() => { setList(options); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [key]);
+  const dirty = list.join('|') !== key;
+  const add = () => { const next = cleanOptions([...list, text]); if (next.length !== list.length) setList(next); setText(''); };
+  return (
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+      <div style={{ fontSize: 13.5, fontWeight: 700 }}>Part of the day options</div>
+      <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2, marginBottom: 10, lineHeight: 1.5 }}>
+        What staff can choose when they can only work part of a day. Preferred still means "I would like to work this day". The rota treats Part day as available and shows you the option when you place them.
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+        {list.map(o => (
+          <span key={o} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, padding: '4px 6px 4px 10px', borderRadius: 999, background: 'var(--inset)', border: '1px solid var(--inset-border)', color: 'var(--t1)' }}>
+            {o}
+            <button onClick={() => setList(l => l.filter(x => x !== o))} title={`Remove ${o}`} style={{ all: 'unset', cursor: 'pointer', display: 'inline-flex', color: 'var(--t4)' }}><Icon name="close" size={11} /></button>
+          </span>
+        ))}
+        {list.length === 0 && <span style={{ fontSize: 12, color: 'var(--t4)' }}>None. Saving an empty list brings the four standard options back.</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input style={{ ...inputStyle, maxWidth: 220, height: 36 }} value={text} maxLength={MAX_OPTION_LENGTH} placeholder="e.g. From 3pm" disabled={list.length >= MAX_PART_DAY_OPTIONS}
+          onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
+        <button className="btn btn-ghost btn-sm" disabled={!text.trim() || list.length >= MAX_PART_DAY_OPTIONS} onClick={add}><Icon name="plus" size={13} /> Add</button>
+        {dirty && <button className="btn btn-acc btn-sm" disabled={busy} onClick={async () => { setBusy(true); try { await onSave(list); } finally { setBusy(false); } }}>{busy ? 'Saving…' : 'Save options'}</button>}
+        {dirty && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setList(options)}>Undo</button>}
+      </div>
+    </div>
+  );
+}
+
 // ── 5.12.89 (HR feedback, 23 Nov 2026): Adjust a holiday balance ─────────────
 // Someone moved from one site to another and their accrued holiday stayed at the old site; the only
 // button was Run accrual. Two ways to change a balance, both written by the server as new ledger
@@ -579,14 +631,15 @@ function AdjustBalanceModal({ person, ctx, pack, onClose, onDone }) {
 }
 
 // ── Section: Availability ────────────────────────────────────────────────────
-function AvailSection({ staff, roles, avail, todayIso, onSave }) {
+function AvailSection({ staff, roles, avail, todayIso, onSave, options = [], onSaveOptions }) {
   // 5.12.61: the pattern in effect today per person; a change they filed for the next rota period
   // is shown under their name ("From Mon, 23 Nov 2026: Tue off").
   const byStaff = useMemo(() => Object.fromEntries(staff.map(s => [s.id, availabilityInEffect(avail.filter(a => a.staffId === s.id), todayIso)])), [avail, staff, todayIso]);
-  const pendingBy = useMemo(() => Object.fromEntries(staff.map(s => [s.id, pendingAvailability(avail.filter(a => a.staffId === s.id), todayIso)[0] || null])), [avail, staff, todayIso]);
+  // 5.12.91: EVERY pattern they have filed for a later week, soonest first (it was the first one only).
+  const pendingBy = useMemo(() => Object.fromEntries(staff.map(s => [s.id, pendingAvailability(avail.filter(a => a.staffId === s.id), todayIso)])), [avail, staff, todayIso]);
   const pendingWords = (row) => {
     if (!row) return '';
-    const changes = DAYS.map((d, i) => { const st = row.perDay?.find(x => x.day === i)?.state || 'available'; return st === 'available' ? null : `${d} ${(AV_STATES.find(x => x.key === st) || AV_STATES[0]).lbl.toLowerCase()}`; }).filter(Boolean);
+    const changes = DAYS.map((d, i) => { const e = row.perDay?.find(x => x.day === i); return !e || e.state === 'available' ? null : `${d} ${dayWords(e).toLowerCase()}`; }).filter(Boolean);
     return `From ${dayText(row.weekStart, { weekday: true })}: ${changes.length ? changes.join(', ') : 'available every day'}`;
   };
   if (!staff.length) {
@@ -601,11 +654,20 @@ function AvailSection({ staff, roles, avail, todayIso, onSave }) {
     const order = AV_STATES.map(s => s.key);
     const cur = perDay[dayIdx];
     cur.state = order[(order.indexOf(cur.state) + 1) % order.length];
+    // Part of the day carries one of the site's options (the first until another is picked).
+    if (cur.state === 'partial') cur.note = cur.note || options[0] || '';
+    else delete cur.note;
+    onSave(staffId, perDay);
+  }
+  function setNote(staffId, dayIdx, note) {
+    const row = byStaff[staffId];
+    const perDay = DAYS.map((_, i) => { const cur = row?.perDay?.find(p => p.day === i); return cur ? { ...cur } : { day: i, state: 'available' }; });
+    perDay[dayIdx] = { day: dayIdx, state: 'partial', note };
     onSave(staffId, perDay);
   }
   return (
     <Card>
-      <Toolbar title="Weekly availability" sub="Click a day to cycle Available → Off → Prefers" />
+      <Toolbar title="Weekly availability" sub="Click a day to cycle Available, Off, Prefers, Part day. This is the pattern in effect now." />
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr>
@@ -622,7 +684,7 @@ function AvailSection({ staff, roles, avail, todayIso, onSave }) {
                       <Avatar name={s.name} role={s.role} roles={roles} />
                       <div>
                         <span style={{ fontWeight: 600 }}>{s.name}</span>
-                        {pendingBy[s.id] && <div style={{ fontSize: 11, color: 'var(--amber, #b7791f)', marginTop: 2 }}>{pendingWords(pendingBy[s.id])}</div>}
+                        {(pendingBy[s.id] || []).map(row => <div key={row.id || row.weekStart} style={{ fontSize: 11, color: 'var(--amber, #b7791f)', marginTop: 2 }}>{pendingWords(row)}</div>)}
                       </div>
                     </div>
                   </td>
@@ -631,10 +693,16 @@ function AvailSection({ staff, roles, avail, todayIso, onSave }) {
                     const st = AV_STATES.find(x => x.key === (p?.state || 'available')) || AV_STATES[0];
                     return (
                       <td key={d} style={{ ...td, textAlign: 'center' }}>
-                        <button onClick={() => cycle(s.id, i)} title={st.lbl}
+                        <button onClick={() => cycle(s.id, i)} title={st.key === 'partial' ? dayWords(p) : st.lbl}
                           style={{ all: 'unset', cursor: 'pointer', display: 'inline-flex' }}>
                           <Badge tone={st.tone}>{st.lbl}</Badge>
                         </button>
+                        {st.key === 'partial' && (
+                          <select value={p?.note || ''} onChange={e => setNote(s.id, i, e.target.value)} aria-label={`${s.name}, ${d}: which part of the day`}
+                            style={{ display: 'block', margin: '4px auto 0', maxWidth: 104, fontSize: 10.5, padding: '2px 4px', borderRadius: 6, border: '1px solid var(--bdr2)', background: 'var(--bg3)', color: 'var(--t2)', fontFamily: 'inherit' }}>
+                            {(options.includes(p?.note) || !p?.note ? options : [p.note, ...options]).map(o => <option key={o} value={o}>{o}</option>)}
+                          </select>
+                        )}
                       </td>
                     );
                   })}
@@ -644,6 +712,7 @@ function AvailSection({ staff, roles, avail, todayIso, onSave }) {
           </tbody>
         </table>
       </div>
+      {onSaveOptions && <PartDayOptions options={options} onSave={onSaveOptions} />}
     </Card>
   );
 }

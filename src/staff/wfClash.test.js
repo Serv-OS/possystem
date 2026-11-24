@@ -58,3 +58,15 @@ test('clashWarnings: holiday + unavailable produce short first-name messages', (
   assert.deepEqual(w, ['Jane is on holiday that day', 'Jane is marked unavailable on Tuesdays']);
   assert.deepEqual(clashWarnings({ staffName: 'Jane Smith', staffId: 's1', dateIso: '2026-07-16', timeOff, availability }), []);
 });
+
+// 5.12.91 (HR feedback batch 2): Part of the day is still available, and the manager sees which part.
+import { availabilityEntryOn } from './wfClash.js';
+test('a part day is not a block, and the rota says which part', () => {
+  const availability = [{ staffId: 's1', perDay: [{ day: 1, state: 'partial', note: 'From 5pm' }, { day: 2, state: 'partial' }, { day: 3, state: 'preferred' }] }];
+  assert.equal(availabilityOn(availability, 's1', '2026-07-14'), 'partial');   // Tue
+  assert.deepEqual(availabilityEntryOn(availability, 's1', '2026-07-14'), { day: 1, state: 'partial', note: 'From 5pm' });
+  assert.deepEqual(clashWarnings({ staffName: 'Jane Smith', staffId: 's1', dateIso: '2026-07-14', timeOff: [], availability }), ['Jane can only work part of the day on Tuesdays: From 5pm']);
+  assert.deepEqual(clashWarnings({ staffName: 'Jane Smith', staffId: 's1', dateIso: '2026-07-15', timeOff: [], availability }), ['Jane can only work part of the day on Wednesdays']);
+  assert.deepEqual(clashWarnings({ staffName: 'Jane Smith', staffId: 's1', dateIso: '2026-07-16', timeOff: [], availability }), []);   // Preferred: no warning
+  assert.equal(availabilityEntryOn(availability, 's1', '2026-07-17'), null);
+});
