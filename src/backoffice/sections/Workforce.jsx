@@ -93,18 +93,21 @@ export default function Workforce({ section, orgCtx }) {
   // 5.12.91: the PINs in use at the site, read from the database when the till access box opens (the
   // store only has them once the Team page has been opened).
   const [tillPins, setTillPins] = useState([]);
-  useEffect(() => {
-    if (!posFor) return undefined;
-    let live = true;
-    loadTillPins(locationId).then(rows => { if (live) setTillPins(rows || []); }).catch(() => {});
-    return () => { live = false; };
-  }, [posFor, locationId]);
 
   // Workforce is scoped to the location selected in the Back Office (bottom-left
   // switcher). Multi-site rollups live in Reports, not here.
   const locationId = orgCtx?.locationId || null;
   const locName = orgCtx?.locationName || 'This location';
   const key = (section || 'wf-dashboard').replace('wf-', '');
+  // 5.12.92: this effect sits BELOW locationId on purpose. In 5.12.91 it sat above it, and its
+  // dependency list read locationId before the line that makes it, which stopped every Workforce
+  // page with "Cannot access before initialization".
+  useEffect(() => {
+    if (!posFor) return undefined;
+    let live = true;
+    loadTillPins(locationId).then(rows => { if (live) setTillPins(rows || []); }).catch(() => {});
+    return () => { live = false; };
+  }, [posFor, locationId]);
 
   // Editable positions (wf_roles), sections (wf_sections) + venue settings.
   const [roles, setRoles] = useState({ list: [], map: {} });
