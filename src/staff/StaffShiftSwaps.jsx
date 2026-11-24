@@ -22,6 +22,9 @@ const small = { background: 'none', border: '1px solid var(--bdr)', borderRadius
 const solid = { ...small, background: 'var(--acc)', border: 'none', color: '#fff' };
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const STATES = [['available', 'Available'], ['preferred', 'Preferred'], ['unavailable', 'Unavailable']];
+// 5.12.91 (HR feedback batch 2, 24 Nov 2026): Preferred is purple, as in the Back Office. It was the
+// same green as Available, so people could not tell the two apart.
+const AV_COLOR = { available: 'var(--acc)', preferred: 'var(--pur)', unavailable: 'var(--red)' };
 const STATUS_WORDS = { open: 'Waiting for someone to take it', pending: 'Waiting for a manager', approved: 'Done', declined: 'Declined', cancelled: 'Cancelled', claimed: 'Taken', denied: 'Declined' };
 const STATUS_TONE = { open: 'var(--t3)', pending: 'var(--amber)', approved: 'var(--grn)', declined: 'var(--red)', cancelled: 'var(--t4)' };
 
@@ -184,11 +187,11 @@ export function AvailabilityCard({ availability, call, onChanged }) {
       {saved && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>{saved}</div>}
       {!editing ? (
         <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.7 }}>
-          {current.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (current[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: current[i] === 'unavailable' ? 'var(--red)' : 'var(--grn)' }}>{current[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
+          {current.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (current[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: AV_COLOR[current[i]] || 'var(--grn)' }}>{current[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
           {pending && (
             <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--bdr)' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)' }}>From {fromWords(pending.from)}</div>
-              {pendingDays.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (pendingDays[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: pendingDays[i] === 'unavailable' ? 'var(--red)' : 'var(--grn)' }}>{pendingDays[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
+              {pendingDays.every(s => s === 'available') ? 'Available every day.' : DAYS.map((d, i) => (pendingDays[i] === 'available' ? null : <div key={d}>{d}: <b style={{ color: AV_COLOR[pendingDays[i]] || 'var(--grn)' }}>{pendingDays[i] === 'unavailable' ? 'Unavailable' : 'Preferred'}</b></div>))}
             </div>
           )}
         </div>
@@ -201,7 +204,7 @@ export function AvailabilityCard({ availability, call, onChanged }) {
               <div style={{ display: 'flex', gap: 4 }}>
                 {STATES.map(([k, lbl]) => (
                   <button key={k} onClick={() => setDays(cur => cur.map((x, j) => (j === i ? k : x)))}
-                    style={{ ...small, padding: '5px 9px', fontSize: 11, background: days[i] === k ? (k === 'unavailable' ? 'var(--red)' : 'var(--acc)') : 'transparent', color: days[i] === k ? '#fff' : 'var(--t2)', border: days[i] === k ? 'none' : '1px solid var(--bdr)' }}>{lbl}</button>
+                    style={{ ...small, padding: '5px 9px', fontSize: 11, background: days[i] === k ? AV_COLOR[k] : 'transparent', color: days[i] === k ? '#fff' : 'var(--t2)', border: days[i] === k ? 'none' : '1px solid var(--bdr)' }}>{lbl}</button>
                 ))}
               </div>
             </div>

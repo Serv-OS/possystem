@@ -2,7 +2,8 @@
 //
 // "Send it again": the documents a team member is asked to upload again, and the words for it.
 // One copy for staff-portal (the staff app's list and the email) and the Back Office (the Resend
-// button and what the row says). Pure, no imports: node --test (src/staff/docRequests.test.js).
+// button and what the row says). Pure (its one import is the region pack, also pure): node --test
+// (src/staff/docRequests.test.js).
 //
 // WHY (HR feedback, 23 Nov 2026): a manager who rejected a Right to Work upload had no way to ask
 // for a new one. The staff app's step was ticked the moment the first file went up and never opened
@@ -13,6 +14,8 @@
 //   waiting for review  never asked (they have just sent it)
 // The onboarding step itself is left alone: who may be put on the rota is decided by it in three
 // places (the Back Office, staff-portal and the database), and none of that changes here.
+
+import { docFilePrefix } from './regionPack.js';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -75,7 +78,7 @@ export function requestEmail({ first, label, reason, note, url, venueName }) {
 /** The stored file's name for a document type, so identity files keep their private rule (20261121a
  *  reads the name: RTW-, I9-, passport-, visa-, id-). */
 export function docFileName(type, stamp, ext) {
-  const safeType = String(type || 'doc').replace(/[^a-z0-9]/gi, '') || 'doc';
+  const safeType = docFilePrefix(type);   // 5.12.91: a share code or visa check is stored under an identity prefix
   const safeExt = String(ext || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'jpg';
   return `${safeType}-${stamp}.${safeExt}`;
 }

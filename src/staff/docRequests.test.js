@@ -74,3 +74,22 @@ test('the Back Office toast says what the person was actually told', () => {
   assert.match(askedWords({ name: 'Sam', answer: { emailed: false, hasLogin: true }, hasEmail: true }), /did not send/);
   assert.match(askedWords({ name: 'Sam', answer: { emailed: true, hasLogin: true, kept: false } }), /database update has not been run/);
 });
+
+// 5.12.91: the new UK document types. A share code and a visa check are identity papers, so their
+// files are stored under a name the private file rule (20261121a) already knows.
+import { regionPack, DOC_INFO, docFilePrefix, docLabel } from '../../supabase/functions/_shared/regionPack.js';
+test('Share Code, Visa check and Term dates are their own UK types, and identity files stay private', () => {
+  const uk = regionPack('GBP').documentTypes;
+  for (const t of ['shareCode', 'visaCheck', 'termDates']) { assert.ok(uk.includes(t), t); assert.equal(DOC_INFO[t].group, 'compliance'); }
+  assert.equal(docLabel('shareCode'), 'Share Code');
+  assert.equal(docLabel('visaCheck'), 'Home Office / Visa check');
+  assert.equal(docLabel('termDates'), 'Term dates');
+  assert.ok(!regionPack('USD').documentTypes.includes('shareCode'));
+  const identity = /(^|\/)(RTW|rtw|I9|i9|passport|visa|id)-[0-9]+\.[A-Za-z0-9]+$/;
+  assert.ok(identity.test(`loc/staff/${docFileName('shareCode', 1700000000000, 'jpg')}`));
+  assert.ok(identity.test(`loc/staff/${docFileName('visaCheck', 1700000000000, 'pdf')}`));
+  assert.ok(!identity.test(`loc/staff/${docFileName('termDates', 1700000000000, 'pdf')}`));
+  assert.equal(docFilePrefix('RTW'), 'RTW');
+  assert.equal(docFilePrefix('../x'), 'x');
+  assert.equal(docFilePrefix(''), 'doc');
+});

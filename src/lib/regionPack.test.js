@@ -28,7 +28,7 @@ test('the UK pack is what the app did before', () => {
   assert.equal(p.payrollExport, 'bacs');
   assert.equal(p.bankDetails, true);
   assert.deepEqual(p.payrollFields, ['bankSortCode', 'bankAccount', 'bankAccountName', 'niNumber', 'taxCode']);
-  assert.deepEqual(p.documentTypes, ['RTW', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other']);
+  assert.deepEqual(p.documentTypes, ['RTW', 'shareCode', 'visaCheck', 'termDates', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other']);
   assert.deepEqual(p.requiredDocs, ['RTW']);
   assert.equal(p.overtimeWeeklyHours, null);
   assert.ok(!p.payPeriods.includes('semimonthly'));

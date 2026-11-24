@@ -86,12 +86,16 @@ function requiredTypes(member, rolesMap) {
   return req;
 }
 
-export default function WfCompliance({ ctx, staff, roles, sections, settings, week, showToast }) {
+export default function WfCompliance({ ctx, staff, leavers = [], roles, sections, settings, week, showToast }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [reviewing, setReviewing] = useState(null); // { doc, member }
   const [asking, setAsking] = useState('');         // the row id a Resend is in flight for
+  // 5.12.91 (HR feedback batch 2, 24 Nov 2026): filters. The page was one long list of everyone; a
+  // manager can now see only what needs attention, what is waiting for review, what was rejected,
+  // or the documents kept for people who have left (read only, for an audit).
+  const [view, setView] = useState('all');          // all | attention | pending | rejected | leavers
   const rolesMap = (roles && roles.map) || {};
 
   useEffect(() => {
@@ -130,6 +134,19 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
     (staff || []).forEach(m => rowsFor(m).forEach(d => { if (NEEDS_ATTENTION.has(docStatus(d))) n++; }));
     return n;
   }, [staff, byStaff, rolesMap]);
+
+  const inView = (st) => view === 'all' || (view === 'attention' && NEEDS_ATTENTION.has(st)) || (view === 'pending' && st === 'pending') || (view === 'rejected' && st === 'rejected');
+  const viewCounts = useMemo(() => {
+    const c = { all: 0, attention: 0, pending: 0, rejected: 0 };
+    (staff || []).forEach(m => rowsFor(m).forEach(d => {
+      const st = docStatus(d);
+      c.all++; if (NEEDS_ATTENTION.has(st)) c.attention++; if (st === 'pending') c.pending++; if (st === 'rejected') c.rejected++;
+    }));
+    return c;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staff, byStaff, rolesMap]);
+  // People who have left and still have documents on file, newest leaver first (the list arrives that way).
+  const leaversWithDocs = useMemo(() => (leavers || []).filter(m => (byStaff.get(m.id) || []).length > 0), [leavers, byStaff]);
 
   async function handleSave(form) {
     // Keyed in by a manager → they've seen the document, so it's reviewed
@@ -229,13 +246,28 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
 
       <AttentionBanner count={attentionCount} />
 
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+        {[['all', `Everyone (${viewCounts.all})`], ['attention', `Needs attention (${viewCounts.attention})`], ['pending', `Pending review (${viewCounts.pending})`], ['rejected', `Rejected (${viewCounts.rejected})`], ['leavers', `Leavers (${leaversWithDocs.length})`]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setView(k)} className={view === k ? 'btn btn-acc btn-sm' : 'btn btn-ghost btn-sm'}>{lbl}</button>
+        ))}
+      </div>
+
+      {view === 'leavers' ? (
+        leaversWithDocs.length === 0
+          ? <EmptyState icon="team" title="No documents kept for leavers" body="When someone who has documents on file is archived, their documents are kept and listed here, read only." />
+          : <LeaverDocs leavers={leaversWithDocs} byStaff={byStaff} rolesMap={rolesMap} />
+      ) : view !== 'all' && viewCounts[view] === 0 ? (
+        <EmptyState icon="check" title="Nothing here" body={view === 'pending' ? 'No uploads are waiting for review.' : view === 'rejected' ? 'No documents are rejected.' : 'No documents need attention.'} />
+      ) : (
       <div style={{ display: 'grid', gap: 14 }}>
         {(staff || []).map(member => {
-          const rows = rowsFor(member);
+          const everyRow = rowsFor(member);
+          const rows = view === 'all' ? everyRow : everyRow.filter(d => inView(docStatus(d)));
+          if (!rows.length) return null;
           const role = rolesMap[member.role];
           // 5.12.89: a required document that has been Requested is a real row now, and still missing:
           // it keeps the red flag until a file arrives (the flag used to count placeholders only).
-          const flagged = rows.some(d => requiredTypes(member, rolesMap).includes(d.type) && docStatus(d) === 'missing');
+          const flagged = everyRow.some(d => requiredTypes(member, rolesMap).includes(d.type) && docStatus(d) === 'missing');
           return (
             <Card key={member.id} style={flagged ? { borderColor: 'var(--red-b)' } : undefined}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
@@ -321,6 +353,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
           );
         })}
       </div>
+      )}
 
       {adding && (
         <AddDocModal
@@ -339,6 +372,45 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
         />
       )}
     </>
+  );
+}
+
+// 5.12.91: documents kept for people who have left. Read only: who, when they left, what is held and
+// until when. Nothing can be asked for, reviewed or removed here (they are no longer on the team).
+function LeaverDocs({ leavers, byStaff, rolesMap }) {
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.5 }}>These people have left. Their documents are kept for your records and cannot be changed here. Their full record is under Workforce, Staff, Leavers.</div>
+      {leavers.map(member => {
+        const rows = [...(byStaff.get(member.id) || [])].sort((a, b) => GROUP_ORDER.indexOf(DOC_GROUP[a.type] || 'other') - GROUP_ORDER.indexOf(DOC_GROUP[b.type] || 'other') || String(a.type).localeCompare(String(b.type)));
+        return (
+          <Card key={member.id}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <span style={{ width: 32, height: 32, borderRadius: 9, background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11.5, fontWeight: 700, color: 'var(--t3)' }}>{initials(member.name)}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t2)' }}>{member.name}</div>
+                <RoleChip role={member.role} roles={rolesMap} />
+              </div>
+              <span style={{ marginLeft: 'auto' }}><Badge tone="grey">{member.leaverDate ? `Left ${fmtDate(String(member.leaverDate).slice(0, 10))}` : 'Left'}</Badge></span>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr><th style={th}>Document</th><th style={th}>Status when they left</th><th style={th}>Issued</th><th style={th}>Expiry</th><th style={th}>File</th></tr></thead>
+              <tbody>
+                {rows.map(d => { const st = docStatus(d); return (
+                  <tr key={d.id}>
+                    <td style={td}><span style={{ fontWeight: 600 }}>{DOC_LABEL[d.type] || d.type}</span></td>
+                    <td style={td}><Badge tone={STATUS_TONE[st]}>{STATUS_LBL[st]}</Badge></td>
+                    <td style={td} className="mono">{fmtDate(d.issuedOn)}</td>
+                    <td style={td} className="mono">{fmtDate(d.expiry)}</td>
+                    <td style={td}>{d.fileUrl ? <ViewDocLink path={d.fileUrl} /> : <span style={{ color: 'var(--t4)' }}>None</span>}</td>
+                  </tr>
+                ); })}
+              </tbody>
+            </table>
+          </Card>
+        );
+      })}
+    </div>
   );
 }
 
