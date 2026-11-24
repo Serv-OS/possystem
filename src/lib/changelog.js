@@ -1,5 +1,32 @@
 export const CHANGELOG = [
   {
+    v: '5.12.90',
+    date: '23 Nov 2026',
+    items: [
+      'Workforce, Staff: editing an existing team member saves again (Peter, 23 Nov 2026, testing 5.12.89: "Couldn\'t save Gina Lee: permission denied for table wf_staff"). Adding a new person worked; every edit of an existing one was refused. The edit was sent as "insert, or update if it is already there", and the database only allows that when the login may read back every column it writes. Since the privacy updates (20261120a and 20261121a) a Back Office login can write the NI number, SSN last 4 and personal pay rate but not read them back, so the whole save was refused. An edit is now a plain update of that one record. Checked on the live database without writing anything: the old form is refused, the new form and adding a new person are allowed. Not caused by 5.12.89: the save code was the same before it.',
+    ],
+  },
+  {
+    v: '5.12.89',
+    date: '23 Nov 2026',
+    items: [
+      'Workforce, Compliance: a rejected document now carries a reason and can be asked for again (HR feedback, 23 Nov 2026: no way to resend a Right to Work check, and the person was never told why it was refused). Reject opens a reason box, and the reason is required. The team member gets an email with the reason and a button, and their staff app shows "A document to send again" under Tasks with an Upload button. Every row that is rejected, expired, expiring or missing has a Resend (or Request) button that does the same without rejecting. An expired document is asked for in the staff app by itself. The new upload goes back to Pending review. The toast says what the person was actually told: emailed, or no email on file so tell them yourself. Needs SQL 20261205a to KEEP the reason on the row and to Resend a document that is still in date; before it has run the reason still goes out in the email.',
+      'Workforce, Staff: a Leavers list next to Current team (HR feedback: "no way to view archived staff"). It shows who left and when. Opening a leaver shows their record read only: details, documents and up to 40 timesheets. Reinstate brings the SAME record back, with its documents, timesheets, onboarding and holiday balance (Peter, 23 Nov 2026: "we need a way to reinstate someone"). Their till PIN is switched back on unless somebody else now uses it; Back Office access is not given back and is added on the Team page.',
+      'Workforce, Add staff member: it now checks whether the person is already on the system before making a record (Peter: "if they are already on that company/locations system, it needs to say so and do a reinstatement"). The same email, mobile or name is looked for across the company, leavers included. A leaver at this site: it says so with the date they left and offers Reinstate. Someone still on the team here: it says so and opens their profile. Someone at another site of the company: it names the site and says how to share them or bring their holiday over. The manager can always add a new record anyway.',
+      'Workforce, Onboarding: no more "Unknown" cards (HR feedback). A case whose person was archived as a leaver stayed in the list with no name and buttons that acted on nobody. Those cases now sit under a new Archived tab, read only, with the name and the day they left. Reinstating the person puts the case back.',
+      'Workforce, Time off, Holiday balances: an Adjust button on each hourly person (HR feedback: someone moved from one site to another and their accrued holiday stayed at the old site). Add or take away hours with a reason, or Bring over from another site: it finds the same person at the company\'s other sites (linked record, same email, same mobile, or same name with date of birth; leavers count), shows the balance there and moves the hours: one line off the old site, one line onto this one, never more than the old site holds. Owners, admins and managers of the site only. Every change is a new line on the record with who and why, and an audit row; nothing is edited. Also fixed on the same table: Remaining took paid holiday off twice (once in the ledger, once again as days taken this year), so it read low. It now shows the ledger itself, in hours and days, and goes red when overdrawn.',
+      'Home address: searched for, with its own postcode box (HR feedback: people typed a street and no postcode; Peter: "search and auto populate"). In the staff app, Me, My details: start typing and pick the address from the list (the same lookup the delivery checkout uses) and it fills the address and the postcode; both can still be typed by hand. A UK address must have a real postcode (LS1 4AP shape); a ZIP code or Eircode is optional and checked when typed. The Back Office staff form has the same search and postcode box, and a profile whose address has no postcode says "Address incomplete: no postcode". The server refuses a changed UK address with no postcode, and never refuses an unchanged old one, so the rest of the form still saves. The staff app follows the same rule: someone with an old address can still save their emergency contact, and an amber line keeps asking for the postcode. At a US site the state is kept and the ZIP code follows it.',
+      'Found in review and fixed: Workforce audit lines for offboarding, staff app invites and training notices all named the manager as "Manager" (the name was read from a column that does not exist); they now carry the person\'s name. Two reviewers checked this release; their eleven findings are fixed in it (a holiday move needs a manager role at BOTH sites and cannot overdraw the old one, a document can only be replaced from the phone while it is being asked for, a manager saving a document stops the staff app asking, Request keeps the red Missing flag, and the typed Add staff form comes back if the "already on the system" box is cancelled).',
+    ],
+  },
+  {
+    v: '5.12.88',
+    date: '23 Nov 2026',
+    items: [
+      'Back Office: the Team chat popover opened behind the page (Peter, 23 Nov 2026, screenshot of the Overview: "team chat hidden behind UI", the Tables active and Terminals online cards sat on top of it). The top bar has a glass blur, which makes it its own paint layer, and with no stacking order the glass cards below it, painted later, covered anything the bar opened. The bar now stacks above the page content; dialogs and full screen overlays sit far higher and are unchanged. No SQL.',
+    ],
+  },
+  {
     v: '5.12.87',
     date: '23 Nov 2026',
     items: [

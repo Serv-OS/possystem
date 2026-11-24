@@ -71,3 +71,14 @@ test('migration 20261120a: ASCII, Ops only, the six columns closed, the door and
   assert.match(m, /-- VISIBLE CHECK/);
   assert.match(rb, /grant select on table public\.wf_staff to anon, authenticated;/);
 });
+
+// 5.12.90 (Peter, 23 Nov 2026: "Couldn't save Gina Lee: permission denied for table wf_staff").
+test('editing a staff record is a plain update, never an upsert (an upsert must READ the private columns it writes)', () => {
+  const wf = read('src/staff/wfData.js');
+  const save = wf.slice(wf.indexOf('export async function saveStaff'), wf.indexOf('export async function softDeleteStaff'));
+  assert.ok(!/\.upsert\(/.test(save), 'saveStaff must not upsert wf_staff');
+  assert.match(save, /from\('wf_staff'\)\.update\(changes\)\.eq\('id', member\.id\)/);
+  assert.match(save, /from\('wf_staff'\)\.insert\(row\)/);
+  // The record's own id is never in the SET list of the update.
+  assert.match(save, /const \{ id: _editId, \.\.\.changes \} = row;/);
+});

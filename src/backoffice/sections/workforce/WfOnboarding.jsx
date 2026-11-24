@@ -131,11 +131,11 @@ export function PickTemplateModal({ kind, member, role, ctx, title, cta, onClose
   );
 }
 
-export default function WfOnboarding({ ctx, staff = [], roles, sections, settings, week, showToast }) {
+export default function WfOnboarding({ ctx, staff = [], leavers = [], roles, sections, settings, week, showToast }) {
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [picking, setPicking] = useState(false);
-  const [tab, setTab] = useState('active'); // active | done
+  const [tab, setTab] = useState('active'); // active | done | archived
   const rolesMap = (roles && roles.map) || {};
   const nameOf = id => (staff.find(s => s.id === id) || {});
 
@@ -200,9 +200,18 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
 
   if (loading) return <LoadingCard label="Loading onboarding…" />;
 
-  const activeCases = cases.filter(c => !caseDone(c, nameOf(c.staffId)));
-  const doneCases = cases.filter(c => caseDone(c, nameOf(c.staffId)));
-  const shown = tab === 'done' ? doneCases : activeCases;
+  // 5.12.89 (HR feedback, 23 Nov 2026: "Unknown" cards on Onboarding). A case whose person has been
+  // archived as a leaver used to stay in the list with no name (the staff list leaves leavers out, so
+  // the card read "Unknown" and its buttons acted on nobody). Those cases now sit under Archived,
+  // read only, with the person's name and the day they left. Reinstating the person brings the case back.
+  const staffIds = new Set((staff || []).map(m => m.id));
+  const leaverById = Object.fromEntries((leavers || []).map(m => [m.id, m]));
+  const isArchived = c => !String(c.id).startsWith('tmp-') && !staffIds.has(c.staffId) && (!!leaverById[c.staffId] || staffIds.size > 0);
+  const archivedCases = cases.filter(isArchived);
+  const liveCases = cases.filter(c => !isArchived(c));
+  const activeCases = liveCases.filter(c => !caseDone(c, nameOf(c.staffId)));
+  const doneCases = liveCases.filter(c => caseDone(c, nameOf(c.staffId)));
+  const shown = tab === 'archived' ? archivedCases : tab === 'done' ? doneCases : activeCases;
 
   return (
     <>
@@ -219,12 +228,16 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-        {[['active', `In progress (${activeCases.length})`], ['done', `Completed (${doneCases.length})`]].map(([k, lbl]) => (
+        {[['active', `In progress (${activeCases.length})`], ['done', `Completed (${doneCases.length})`], ...(archivedCases.length || tab === 'archived' ? [['archived', `Archived (${archivedCases.length})`]] : [])].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)} className={tab === k ? 'btn btn-acc btn-sm' : 'btn btn-ghost btn-sm'}>{lbl}</button>
         ))}
       </div>
 
-      {shown.length === 0 ? (
+      {tab === 'archived' ? (
+        archivedCases.length === 0
+          ? <EmptyState icon="team" title="Nothing archived" body="When someone who was being onboarded is archived as a leaver, their onboarding moves here." />
+          : <ArchivedCases cases={archivedCases} leaverById={leaverById} rolesMap={rolesMap} />
+      ) : shown.length === 0 ? (
         tab === 'done'
           ? <EmptyState icon="team" title="No completed onboardings yet" body="Once every step on a starter is ticked (including till access), they move here automatically." />
           : <EmptyState icon="team" title="No one onboarding" body={candidates.length ? (activeRegionPack().country === 'US' ? `Start onboarding a new hire to email their offer, collect their ${activeRegionPack().workDocLabel} and get the contract signed.` : 'Start onboarding a new hire to email their offer, collect Right to Work, get the contract signed and capture bank details.') : 'Add a staff member first, then onboard them here.'} cta={candidates.length ? 'Start onboarding' : undefined} onCta={candidates.length ? () => setPicking(true) : undefined} />
@@ -236,6 +249,39 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
 
       {picking && <PickStaffModal candidates={candidates} rolesMap={rolesMap} onClose={() => setPicking(false)} onPick={startOnboarding} />}
     </>
+  );
+}
+
+// 5.12.89: onboarding cases of people who have left. Read only: who, when they left, and how far the
+// onboarding got. Nothing here can be sent or ticked (the person is no longer on the team).
+function ArchivedCases({ cases, leaverById, rolesMap }) {
+  const day = iso => iso ? localeDateString(new Date(String(iso).slice(0, 10) + 'T00:00:00'), { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--t3)', borderBottom: '1px solid var(--bdr)', lineHeight: 1.5 }}>
+        These people have left, so their onboarding is closed. To bring someone back, reinstate them from Workforce, Staff, Leavers: their onboarding returns to the lists above.
+      </div>
+      {cases.map(c => {
+        const m = leaverById[c.staffId] || null;
+        const steps = c.steps || [];
+        const done = steps.filter(st => st.status === 'complete');
+        return (
+          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: '1px solid var(--bdr)', flexWrap: 'wrap' }}>
+            <span style={{ width: 32, height: 32, borderRadius: 9, background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11.5, fontWeight: 700, color: 'var(--t3)' }}>{initials(m?.name || '')}</span>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t2)' }}>{m?.name || 'Former team member'}</div>
+              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
+                {m ? <>{m.leaverDate ? `Left ${day(m.leaverDate)}` : 'Left'}{(m.role || c.roleKey) ? <> · <RoleChip role={m.role || c.roleKey} roles={rolesMap} /></> : null}</> : 'Their staff record is no longer on this site.'}
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', textAlign: 'right' }}>
+              <Badge tone="grey">{done.length} of {steps.length} steps done</Badge>
+              {done.length > 0 && <div style={{ marginTop: 4, fontSize: 11.5, color: 'var(--t4)' }}>{done.map(st => STEPS.find(x => x.key === st.key)?.label || st.key).join(', ')}</div>}
+            </div>
+          </div>
+        );
+      })}
+    </Card>
   );
 }
 
