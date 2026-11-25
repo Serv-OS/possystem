@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.96',
+    date: '25 Nov 2026',
+    items: [
+      'Team: a Back Office login can be given to a person you have just added (Peter, 25 Nov 2026: "User created but linking to staff member failed: invalid input syntax for type uuid"). When a person is added the screen shows them at once under its own stand in id and saves them in the background. The real id was never read back, so until the page was reloaded anything done to that person missed their record: a login was created and then linked to nobody, an edit was refused with "refresh the page", and a remove took them off the screen but left them able to sign in on the till. The save now reads the real id back and uses it at once.',
+      'If the save has not answered yet, Grant access and Remove now say "This team member is still being saved" and do nothing. No login is created for a person who is not saved.',
+      'A login already created by the old fault is not lost: reload the page, open the person, and press Grant access again with the same email. It links the login that exists and leaves its password alone.',
+    ],
+  },
+  {
     v: '5.12.95',
     date: '25 Nov 2026',
     items: [
