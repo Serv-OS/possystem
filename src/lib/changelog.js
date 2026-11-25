@@ -1,13 +1,14 @@
 export const CHANGELOG = [
   {
-    v: '5.12.94',
+    v: '5.12.95',
     date: '25 Nov 2026',
     items: [
       'Loyalty and card: the card machine can no longer take more than the till records (Peter, Coffee Boy Castleford, 25 Nov 2026: the reader took 8.75 more than the till on two loyalty orders). Six orders at four sites since 1 Oct, 23.55 in all: the customer paid the full bill on the card, and the till recorded a Free Drink reward plus a smaller card payment and used their stamp card. What happened each time: the customer tapped Free Drink on the customer display, staff pressed Card before the till had finished loading that customer\'s loyalty, the full bill went to the reader, and the reward landed on the bill a few seconds later while the customer was paying. Checked against all 54,056 card payments since 1 Sep: these six are the only ones.',
       'The fix, part one: once Card is pressed, nothing is taken off the bill until the card screen is left. A reward that arrives during a card payment stays chosen and staff see why: "Free Drink is not on this bill: the card payment was already sent. Cancel the card payment to use it now, or the customer keeps it for next time." If the card is declined or cancelled, the reward goes on the bill and the next press sends the lower amount. If the card is approved, the sale is recorded as charged and the stamp card is not used.',
       'The fix, part two: when the customer has chosen a reward on the display, the Card button waits for it to reach the bill (it reads "Applying the reward…"), so the reader is asked for the right amount in the first place. Normally under a second, never more than 5 seconds, and only on a sale where a reward was chosen. Cash and the other buttons are not held.',
       'A last check on every card sale: if the amount the reader was asked for and the card amount the till is about to record ever differ, staff are told on the spot ("Check this sale ... Tell a manager") and it is written to the log. The sale is still recorded.',
-      'Not yet tried on a real till and reader. The six customers have not been refunded by this update: that is done by hand.',
+      'The same lock for a promo code: a code typed and then overtaken by a Card press (the server had not answered yet) is not applied, and the card screen stays up. Staff see "A card payment is out for this bill. Finish or cancel it, then enter the code again." No sale was found where this had happened. Gift cards and split checks were checked and did not need a change.',
+      'Not yet tried on a real till and reader.',
     ],
   },
   {

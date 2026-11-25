@@ -1048,8 +1048,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   //   cardSendingRef  the press itself, set in the same tick (state is one render behind, and
   //                   the reward below answers in the tick it is asked).
   //   cardLocked      the same fact for render: the send is out, or a card screen is up.
+  // Checked for the other ways a credit reaches the bill (same day): a gift card is applied by a
+  // press on its own screen, never by a late answer; a split takes no reward or code at all; a
+  // promo code IS checked by the server first, so its answer goes through the lock too.
   const cardSendingRef = useRef(false);
   const cardLocked = cardSendLocked({ sending: paxBusy, screen });
+  // The same fact for code that answers later (a promo code being checked by the server): a ref,
+  // because the function that asked holds the screen as it was when it asked.
+  const cardLockedRef = useRef(false);
+  useEffect(() => { cardLockedRef.current = cardLocked; }, [cardLocked]);
+  const billLockedNow = () => cardSendingRef.current || cardLockedRef.current;
   // Staff are told once per reward that it arrived too late for this card payment.
   const lateRewardToldRef = useRef(null);
   const tellLateReward = (reward) => {
@@ -1306,6 +1314,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis, lines, delivery_fee: Number(deliveryFee) || 0 },
       } });
       if (error) throw new Error(error.message);
+      // 25 Nov 2026: the code was typed, then Card was pressed before the server answered. The
+      // reader already has its amount, so the code is not applied (and the card screen stays up:
+      // the caller only goes back to the bill on ok). lib/payments/cardSendLock.js.
+      if (billLockedNow()) return { error: 'A card payment is out for this bill. Finish or cancel it, then enter the code again.' };
       if (data?.valid) {
         // `basket` rides on the held promo so the redeem records the same basket (store
         // redeemPromoCode reads it through promoRedeemBasket). Built by lib/promoBasis.js heldPromo.

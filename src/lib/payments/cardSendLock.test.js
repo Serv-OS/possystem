@@ -262,6 +262,31 @@ test('checkout: every way a card payment starts sets the lock before anything el
   assert.match(start, /loyaltyRedemption: loyaltyApplied \|\| null,/);
 });
 
+test('checkout: a promo code answered after Card was pressed is not applied; gift and split have no late answer', () => {
+  const cm = code(read('surfaces/CheckoutModal.jsx'));
+  assert.match(cm, /useEffect\(\(\) => \{ cardLockedRef\.current = cardLocked; \}, \[cardLocked\]\);/);
+  assert.match(cm, /const billLockedNow = \(\) => cardSendingRef\.current \|\| cardLockedRef\.current;/);
+  // the promo check: the lock is read AFTER the server answers and BEFORE the code is held
+  const promo = cm.slice(cm.indexOf('const applyPromoCode = async (rawCode) => {'), cm.indexOf('const taxCtx = useStore('));
+  const answered = promo.indexOf("supabase.functions.invoke('promo-redeem'");
+  const locked = promo.indexOf('if (billLockedNow()) return { error:');
+  const held = promo.indexOf('setPromoApplied(heldPromo(');
+  assert.ok(answered > 0 && locked > answered && held > locked, 'asked, lock read, then held');
+  assert.equal(promo.split('setPromoApplied(').length - 1, 1, 'one place a typed code reaches the bill');
+  // the caller leaves the screen it is on only when the code was applied
+  assert.match(cm, /onPromoCode=\{async \(code\) => \{ const r = await applyPromoCode\(code\); if \(r\?\.ok\) setScreen\('review'\); return r; \}\}/);
+  // a gift card reaches the bill by a press on its own screen (the lookup only fills that screen)
+  const gift = cm.slice(cm.indexOf('function GiftCardEntry('), cm.indexOf('function LoyaltyRewardsEntry('));
+  assert.match(gift, /setCardInfo\(j\); setLoading\(false\); return;/);
+  assert.equal(gift.split('onApplied(').length - 1, 1, 'applied in one place');
+  assert.ok(gift.indexOf('onApplied(') > gift.indexOf('const handleApply = () => {'), 'and that place is the Apply press');
+  // a split carries no reward and no code: its close books neither
+  const split = cm.slice(cm.indexOf('{showSplit && ('));
+  const close = split.slice(split.indexOf("onComplete({ method:'split'"), split.indexOf('onClose={()=>setShowSplit(false)}'));
+  assert.ok(close.length > 0);
+  assert.doesNotMatch(close, /loyaltyRedemption|promoRedemption/);
+});
+
 test('checkout: Card waits for the chosen reward (button and press), for a bounded time', () => {
   const cm = code(read('surfaces/CheckoutModal.jsx'));
   assert.match(cm, /const \[loyaltyDone, setLoyaltyDone\] = useState\(!customer\?\.phone\);/);
