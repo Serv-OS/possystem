@@ -28,15 +28,19 @@ const read = (p) => fs.readFileSync(path.join(repo, p), 'utf8');
 const SQL = read('supabase/data_fixes/20261015_PLATFORM_adyen_rates_restatement.sql');
 const DDL = read('supabase/migrations/20261015_PLATFORM_adyen_rates_cutover.sql');
 
-// The SQL formula, line for line.
+// The SQL formula, line for line (the 15 Oct 2026 restatement, already run: it rounded half up).
 const sqlFee = (amount, bp, fixed = 0) => Math.floor((amount * bp) / 10000 + 0.5) + fixed;
 const LEGACY = { percent_bp: 85, fixed_minor: 0, refund: 'none' };
 
-test('the formula: floor(amount x 85 / 10000 + 0.5) on sample amounts, and feeFor agrees', () => {
-  for (const [amount, fee] of [[100, 1], [250, 2], [955, 8], [1600, 14], [1000, 9], [7339, 62], [1, 0], [59, 1], [58, 0]]) {
+test('the formula: floor(amount x 85 / 10000 + 0.5) on sample amounts, and feeFor agrees away from an exact half penny', () => {
+  for (const [amount, fee] of [[100, 1], [250, 2], [955, 8], [1600, 14], [7339, 62], [1, 0], [59, 1], [58, 0]]) {
     assert.equal(sqlFee(amount, 85), fee, String(amount));
     assert.equal(feeFor(amount, legacyCommission(LEGACY)), fee, String(amount));
   }
+  // 25 Nov 2026: Adyen rounds an exact half penny to the EVEN penny (proven on Castleford's bank).
+  // 10.00 at 85 basis points is 8.5: the old SQL said 9, Adyen took 8, and feeFor now says 8.
+  assert.equal(sqlFee(1000, 85), 9);
+  assert.equal(feeFor(1000, legacyCommission(LEGACY)), 8);
   // the demo venue's charge: 80 basis points plus 5
   assert.equal(sqlFee(1000, 80, 5), 13);
   assert.equal(feeFor(1000, legacyCommission({ percent_bp: 80, fixed_minor: 5 })), 13);

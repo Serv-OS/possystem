@@ -140,14 +140,34 @@ export function commissionFromTier(tier) {
   return Object.keys(out).length ? out : { variablePercentage: 0 };
 }
 // The fee on an amount under a commission block: basis points on the amount,
-// rounded half up, plus the fixed pence. Null when there is no block.
+// rounded to the penny, plus the fixed pence. Null when there is no block.
+// ROUNDING IS HALF TO EVEN (25 Nov 2026), not half up. An exact half penny goes
+// to the even penny: 8.5 is 8, 25.5 is 26. Proven against the money Adyen paid
+// into Coffee Boy Castleford's bank: 13 payouts, 28 Oct to 22 Nov 2026, 16 half
+// penny fees among them. Half to even matches all 13 to the penny; half up was
+// 1p too high on 7 of them and half down 1p too low on 6. The amount and the
+// basis points are whole numbers, so the half is found on whole numbers and
+// never on a float.
+export function roundHalfEven(numerator, denominator) {
+  const n = Math.round(Number(numerator)); const d = Math.round(Number(denominator));
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0 || n < 0) return null;
+  const q = Math.floor(n / d);
+  const twice = (n - q * d) * 2;
+  if (twice > d) return q + 1;
+  if (twice < d) return q;
+  return q % 2 === 0 ? q : q + 1;
+}
 export function feeFor(amountMinor, commission) {
   if (!isObj(commission)) return null;
   const amount = Number(amountMinor);
   if (!Number.isFinite(amount) || amount < 0) return null;
   const bp = Number(commission.variablePercentage ?? 0) || 0;
   const fixed = Math.round(Number(commission.fixedAmount ?? 0) || 0);
-  return Math.floor((amount * bp) / 10000 + 0.5) + fixed;
+  // Whole pence and whole basis points (every caller's case): exact. Anything else falls
+  // back to the float, rounded the same way at 1e-9.
+  const whole = Number.isInteger(amount) && Number.isInteger(bp);
+  const pct = whole ? roundHalfEven(amount * bp, 10000) : roundHalfEven(Math.round(amount * bp * 1e5), 10000 * 1e5);
+  return (pct ?? 0) + fixed;
 }
 const sameCommission = (a, b) => {
   const x = isObj(a) ? a : {}; const y = isObj(b) ? b : {};
@@ -369,6 +389,31 @@ export function latestRulesEntry(adyenRules) {
 // Answers { rate_category, commission_minor, fee_rule, fee_refund_policy }.
 export const LEGACY_FEE_RULE = 'legacy_flat';
 export const RULES_FEE_RULE_PREFIX = 'adyen_rules:';
+// 25 Nov 2026 (Coffee Boy Castleford): a venue with a rate card and NO recorded cutover
+// (rates_live_at null, no rules read back). Its store was given its profile from the rate
+// card when it went live, so Adyen has charged these rules all along, but the ledger had
+// nothing to stamp from and fell back to the old classifier, which read every in person
+// payment as online (2.5% shown where Adyen took 1%). The stamp is now the SAME generator
+// that builds the profile Adyen is sent, matched the same way: for Castleford it equals the
+// bank to the penny on every payout checked. Marked 'rate_card' so the row says how it was
+// priced; a venue cut over later is stamped from the rules read back, which outrank this.
+export const RATE_CARD_FEE_RULE = 'rate_card';
+//   payment  { amountMinor, ok, facts }   facts from paymentFacts
+//   tiers    the venue's resolved rate card (rulesFromRateCard's tiers)
+// Null when there is no priced rate card, no currency on the payment, or no rule matches:
+// the caller keeps its own answer, never a guess.
+export function stampFromRateCard(payment, tiers) {
+  const p = isObj(payment) ? payment : {};
+  if (!isObj(tiers) || !isObj(p.facts)) return null;
+  const cur = str(p.facts.currency).toUpperCase();
+  if (!cur) return null;
+  const built = rulesFromRateCard(tiers, { currency: cur });
+  if (!built.rules.length) return null;
+  const r = matchAdyenRule(p.facts, built.rules);
+  const tier = r ? built.tiers[built.rules.indexOf(r)] : null;
+  if (!r || !tier) return null;
+  return { rate_category: tier, commission_minor: p.ok !== false ? feeFor(p.amountMinor, r.splitLogic?.commission) : null, fee_rule: RATE_CARD_FEE_RULE, fee_refund_policy: null };
+}
 export function legacyCommission(legacy) {
   if (!isObj(legacy)) return null;
   const bp = Number(legacy.percent_bp);
@@ -383,7 +428,12 @@ export function stampForPayment(payment, venue, today) {
   const v = isObj(venue) ? venue : null;
   const live = Date.parse(String(v?.rates_live_at ?? ''));
   const at = Date.parse(String(p.authorisedAt ?? ''));
-  if (!v || !Number.isFinite(live) || !Number.isFinite(at)) return base;
+  if (!v) return base;
+  // 25 Nov 2026: a venue whose row was read and has NO recorded cutover is stamped from its
+  // rate card through the rule generator (stampFromRateCard below), when the caller hands the
+  // tiers in. Until today it took the old classifier's answer (base).
+  if (!Number.isFinite(live)) return stampFromRateCard(p, t.tiers) ?? base;
+  if (!Number.isFinite(at)) return base;
   const ok = p.ok !== false;
   if (at < live) {
     const legacy = legacyCommission(v.legacy_charge);
@@ -407,7 +457,7 @@ export function stampForPayment(payment, venue, today) {
 // at or after the cutover follows the new profile too, as Adyen does.
 //   existing  { fee_rule, raw: { authorisation }, channel, fee_refund_policy }
 const capturedUnderRules = (v, atIso) => !!v && Number.isFinite(Date.parse(String(v.rates_live_at ?? ''))) && Date.parse(String(atIso ?? '')) >= Date.parse(String(v.rates_live_at));
-export function restampForAmount(existing, amountMinor, atIso, venue, todayCommission) {
+export function restampForAmount(existing, amountMinor, atIso, venue, todayCommission, tiers = null) {
   const e = isObj(existing) ? existing : {};
   const v = isObj(venue) ? venue : null;
   const base = { commission_minor: todayCommission ?? null, fee_rule: e.fee_rule ?? null, fee_refund_policy: e.fee_refund_policy ?? null };
@@ -424,7 +474,16 @@ export function restampForAmount(existing, amountMinor, atIso, venue, todayCommi
   } else if (capturedUnderRules(v, atIso)) {
     entry = rulesForInstant(list, atIso);
   }
-  if (!entry) return base;
+  if (!entry) {
+    // 25 Nov 2026: a row priced from the rate card (or one with no rule at a venue with no
+    // recorded cutover) is priced again from the rate card on the amount captured.
+    const noCutover = !!v && !Number.isFinite(Date.parse(String(v.rates_live_at ?? '')));
+    if (feeRule === RATE_CARD_FEE_RULE || (!feeRule && noCutover)) {
+      const s = stampFromRateCard({ amountMinor, ok: true, facts: paymentFacts(e.raw?.authorisation ?? null, e.channel ?? null) }, tiers);
+      if (s) return s;
+    }
+    return base;
+  }
   const facts = paymentFacts(e.raw?.authorisation ?? null, e.channel ?? null);
   const r = matchAdyenRule(facts, entry.rules);
   const rule = `${RULES_FEE_RULE_PREFIX}${str(entry.profile_id) || 'unknown'}`;
@@ -559,6 +618,8 @@ export function keepExistingStamp(existing, stamped, venue) {
   if (!had) return s;
   const keep = { rate_category: e.rate_category ?? s.rate_category ?? null, commission_minor: e.commission_minor ?? null, fee_rule: had, fee_refund_policy: e.fee_refund_policy ?? null };
   if (s.fee_rule === null || s.fee_rule === undefined) return keep;
+  // A row stamped from the rules read back from Adyen is never handed back to the rate card.
+  if (s.fee_rule === RATE_CARD_FEE_RULE && had.startsWith(RULES_FEE_RULE_PREFIX)) return keep;
   if (s.fee_rule === LEGACY_FEE_RULE && had.startsWith(RULES_FEE_RULE_PREFIX) && capturedUnderRules(isObj(venue) ? venue : null, e.captured_at)) return keep;
   return s;
 }

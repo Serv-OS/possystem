@@ -39,9 +39,9 @@ const today = { rate_category: 'card_present', commission_minor: 9 };   // 0.9% 
 
 test('before the cutover: the legacy charge, legacy_flat, policy none; the label stays', () => {
   const p = { amountMinor: 1000, authorisedAt: '2026-10-01T12:00:00Z', ok: true, facts: paymentFacts(item('mccommercialdebit'), 'pos') };
-  assert.deepEqual(stampForPayment(p, venue, { rate_category: 'amex', commission_minor: 35 }), { rate_category: 'amex', commission_minor: 9, fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none' });
-  // 85bp half up on sample amounts
-  for (const [amount, fee] of [[100, 1], [250, 2], [955, 8], [1600, 14], [1000, 9], [7339, 62]]) {
+  assert.deepEqual(stampForPayment(p, venue, { rate_category: 'amex', commission_minor: 35 }), { rate_category: 'amex', commission_minor: 8, fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none' });
+  // 85bp on sample amounts; 10.00 is an exact 8.5 and goes to the even 8 (25 Nov 2026, Adyen's rounding)
+  for (const [amount, fee] of [[100, 1], [250, 2], [955, 8], [1600, 14], [1000, 8], [7339, 62]]) {
     assert.equal(stampForPayment({ ...p, amountMinor: amount }, venue, today).commission_minor, fee, String(amount));
   }
   // one second before the cutover is legacy; the cutover instant itself is the rules
@@ -59,12 +59,12 @@ test('before the cutover: the legacy charge, legacy_flat, policy none; the label
 test('after the cutover: the rule Adyen picks, its tier as the label, adyen_rules:<id>, the entry\'s policy', () => {
   const at = '2026-10-16T08:00:00Z';
   const stamp = (variant, channel = 'pos', extra = {}) => stampForPayment({ amountMinor: 1000, authorisedAt: at, ok: true, facts: paymentFacts(item(variant, extra), channel) }, venue, today);
-  assert.deepEqual(stamp('mcstandarddebit'), { rate_category: 'card_present_debit', commission_minor: 9, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
+  assert.deepEqual(stamp('mcstandarddebit'), { rate_category: 'card_present_debit', commission_minor: 8, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
   assert.deepEqual(stamp('visastandardcredit'), { rate_category: 'card_present', commission_minor: 9, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
   assert.deepEqual(stamp('mccommercialdebit'), { rate_category: 'amex', commission_minor: 35, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
   assert.deepEqual(stamp('visastandarddebit', 'online'), { rate_category: 'card_not_present', commission_minor: 21, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
   assert.deepEqual(stamp('visastandarddebit', 'pos', { posEntryMode: 'KEYED' }), { rate_category: 'keyed', commission_minor: 32, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
-  assert.equal(stamp('mcstandarddebit', 'pos', {}).commission_minor, 9);
+  assert.equal(stamp('mcstandarddebit', 'pos', {}).commission_minor, 8);
   // 2.50 on a debit card: 2.125 is 2
   assert.equal(stampForPayment({ amountMinor: 250, authorisedAt: at, ok: true, facts: paymentFacts(item('mcstandarddebit'), 'pos') }, venue, today).commission_minor, 2);
   // a failed authorisation: the tier, no fee
@@ -152,4 +152,54 @@ test('a replay never demotes a row already stamped under the new scheme', () => 
   // a later rules entry replaces an earlier rules stamp as the engine says (a rate change is a real move)
   const second = { rate_category: 'amex', commission_minor: 36, fee_rule: 'adyen_rules:SC_2', fee_refund_policy: 'none' };
   assert.deepEqual(keepExistingStamp(ruled, second, venue), second);
+});
+
+
+// ── 25 Nov 2026: a venue with a rate card and no recorded cutover (Coffee Boy Castleford) ──
+// Its ledger fell back to the old classifier, which read an in person payment as online
+// because Adyen's event carries isCardCommercial: 2.5% shown where Adyen took 1%.
+test('no recorded cutover: the stamp is the rate card through the rule generator, marked rate_card', async () => {
+  const { stampFromRateCard, RATE_CARD_FEE_RULE, restampForAmount: restamp } = await import('./adyenRules.js');
+  const tiers = { amex: { percent: 2.5, fixed_pence: 10 }, keyed: { percent: 2.2, fixed_pence: 10 }, card_present: { percent: 0.9, fixed_pence: 0 }, card_not_present: { percent: 1.1, fixed_pence: 10 }, card_present_debit: { percent: 0.85, fixed_pence: null }, card_not_present_debit: { percent: 1.1, fixed_pence: 10 } };
+  // Castleford's own event shape: in person, with isCardCommercial present (the key that fooled the classifier).
+  const ev = (variant, extra = {}) => ({ amount: { value: 1000, currency: 'GBP' }, additionalData: { paymentMethod: 'visa', paymentMethodVariant: variant, fundingSource: 'DEBIT', isCardCommercial: 'false', shopperInteraction: 'POS', ...extra } });
+  const never = { rates_live_at: null, legacy_charge: null, adyen_rules: null };
+  const wrong = { rate_category: 'card_not_present_debit', commission_minor: 21, tiers };   // what the classifier said
+  const pay = (variant, amount = 1000, channel = 'pos', extra = {}) => ({ amountMinor: amount, authorisedAt: '2026-11-09T10:00:00Z', ok: true, facts: paymentFacts(ev(variant, extra), channel) });
+  assert.deepEqual(stampForPayment(pay('visastandarddebit'), never, wrong), { rate_category: 'card_present_debit', commission_minor: 8, fee_rule: RATE_CARD_FEE_RULE, fee_refund_policy: null });
+  assert.deepEqual(stampForPayment(pay('visastandardcredit'), never, wrong), { rate_category: 'card_present', commission_minor: 9, fee_rule: RATE_CARD_FEE_RULE, fee_refund_policy: null });
+  assert.equal(stampForPayment(pay('amex'), never, wrong).commission_minor, 35);
+  assert.equal(stampForPayment(pay('visacommercialdebit'), never, wrong).rate_category, 'amex', 'a business card pays the Amex and business price');
+  assert.equal(stampForPayment(pay('visastandarddebit', 1000, 'online', { shopperInteraction: 'Ecommerce' }), never, wrong).commission_minor, 21, 'online pays 1.1% plus 10p');
+  // a failed authorisation: the tier, no fee
+  assert.equal(stampForPayment({ ...pay('visastandarddebit'), ok: false }, never, wrong).commission_minor, null);
+  // no rate card handed in, or the venue row not read: the old answer, nothing marked
+  assert.deepEqual(stampForPayment(pay('visastandarddebit'), never, { rate_category: 'card_not_present_debit', commission_minor: 21 }), { rate_category: 'card_not_present_debit', commission_minor: 21, fee_rule: null, fee_refund_policy: null });
+  assert.deepEqual(stampForPayment(pay('visastandarddebit'), null, wrong), { rate_category: 'card_not_present_debit', commission_minor: 21, fee_rule: null, fee_refund_policy: null });
+  assert.equal(stampFromRateCard(pay('visastandarddebit'), null), null);
+  assert.equal(stampFromRateCard(pay('visastandarddebit'), { card_present: {} }), null, 'an unpriced card gives no answer');
+  // a venue that IS cut over is never priced from the rate card
+  assert.equal(stampForPayment({ ...pay('mcstandarddebit'), authorisedAt: '2026-10-16T08:00:00Z' }, venue, { ...today, tiers }).fee_rule, 'adyen_rules:SC_NEW');
+  // a tip captured later is priced the same way on the new amount
+  const row = { fee_rule: RATE_CARD_FEE_RULE, raw: { authorisation: ev('visastandarddebit') }, channel: 'pos', fee_refund_policy: null };
+  assert.deepEqual(restamp(row, 3000, '2026-11-09T10:05:00Z', never, 43, tiers), { rate_category: 'card_present_debit', commission_minor: 26, fee_rule: RATE_CARD_FEE_RULE, fee_refund_policy: null });
+  assert.equal(restamp({ ...row, fee_rule: null }, 3000, '2026-11-09T10:05:00Z', never, 43, tiers).commission_minor, 26, 'a row with no rule yet at such a venue too');
+  assert.equal(restamp(row, 3000, '2026-11-09T10:05:00Z', never, 43).commission_minor, 43, 'no rate card handed in: the caller\'s answer');
+  // a row stamped from the rules read back is never handed back to the rate card
+  const fromRules = { rate_category: 'card_present_debit', commission_minor: 8, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' };
+  assert.deepEqual(keepExistingStamp(fromRules, { rate_category: 'card_present', commission_minor: 9, fee_rule: RATE_CARD_FEE_RULE, fee_refund_policy: null }, never), fromRules);
+});
+
+// The proof behind the rounding and the rate card stamp: Castleford's own bank figures.
+test('Castleford, 9 to 19 Nov 2026: half to even gives the fee Adyen took on real amounts', async () => {
+  const { feeFor: fee } = await import('./adyenRules.js');
+  const debit = { variablePercentage: 85 }; const credit = { variablePercentage: 90 };
+  // every exact half penny goes to the even penny, up or down
+  for (const [amount, c, want] of [[1000, debit, 8], [3000, debit, 26], [5000, debit, 42], [7000, debit, 60], [500, credit, 4], [1500, credit, 14], [2500, credit, 22]]) {
+    assert.equal(fee(amount, c), want, `${amount} at ${c.variablePercentage}`);
+  }
+  // away from a half nothing changed
+  for (const [amount, c] of [[470, debit], [380, debit], [1145, debit], [1772, credit], [999, credit]]) {
+    assert.equal(fee(amount, c), Math.floor((amount * c.variablePercentage) / 10000 + 0.5), String(amount));
+  }
 });
