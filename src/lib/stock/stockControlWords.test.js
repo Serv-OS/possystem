@@ -192,7 +192,7 @@ test('one site: the Team screen is main\'s file once the Stock control line is t
     '    payrollDetails: payroll ? (payroll[p.id] ?? false) : undefined,\n',
     '                    {payrollDetailsAccess(sel.id, link)}\n',
   ]) { once(t, line); t = t.replace(line, ''); }
-  assert.equal(sha(t), '36a21a2de4e3d4590a818085b97aecb9ad654bf71f651552e6f967448b15694f', 'everything else is main\'s text byte for byte');   // 5.12.91: PIN Generate and Text PIN (HR feedback batch 2); was a48dc427 at 5.12.43
+  assert.equal(sha(t), 'f89463eaaddca11b4266654f407db7855fa3d7a067e3a8ab9afb461f52190df3', 'everything else is main\'s text byte for byte');   // 5.12.96: a just added person takes their real id (lib/staffLocalId.js); was 36a21a2d at 5.12.91, a48dc427 at 5.12.43
   // the one thing drawn is behind multi; the save is the database function and believes its answer
   assert.match(now, /const stockMulti = !isMock && stockScope\.ready && stockScope\.multi;/);
   assert.equal(now.split('const stockControlAccess = (staffId, link) => {').length - 1, 1, 'defined once');
