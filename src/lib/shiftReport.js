@@ -21,7 +21,7 @@
 // Money collected) and are named again under Payments, where their money sits inside Card and Cash.
 // Pure: no store, no printer, no clock of its own.
 
-import { salesBreakdown, breakdownLines, TENDER_ORDER, TENDER_WORDS } from './salesBreakdown.js';
+import { salesBreakdown, breakdownLines, tendersByPlace, placeSplit, TENDER_ORDER, TENDER_WORDS } from './salesBreakdown.js';
 import { businessDayOf, businessDayWindow } from '../../supabase/functions/_shared/businessDay.js';
 import { DocBuilder } from './printDoc.js';
 import { money, signedMoney } from './currency.js';
@@ -61,7 +61,12 @@ export function summariseShift(checks, { range = null, refundRows = null, curren
   const payments = TENDER_ORDER
     .filter((k) => ['card', 'cash', 'gift_card'].includes(k) || Math.abs(sales[`tender_${k}`] || 0) >= 0.005)
     .map((k) => ({ kind: k, label: TENDER_WORDS[k], count: sales.tenderChecks?.[k] || 0, amount: sales[`tender_${k}`] || 0, tips: sales.tenderTips?.[k] || 0 }));
-  return { sales, payments };
+  // 25 Nov 2026 (Coffee Boy Castleford: "the end of day report doesn't separate them"): where each
+  // kind of money was taken (the till, online and app, the kiosk, QR at the table). A kind taken
+  // in one place only carries no split: it would repeat the line above it.
+  const places = tendersByPlace(list, { range, refundRows });
+  for (const p of payments) p.split = placeSplit(places, p.kind);
+  return { sales, payments, places };
 }
 
 // A narrow (58 mm) slip says "inc" and "ex" so a label and its amount share one line.
@@ -120,6 +125,8 @@ export function buildShiftReportDoc(r, { cols = 42 } = {}) {
   const payments = Array.isArray(r.payments) ? r.payments : [];
   for (const p of payments) {
     b.twoColTrunc(`${p.label} (${p.count || 0})`, m(p.amount));
+    // Where it was taken, when it was more than one place: "  At the till", "  Online and app".
+    for (const part of (Array.isArray(p.split) ? p.split : [])) b.twoColTrunc(`  ${part.label}`, m(part.amount));
     if (Math.abs(Number(p.tips) || 0) >= 0.005) b.twoColTrunc('  of which tips', m(p.tips));
   }
   if ((Number(s.giftSold) || 0) >= 0.005) {

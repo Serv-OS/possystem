@@ -9,7 +9,7 @@ import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { isSplit, keyedMatrix } from '../../../lib/reportSplit.js';
-import { salesBreakdown, breakdownFromDaySums } from '../../../lib/salesBreakdown.js';
+import { salesBreakdown, breakdownFromDaySums, tendersByPlace, placeSplit } from '../../../lib/salesBreakdown.js';
 import { paymentRows, paymentLabel } from '../../../lib/paymentMethodRows.js';
 import { applyFilters } from './_filters';
 import { useRefundLookback, toMs } from './_refundLookback';
@@ -49,6 +49,9 @@ function PaymentsOne({ checks, fmt, fmtN, sites, locationConfig, rangeFrom, rang
   const currency = locationConfig?.currency || one?.currency || null;
   const range = useMemo(() => (from != null ? { fromMs: toMs(from), toMs: toMs(to) } : null), [from, to]);
   const breakdown = useMemo(() => paymentRows(salesBreakdown(checks, { range, refundRows, currency })), [checks, range, refundRows, currency]);
+  // 25 Nov 2026 (Castleford: "where can we see what is card payment and what is app payments"):
+  // where each kind of money was taken. Shown under its row, even when it was one place only.
+  const places = useMemo(() => tendersByPlace(checks, { range, refundRows }), [checks, range, refundRows]);
 
   const cashRow        = breakdown.rows.find(r => r.method === 'cash');
   const cashRevenue    = cashRow?.revenue || 0;
@@ -97,6 +100,12 @@ function PaymentsOne({ checks, fmt, fmtN, sites, locationConfig, rangeFrom, rang
               />
             );
           })}
+          {placeSplit(places, 'card', { always: true }).length > 0 && (
+            <div style={{ marginTop:12, paddingTop:10, borderTop:'1px solid var(--bdr)' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 }}>Card, by where it was taken</div>
+              {placeSplit(places, 'card', { always: true }).map(part => <Row key={part.place} label={part.label} value={fmt(part.amount)} color="var(--t1)"/>)}
+            </div>
+          )}
           {breakdown.rewards > 0 && (
             <div style={{ marginTop:10, fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>{rewardsNote(fmt, breakdown.rewards)}</div>
           )}

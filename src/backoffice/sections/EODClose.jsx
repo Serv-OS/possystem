@@ -19,6 +19,9 @@ import { taxWord } from '../../lib/taxWords';   // 5.12.57: the venue's own tax 
 import { denominationLabel, countedValues, countTotal } from '../../lib/cashDenominations';
 import { Icon } from '../../components/ServOSIcons';
 import { localeString, zoneOr } from '../../lib/venueDates';
+import { salesBreakdown, tendersByPlace, placeSplit } from '../../lib/salesBreakdown.js';
+import { paymentRows, paymentLabel } from '../../lib/paymentMethodRows.js';
+import { offTillChecksSince } from '../../lib/eodPayments.js';
 
 // 5.12.46: labels come from the venue's own notes and coins (lib/cashDenominations.js).
 
@@ -153,18 +156,17 @@ export default function EODClose() {
     });
   }, [cashDrawers, sessions, movements]);
 
-  // Payment method breakdown
-  const paymentMethods = useMemo(() => {
-    const byM = {};
-    shiftChecks.forEach(c => {
-      const m = c.method || 'other';
-      if (!byM[m]) byM[m] = { method: m, count: 0, revenue: 0, tips: 0 };
-      byM[m].count++;
-      byM[m].revenue += Number(c.total) || 0;
-      byM[m].tips    += Number(c.tip)   || 0;
-    });
-    return Object.values(byM).sort((a, b) => b.revenue - a.revenue);
-  }, [shiftChecks]);
+  // Payment method breakdown.
+  // 25 Nov 2026 (Coffee Boy Castleford: "the end of day report doesn't separate them"):
+  //   split by what paid (the one sales rule), so an order paid part by card and part with a
+  //   loyalty reward no longer shows as "loyalty+card" with its card money outside Card;
+  //   and by WHERE it was taken. An online, app, kiosk or QR order carries no shift, so it was
+  //   never on this page at all: those taken since the shift opened are read in here
+  //   (lib/eodPayments.js) and named apart, and the shift totals above are left as they were.
+  const offTill = useMemo(() => offTillChecksSince(closedChecks, currentShift?.openedAt), [closedChecks, currentShift?.openedAt]);
+  const payChecks = useMemo(() => [...shiftChecks, ...offTill], [shiftChecks, offTill]);
+  const paymentMethods = useMemo(() => paymentRows(salesBreakdown(payChecks)).rows.filter(r => r.revenue !== 0 || r.count > 0), [payChecks]);
+  const payPlaces = useMemo(() => tendersByPlace(payChecks), [payChecks]);
 
   // Net variance across all drawers
   const netVariance = useMemo(() => drawerRows.reduce((s, r) => s + (r.allClosed ? r.variance : 0), 0), [drawerRows]);
@@ -301,13 +303,23 @@ export default function EODClose() {
           <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, overflow:'hidden', marginBottom:20 }}>
             {paymentMethods.map((pm, i) => (
               <div key={pm.method} style={{ display:'grid', gridTemplateColumns:'1fr 80px 120px 120px', gap:10, padding:'10px 14px', fontSize:13, borderBottom: i < paymentMethods.length - 1 ? '1px solid var(--bdr)' : 'none' }}>
-                <div style={{ color:'var(--t1)', fontWeight:600, textTransform:'capitalize' }}>{pm.method}</div>
+                <div style={{ color:'var(--t1)', fontWeight:600 }}>
+                  {paymentLabel(pm.method)}
+                  {placeSplit(payPlaces, pm.method).map(part => (
+                    <div key={part.place} style={{ fontSize:12, fontWeight:500, color:'var(--t3)', marginTop:3 }}>{part.label}: {fmt(part.amount)}</div>
+                  ))}
+                </div>
                 <div style={{ textAlign:'right', color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{pm.count}</div>
                 <div style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(pm.revenue)}</div>
                 <div style={{ textAlign:'right', color:'var(--t4)', fontFamily:'var(--font-mono)' }}>tip {fmt(pm.tips)}</div>
               </div>
             ))}
           </div>
+          {offTill.length > 0 && (
+            <div style={{ fontSize:12, color:'var(--t3)', margin:'-12px 0 20px', lineHeight:1.6 }}>
+              Includes {offTill.length} order{offTill.length === 1 ? '' : 's'} taken away from the tills since the shift opened (online, app, kiosk or QR). They are not in the shift totals at the top.
+            </div>
+          )}
         </>
       )}
 
