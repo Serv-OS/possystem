@@ -1,37 +1,34 @@
 // v4.6.15: Payments report.
-// Breaks down revenue by payment method (cash / card / Apple Pay / Google Pay / split / other)
-// and gives a cash reconciliation helper for end-of-day close.
+// Money collected by what paid it (card, cash, gift card), and a cash reconciliation helper for
+// end of day close.
+// 25 Nov 2026 (Coffee Boy Castleford): the rows come from the one sales rule, split by tender
+// (lib/paymentMethodRows.js). A check paid part by card and part with a free loyalty drink used
+// to be a row called "? Other", with its card money missing from Card.
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
-import { isSplit, keyedMatrix, methodsFromSums } from '../../../lib/reportSplit.js';
+import { isSplit, keyedMatrix } from '../../../lib/reportSplit.js';
+import { salesBreakdown, breakdownFromDaySums } from '../../../lib/salesBreakdown.js';
+import { paymentRows, paymentLabel } from '../../../lib/paymentMethodRows.js';
+import { applyFilters } from './_filters';
+import { useRefundLookback, toMs } from './_refundLookback';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, SiteMatrix } from './SiteSplit';
 import { Icon, hasIcon } from '../../../components/ServOSIcons';
 
-// Normalise the check.method string into a canonical bucket.
-// The check writer uses 'cash' and 'card'; older checks also carry 'stripe' or
-// 'terminal' as their card method, and 'apple-pay' / 'google-pay' / 'split' are
-// kept as their own buckets.
-function bucket(method) {
-  const m = (method || '').toLowerCase();
-  if (m === 'cash') return 'cash';
-  if (m.includes('apple'))  return 'apple-pay';
-  if (m.includes('google')) return 'google-pay';
-  if (m.includes('split'))  return 'split';
-  if (m === 'card' || m.includes('stripe') || m.includes('terminal') || m.includes('contactless') || m.includes('chip')) return 'card';
-  return m || 'other';
-}
-
 const METHOD_STYLE = {
-  'cash':       { color:'var(--grn)', label:'Cash',          icon:'money' },
-  'card':       { color:'#3b82f6',    label:'Card',          icon:'card' },
-  'apple-pay':  { color:'#a1a1aa',    label:'Apple Pay',     icon:''       },
-  'google-pay': { color:'#4ade80',    label:'Google Pay',    icon:'G'            },
-  'split':      { color:'var(--acc)', label:'Split payment', icon:'⎘'       },
-  'other':      { color:'var(--t3)',  label:'Other',         icon:'?'            },
+  'cash':        { color:'var(--grn)', icon:'money' },
+  'card':        { color:'#3b82f6',    icon:'card' },
+  'gift_card':   { color:'#a855f7',    icon:'gift' },
+  'deposit':     { color:'var(--acc)', icon:'calendar' },
+  'other':       { color:'var(--t3)',  icon:'?' },
+  'unallocated': { color:'var(--t3)',  icon:'?' },
 };
+const NONE = Object.freeze([]);
+const styleOf = (m) => METHOD_STYLE[m] || METHOD_STYLE.other;
+// Free loyalty items are named under the rows: they are not money and are not in the total.
+const rewardsNote = (fmt, rewards) => `Loyalty rewards given: ${fmt(rewards)} of free items. No money was taken for these, so they are not in the total above.`;
 
 // 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
 // together"): with more than one site on screen this is the site split at the foot of the
@@ -40,29 +37,27 @@ export default function Payments(props) {
   return isSplit(props.sites) ? <PaymentsSites {...props}/> : <PaymentsOne {...props}/>;
 }
 
-function PaymentsOne({ checks, fmt, fmtN }) {
-  const breakdown = useMemo(() => {
-    const map = {};
-    let total = 0;
-    (checks || []).filter(c => c.status !== 'voided').forEach(c => {
-      const b = bucket(c.method);
-      if (!map[b]) map[b] = { method:b, revenue:0, count:0, tips:0 };
-      map[b].revenue += c.total || 0;
-      map[b].count   += 1;
-      map[b].tips    += c.tip   || 0;
-      total          += c.total || 0;
-    });
-    return { rows: Object.values(map).sort((a, b) => b.revenue - a.revenue), total };
-  }, [checks]);
+// rangeFrom / rangeTo / locationId / filters: as the Business summary takes them, so a refund
+// comes off on the day it was made and Total collected here is its Money collected.
+function PaymentsOne({ checks, fmt, fmtN, sites, locationConfig, rangeFrom, rangeTo, locationId, filters }) {
+  const one = Array.isArray(sites) && sites.length === 1 ? sites[0] : null;
+  const siteId = one && !one.isHome ? String(one.id) : (locationId ? String(locationId) : null);
+  const from = rangeFrom ?? one?.range?.from ?? null;
+  const to   = rangeTo   ?? one?.range?.to   ?? null;
+  const lookback = useRefundLookback(siteId ? [siteId] : [], from);
+  const refundRows = useMemo(() => applyFilters((siteId && lookback.rows[siteId]) || NONE, filters), [siteId, lookback.rows, filters]);
+  const currency = locationConfig?.currency || one?.currency || null;
+  const range = useMemo(() => (from != null ? { fromMs: toMs(from), toMs: toMs(to) } : null), [from, to]);
+  const breakdown = useMemo(() => paymentRows(salesBreakdown(checks, { range, refundRows, currency })), [checks, range, refundRows, currency]);
 
   const cashRow        = breakdown.rows.find(r => r.method === 'cash');
   const cashRevenue    = cashRow?.revenue || 0;
   const nonCashRevenue = breakdown.total - cashRevenue;
-  const checkCount     = breakdown.rows.reduce((s, r) => s + r.count, 0);
+  const checkCount     = breakdown.checks;
 
   const onExport = () => {
     const csv = toCsv(breakdown.rows, [
-      { label:'Method',  key: r => (METHOD_STYLE[r.method] || METHOD_STYLE.other).label },
+      { label:'Method',  key: r => paymentLabel(r.method) },
       { label:'Checks',  key:'count' },
       { label:'Revenue', key: r => r.revenue.toFixed(2) },
       { label:'Tips',    key: r => r.tips.toFixed(2) },
@@ -71,7 +66,7 @@ function PaymentsOne({ checks, fmt, fmtN }) {
     downloadCsv(`payments-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
-  if (breakdown.total === 0) {
+  if (breakdown.total === 0 && breakdown.rewards === 0) {
     return <EmptyState icon="card" message="No payments recorded in this period."/>;
   }
 
@@ -89,12 +84,12 @@ function PaymentsOne({ checks, fmt, fmtN }) {
         <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'14px 16px' }}>
           <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:12 }}>Payment methods</div>
           {breakdown.rows.map(r => {
-            const st  = METHOD_STYLE[r.method] || METHOD_STYLE.other;
+            const st  = styleOf(r.method);
             const pct = breakdown.total ? (r.revenue / breakdown.total * 100) : 0;
             return (
               <BarRow
                 key={r.method}
-                label={<span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>{hasIcon(st.icon) ? <Icon name={st.icon} size={14}/> : st.icon} {st.label} · {r.count} checks</span>}
+                label={<span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>{hasIcon(st.icon) ? <Icon name={st.icon} size={14}/> : st.icon} {paymentLabel(r.method)} · {r.count} checks</span>}
                 value={r.revenue}
                 max={breakdown.total}
                 color={st.color}
@@ -102,6 +97,9 @@ function PaymentsOne({ checks, fmt, fmtN }) {
               />
             );
           })}
+          {breakdown.rewards > 0 && (
+            <div style={{ marginTop:10, fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>{rewardsNote(fmt, breakdown.rewards)}</div>
+          )}
         </div>
 
         <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'14px 16px' }}>
@@ -114,9 +112,9 @@ function PaymentsOne({ checks, fmt, fmtN }) {
               <Row label="Cash tips recorded"   value={fmt(cashRow?.tips || 0)}   color="var(--grn)"/>
               <Row label="Checks taking cash"   value={fmtN(cashRow?.count || 0)}/>
               <div style={{ marginTop:10, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-                <strong style={{ color:'var(--t2)' }}>End-of-day check:</strong><br/>
+                <strong style={{ color:'var(--t2)' }}>End of day check:</strong><br/>
                 Expected in drawer = <span style={{ color:'var(--t1)' }}>starting float + {fmt(cashRevenue)}</span><br/>
-                Count the drawer at close and subtract starting float. The remainder should match cash sales above — any gap is variance.
+                Count the drawer at close and subtract starting float. The remainder should match cash sales above. Any gap is variance.
               </div>
             </div>
           )}
@@ -135,30 +133,28 @@ function Row({ label, value, color = 'var(--t2)' }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Several sites: the group's methods on top, then a column per site. The same buckets as
-// one site. A long period reads the server day sums (the database keys by the method as
-// written; `bucket` folds them the same way here). Cash is never added across sites into
-// one drawer figure: each site's cash is its own column.
-// ─────────────────────────────────────────────────────────────────────────────
-function methodRows(checks) {
-  const map = {};
-  (checks || []).filter(c => c.status !== 'voided').forEach(c => {
-    const b = bucket(c.method);
-    if (!map[b]) map[b] = { method:b, revenue:0, count:0, tips:0 };
-    map[b].revenue += c.total || 0;
-    map[b].count   += 1;
-    map[b].tips    += c.tip   || 0;
-  });
-  return map;
-}
-
+// Several sites: the group's methods on top, then a column per site. The same rows as one
+// site, from the same rule: a short period reads the checks (split by tender), a long period
+// the server day sums (their by tender figures, which hold no check count per kind of money).
+// Cash is never added across sites into one drawer figure: each site's cash is its own column.
 function PaymentsSites(props) {
   const { fmtN } = props;
   const { parts, blocks, fromSums } = useParts(props);
-  const bySite = useMemo(() => new Map(parts.map(p => [p.id, p.sums ? methodsFromSums(p.sums.totals, bucket) : methodRows(p.rows)])), [parts]);
+  const ids = fromSums ? [] : parts.map(p => p.id);
+  const starts = [props.rangeFrom, ...parts.map(p => p.site?.range?.from)].map(toMs).filter(v => v != null);
+  const lookback = useRefundLookback(ids, starts.length ? Math.min(...starts) : null);
+  const filters = props.filters;
+  const read = useMemo(() => new Map(parts.map(p => {
+    const range = p.site?.range?.from ? { fromMs: toMs(p.site.range.from), toMs: toMs(p.site.range.to) } : null;
+    const b = p.sums
+      ? breakdownFromDaySums(p.sums.totals.stats, p.sums.totals.byTender, { currency: p.currency, refundsMade: p.sums.totals.refundsMade })
+      : salesBreakdown(p.rows, { currency: p.currency, range, refundRows: applyFilters(lookback.rows[String(p.id)] || NONE, filters) });
+    const r = paymentRows(b);
+    return [p.id, { ...r, map: Object.fromEntries(r.rows.map(x => [x.method, x])), tips: Number(b.tips) || 0 }];
+  })), [parts, lookback.rows, filters]);
+  const bySite = { get: (id) => read.get(id).map };
   const sum = (map, f) => Object.values(map).reduce((s, r) => s + r[f], 0);
-  const label = (m) => (METHOD_STYLE[m] || { label: m.charAt(0).toUpperCase() + m.slice(1) }).label;
+  const label = (m) => paymentLabel(m);
 
   const onExport = () => {
     const rows = [];
@@ -183,15 +179,17 @@ function PaymentsSites(props) {
       <SplitHeader parts={parts} fromSums={fromSums} chips={false} onExport={onExport}/>
       <Blocks blocks={blocks}>{b => {
         const m = keyedMatrix(b.parts, p => Object.fromEntries(Object.values(bySite.get(p.id)).map(r => [r.method, r.revenue])));
-        const checks = b.parts.reduce((s, p) => s + sum(bySite.get(p.id), 'count'), 0);
+        const checks = b.parts.reduce((s, p) => s + read.get(p.id).checks, 0);
+        const rewards = b.parts.reduce((s, p) => s + read.get(p.id).rewards, 0);
         const cash = m.rows.find(r => r.key === 'cash')?.total || 0;
         const share = (v) => (m.total ? `${((v / m.total) * 100).toFixed(1)}% of total` : null);
         const rows = [
           { key:'__total', label:'Total collected', strong:true, total: m.total, bySite: m.bySite },
           ...m.rows.map(r => ({ ...r, label: label(r.key) })),
-          { key:'__checks', label:'Checks', kind:'count', total: checks, bySite: Object.fromEntries(b.parts.map(p => [p.id, sum(bySite.get(p.id), 'count')])) },
-          { key:'__tips', label:'Tips recorded', total: b.parts.reduce((s, p) => s + sum(bySite.get(p.id), 'tips'), 0), bySite: Object.fromEntries(b.parts.map(p => [p.id, sum(bySite.get(p.id), 'tips')])) },
-          { key:'__cashtips', label:'Cash tips recorded', total: b.parts.reduce((s, p) => s + (bySite.get(p.id).cash?.tips || 0), 0), bySite: Object.fromEntries(b.parts.map(p => [p.id, bySite.get(p.id).cash?.tips || 0])) },
+          { key:'__checks', label:'Checks', kind:'count', total: checks, bySite: Object.fromEntries(b.parts.map(p => [p.id, read.get(p.id).checks])) },
+          { key:'__tips', label:'Tips recorded', total: b.parts.reduce((s, p) => s + read.get(p.id).tips, 0), bySite: Object.fromEntries(b.parts.map(p => [p.id, read.get(p.id).tips])) },
+          // The server day sums do not hold tips per kind of money, so this row is left off a long period.
+          ...(fromSums ? [] : [{ key:'__cashtips', label:'Cash tips recorded', total: b.parts.reduce((s, p) => s + (bySite.get(p.id).cash?.tips || 0), 0), bySite: Object.fromEntries(b.parts.map(p => [p.id, bySite.get(p.id).cash?.tips || 0])) }]),
         ];
         return (
           <>
@@ -201,6 +199,7 @@ function PaymentsSites(props) {
               <StatTile label="Non-cash"        value={b.fmt(m.total - cash)} sub={share(m.total - cash)} color="#3b82f6"/>
             </div>
             <SiteMatrix block={b} rows={rows} first="Payment method" fmtN={fmtN}/>
+            {rewards > 0 && <div style={{ margin:'0 0 10px', fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>{rewardsNote(b.fmt, rewards)}</div>}
             <div style={{ marginBottom:14, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
               Each site has its own drawer. Expected in a drawer = that site's starting float + its cash sales above. Count each drawer by itself.
             </div>

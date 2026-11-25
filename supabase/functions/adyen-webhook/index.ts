@@ -820,7 +820,7 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
                 const tiers = await resolveVenueTiers(loc);
                 const todayFee = tiers ? commissionForAmount(capMinor, tiers[rc]) : null;
                 // 15 Oct 2026: the SAME rule the row was stamped with (webhookStamp.test.js).
-                const re = restampForAmount({ ...(existing as Record<string, unknown>), raw }, capMinor, String(item?.eventDate ?? new Date().toISOString()), await resolveVenueRules(loc), todayFee);
+                const re = restampForAmount({ ...(existing as Record<string, unknown>), raw }, capMinor, String(item?.eventDate ?? new Date().toISOString()), await resolveVenueRules(loc), todayFee, tiers);
                 patch.commission_minor = re.commission_minor;
                 patch.fee_rule = re.fee_rule ?? null;
                 patch.fee_refund_policy = re.fee_refund_policy ?? null;
@@ -956,7 +956,9 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
         const engine = stampForPayment(
           { amountMinor: effAmount, authorisedAt: (row.authorised_at as string | undefined) ?? null, ok: okEvent, facts: paymentFacts(item, channel as string | null) },
           venueRules,
-          { rate_category: rateCategory, commission_minor: row.commission_minor },
+          // 25 Nov 2026: the rate card too, so a venue with no recorded cutover is priced by
+          // the rule generator (stampFromRateCard), not the classifier above.
+          { rate_category: rateCategory, commission_minor: row.commission_minor, tiers: await resolveVenueTiers(location_id) },
         );
         // Review 15 Oct 2026: a replay never demotes a row already stamped under
         // the new scheme (an unmarked answer when the venue row could not be
@@ -1013,7 +1015,7 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
         // after the cutover is charged by Adyen under the new profile, so the
         // capture instant decides for a row with no rule yet (webhookStamp.test.js).
         if (location_id) {
-          const re = restampForAmount({ ...(existing as Record<string, unknown>), raw }, amountMinor, String(item?.eventDate ?? row.captured_at ?? new Date().toISOString()), await resolveVenueRules(location_id), restamped);
+          const re = restampForAmount({ ...(existing as Record<string, unknown>), raw }, amountMinor, String(item?.eventDate ?? row.captured_at ?? new Date().toISOString()), await resolveVenueRules(location_id), restamped, await resolveVenueTiers(location_id));
           row.commission_minor = re.commission_minor;
           row.fee_rule = re.fee_rule ?? null;
           row.fee_refund_policy = re.fee_refund_policy ?? null;
