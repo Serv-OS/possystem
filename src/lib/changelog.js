@@ -1,5 +1,17 @@
 export const CHANGELOG = [
   {
+    v: '5.12.98',
+    date: '25 Nov 2026',
+    items: [
+      'Back Office, Close day: the totals at the top now count every sale of the shift (Peter, 25 Nov 2026: "fix the Close day totals"). They were far too low. The page asked each sale "were you taken in the open shift?" by the shift stamped on it. The till writes that stamp, but nothing read it back from the database, so the only sales that counted were ones made on the same device since it was last reloaded. Opened on another computer, the page showed almost nothing.',
+      'The shift is now every sale closed since it opened, whoever took it: the tills, the card reader route (those sales carry no stamp), online, the app, kiosk and QR. The page reads them from the database itself, so it no longer depends on the newest 500 sales the device happens to hold. If that read fails the page says so in a warning and tells you to reload before closing the day.',
+      'The figures are the same ones as the Business summary and the Z report. Revenue is money collected. Cash and Card are what was actually paid in each, so an order paid part by card and part with a free loyalty drink is split properly, and the free drink is not revenue. Cash, Card and Other add up to Revenue. Payment methods underneath is the same sales, so it adds up to the top.',
+      'Checked on a real Huddersfield shift (24 to 25 Nov): 176 sales, 1,288.12. The old page at its very best would have shown 137 sales and 1,046.63: it left out 34 till sales closed by the card reader route and 5 QR orders, and counted 35.85 of free drinks as revenue.',
+      'Back Office, Shifts: the current shift box counts the same way.',
+      'The day stored when you press Close day holds these corrected totals from now on. Days already closed keep the figures they were closed with.',
+    ],
+  },
+  {
     v: '5.12.97',
     date: '25 Nov 2026',
     items: [

@@ -51,8 +51,10 @@ test('the row map keeps the defaults the boot loaders always used (processor: Ad
   assert.deepEqual(closedCheckRefundFields({}), {
     giftCard: null, stripePaymentIntentId: null, paymentIntents: null,
     processor: 'adyen', loyalty: null, source: 'pos', tenders: null,
+    shiftId: null,   // 25 Nov 2026: the shift the sale was taken in is read back too
   });
   assert.equal(closedCheckRefundFields({ tenders: 'junk' }).tenders, null);
+  assert.equal(closedCheckRefundFields({ shift_id: 'shift-1' }).shiftId, 'shift-1');
 });
 
 test('R6404 through the new realtime copy refunds 3.80 to the Adyen card', () => {

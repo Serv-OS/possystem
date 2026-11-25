@@ -38,6 +38,10 @@ export function closedCheckRefundFields(row) {
     // v5.9.11: what paid the check. A reader sale's card tender carries its psp_ref, which
     // is the last record of the card leg when nothing else is (refundMath.cardLegsOf).
     tenders: Array.isArray(row?.tenders) ? row.tenders : null,
+    // 25 Nov 2026: the shift the sale was taken in. The till writes it (closedCheckRow.js) and
+    // nothing read it back, so Close day and Shifts, which ask "is this sale in the open shift",
+    // only ever counted sales made on the same device since it was last reloaded.
+    shiftId: row?.shift_id ?? null,
   };
 }
 
