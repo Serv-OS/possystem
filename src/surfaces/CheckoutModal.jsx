@@ -31,6 +31,9 @@ import {
   fetchJobs, markJobReconciled,
 } from '../lib/payments/terminalJobs';
 import { checkoutOrderRef, watchCheckout } from '../lib/payments/terminalJobCloser';
+import {
+  cardSendLocked, pendingRewardAction, holdCardForReward, cardLegDiffersFromSend, lateRewardMessage, REWARD_WAIT_MS,
+} from '../lib/payments/cardSendLock';   // 25 Nov 2026: the bill does not change once the card is sent
 import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
@@ -924,6 +927,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // v5.5.218: loyalty state
   const [loyaltyData, setLoyaltyData] = useState(null); // { credit, rewards, memberCode, tier, ... }
   const [loyaltyLoading, setLoyaltyLoading] = useState(false);
+  // 25 Nov 2026: has the lookup ANSWERED (found the member or not)? loyaltyLoading is false
+  // before the lookup starts as well as after it, so it cannot say. No phone, nothing to wait for.
+  const [loyaltyDone, setLoyaltyDone] = useState(!customer?.phone);
   const [loyaltyApplied, setLoyaltyApplied] = useState(null);
   // Promo code (marketing offers) — validated via promo-redeem; redeemed (bound to the order) by the store.
   // v5.5.505: entered through the unified gift-card/promo box (no separate field).
@@ -965,32 +971,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     if (!customer?.phone) return;
     let alive = true;
     setLoyaltyLoading(true);
+    setLoyaltyDone(false);
     fetchCustomerByPhone(customer.phone).then(data => {
       if (!alive) return;
       if (data?.knownCustomer) setLoyaltyData(data);
-    }).catch(() => {}).finally(() => { if (alive) setLoyaltyLoading(false); });
+    }).catch(() => {}).finally(() => { if (alive) { setLoyaltyLoading(false); setLoyaltyDone(true); } });
     return () => { alive = false; };
   }, [customer?.phone]);
 
-  // v5.5.349: auto-apply the reward the customer chose on the customer display.
-  // Guarded — only when loyalty loaded + nothing applied yet; failure is silent
-  // (staff can still apply manually), so it can never block checkout.
-  useEffect(() => {
-    if (!pendingLoyaltyReward || !loyaltyData || loyaltyApplied) return;
-    let alive = true;
-    redeemLoyaltyReward(pendingLoyaltyReward, {
-      // v5.11.81 round 1: a percent reward is worked out on the GOODS after deals (the promo basket,
-      // as the kiosk and online do), never the delivery fee, service charge or added on tax.
-      customerId: loyaltyData.customerId || customer?.customerId, items, total: promoBasis,
-      menuItems: useStore.getState().menuItems || [],
-      // 28 Sep 2026: this site's categories as well, like Redeem on the rewards screen (v5.9.66), so
-      // a reward that names a CATEGORY (Coffee Boy's Free Drink) applies the same both ways.
-      categories: useStore.getState().menuCategories || [],
-    })
-      .then(r => { if (alive) { setLoyaltyApplied(r); setPendingLoyaltyReward?.(null); } })
-      .catch(() => { /* leave for manual apply */ });
-    return () => { alive = false; };
-  }, [pendingLoyaltyReward, loyaltyData, loyaltyApplied]);
+  // v5.5.349: the reward the customer chose on the customer display is applied further down,
+  // below the card machine state it has to read (25 Nov 2026, lib/payments/cardSendLock.js).
 
   // The member's loyalty line (lib/orderCustomerLoyalty.js checkoutLoyaltyView). 28 Sep 2026, Peter at
   // Coffee Boy Leeds: "where the loyalty loads so you can redeem, it's not loading". It loaded, but
@@ -1051,6 +1041,77 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // still lets the reconciler book an approved sale at once (and adopt it, see the banner).
   const checkWatchRef = useRef(null);
   useEffect(() => () => { checkWatchRef.current?.off?.(); checkWatchRef.current = null; }, []);
+  // ── 25 Nov 2026: THE BILL DOES NOT CHANGE ONCE THE CARD MACHINE HAS BEEN ASKED FOR IT ──
+  // lib/payments/cardSendLock.js has the whole story (six loyalty orders, four sites, the reader
+  // took the full bill and the till booked a reward on top). The amount goes to the reader when
+  // Card is pressed; from that press until the card screen is left, nothing is taken off the bill.
+  //   cardSendingRef  the press itself, set in the same tick (state is one render behind, and
+  //                   the reward below answers in the tick it is asked).
+  //   cardLocked      the same fact for render: the send is out, or a card screen is up.
+  const cardSendingRef = useRef(false);
+  const cardLocked = cardSendLocked({ sending: paxBusy, screen });
+  // Staff are told once per reward that it arrived too late for this card payment.
+  const lateRewardToldRef = useRef(null);
+  const tellLateReward = (reward) => {
+    if (!reward || lateRewardToldRef.current === reward) return;
+    lateRewardToldRef.current = reward;
+    try { useStore.getState().showToast?.(lateRewardMessage(reward), 'error', 10000); } catch { /* the lock holds either way */ }
+  };
+  // The chosen reward that could not be applied (no eligible item on the order): staff apply
+  // one by hand, the Card button does not wait for it, and it is not tried or mentioned again.
+  const [rewardFailedFor, setRewardFailedFor] = useState(null);
+  const rewardApplyFailed = !!pendingLoyaltyReward && rewardFailedFor === pendingLoyaltyReward;
+
+  // v5.5.349: auto-apply the reward the customer chose on the customer display.
+  // Guarded: only when loyalty loaded + nothing applied yet; failure is silent
+  // (staff can still apply manually), so it can never block checkout.
+  // 25 Nov 2026: and NEVER while a card payment is out for this bill. The reward stays chosen:
+  // a declined or cancelled card brings staff back to the bill and it applies then; an approved
+  // one is booked as charged and the customer keeps the reward.
+  useEffect(() => {
+    const action = pendingRewardAction({
+      pending: pendingLoyaltyReward, applied: loyaltyApplied, haveLoyalty: !!loyaltyData, locked: cardLocked,
+      applyFailed: rewardApplyFailed,
+    });
+    if (action === 'refuse') { tellLateReward(pendingLoyaltyReward); return; }
+    if (action !== 'apply') return;
+    let alive = true;
+    redeemLoyaltyReward(pendingLoyaltyReward, {
+      // v5.11.81 round 1: a percent reward is worked out on the GOODS after deals (the promo basket,
+      // as the kiosk and online do), never the delivery fee, service charge or added on tax.
+      customerId: loyaltyData.customerId || customer?.customerId, items, total: promoBasis,
+      menuItems: useStore.getState().menuItems || [],
+      // 28 Sep 2026: this site's categories as well, like Redeem on the rewards screen (v5.9.66), so
+      // a reward that names a CATEGORY (Coffee Boy's Free Drink) applies the same both ways.
+      categories: useStore.getState().menuCategories || [],
+    })
+      .then(r => {
+        if (!alive) return;
+        // Card can be pressed between this effect and its answer; the ref knows, state does not yet.
+        if (cardSendingRef.current) { tellLateReward(pendingLoyaltyReward); return; }
+        setLoyaltyApplied(r); setPendingLoyaltyReward?.(null);
+      })
+      .catch(() => { if (alive) setRewardFailedFor(pendingLoyaltyReward); /* leave for manual apply */ });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLoyaltyReward, loyaltyData, loyaltyApplied, cardLocked]);
+
+  // The Card button waits for a reward the customer has already chosen, so the reader is asked
+  // for the right amount in the first place (the lookup is several network calls; staff press
+  // Card inside a second). Never longer than REWARD_WAIT_MS; Cash and the rest are not held.
+  const [rewardWaitOver, setRewardWaitOver] = useState(false);
+  const rewardWait = {
+    pending: pendingLoyaltyReward, applied: loyaltyApplied, lookupDone: loyaltyDone, haveLoyalty: !!loyaltyData,
+    applyFailed: rewardApplyFailed,
+  };
+  const waitingOnReward = holdCardForReward({ ...rewardWait, waitedOut: false });
+  useEffect(() => {
+    if (!waitingOnReward) return undefined;
+    const t = setTimeout(() => setRewardWaitOver(true), REWARD_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [waitingOnReward]);
+  const holdCard = holdCardForReward({ ...rewardWait, waitedOut: rewardWaitOver });
+
   // v5.5.862: ONE check id per checkout, minted on the first send and held for the
   // life of this modal. It does two jobs: (a) it is the pre-minted closed_check_id
   // (was re-minted `chk-${Date.now()}` on EVERY press, breaking idempotent retry),
@@ -1636,7 +1697,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     && Number(detail.due_minor) === toMinor(grand);
 
   // Clears the last answer (error, repeat dialog, busy offer) and marks the send as out.
-  const resetCardStart = () => { setPaxError(''); setPaxBusy(true); setRepeatWarn(null); setBusyOffer(null); setPaxAdopted(false); setPaxAdvisory(null); };
+  // 25 Nov 2026: and locks the bill in the same tick (cardSendingRef, see cardSendLock.js).
+  const resetCardStart = () => { cardSendingRef.current = true; setPaxError(''); setPaxBusy(true); setRepeatWarn(null); setBusyOffer(null); setPaxAdopted(false); setPaxAdvisory(null); };
 
   const startTerminalJob = async () => {
     resetCardStart();
@@ -1858,6 +1920,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         setPaxError(e?.message || 'Could not send the payment to the card machine.');
       }
     } finally {
+      // Released with paxBusy: on a send that worked the card screen (set above, same render)
+      // keeps the bill locked; on one that failed staff are back on the bill.
+      cardSendingRef.current = false;
       setPaxBusy(false);
     }
   };
@@ -1872,6 +1937,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // the moment this is pressed, and a job already approved is NOT mounted: one writer, the
   // reconciler, with its banner. On any failure the checkout's own check id comes back.
   const watchBusyPayment = async (detail) => {
+    cardSendingRef.current = true;   // 25 Nov 2026: the job being adopted was sent for the bill as it stands
     setPaxBusy(true); setPaxError('');
     const ownCheckId = checkIdRef.current;
     const ownOrderRef = orderRefRef.current;
@@ -1904,6 +1970,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       giveBack();
       setPaxError(e?.message || 'Could not read that payment.');
     } finally {
+      cardSendingRef.current = false;
       setPaxBusy(false);
     }
   };
@@ -1931,6 +1998,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // REAL charge to a REAL terminal, and the server-side close path bypasses the
     // client-side commit gates entirely. Training keeps the existing simulated flow.
     if (isTrainingMode()) { setScreen('card_terminal'); return; }
+
+    // 25 Nov 2026: a reward the customer chose on the display is still on its way to this bill
+    // (holdCard). The button is disabled for those few seconds; this is the belt for a press
+    // that got through anyway. Nothing is sent, so nothing is charged.
+    if (holdCard) return;
 
     // PAX: the tip is chosen ON THE TERMINAL, in the customer's hand.
     //
@@ -2367,7 +2439,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               )}
               {/* v5.5.793: compact tiles (~half height) — icon + label on one row, single subtitle */}
               <div style={{ display:'flex', gap:10, marginBottom:10 }}>
-                <button onClick={handleCardPress} disabled={paxBusy} style={{
+                <button onClick={handleCardPress} disabled={paxBusy || holdCard} style={{
                   flex:1, padding:compact?'9px 8px':'11px 12px', borderRadius:compact?12:14, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--card-bg)', border:`1.5px solid var(--card-border)`,
                   display:'flex', flexDirection:'column', alignItems:'center', gap:3,
@@ -2378,7 +2450,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   <div style={{ display:'flex', alignItems:'center', gap:7 }}>
                     <span style={{ display:'flex', color:'var(--card-text)' }}><Icon name="card" size={compact?17:20} /></span>
                     <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>
-                      {paxBusy ? 'Sending to the card machine…' : 'Card'}
+                      {paxBusy ? 'Sending to the card machine…' : holdCard ? 'Applying the reward…' : 'Card'}
                     </span>
                   </div>
                   {/* v5.5.837: with a paired PAX the whole thing (amount, tip, card) happens on the terminal in the customer's hand. */}
@@ -2496,6 +2568,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // charge_minor — so the recorded tip and the refundable leg are
                 // exactly what the card was asked for. Never round twice.
                 forgetJob(paxJob.check_key);
+                // 25 Nov 2026: THE LAST LINE. The card leg this close books (grand, before the
+                // reader's tip) must be what the reader was asked for (the job's due_minor). The
+                // lock above keeps them equal; if they ever part again staff and the log are told
+                // at once, on the sale itself, instead of a customer finding it on a statement.
+                if (cardLegDiffersFromSend({ sentDueMinor: paxJob?.due_minor, bookedCardMinor: toMinor(grand) })) {
+                  console.error('[checkout] the card machine was asked for a different amount than this bill books',
+                    { jobId: paxJob?.id, sentDueMinor: paxJob?.due_minor, bookedCardMinor: toMinor(grand), checkId: checkIdRef.current });
+                  try {
+                    useStore.getState().showToast?.(
+                      `Check this sale: the card machine was asked for ${money(Number(paxJob?.due_minor) / 100)} and the bill says ${money(grand)}. Tell a manager.`,
+                      'error', 15000);
+                  } catch { /* the sale is still booked below */ }
+                }
                 // v5.5.903: the card was APPROVED — the dispatch-time gift debit is paid
                 // for and belongs on this check (complete() re-commits it idempotently and
                 // books it). Drop the reversal handle so nothing can hand it back.
