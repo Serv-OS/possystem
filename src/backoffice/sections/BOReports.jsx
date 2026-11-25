@@ -855,7 +855,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
           {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} onOpenReport={openReport} rangeFrom={range.from} rangeTo={range.to} locationId={activeLocId} filters={reportFilters} {...siteProps}/>}
           {view === 'sales_mix'  && <SalesMix     checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} range={trendRange} canOpen={canOpen} {...siteProps}/>}
           {view === 'exceptions' && <Exceptions   checks={filtered} fmt={fmt} {...siteProps}/>}
-          {view === 'payments'   && <Payments     checks={filtered} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
+          {view === 'payments'   && <Payments     checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} rangeFrom={range.from} rangeTo={range.to} locationId={activeLocId} filters={reportFilters} {...siteProps}/>}
           {view === 'daypart'    && <Daypart      checks={filtered} fmt={fmt} locationConfig={locationConfig} {...siteProps}/>}
           {view === 'shifts'      && <Shifts       checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} {...siteProps}/>}
           {view === 'payroll'     && <PayrollReport fmt={fmt} {...siteProps}/>}
