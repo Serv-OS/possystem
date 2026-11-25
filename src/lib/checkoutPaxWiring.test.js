@@ -72,17 +72,20 @@ test('while the send is out (paxBusy): × and Back are hidden, Cash is hidden, g
   // is already net of them, so they are locked too.
   assert.ok(co.includes("<button disabled={paxBusy} onClick={()=>{ applyGift(null); setGiftError(''); }}"), 'gift remove locked');
   assert.ok(co.includes("<button disabled={paxBusy} onClick={()=>{ setPromoApplied(null); }}"), 'promo remove locked');
-  assert.ok(co.includes('<button onClick={handleCardPress} disabled={paxBusy}'), 'Card itself cannot be pressed twice');
+  // 25 Nov 2026: and Card waits for a reward the customer chose on the display (holdCard,
+  // lib/payments/cardSendLock.js), so the reader is never asked for the bill before the reward.
+  assert.ok(co.includes('<button onClick={handleCardPress} disabled={paxBusy || holdCard}'), 'Card itself cannot be pressed twice');
 });
 
 test('staff wording: Sending to the card machine…, and the card screen says the payment finishes by itself', () => {
-  assert.ok(co.includes("{paxBusy ? 'Sending to the card machine…' : 'Card'}"));
+  assert.ok(co.includes("{paxBusy ? 'Sending to the card machine…' : holdCard ? 'Applying the reward…' : 'Card'}"));
   const px = read('../surfaces/PaxTerminal.jsx');
   assert.ok(px.includes("sub: 'Customer is paying on the card machine. Keep this screen open, it finishes by itself.'"));
   assert.ok(px.includes("{cancelBusy ? 'Cancelling…' : 'Cancel payment'}"));
   // No em or en dashes as punctuation in the new copy.
   for (const line of [
     'Sending to the card machine…',
+    'Applying the reward…',
     'Customer is paying on the card machine. Keep this screen open, it finishes by itself.',
     'Card approved after the checkout closed:',
   ]) assert.ok(!/[–—]/.test(line), line);
