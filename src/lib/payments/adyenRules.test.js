@@ -73,7 +73,13 @@ test('units: percent times 100 is basis points, pence as they are, 0 and 0 is an
   assert.deepEqual(commissionFromTier({}), { variablePercentage: 0 });
   // a rate finer than a basis point never reaches the generator: the editor refuses it
   assert.ok(rateCardProblems({ ...UK, card_present: { percent: 1.255, fixedPence: 0 } }).errors.length > 0);
-  // feeFor: half up on the basis points, plus the pence
+  // feeFor: the basis points rounded half to EVEN (Adyen's rule, 25 Nov 2026), plus the pence
+  assert.equal(feeFor(1000, { variablePercentage: 85 }), 8);     // 8.5 goes to the even 8
+  assert.equal(feeFor(3000, { variablePercentage: 85 }), 26);    // 25.5 goes to the even 26
+  assert.equal(feeFor(500, { variablePercentage: 90 }), 4);      // 4.5 goes to 4
+  assert.equal(feeFor(1500, { variablePercentage: 90 }), 14);    // 13.5 goes to 14
+  assert.equal(feeFor(1001, { variablePercentage: 85 }), 9);     // 8.5085 is above the half
+  assert.equal(feeFor(999, { variablePercentage: 85 }), 8);      // 8.4915 is below it
   assert.equal(feeFor(1000, { variablePercentage: 90 }), 9);
   assert.equal(feeFor(250, { variablePercentage: 85 }), 2);     // 2.125
   assert.equal(feeFor(250, { variablePercentage: 90 }), 2);     // 2.25
@@ -261,10 +267,10 @@ test('variant table: every variant by every interaction gives the tier and the p
   const debitLike = [...DEBIT_VARIANTS];
   const creditLike = ['mcpremiumcredit', 'visapremiumcredit', 'mcsuperpremiumcredit', 'visastandardcredit', 'mcstandardcredit', 'visasuperpremiumcredit', 'mccredit', 'visa', 'mc', 'visa_applepay', 'mc_applepay', 'visa_googlepay', 'mc_googlepay', 'somethingnew'];
   const expect = {
-    card_present_debit: { tier: 'card_present_debit', on1000: 9, on250: 2 },     // 85bp: 8.5 -> 9; 2.125 -> 2
+    card_present_debit: { tier: 'card_present_debit', on1000: 8, on250: 2 },     // 85bp: 8.5 -> 8 (half to even); 2.125 -> 2
     card_present: { tier: 'card_present', on1000: 9, on250: 2 },                 // 90bp: 9; 2.25 -> 2
     card_not_present: { tier: 'card_not_present', on1000: 21, on250: 13 },       // 110bp plus 10: 11 plus 10; 2.75 -> 3 plus 10
-    keyed: { tier: 'keyed', on1000: 32, on250: 16 },                             // 220bp plus 10: 22 plus 10; 5.5 -> 6 plus 10
+    keyed: { tier: 'keyed', on1000: 32, on250: 16 },                             // 220bp plus 10: 22 plus 10; 5.5 -> 6 (half to even) plus 10
     amex: { tier: 'amex', on1000: 35, on250: 16 },                               // 250bp plus 10: 25 plus 10; 6.25 -> 6 plus 10
   };
   const check = (variant, si, key) => {

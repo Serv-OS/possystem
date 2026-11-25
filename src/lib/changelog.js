@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.94',
+    date: '25 Nov 2026',
+    items: [
+      'Reports, Payment methods: the rows are split by what actually paid (Coffee Boy Castleford, 25 Nov 2026: the report said Card 591.86 for 9 Nov when the card machine took 603.31). The report filed a whole order under one word, so an order paid part by card and part with a free loyalty drink became a row called "? Other", its card money was missing from Card, and the total counted free drinks as money. It now reads the same rule as the Business summary and the X and Z report: Card, Cash, Gift card, each with every part payment in it, adding up to Money collected. Free loyalty drinks are named in a line underneath and are not in the total. Checked on Castleford\'s real 9 Nov sales: Card 603.31, Cash 92.94, Total collected 696.25, 41.00 of free drinks named beside it. Cash sales in the drawer check now include the cash part of a mixed order too.',
+      'Card fees shown in Back Office: exact to the penny. Adyen rounds a fee of exactly half a penny to the EVEN penny (8.5p is 8p, 25.5p is 26p). We rounded it up, so a fee was 1p too high on about one payment in 150. Proven against the money paid into Castleford\'s bank: 13 payouts from 28 Oct to 22 Nov, 2,446 payments. Rounding to even matches all 13 to the penny; rounding up was 1p out on 7 of them. This changes what Back Office SHOWS as the fee. It does not change what any venue is charged: Adyen has always taken the right amount.',
+      'Card fees shown for Coffee Boy Castleford were far too high (about 2.5% shown, about 1% really taken). Castleford\'s rates were put on Adyen when it went live, but the cutover was never recorded on our side, so our ledger fell back to an old rule that read every in person payment as an online one. A venue in that state is now priced from its own rate card through the same rule builder that sets the rates on Adyen. For Castleford that equals the bank on every payout checked. The row is marked "rate_card" so it says how it was priced.',
+      'Needs: two server functions redeployed (adyen-webhook and adyen-terminal-admin), then SQL 20261207a run on the Platform database to put the corrected fee on past payments. Until the SQL is run, only new payments show it.',
+    ],
+  },
+  {
     v: '5.12.93',
     date: '24 Nov 2026',
     items: [

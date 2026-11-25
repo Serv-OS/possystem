@@ -98,7 +98,8 @@ test('pin: every flipped report renders its one site view untouched when one sit
   assert.match(read(dir + 'SalesSummary.jsx'), /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId, filters \}\) \{/);
   // v5.11.99 (Reports align): and sites and the signed in site, only to read the older checks refunded in the range.
   assert.match(read(dir + 'DailyTrend.jsx'), /function DailyTrendOne\(\{ checks, prevChecks = \[\], fmt, fmtN, range, sites, locationId \}\) \{/);
-  assert.match(read(dir + 'Payments.jsx'), /function PaymentsOne\(\{ checks, fmt, fmtN \}\) \{/);
+  // 25 Nov 2026: the one site view now takes its range too (it reads the one sales rule, split by tender).
+  assert.match(read(dir + 'Payments.jsx'), /function PaymentsOne\(\{ checks, fmt, fmtN, sites, locationConfig, rangeFrom, rangeTo, locationId, filters \}\) \{/);
   assert.match(read(dir + 'Tables.jsx'), /function TablesOne\(\{ checks, fmt, fmtN \}\) \{/);
 });
 
