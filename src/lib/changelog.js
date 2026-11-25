@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.97',
+    date: '25 Nov 2026',
+    items: [
+      'End of day: card taken at the till is shown apart from card taken online and on the app (Coffee Boy Castleford, 25 Nov 2026: "where can we see what is card payment and what is app payments. The end of day report doesn\'t separate them"). Card was one figure: the card machine, the online ordering page and app, the kiosk and QR at the table all added together. Under Card you now get a line for each place it was taken: At the till, Online and app, Kiosk, QR at the table. When it was all taken in one place there is no extra line. Checked on Castleford\'s real 20 Nov sales: Card 750.29, of which At the till 740.89 and Online and app 9.40, the same two figures Adyen holds.',
+      'It is in three places. The X and Z report the till prints: under Payments, each place is a line under Card. Back Office, Reports, Payment methods: a new block, "Card, by where it was taken". Back Office, Close day: each place is named under its payment.',
+      'Back Office, Close day, Payment methods: the rows are now split by what paid, like the report fixed in 5.12.94. An order paid part by card and part with a free loyalty drink showed as "loyalty+card" with its card money outside Card.',
+      'Back Office, Close day: online, app, kiosk and QR orders now show in Payment methods. They carry no shift, so the page never showed them at all. Those taken since the shift opened are read in, and a line underneath says how many. The shift totals at the top are not changed.',
+    ],
+  },
+  {
     v: '5.12.96',
     date: '25 Nov 2026',
     items: [
