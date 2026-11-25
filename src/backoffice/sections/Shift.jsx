@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
 import { Icon } from '../../components/ServOSIcons';
+import { shiftWindowChecks, closeDayTotals } from '../../lib/eodPayments.js';
 
 /**
  * Shift section (v4.6.37).
@@ -60,11 +61,11 @@ export default function Shift() {
   // Compute current-shift totals from closed_checks + drawer statuses
   const currentTotals = useMemo(() => {
     if (!currentShift) return null;
-    const mine = closedChecks.filter(c => c.shiftId === currentShift.id);
-    const revenue = mine.reduce((s, c) => s + (c.total || 0), 0);
-    const cash = mine.filter(c => c.method === 'cash').reduce((s, c) => s + (c.total || 0), 0);
-    const card = mine.filter(c => c.method !== 'cash').reduce((s, c) => s + (c.total || 0), 0);
-    return { revenue, cash, card, checks: mine.length };
+    // 25 Nov 2026: every sale since the shift opened, by the one sales rule (lib/eodPayments.js).
+    // The shift stamp was never read back from the database, so this only counted sales made on
+    // this device since it was last reloaded; and "card" was everything that was not cash.
+    const t = closeDayTotals(shiftWindowChecks(currentShift, closedChecks), currentShift);
+    return { revenue: t.revenue, cash: t.cash, card: t.card, checks: t.checks };
   }, [currentShift, closedChecks]);
 
   const handleClose = async () => {

@@ -21,7 +21,8 @@ import { Icon } from '../../components/ServOSIcons';
 import { localeString, zoneOr } from '../../lib/venueDates';
 import { salesBreakdown, tendersByPlace, placeSplit } from '../../lib/salesBreakdown.js';
 import { paymentRows, paymentLabel } from '../../lib/paymentMethodRows.js';
-import { offTillChecksSince } from '../../lib/eodPayments.js';
+import { shiftWindowChecks, awayFromTills, closeDayTotals } from '../../lib/eodPayments.js';
+import { fetchClosedChecksRange } from '../../lib/db';
 
 // 5.12.46: labels come from the venue's own notes and coins (lib/cashDenominations.js).
 
@@ -49,6 +50,11 @@ export default function EODClose() {
 
   const [sessions, setSessions] = useState([]);
   const [movements, setMovements] = useState([]);
+  // 25 Nov 2026: the shift's sales, read from the database by this page (lib/eodPayments.js has
+  // why). null = not read (still loading, the demo, or the read failed): the page then adds up
+  // what the till's working list holds, and says so.
+  const [windowRows, setWindowRows] = useState(null);
+  const [windowFailed, setWindowFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [expandedDrawer, setExpandedDrawer] = useState(null);
@@ -80,34 +86,36 @@ export default function EODClose() {
     })();
   }, [currentShift?.id]);
 
+  // The shift's sales: every check closed since it opened, whoever took it. Read once when the
+  // page opens; a sale closed after that arrives in the working list and is merged in below.
+  useEffect(() => {
+    if (!currentShift?.id || !currentShift?.openedAt || isMock || !supabase) { setWindowRows(null); return undefined; }
+    let alive = true;
+    (async () => {
+      try {
+        const locationId = await getLocationId();
+        const res = await fetchClosedChecksRange(locationId, new Date(currentShift.openedAt), new Date(), { stop: () => !alive });
+        if (!alive) return;
+        if (Array.isArray(res?.data)) { setWindowRows(res.data); setWindowFailed(false); }
+        else { setWindowRows(null); setWindowFailed(true); }
+      } catch (err) {
+        console.warn('[CloseDay] sales read failed:', err?.message || err);
+        if (alive) { setWindowRows(null); setWindowFailed(true); }
+      }
+    })();
+    return () => { alive = false; };
+  }, [currentShift?.id, currentShift?.openedAt]);
+
   // Drawers that still need cashing up (blocking)
   const openDrawers = useMemo(() => cashDrawers.filter(d => d.status && d.status !== 'idle'), [cashDrawers]);
 
-  // Checks attributed to this shift
-  const shiftChecks = useMemo(() => {
-    if (!currentShift?.id) return [];
-    return closedChecks.filter(c => c.shiftId === currentShift.id && c.status !== 'voided');
-  }, [closedChecks, currentShift?.id]);
+  // The shift's sales (lib/eodPayments.js shiftWindowChecks): the page's own read first, then
+  // anything newer in the working list. Every sale since the shift opened counts, stamped or not.
+  const shiftChecks = useMemo(() => shiftWindowChecks(currentShift, windowRows, closedChecks), [currentShift, windowRows, closedChecks]);
 
-  // Totals
-  const totals = useMemo(() => {
-    const t = { revenue: 0, cash: 0, card: 0, other: 0, tips: 0, refunds: 0, covers: 0, checks: 0, taxes: 0, taxMissing: 0, taxMissingRefs: [] };
-    shiftChecks.forEach(c => {
-      const total = Number(c.total) || 0;
-      t.revenue += total;
-      t.tips += Number(c.tip) || 0;
-      t.taxes += Number(c.taxAmount) || 0;
-      // 8 Oct 2026 (the VAT audit): a sale with money taken and no VAT recorded counts 0 and is named.
-      if (c.taxAmount == null && total > 0) { t.taxMissing += 1; if (t.taxMissingRefs.length < 12) t.taxMissingRefs.push(c.ref || c.id); }
-      t.covers += Number(c.covers) || 0;
-      t.checks++;
-      if (c.method === 'cash') t.cash += total;
-      else if (c.method === 'card' || c.method === 'stripe') t.card += total;   // older checks carry 'stripe' as the card method
-      else t.other += total;
-      if (Array.isArray(c.refunds)) t.refunds += c.refunds.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    });
-    return t;
-  }, [shiftChecks]);
+  // Totals, by the one sales rule (closeDayTotals): the same figures as the Business summary and
+  // the Z report. Cash and Card are what was paid in each; a free loyalty drink is not revenue.
+  const totals = useMemo(() => closeDayTotals(shiftChecks, currentShift, { currency: getActiveCurrencyCode() }), [shiftChecks, currentShift]);
 
   // Per-drawer rollup
   const drawerRows = useMemo(() => {
@@ -163,15 +171,23 @@ export default function EODClose() {
   //   and by WHERE it was taken. An online, app, kiosk or QR order carries no shift, so it was
   //   never on this page at all: those taken since the shift opened are read in here
   //   (lib/eodPayments.js) and named apart, and the shift totals above are left as they were.
-  const offTill = useMemo(() => offTillChecksSince(closedChecks, currentShift?.openedAt), [closedChecks, currentShift?.openedAt]);
-  const payChecks = useMemo(() => [...shiftChecks, ...offTill], [shiftChecks, offTill]);
-  const paymentMethods = useMemo(() => paymentRows(salesBreakdown(payChecks)).rows.filter(r => r.revenue !== 0 || r.count > 0), [payChecks]);
-  const payPlaces = useMemo(() => tendersByPlace(payChecks), [payChecks]);
+  // 25 Nov 2026 (later the same day): the shift's sales now hold those orders themselves, so
+  // this section and the totals at the top are the same sales and add up.
+  const shiftRange = useMemo(() => (currentShift?.openedAt ? { fromMs: Date.parse(currentShift.openedAt), toMs: Date.now() } : null), [currentShift?.openedAt, shiftChecks]);
+  const offTillCount = useMemo(() => awayFromTills(shiftChecks), [shiftChecks]);
+  const paymentMethods = useMemo(() => paymentRows(salesBreakdown(shiftChecks, { range: shiftRange })).rows.filter(r => r.revenue !== 0 || r.count > 0), [shiftChecks, shiftRange]);
+  const payPlaces = useMemo(() => tendersByPlace(shiftChecks, { range: shiftRange }), [shiftChecks, shiftRange]);
 
   // Net variance across all drawers
   const netVariance = useMemo(() => drawerRows.reduce((s, r) => s + (r.allClosed ? r.variance : 0), 0), [drawerRows]);
   const totalExpected = useMemo(() => drawerRows.reduce((s, r) => s + r.expectedCash, 0), [drawerRows]);
   const totalDeclared = useMemo(() => drawerRows.reduce((s, r) => s + r.declaredCash, 0), [drawerRows]);
+
+  // Said when the page could not read the shift's sales itself: the figures are then only what
+  // this device holds, and must not be read as the whole shift.
+  const readNote = windowFailed
+    ? <Alert tone="warn" title="The shift's sales could not be read" body="These figures are only the sales this device already holds, so they may be short. Check the connection and reload the page before closing the day." />
+    : null;
 
   // Can we close? Only when every drawer is idle and a shift is open
   const readyToClose = currentShift && openDrawers.length === 0 && cashDrawers.length > 0;
@@ -233,6 +249,7 @@ export default function EODClose() {
         <Title title="Close day" sub="Cash up every drawer before the day can be closed." />
 
         <ShiftHeader shift={currentShift} totals={totals} cashDrawers={cashDrawers} />
+        {readNote}
 
         <Alert tone="warn" title={`${openDrawers.length} drawer${openDrawers.length === 1 ? '' : 's'} still open`}
                body="Every drawer must be cashed up before the day closes. Go to Cash drawers in the sidebar, or cash up from the assigned POS.">
@@ -269,6 +286,7 @@ export default function EODClose() {
       <Title title="Close day" sub="Review each drawer's count plus the day's totals, then close." />
 
       <ShiftHeader shift={currentShift} totals={totals} cashDrawers={cashDrawers} />
+      {readNote}
 
       {/* Location totals */}
       <SectionTitle title="Day totals" />
@@ -315,9 +333,9 @@ export default function EODClose() {
               </div>
             ))}
           </div>
-          {offTill.length > 0 && (
+          {offTillCount > 0 && (
             <div style={{ fontSize:12, color:'var(--t3)', margin:'-12px 0 20px', lineHeight:1.6 }}>
-              Includes {offTill.length} order{offTill.length === 1 ? '' : 's'} taken away from the tills since the shift opened (online, app, kiosk or QR). They are not in the shift totals at the top.
+              Includes {offTillCount} order{offTillCount === 1 ? '' : 's'} taken away from the tills since the shift opened (online, app, kiosk or QR).
             </div>
           )}
         </>

@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { offTillChecksSince } from './eodPayments.js';
+import { shiftWindowChecks, awayFromTills, closeDayTotals } from './eodPayments.js';
 import { salesBreakdown, tendersByPlace, placeSplit, placeOf, PLACE_WORDS } from './salesBreakdown.js';
 import { summariseShift, buildShiftReportDoc } from './shiftReport.js';
 
@@ -60,27 +60,69 @@ test('the X and Z report names where card was taken, only when it was more than 
   assert.equal(typeof text, 'string');
 });
 
-test('Close day reads in the orders taken away from the tills since the shift opened', () => {
-  const checks = [
+test('the shift is a window: every sale closed since it opened counts, stamped or not, once', () => {
+  const shift = { id: 'sh1', openedAt: '2026-11-09T08:00:00Z' };
+  const read = [
     { id: 'till', shiftId: 'sh1', closedAt: at('10:00') },
-    { id: 'online-in', shiftId: null, source: 'online', closedAt: at('10:00') },
-    { id: 'kiosk-in', source: 'kiosk', closedAt: at('09:00') },
-    { id: 'online-before', shiftId: null, source: 'online', closedAt: at('07:59') },
-    { id: 'online-voided', shiftId: null, source: 'online', closedAt: at('10:00'), status: 'voided' },
-    { id: 'row-shape', shiftId: null, closed_at: '2026-11-09T12:00:00Z' },
+    { id: 'online', shiftId: null, source: 'online', closedAt: at('10:00') },
+    { id: 'reader', shiftId: null, source: 'pos', closedAt: at('09:00') },
+    { id: 'before', shiftId: null, source: 'online', closedAt: at('07:59') },
+    { id: 'other-shift-before', shiftId: 'sh0', closedAt: at('07:00') },
+    { id: 'row-shape', shift_id: null, closed_at: '2026-11-09T12:00:00Z' },
     null,
   ];
-  assert.deepEqual(offTillChecksSince(checks, at('08:00')).map((c) => c.id), ['online-in', 'kiosk-in', 'row-shape']);
-  assert.deepEqual(offTillChecksSince(checks, '2026-11-09T08:00:00Z').map((c) => c.id), ['online-in', 'kiosk-in', 'row-shape'], 'a text start reads the same');
-  assert.deepEqual(offTillChecksSince(checks, null), [], 'no shift start, nothing read in');
-  assert.deepEqual(offTillChecksSince(null, at('08:00')), []);
+  const live = [{ id: 'till', shiftId: 'sh1', closedAt: at('10:00'), stale: true }, { id: 'new', shiftId: 'sh1', closedAt: at('13:00') }];
+  const got = shiftWindowChecks(shift, read, live);
+  assert.deepEqual(got.map((c) => c.id), ['till', 'online', 'reader', 'row-shape', 'new']);
+  assert.equal(got[0].stale, undefined, 'a check in both lists counts once, the database copy');
+  assert.deepEqual(shiftWindowChecks(shift, null, live).map((c) => c.id), ['till', 'new'], 'the read failed: what the device holds');
+  assert.deepEqual(shiftWindowChecks(null, read), []);
+  // stamped with the shift but closed a moment before its recorded start still belongs to it
+  assert.deepEqual(shiftWindowChecks(shift, [{ id: 'early', shiftId: 'sh1', closedAt: at('07:59') }]).map((c) => c.id), ['early']);
+  assert.equal(awayFromTills(got), 1, 'one order was taken away from the tills');
+  assert.equal(awayFromTills([{ id: 'v', source: 'online', status: 'voided' }]), 0);
+});
+
+test('Close day totals are the one sales rule: money by what paid it, adding up to revenue', () => {
+  const shift = { id: 'sh1', openedAt: '2026-11-09T08:00:00Z' };
+  const checks = [
+    check('a', null, 10, 'card', { covers: 2 }),
+    check('b', 'online', 9.4),
+    check('c', 'pos', 4, 'cash'),
+    check('e', null, 16.15, 'loyalty+card', { tenders: [{ method: 'loyalty', amount: 4.7, rewards: [{ name: 'Free Drink' }] }, { method: 'card', amount: 11.45 }] }),
+    check('v', null, 8, 'card', { status: 'voided' }),
+    check('r', null, 5, 'card', { refunds: [{ amount: 5, at: at('11:00'), method: 'card' }] }),
+  ];
+  const t = closeDayTotals(checks, shift, { now: at('18:00'), currency: 'GBP' });
+  assert.equal(t.card, 30.85, 'card: 10.00 + 9.40 + the 11.45 card part; the refunded 5.00 is back out');
+  assert.equal(t.cash, 4);
+  assert.equal(t.other, 0);
+  assert.equal(t.revenue, 34.85, 'revenue is the money: the 4.70 free drink is not in it');
+  assert.equal(Math.round((t.cash + t.card + t.other) * 100), Math.round(t.revenue * 100), 'the money adds up to revenue');
+  assert.equal(t.rewards, 4.7);
+  assert.equal(t.refunds, 5);
+  assert.equal(t.checks, 5, 'a voided check is not a check');
+  assert.equal(t.voids, 1);
+  const none = closeDayTotals([], shift);
+  assert.equal(none.revenue, 0); assert.equal(none.checks, 0); assert.equal(none.taxMissing, 0);
+});
+
+test('the shift a sale was taken in is read back with the row', () => {
+  const src = readFileSync(new URL('./closedCheckRefundFields.js', import.meta.url), 'utf8');
+  assert.ok(src.includes('shiftId: row?.shift_id ?? null,'), 'shift_id comes back as shiftId on every copy');
 });
 
 test('the pages use the one rule', () => {
   const eod = readFileSync(new URL('../backoffice/sections/EODClose.jsx', import.meta.url), 'utf8');
-  assert.ok(eod.includes('const paymentMethods = useMemo(() => paymentRows(salesBreakdown(payChecks)).rows'), 'Close day splits by what paid');
+  assert.ok(eod.includes('const shiftChecks = useMemo(() => shiftWindowChecks(currentShift, windowRows, closedChecks)'), 'Close day counts the window, from its own read');
+  assert.ok(eod.includes('const totals = useMemo(() => closeDayTotals(shiftChecks, currentShift,'), 'and its totals are the one sales rule');
+  assert.ok(eod.includes('fetchClosedChecksRange(locationId, new Date(currentShift.openedAt), new Date()'), 'the page reads the shift\'s sales itself');
+  assert.ok(eod.includes('paymentRows(salesBreakdown(shiftChecks, { range: shiftRange })).rows'), 'Payment methods is the same sales');
   assert.ok(eod.includes('{placeSplit(payPlaces, pm.method).map(part => ('), 'and names where it was taken');
-  assert.ok(!eod.includes("const m = c.method || 'other';"), 'the method word is not the row any more');
+  assert.ok(!eod.includes("c.shiftId === currentShift.id"), 'no sale is asked for its stamp any more');
+  assert.ok(!eod.includes("if (c.method === 'cash') t.cash += total;"), 'cash and card are not the method word any more');
+  const shifts = readFileSync(new URL('../backoffice/sections/Shift.jsx', import.meta.url), 'utf8');
+  assert.ok(shifts.includes('closeDayTotals(shiftWindowChecks(currentShift, closedChecks), currentShift)'), 'the Shifts page counts the same way');
   const rep = readFileSync(new URL('../backoffice/sections/reports/Payments.jsx', import.meta.url), 'utf8');
   assert.ok(rep.includes("placeSplit(places, 'card', { always: true })"), 'the Payment methods report shows card by place');
 });
