@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { isLocalStaffId, resolveStaffId, swapStaffId, NOT_SAVED_YET } from '../../lib/staffLocalId';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
@@ -257,6 +258,16 @@ export default function StaffManager({ orgCtx = null } = {}) {
     }
   };
   const [selId, setSelId]     = useState(null);
+  // Stand in id -> the row's real id, for a box that was opened on the stand in a moment
+  // before the save answered (it still holds the old id).
+  const savedIdsRef = useRef({});
+  const realId = (id) => resolveStaffId(id, savedIdsRef.current);
+  const adoptSavedId = (localId, savedId) => {
+    if (!isLocalStaffId(localId) || !savedId) return;
+    savedIdsRef.current = { ...savedIdsRef.current, [localId]: savedId };
+    useStore.setState(st => ({ staffMembers: swapStaffId(st.staffMembers, localId, savedId) }));
+    setSelId(cur => (cur === localId ? savedId : cur));
+  };
   const [scanningCard, setScanningCard] = useState(false);
   const [cardEntry, setCardEntry] = useState(''); // Back-Office USB-reader capture box
   const [showAdd, setShowAdd] = useState(false);
@@ -302,7 +313,8 @@ export default function StaffManager({ orgCtx = null } = {}) {
 
   // Resolves true only when the change is actually persisted (or we're in mock mode) —
   // callers must not claim success before awaiting it.
-  const save = async (id, patch) => {
+  const save = async (askedId, patch) => {
+    const id = realId(askedId);   // 25 Nov 2026: a just added person's real id, once their save answered
     // The store keeps some fields camelCase but the DB columns are snake_case. Mirror the snake-case
     // patch onto the camelCase the UI reads, so the change shows immediately (toggle moves, card
     // status updates). The DB still receives the snake-case `patch` below.
@@ -414,14 +426,20 @@ export default function StaffManager({ orgCtx = null } = {}) {
         if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
       }
       if (!locationId) throw new Error('No location found for this user');
-      const { error } = await supabase.from('staff_members').insert({
+      const { data: saved, error } = await supabase.from('staff_members').insert({
         location_id: locationId, org_id: profile?.org_id,
         name: member.name, role: member.role, pin: member.pin,
         color: member.color || '#3b82f6', initials: member.initials,
         permissions: member.permissions || [],
         active: true,
-      });
+      }).select('id').single();
       if (error) throw error;
+      // 25 Nov 2026 (Peter, adding a Back Office user: "linking to staff member failed: invalid
+      // input syntax for type uuid: s-1795625033657"). The person kept the screen's own stand in
+      // id until the page was reloaded, so giving them a login, editing them or removing them
+      // straight after adding them never reached their row. The row's real id is read back and
+      // takes the stand in's place at once (lib/staffLocalId.js).
+      adoptSavedId(localId, saved?.id);
       reportSave('staff member', null);
       showToast(`${member.name} added`, 'success');
     } catch (e) {
@@ -432,7 +450,11 @@ export default function StaffManager({ orgCtx = null } = {}) {
     }
   };
 
-  const deleteMember = async (id) => {
+  const deleteMember = async (askedId) => {
+    const id = realId(askedId);   // 25 Nov 2026: so a just added person is removed from the database too
+    // 25 Nov 2026: a person whose save has not answered yet cannot be removed from the database,
+    // and taking them off the screen alone would leave them able to sign in on the till.
+    if (!isMock && isLocalStaffId(id)) { showToast(NOT_SAVED_YET, 'error'); return; }
     // Remove from the DB FIRST: if the soft-delete is rejected the person can still
     // sign in on the till, so the list must keep showing them.
     if (!isMock && !String(id).startsWith('s-')) {
@@ -465,8 +487,12 @@ export default function StaffManager({ orgCtx = null } = {}) {
   // (same one CompanyAdminApp uses), then links the new user_profiles.id
   // back onto staff_members.auth_user_id. The user can sign in to the BO
   // immediately afterwards. bo_access defaults true on the new user.
-  const grantBOAccess = async (staffId) => {
+  const grantBOAccess = async (askedId) => {
     setGrantError('');
+    // 25 Nov 2026: the person's real id. One still on a stand in id has not reached the database,
+    // so NO login is made for them (it used to be made and then left linked to nobody).
+    const staffId = realId(askedId);
+    if (isLocalStaffId(staffId)) { setGrantError(NOT_SAVED_YET); return; }
     if (!grantForm.email.trim()) { setGrantError('Email required'); return; }
     if (grantForm.password.length < MIN_PASSWORD_LENGTH) { setGrantError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`); return; }
     if (grantForm.password !== grantForm.confirmPassword) { setGrantError('Passwords do not match'); return; }
