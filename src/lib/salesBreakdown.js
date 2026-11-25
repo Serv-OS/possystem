@@ -289,6 +289,68 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
   return out;
 }
 
+// ── WHERE THE MONEY WAS TAKEN (25 Nov 2026) ──────────────────────────────────
+// Coffee Boy Castleford: "where can we see what is card payment and what is app payments. The
+// end of day report doesn't separate them." Card was one figure: the till's card machine, the
+// online ordering page and app, the kiosk and QR at the table all added together.
+// Each check is put in ONE place by its source, and its tenders (the same reading as
+// salesBreakdown: checkPieces and the refunds made in the range) are added up per place.
+export const PLACE_ORDER = ['till', 'online', 'kiosk', 'qr', 'partner', 'other'];
+export const PLACE_WORDS = {
+  till: 'At the till', online: 'Online and app', kiosk: 'Kiosk', qr: 'QR at the table', partner: 'Delivery apps', other: 'Other',
+};
+const PLACE_OF = {
+  '': 'till', pos: 'till', till: 'till', mpos: 'till', bar: 'till', handheld: 'till', pos_send_to_terminal: 'till', terminal: 'till',
+  online: 'online', app: 'online', web: 'online', gift: 'online', booking: 'online', catering: 'online',
+  kiosk: 'kiosk', qr: 'qr',
+  hubrise: 'partner', delivery: 'partner', deliveroo: 'partner', ubereats: 'partner', justeat: 'partner', doordash: 'partner', ezcater: 'partner',
+};
+/** The place a check was taken: its source word, read the same from a till check or a database row. */
+export function placeOf(check) {
+  const src = String(check?.source ?? '').trim().toLowerCase();
+  return PLACE_OF[src] || 'other';
+}
+/**
+ * The money tenders by place. Same arguments as salesBreakdown, so the places of one kind of
+ * money add up to its tender_* figure there (card at the till + card online + ... = Card).
+ * Returns { [place]: { card, cash, gift_card, deposit, other, unallocated, checks } } in major
+ * units, only for places that took money or had a check.
+ */
+export function tendersByPlace(checks, { range = null, refundRows = null } = {}) {
+  const acc = {};
+  const at = (place) => (acc[place] ||= { ...Object.fromEntries(TENDER_ORDER.map((k) => [k, 0])), checks: 0 });
+  for (const c of checks || []) {
+    if (!c) continue;
+    const p = checkPieces(c);
+    if (p.voided) continue;
+    const row = at(placeOf(c));
+    row.checks += 1;
+    for (const [k, v] of Object.entries(p.byTender)) row[k] = (row[k] || 0) + v;
+  }
+  eachRefund(checks, refundRows, range, (r, c) => {
+    const row = at(placeOf(c));
+    for (const [k, v] of Object.entries(r.byTender)) row[k] = (row[k] || 0) - v;
+  });
+  const out = {};
+  for (const place of PLACE_ORDER) {
+    if (!acc[place]) continue;
+    out[place] = { checks: acc[place].checks };
+    for (const k of TENDER_ORDER) out[place][k] = (acc[place][k] || 0) / 100;
+  }
+  return out;
+}
+/**
+ * One kind of money split by place, for a report line: [{ place, label, amount }] in place
+ * order, places with nothing left out. Empty when it was all taken in one place (the split
+ * would only repeat the total), unless `always`.
+ */
+export function placeSplit(byPlace, kind = 'card', { always = false } = {}) {
+  const rows = PLACE_ORDER
+    .map((place) => ({ place, label: PLACE_WORDS[place], amount: num(byPlace?.[place]?.[kind]) }))
+    .filter((r) => Math.abs(r.amount) >= 0.005);
+  return rows.length > 1 || (always && rows.length === 1) ? rows : [];
+}
+
 /** One check's net sales (excluding VAT) after its own refunds made inside `range`. Major units. */
 export function checkNetSales(check, range = null) {
   const p = checkPieces(check);
