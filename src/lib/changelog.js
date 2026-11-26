@@ -1,5 +1,21 @@
 export const CHANGELOG = [
   {
+    v: '5.12.104',
+    date: '25 Nov 2026',
+    items: [
+      'Multi site menu: tax profiles (Peter, Mozz, 25 Nov 2026: the Tax view read "No tax rate" in every box and the product sheet offered only old style rates, while every site charged through its "Prepared food" profile. "this is confusing to customers. this needs fixing"). The group menu was built on tax rates and did not know tax profiles existed.',
+      'The Tax view now says what each site really charges. A product with no tax set in the group menu shows each site\'s own default profile and its rate, for example "Prepared food 8.45%" at one site and "Prepared food 9.45%" at another. The group column reads "Each site\'s own".',
+      'Head office can pick a tax profile for a product, by name. The product sheet lists the profiles the sites have (Prepared food, Retail, Tax exempt), each with its rates across the sites. Each site then uses its OWN profile of that name, with its own rates. A site that has no profile of that name is named in red, and publishing stops there until it is added at that site.',
+      'A product\'s sizes take the profile with it, because the till taxes a size by the size\'s own row.',
+      '"Each site\'s own tax" is the first choice and the default: nothing about tax is written at the sites, and each product follows its category and then the site default. Picking it on a product that had a profile takes the profile off again at every site.',
+      'A group on tax profiles is no longer told "Pick the VAT rate" on every product once one product has a tax set.',
+      'The key under the Tax view is in the right words for a group on tax profiles (no "VAT 20%" and "Zero 0%"), and holds no sample figures.',
+      'Bring in: a product that has its own tax profile at its site comes in naming that profile.',
+      'Groups that work on tax rates, which is every UK group, are unchanged: a name with a percent is a rate exactly as before, and a generated copy of a rate is never treated as a profile.',
+      'Database: 20261209a lets a publish put a site\'s own tax profile on a product (and take it off). It must be run before this version is launched. Checked on the local database rig, 319 of 319, with a real publish to two sites and five refusals; and rehearsed on a copy of Mozz\'s five menus.',
+    ],
+  },
+  {
     v: '5.12.103',
     date: '25 Nov 2026',
     items: [

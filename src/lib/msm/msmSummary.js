@@ -128,7 +128,12 @@ export function summarise(changes, central, opts = {}) {
       }
     }
     if (ch.target === 'product' && ('tax_rate_name' in a || 'tax_rate_percent' in a)) {
-      out.push(`${pName(ch.entity_id)}: ${activeTaxWords().Tax} becomes ${a.tax_rate_name ?? 'another rate'}${a.tax_rate_percent != null ? ` (${pctText(a.tax_rate_percent)})` : ''} at every site.`);
+      // 5.12.104: a tax profile by name, or nothing set, is said as what it is.
+      const noName = a.tax_rate_name == null || a.tax_rate_name === '';
+      const noPct = a.tax_rate_percent == null || a.tax_rate_percent === '';
+      if ('tax_rate_name' in a && 'tax_rate_percent' in a && noName && noPct) out.push(`${pName(ch.entity_id)}: each site's own tax decides again.`);
+      else if ('tax_rate_name' in a && !noName && 'tax_rate_percent' in a && noPct) out.push(`${pName(ch.entity_id)}: ${activeTaxWords().Tax} becomes each site's "${String(a.tax_rate_name).trim()}" profile.`);
+      else out.push(`${pName(ch.entity_id)}: ${activeTaxWords().Tax} becomes ${a.tax_rate_name ?? 'another rate'}${a.tax_rate_percent != null ? ` (${pctText(a.tax_rate_percent)})` : ''} at every site.`);
     }
     // Options.
     if (ch.target === 'modifier_option' && 'price' in a && ch.op !== 'create') {

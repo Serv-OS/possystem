@@ -32,6 +32,9 @@ const RB2 = path.join(ROOT, 'supabase', 'migrations', '20261017c_OPS_multi_site_
 // 18 Oct 2026: the category rule, its own step (20261017c was already run on Ops; it stays as run).
 const MIG3 = path.join(ROOT, 'supabase', 'migrations', '20261018_OPS_multi_site_menu_category_fields.sql');
 const RB3 = path.join(ROOT, 'supabase', 'migrations', '20261018_OPS_multi_site_menu_category_fields_ROLLBACK.sql');
+// 25 Nov 2026 (5.12.104): a product's tax may be a tax profile, by name (msm_apply_site only).
+const MIG4 = path.join(ROOT, 'supabase', 'migrations', '20261209a_OPS_multi_site_menu_tax_profiles.sql');
+const RB4 = path.join(ROOT, 'supabase', 'migrations', '20261209a_OPS_multi_site_menu_tax_profiles_ROLLBACK.sql');
 const BASE = path.join(HERE, 'baseline.sql');
 const DB = 'msm_harness';
 const CONN = ['-h', process.env.MSM_PGHOST || '127.0.0.1', '-p', process.env.MSM_PGPORT || '55991', '-U', 'postgres', '-X', '-q', '-v', 'ON_ERROR_STOP=1'];
@@ -121,6 +124,19 @@ expect('20261018 applies a second time (idempotent)', r.code === 0, r.err);
 expect('20261018 check row: the category rule is on and runs after the main guard; anon nothing; no staged category field; contract 2',
   r.out.split('\n').pop() === 't|t|0|0|2', r.out);
 expect('20261018 is additive: every function 20261017c left is exactly as it was', one(MSM_FUNCTIONS) === round2Functions);
+// 20261209a: msm_apply_site only, built from the function as Ops ran it.
+const APPLY_MD5 = `select md5(p.prosrc) from pg_proc p where p.proname = 'msm_apply_site'`;
+const applyBefore = one(APPLY_MD5);
+expect('20261209a starts from the function Ops runs (the body 20261017c made is the one read on live, md5 5e37e520)', applyBefore === '5e37e5207d3ac1957d1c0692861f5f2d', applyBefore);
+r = psql(['-d', DB, '-1', '-At', '-f', MIG4]);
+expect('20261209a (tax profiles by name) applies as one transaction', r.code === 0, r.err);
+const applyAfter = one(APPLY_MD5);
+expect('20261209a check row: the three new rules are in the body', r.out.split('\n').pop() === `${applyAfter}|1|1|1`, r.out);
+r = psql(['-d', DB, '-1', '-At', '-f', MIG4]);
+expect('20261209a applies a second time (idempotent)', r.code === 0 && one(APPLY_MD5) === applyAfter, r.err);
+const sansApply = (text) => text.split(',').filter((x) => !x.startsWith('msm_apply_site:')).join(',');
+expect('20261209a changes msm_apply_site and no other function', applyAfter !== applyBefore && sansApply(one(MSM_FUNCTIONS)) === sansApply(round2Functions));
+expect('20261209a keeps who may run msm_apply_site (service role only)', one(`select coalesce(has_function_privilege('authenticated', p.oid, 'execute')::text, '') || '|' || has_function_privilege('service_role', p.oid, 'execute')::text from pg_proc p where p.proname = 'msm_apply_site'`) === 'false|true');
 
 one(`
 insert into organisations (id, name) values ('${ORG_A}', 'Company A'), ('${ORG_B}', 'Company B');
@@ -522,6 +538,8 @@ await import('./round2.mjs').then((m) => m.run({ q, one, json, lit, psql, expect
 
 // ── roll back (20261018 first, then round 2, as Peter would) ─────────────────
 const menusBefore = one(`select count(*) from menu_items`);
+r = psql(['-d', DB, '-1', '-At', '-f', RB4]);
+expect('the 20261209a roll back runs and puts msm_apply_site back exactly as Ops had it', r.code === 0 && one(APPLY_MD5) === applyBefore, r.err || one(APPLY_MD5));
 r = psql(['-d', DB, '-1', '-At', '-f', RB3]);
 expect('the 20261018 roll back runs and leaves no category trigger or function', r.code === 0 && r.out.split('\n').pop() === '0|0', r.err || r.out);
 expect('the 20261018 roll back leaves every other function as 20261017c made it', one(MSM_FUNCTIONS) === round2Functions);

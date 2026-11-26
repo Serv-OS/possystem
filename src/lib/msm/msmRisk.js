@@ -30,6 +30,10 @@ const TAX_WORDS = { 'dine-in': 'Eat in', takeaway: 'Takeaway', delivery: 'Delive
 const PRICE_WORDS = { dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' };
 const json = (v) => JSON.stringify(v ?? null);
 const rateWords = (r) => (r ? `${r.name}${r.percent != null ? ` (${pctText(r.percent)})` : ''}` : `the product's own ${activeTaxWords().tax}`);
+// A product's tax as picked: a rate, a tax profile by name (a name, no percent), or nothing set.
+const blankTax = (v) => v == null || v === '';
+const taxPickWords = (t) => (blankTax(t?.name) && blankTax(t?.percent) ? "each site's own tax"
+  : blankTax(t?.percent) ? `the "${String(t.name).trim()}" tax profile` : rateWords(t));
 
 /** Is a move from `before` to `after` (pence) more than 20%? Exactly 20% is not. */
 export function moreThan20(before, after) {
@@ -151,8 +155,12 @@ export function riskChecks(changes, central, sold = null, trading = null, opts =
     // VAT. The key holds the new rate: picking another rate needs a new tick.
     if (ch.target === 'product' && ('tax_rate_name' in a || 'tax_rate_percent' in a) && ch.op !== 'create') {
       const p = product.get(ch.entity_id);
-      const to = { name: a.tax_rate_name ?? p?.tax_rate_name, percent: a.tax_rate_percent ?? p?.tax_rate_percent };
-      add('vat', `${ch.entity_id}|rate|${json(to)}`, `${pName(ch.entity_id)} ${activeTaxWords().tax} changes from ${rateWords({ name: b.tax_rate_name ?? p?.tax_rate_name, percent: b.tax_rate_percent ?? p?.tax_rate_percent })} to ${rateWords(to)}. I have checked this is right.`);
+      // 5.12.104: a field the change SETS is read as set, even to nothing (a tax profile by name
+      // has no percent; "each site's own tax" has neither).
+      const pick = (o, k) => (k in o ? o[k] : p?.[k]);
+      const to = { name: pick(a, 'tax_rate_name'), percent: pick(a, 'tax_rate_percent') };
+      const from = { name: pick(b, 'tax_rate_name'), percent: pick(b, 'tax_rate_percent') };
+      add('vat', `${ch.entity_id}|rate|${json(to)}`, `${pName(ch.entity_id)} ${activeTaxWords().tax} changes from ${taxPickWords(from)} to ${taxPickWords(to)}. I have checked this is right.`);
     }
     if (ch.target === 'product' && 'tax_by_type' in a) {
       const before = has(b, 'tax_by_type') ? (b.tax_by_type || {}) : (product.get(ch.entity_id)?.tax_by_type || {});

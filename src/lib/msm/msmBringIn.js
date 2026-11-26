@@ -283,14 +283,17 @@ function bringMachinery(ctx) {
   };
   const rateOf = (id) => listOf(raw?.taxRates).find((r) => r.id === id) || null;
   const productFields = (r, parentId) => {
-    const rate = r.tax_rate_id ? rateOf(r.tax_rate_id) : null;
+    // 5.12.104: a real tax profile on the site's item comes in as its NAME (no percent), so the
+    // group product names it and every site uses its own profile of that name.
+    const ownProfile = r.tax_profile_id ? listOf(raw?.taxProfiles).find((x) => x && String(x.id) === String(r.tax_profile_id) && x.active !== false && !(x.generated_from_rate_id ?? x.generatedFromRateId)) : null;
+    const rate = ownProfile ? { name: ownProfile.name, rate: null } : (r.tax_rate_id ? rateOf(r.tax_rate_id) : null);
     const channels = {};
     for (const k of PUBLISHED_CHANNELS) channels[k] = num(r.pricing?.[k]);
     return {
       category_id: catOf(r.cat), extra_category_ids: listOf(r.cats).map(catOf).filter(Boolean), parent_product_id: parentId,
       type: r.type || 'simple', name: r.name ?? r.menu_name ?? 'Item', menu_name: r.menu_name ?? null, receipt_name: r.receipt_name ?? null,
       kitchen_name: r.kitchen_name ?? null, description: r.description ?? '', default_price: num(r.pricing?.base) ?? 0,
-      default_channels: channels, tax_rate_name: rate ? rate.name : null, tax_rate_percent: rate ? Number(rate.rate) : null,
+      default_channels: channels, tax_rate_name: rate ? rate.name : null, tax_rate_percent: rate && rate.rate != null ? Number(rate.rate) : null,
       allergens: listOf(r.allergens), tags: listOf(r.tags), image: r.image ?? null, modifier_groups: [],
       visibility: r.visibility ?? null, sold_alone: !!r.sold_alone, item_code: r.item_code ?? null, site_only_location_id: null,
       archived: false, sort_order: r.sort_order ?? 0, family_base: familyOf(r),
@@ -523,6 +526,9 @@ function settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHe
           changed++;
           continue;
         }
+        // 5.12.104: a tax profile the group would put on (or take off) the site's own row: the site
+        // keeps its own tax, the same kept key as its rate (a kept tax is never written, either way).
+        if (l.column === 'tax_profile_id') { if (!has(c.after.kept, 'tax_rate_id')) { c.after.kept.tax_rate_id = vr.tax_rate_id ?? null; changed++; } continue; }
         if (KEPT_COLUMNS.includes(l.column) && !sameValue(c.after.kept[l.column], vr[l.column] ?? null)) { c.after.kept[l.column] = vr[l.column] ?? null; changed++; }
         else if (KEPT_COLUMNS.includes(l.column) && !has(c.after.kept, l.column)) { c.after.kept[l.column] = vr[l.column] ?? null; changed++; }
         continue;
