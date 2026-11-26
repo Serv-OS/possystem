@@ -42,7 +42,7 @@ test('the places of one kind of money add up to its total, refunds and part paym
   assert.equal(by.kiosk.card, 6);
   assert.equal(by.till.checks, 3);
   const split = placeSplit(by, 'card');
-  assert.deepEqual(split.map((r) => r.label), ['At the till', 'Online and app', 'Kiosk']);
+  assert.deepEqual(split.map((r) => r.label), ['POS', 'Online and app', 'Kiosk']);
   assert.deepEqual(placeSplit(by, 'cash'), [], 'cash was one place: no split to show');
   assert.deepEqual(placeSplit(by, 'cash', { always: true }).map((r) => r.amount), [4]);
   assert.deepEqual(placeSplit({}, 'card'), []);
@@ -51,7 +51,7 @@ test('the places of one kind of money add up to its total, refunds and part paym
 test('the X and Z report names where card was taken, only when it was more than one place', () => {
   const both = summariseShift([check('a', null, 10), check('b', 'online', 9.4)]);
   const card = both.payments.find((p) => p.kind === 'card');
-  assert.deepEqual(card.split.map((r) => [r.label, r.amount]), [['At the till', 10], ['Online and app', 9.4]]);
+  assert.deepEqual(card.split.map((r) => [r.label, r.amount]), [['POS', 10], ['Online and app', 9.4]]);
   const text = Buffer.from(buildShiftReportDoc({ kind: 'Z', venueName: 'Test', sales: both.sales, payments: both.payments, currency: 'GBP' }).bytes?.() ?? []).toString('latin1');
   const one = summariseShift([check('a', null, 10)]);
   assert.deepEqual(one.payments.find((p) => p.kind === 'card').split, [], 'all at the till: the line is not repeated');
@@ -79,7 +79,7 @@ test('the shift is a window: every sale closed since it opened counts, stamped o
   assert.deepEqual(shiftWindowChecks(null, read), []);
   // stamped with the shift but closed a moment before its recorded start still belongs to it
   assert.deepEqual(shiftWindowChecks(shift, [{ id: 'early', shiftId: 'sh1', closedAt: at('07:59') }]).map((c) => c.id), ['early']);
-  assert.equal(awayFromTills(got), 1, 'one order was taken away from the tills');
+  assert.equal(awayFromTills(got), 1, 'one order was taken away from the POS');
   assert.equal(awayFromTills([{ id: 'v', source: 'online', status: 'voided' }]), 0);
 });
 

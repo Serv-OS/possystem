@@ -70,6 +70,9 @@ test('each source holds its own sales: a reward is not a sale, a void is not cou
   assert.equal(pence(by.qr.net), 600);
   assert.equal(pence(by.partner.net), 1500);
   assert.equal(by.partner.label, PLACE_WORDS.partner);
+  // Peter, 26 Nov 2026: "It needs to say POS". One word, used on every report that names the place.
+  assert.equal(PLACE_WORDS.till, 'POS');
+  assert.equal(by.till.label, 'POS');
 });
 
 test('a source with nothing is left out; a day with no sales has no rows; odd input is safe', () => {
@@ -77,7 +80,7 @@ test('a source with nothing is left out; a day with no sales has no rows; odd in
   assert.deepEqual(salesByPlace(null), []);
   n = 0;
   const till = salesByPlace([sale(null, { items: [line(6)], subtotal: 6, taxAmount: 1, total: 6, tenders: [card(6)] })]);
-  assert.deepEqual(till.map((r) => [r.place, r.label, r.checks]), [['till', 'At the till', 1]]);
+  assert.deepEqual(till.map((r) => [r.place, r.label, r.checks]), [['till', 'POS', 1]]);
   // a refund today on an older sale, with no sale today in that place: the place still shows, negative
   const only = salesByPlace([], { range: RANGE, refundRows: older() });
   assert.deepEqual(only.map((r) => [r.place, r.checks, pence(r.net)]), [['kiosk', 0, -200]]);
@@ -95,7 +98,7 @@ test('the X and the Z slip print Sales by source, between the sales and the paym
     assert.ok(head < t.indexOf('Payments'), 'above the payments');
     assert.ok(head > t.findIndex((l) => l.startsWith('Checks |')), 'below the sales');
     // the till: 16.80 of money sales less 2.42 VAT (1.00 + 0.80 + the money share of the loyalty order's VAT, 0.62)
-    assert.deepEqual(t.slice(head + 1, head + 6), ['At the till (3) | £14.38', 'Online and app (2) | £8.00', 'Kiosk (1) | £8.00', 'QR at the table (1) | £6.00', 'Delivery apps (1) | £15.00']);
+    assert.deepEqual(t.slice(head + 1, head + 6), ['POS (3) | £14.38', 'Online and app (2) | £8.00', 'Kiosk (1) | £8.00', 'QR at the table (1) | £6.00', 'Delivery apps (1) | £15.00']);
   }
   // a US venue words it "tax"; a narrow slip shortens the heading to fit one line
   const us = summariseShift(theDay(), { range: RANGE, currency: 'USD' });

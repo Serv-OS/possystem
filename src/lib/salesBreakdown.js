@@ -297,7 +297,8 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
 // salesBreakdown: checkPieces and the refunds made in the range) are added up per place.
 export const PLACE_ORDER = ['till', 'online', 'kiosk', 'qr', 'partner', 'other'];
 export const PLACE_WORDS = {
-  till: 'At the till', online: 'Online and app', kiosk: 'Kiosk', qr: 'QR at the table', partner: 'Delivery apps', other: 'Other',
+  // 26 Nov 2026 (5.12.108, Peter: "It needs to say POS"): the till is worded POS, as staff and owners call it.
+  till: 'POS', online: 'Online and app', kiosk: 'Kiosk', qr: 'QR at the table', partner: 'Delivery apps', other: 'Other',
 };
 const PLACE_OF = {
   '': 'till', pos: 'till', till: 'till', mpos: 'till', bar: 'till', handheld: 'till', pos_send_to_terminal: 'till', terminal: 'till',
