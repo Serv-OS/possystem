@@ -615,6 +615,7 @@ export const IMPORT_KINDS = Object.freeze([
   { kind: 'supplier_item', key: 'supplier_items', label: 'Supplier items and prices' },
   { kind: 'par', key: 'pars', label: 'Pars' },
   { kind: 'recipe', key: 'recipes', label: 'Recipes' },
+  { kind: 'bridge', key: 'bridges', label: 'Unit bridges' },
 ]);
 export const importKey = (kind) => IMPORT_KINDS.find((k) => k.kind === kind || k.key === kind)?.key || null;
 export const importKind = (key) => IMPORT_KINDS.find((k) => k.kind === key || k.key === key)?.kind || null;
@@ -629,7 +630,7 @@ const countOf = (counts, kind, action) => {
 const allOf = (counts, action) => {
   const c = counts || {};
   if (isNum(c[action])) return Number(c[action]);
-  return ['item', 'supplier', 'supplier_item', 'par', 'recipe'].reduce((t, k) => t + countOf(c, k, action), 0);
+  return ['item', 'supplier', 'supplier_item', 'par', 'recipe', 'bridge'].reduce((t, k) => t + countOf(c, k, action), 0);
 };
 
 // A recipe count the server answers: its own total ('new_recipes'), else the per kind shape.
@@ -654,6 +655,12 @@ export function importCountWords(counts) {
   let words = `${plural(newItems, 'new item')}, ${plural(priceChanges, 'price change')}, ${plural(problems, 'problem')}`;
   if (hasRecipeCount(c, 'new_recipes', 'new') || hasRecipeCount(c, 'changed_recipes', 'change')) {
     words += `, ${plural(recipeCount(c, 'new_recipes', 'new'), 'new recipe')}, ${plural(recipeCount(c, 'changed_recipes', 'change'), 'changed recipe')}`;
+  }
+  // 5.12.99: unit bridges are said only when the file has some (every other file reads as before)
+  const newBridges = isNum(c.new_bridges) ? Number(c.new_bridges) : countOf(c, 'bridge', 'new');
+  const changedBridges = isNum(c.changed_bridges) ? Number(c.changed_bridges) : countOf(c, 'bridge', 'change');
+  if (newBridges > 0 || changedBridges > 0) {
+    words += `, ${plural(newBridges, 'new unit bridge')}, ${plural(changedBridges, 'changed unit bridge')}`;
   }
   return words;
 }

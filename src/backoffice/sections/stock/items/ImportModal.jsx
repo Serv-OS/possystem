@@ -14,6 +14,9 @@
  * Nothing is written to a site until Import, and nothing writes an on hand, a cost or the ledger
  * except through the normal cost step.
  *
+ * 5.12.99: a file of unit bridges too ('30 oz of this item = 40 fl oz'): one bridge a line, checked and
+ * imported like the rest; the item's cost at each site follows.
+ *
  * Used by Stock items (Import) and a supplier's Items tab ('Import price list': kind
  * 'supplier_item', and that supplier for every row that names none).
  */
@@ -174,7 +177,7 @@ export default function ImportModal({ orgId, sites, kind = null, source = null, 
         <>
           {!source && <div style={{ marginBottom: 12 }}><Segmented value={from} onChange={setFrom} options={SOURCES} /></div>}
           <Field label="File" hint={from === 'csv'
-            ? 'A CSV file with headings in the first row: stock items, suppliers, supplier items and prices, pars, or recipes (one ingredient a line).'
+            ? 'A CSV file with headings in the first row: stock items, suppliers, supplier items and prices, pars, recipes (one ingredient a line), or unit bridges (Item, This much, Unit, Equals, Equal unit).'
             : 'The export file from Nory or MarketMan, saved as CSV.'}>
             <input type="file" accept=".csv,text/csv" onChange={(e) => { setFile(e.target.files?.[0] || null); setError(null); }} aria-label="File" />
           </Field>

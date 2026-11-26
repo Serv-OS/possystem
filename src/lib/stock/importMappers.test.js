@@ -130,8 +130,8 @@ test('the Phase 1 helpers: chunks of 2,000, VAT as a percent and back', () => {
 });
 
 test('the kinds and their fields: items, suppliers, supplier items, pars and (Drop 2) recipes for real', () => {
-  assert.deepEqual([...IMPORT_KINDS], ['items', 'suppliers', 'supplier_items', 'pars', 'recipes']);
-  assert.deepEqual({ ...STAGE_KIND }, { items: 'item', suppliers: 'supplier', supplier_items: 'supplier_item', pars: 'par', recipes: 'recipe' });
+  assert.deepEqual([...IMPORT_KINDS], ['items', 'suppliers', 'supplier_items', 'pars', 'recipes', 'bridges']);
+  assert.deepEqual({ ...STAGE_KIND }, { items: 'item', suppliers: 'supplier', supplier_items: 'supplier_item', pars: 'par', recipes: 'recipe', bridges: 'bridge' });
   assert.equal(CSV_COLUMNS.recipes.skip, undefined, 'recipes are no longer skipped');
   assert.deepEqual([...CSV_COLUMNS.recipes.required], ['name', 'ingredient', 'qty', 'unit']);
   assert.deepEqual([...CSV_COLUMNS.recipes.fields], ['name', 'kind', 'type', 'ingredient', 'item_sku', 'qty', 'unit', 'usable_pct', 'order_types', 'yield_qty', 'yield_unit', 'made_item', 'sites', 'till_product']);
@@ -580,6 +580,55 @@ test('sites: All, names split by ;, case blind, by id too; an empty cell means t
   assert.deepEqual([...siteLookup(new Map([['North Site', N1]]))], [['north site', N1]]);
   assert.deepEqual([...siteLookup({ 'South Site': N2 })], [['south site', N2]]);
   assert.equal(siteLookup(null).size, 0);
+});
+
+// ── unit bridges (5.12.99, migration 20261208a) ──
+const BRIDGE_FILE = [
+  'Item,This much,Unit,Equals,Equal unit',
+  'Olives Pitted,30,oz,40,fl oz',
+  'Honey,143.52,OZ,96,floz_us',
+  'Eggs,1,each,50,g',
+  'Olives Pitted,40,fl oz,30,oz',
+  ',1,each,2,g',
+].join('\n');
+
+test('unit bridges: a file of "this much = that much" is read as bridges only, one staged row a bridge', () => {
+  const table = parseCsv(BRIDGE_FILE);
+  assert.deepEqual(fileKinds('csv', table[0]), ['bridges'], 'not an item list, though it has Item and Unit');
+  const mapped = mapFile(table);
+  assert.deepEqual(mapped.order, ['bridges']);
+  assert.deepEqual(mapped.unknown, [], 'every heading is used');
+  assert.deepEqual(mapped.kinds.bridges.missing, []);
+  assert.equal(mapped.kinds.bridges.rows.length, 3, 'the row with no item is left out, and the same bridge the other way round folds into the first');
+  const us = stageFile(mapped, { siteIdByName: SITES, currency: 'USD' });
+  assert.deepEqual(us.problems, []);
+  assert.deepEqual(us.counts, { bridge: 3 });
+  assert.deepEqual(us.rows.map((r) => [r.row_no, r.kind, r.sites]), [[KIND_BLOCK.bridge + 2, 'bridge', null], [KIND_BLOCK.bridge + 3, 'bridge', null], [KIND_BLOCK.bridge + 4, 'bridge', null]]);
+  assert.deepEqual(us.rows[0].data, { item: 'Olives Pitted', item_sku: null, from_qty: 30, from_unit: 'oz', to_qty: 40, to_unit: 'floz_us' }, 'a US site reads fl oz as the US one');
+  assert.deepEqual(us.rows[1].data, { item: 'Honey', item_sku: null, from_qty: 143.52, from_unit: 'oz', to_qty: 96, to_unit: 'floz_us' }, 'a unit code is taken as it is');
+  assert.equal(fileRowOf(us.rows[2].row_no), 4, 'the check screen shows the line in the file');
+  const uk = stageFile(mapped, { siteIdByName: SITES, currency: 'GBP' });
+  assert.equal(uk.rows[0].data.to_unit, 'floz', 'a UK site reads fl oz as the UK one');
+  for (const f of CSV_COLUMNS.bridges.fields) assert.ok(FIELD_WORDS[f], `bridges.${f} has plain words`);
+});
+
+test('unit bridges: values that cannot be read are said, and the row still goes to the check screen', () => {
+  const table = parseCsv('Item,This much,Unit,Equals,Equal unit\nFlour,0,cup,120,g\nFlour X,one,scoops,2,g');
+  const st = stageFile(mapFile(table), { currency: 'USD' });
+  assert.equal(st.rows.length, 2);
+  assert.deepEqual(st.rows[0].data, { item: 'Flour', item_sku: null, from_qty: null, from_unit: 'cup_us', to_qty: 120, to_unit: 'g' });
+  assert.equal(st.rows[1].data.from_unit, 'scoops', 'a unit ServOS does not know goes as typed: the database says so');
+  assert.deepEqual(st.problems.map((p) => p.words), ['Row 2: "0" is not an amount above 0 (This much).', 'Row 3: "one" is not an amount above 0 (This much).']);
+  // half a bridge file (no 'Equals') is not taken for one: the check screen then shows what it was read as
+  assert.deepEqual(fileKinds('csv', ['Item', 'This much', 'Unit']), ['items']);
+  assert.equal(missingWords(rowsFor('csv', 'bridges', parseCsv('Item,This much,Unit\nFlour,1,cup')).missing), 'These columns are missing: Equals, Equal unit.');
+});
+
+test('unit bridges: other files read exactly as before', () => {
+  assert.deepEqual(fileKinds('csv', ['Name', 'Category', 'Base unit']), ['items']);
+  assert.deepEqual(fileKinds('csv', ['Item', 'Unit', 'Supplier', 'Price']), ['items', 'suppliers', 'supplier_items']);
+  assert.deepEqual(fileKinds('csv', ['Recipe', 'Ingredient', 'Qty', 'Unit']), ['recipes']);
+  assert.deepEqual(fileKinds('csv', ['Item', 'Site', 'Par']), ['pars']);
 });
 
 test('the module is plain words, no long dashes, no payment provider names (house rules)', () => {
