@@ -28,7 +28,7 @@
 //     nothing: its row comes out of the draft, and so do the option rows its turn on staged there,
 //     unless another product still on at that site needs them (droppedOptionRows).
 
-import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText, keptWithoutNoPrice, noPriceAt } from '../../../supabase/functions/_shared/msmModel.js';
+import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText, keptWithoutNoPrice, noPriceAt, CATEGORY_RULE_OLD_WORDS } from '../../../supabase/functions/_shared/msmModel.js';
 
 export { noPriceAt };
 import { optionRowsForNewSites } from './msmGroupEdit.js';
@@ -260,7 +260,7 @@ export function defaultPriceChange(ctx, productId, value, channel = null) {
 
 const PRODUCT_EDITABLE = STAGE_FIELDS.product.filter((f) => !['family_base', 'site_only_location_id'].includes(f));
 const TEXT_FIELDS = new Set(['name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'item_code']);
-const EMPTY_IS_NONE = new Set(['tags', 'allergens']);
+const EMPTY_IS_NONE = new Set(['tags', 'allergens', 'extra_category_ids']);
 
 /** Plain words for what is wrong with a product's fields ([] when nothing). */
 export function productProblems(fields, ctx = {}) {
@@ -443,6 +443,38 @@ export function newCategoryChange(ctx, { id, label, parent_id = null, route_like
       before: {},
     },
   };
+}
+
+/**
+ * Rename a category the group menu has (5.12.110). Peter, 26 Nov 2026: the names could not be
+ * changed in the Multi site menu, "also in categories". The new name goes to that category at
+ * every site when the draft is published. Its place and colour stay as each site has them.
+ * Returns { change } (null when the name is the same), or { words }.
+ */
+export function categoryRenameChange(ctx, categoryId, label) {
+  const c = findCategory(ctx.eff, categoryId);
+  if (!c) return { words: 'That category is not in the group menu.' };
+  if (c.archived) return { words: 'That category has been taken off the group menu. Bring it back first.' };
+  const name = String(label ?? '').trim();
+  if (!name) return { words: 'Give the category a name.' };
+  if (name.length > 80) return { words: 'The name is too long (80 letters at most).' };
+  if (name === String(c.label ?? '').trim()) return { change: null };
+  // Two categories with one name in the same place cannot be told apart on the POS or in reports.
+  const twin = listOf(ctx.eff?.categories).find((x) => x.id !== categoryId && !x.archived
+    && (x.parent_id || null) === (c.parent_id || null) && String(x.label ?? '').trim().toLowerCase() === name.toLowerCase());
+  if (twin) return { words: `There is already a category called ${twin.label} here. Pick another name.` };
+  const liveC = findCategory(ctx.live, categoryId);
+  return { change: { target: 'category', entity_id: categoryId, location_id: null, op: 'update', after: { label: name }, before: { label: liveC ? liveC.label ?? null : null } } };
+}
+
+/**
+ * The database's words from before 20261211a ran (it still refuses a category name), turned into
+ * what to do about it. Any other words come back as they are.
+ */
+export function categoryGuardWords(words) {
+  return String(words || '').includes(CATEGORY_RULE_OLD_WORDS)
+    ? 'Renaming a category needs one database update that has not been run yet (SQL 20261211a). Nothing was changed. Ask ServOS to run it.'
+    : words;
 }
 
 // ── Many at once (the bulk bar) ─────────────────────────────────────────────

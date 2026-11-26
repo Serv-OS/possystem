@@ -45,6 +45,7 @@ import { Btn, Pill, Notice, Count } from './msmUi';
 import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto, undoTarget, draftCount } from '../../../lib/msm/msmStatus';
 import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { productsWithNoCategory, repairNoCategoryChanges } from '../../../lib/msm/msmBringIn';
+import { categoryGuardWords } from '../../../lib/msm/msmEdit';
 import { assembleProfilesByLoc } from '../../../lib/msm/msmTaxProfiles';
 import MsmGroups from './MsmGroups';
 import { WORDS } from '../../../lib/msm/msmWords';
@@ -272,7 +273,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       if (r.conflicts) setNote({ tone: 'warn', text: `${r.conflicts} of these were changed by someone else at the same moment. The grid shows their change now.` });
       else if (r.failed?.length) {
         if ((r.failed[0].words || '').includes('cannot change the group menu')) onAccessLost?.();
-        setNote({ tone: 'bad', text: `${r.failed.length} change${r.failed.length === 1 ? '' : 's'} did not save: ${r.failed[0].words}` });
+        setNote({ tone: 'bad', text: `${r.failed.length} change${r.failed.length === 1 ? '' : 's'} did not save: ${categoryGuardWords(r.failed[0].words)}` });
       } else if (done && !quiet) {
         // The status bar already offers Review and publish: the note keeps only Undo, tied to the
         // draft this change went into (17 Oct verification).

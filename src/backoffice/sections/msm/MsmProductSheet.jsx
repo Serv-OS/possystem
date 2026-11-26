@@ -86,14 +86,14 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
 
   const firstRate = rateChoices[0] || null;
   const blank = useMemo(() => ({
-    name: '', menu_name: '', receipt_name: '', kitchen_name: '', description: '', category_id: '', parent_product_id: '',
+    name: '', menu_name: '', receipt_name: '', kitchen_name: '', description: '', category_id: '', extra_category_ids: [], parent_product_id: '',
     default_price: '', tax_rate_name: firstRate?.name ?? null, tax_rate_percent: firstRate?.percent ?? null, tax_by_type: {},
     allergens: [], tags: [], visibility: { pos: true, kiosk: true, online: true, onlineDelivery: true }, modifier_groups: [], image: '', item_code: '', sold_alone: true, type: 'simple',
     default_channels: {},
   }), [firstRate]);
   const fromProduct = (x) => ({
     name: x.name || '', menu_name: x.menu_name || '', receipt_name: x.receipt_name || '', kitchen_name: x.kitchen_name || '', description: x.description || '',
-    category_id: x.category_id || '', parent_product_id: x.parent_product_id || '', default_price: price2(x.default_price),
+    category_id: x.category_id || '', extra_category_ids: [...(x.extra_category_ids || [])], parent_product_id: x.parent_product_id || '', default_price: price2(x.default_price),
     tax_rate_name: x.tax_rate_name ?? null, tax_rate_percent: x.tax_rate_percent ?? null, tax_by_type: x.tax_by_type || {}, allergens: x.allergens || [], tags: x.tags || [],
     visibility: x.visibility || { pos: true, kiosk: true, online: true, onlineDelivery: true }, modifier_groups: x.modifier_groups || [],
     image: x.image || '', item_code: x.item_code || '', sold_alone: x.type === 'subitem' ? x.sold_alone === true : x.sold_alone !== false, type: x.type || 'simple',
@@ -152,6 +152,9 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     f.default_price = groupPrice;
     f.parent_product_id = f.parent_product_id || null;
     f.category_id = f.category_id || null;
+    // "Also in": never its own category twice, never a size's or an option only sub item's (they are
+    // on no menu of their own).
+    f.extra_category_ids = (f.parent_product_id || isOptionOnlyItem(f)) ? [] : (f.extra_category_ids || []).filter((c) => c && c !== f.category_id);
     f.menu_name = f.menu_name || f.name;
     for (const k of ['receipt_name', 'kitchen_name', 'image', 'item_code']) f[k] = String(f[k] || '').trim() || null;
     f.default_channels = groupChannels();
@@ -497,6 +500,21 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             {productRate && missingFor(productRate).length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{missingFor(productRate).join(', ')} {missingFor(productRate).length === 1 ? 'has' : 'have'} no rate like this. Add it in Settings, Tax, or {missingFor(productRate).length === 1 ? 'that site' : 'those sites'} cannot be published.</div>}
           </Field>
         </div>
+
+        {/* 5.12.110 (Peter, 26 Nov 2026: "in the normal menu we have this feature where you can add
+            products to multiple categories"): Menu Manager's "Also in" is locked for a group product
+            (publish writes it), and this sheet had no way to set it. The same chips, here. */}
+        {!optionOnly && !isSizeForm && tree.filter((t) => t.id !== form.category_id).length > 0 && (
+          <Field label="Also in" hint="Extra categories it also shows in, on the POS, kiosk and online. Tap to add or take away.">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} data-testid="msm-also-in">
+              {tree.filter((t) => t.id !== form.category_id).map((t) => {
+                const on = (form.extra_category_ids || []).includes(t.id);
+                return <button key={t.id} type="button" aria-pressed={on} onClick={() => set('extra_category_ids', on ? form.extra_category_ids.filter((x) => x !== t.id) : [...(form.extra_category_ids || []), t.id])}
+                  style={{ padding: '5px 10px', borderRadius: 20, border: `1px solid ${on ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: on ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: on ? 'var(--t1)' : 'var(--t3)', fontSize: 12, fontWeight: 650, cursor: 'pointer', fontFamily: 'inherit' }}>{t.label}</button>;
+              })}
+            </div>
+          </Field>
+        )}
 
         {subChanged && (
           <div style={{ marginBottom: 12 }}>

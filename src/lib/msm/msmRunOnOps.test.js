@@ -7,7 +7,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { CATEGORY_UPDATE_FIELDS, categoryUpdateWords } from '../../../supabase/functions/_shared/msmModel.js';
+import { CATEGORY_RULE_OLD_WORDS } from '../../../supabase/functions/_shared/msmModel.js';
+
+// 20261018 is pinned as Ops ran it in October: the list and the words it held THEN. The rule as it
+// is now (the name is allowed, 5.12.110) is 20261211a, pinned by msmCategoryRename.test.js.
+const RULE_FIELDS_AS_RUN = ['archived', 'route_like_id'];
 
 const root = new URL('../../../', import.meta.url);
 const exists = (p) => fs.existsSync(new URL(p, root));
@@ -29,15 +33,15 @@ test('20261017c is byte for byte the file Ops ran on 18 Oct (any later change go
   assert.doesNotMatch(read(ROUND2), /category_fields_ok/);
 });
 
-test('20261018 holds the category rule: msmModel.CATEGORY_UPDATE_FIELDS and the same words, only on an existing category', () => {
+test('20261018 holds the category rule as Ops ran it: its two fields and its words, only on an existing category', () => {
   assert.ok(exists(RULE) && exists(RULE_RB), 'the category rule is its own migration with a roll back');
   const sql = read(RULE);
   const fn = fnText(sql, 'msm_changes_category_fields');
   assert.ok(fn, 'public.msm_changes_category_fields()');
   const m = /if new\.target = 'category' and new\.op <> 'create' and jsonb_typeof\(new\.after\) = 'object'\s+and exists \(select 1 from jsonb_object_keys\(new\.after\) k where k <> all \(array\[([^\]]+)\]\)\) then/.exec(fn);
   assert.ok(m, 'refuses other fields on a category that is not new');
-  assert.deepEqual([...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]), [...CATEGORY_UPDATE_FIELDS]);
-  const words = categoryUpdateWords({ target: 'category', op: 'update', after: { label: 'x' } });
+  assert.deepEqual([...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]), RULE_FIELDS_AS_RUN);
+  const words = CATEGORY_RULE_OLD_WORDS;
   assert.ok(words && fn.includes(`raise exception '${words.replace(/'/g, "''")}' using errcode = '22023'`), 'the database says what the screen says');
   assert.match(fn, /return new;\s*end\s*$/);
   assert.doesNotMatch(fn, /security definer/, 'it reads no table, so it needs no extra rights');

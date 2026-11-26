@@ -253,15 +253,17 @@ test('follow up 5: a size with no VAT rate turned on where its product has order
 });
 
 // ── 6. A category the group menu already has ────────────────────────────────
-test('follow up 6: a category the group menu already has takes only "send like" and removed or back; a new one takes everything', () => {
-  assert.deepEqual([...(model.CATEGORY_UPDATE_FIELDS || [])], ['archived', 'route_like_id']);
+test('follow up 6: a category the group menu already has takes only "send like", removed or back and (5.12.110) its name; a new one takes everything', () => {
+  assert.deepEqual([...(model.CATEGORY_UPDATE_FIELDS || [])], ['archived', 'route_like_id', 'label']);
   const k = 'aaaaaaaa-0000-4000-8000-00000000c001';
   const refused = mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'update', after: { label: 'Hot', color: '#000000' } });
   assert.equal(refused.action, 'none');
-  assert.match(refused.words, /A category's name, place and colour stay as each site has them/);
+  assert.match(refused.words, /A category's place and colour stay as each site has them/);
+  // 5.12.110: the name alone goes through (Peter, 26 Nov 2026).
+  assert.equal(mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'update', after: { label: 'Hot' }, before: { label: 'Hot drinks' } }).action, 'insert');
   assert.equal(mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'update', after: { route_like_id: k } }).action, 'insert');
   assert.equal(mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'update', after: { archived: true } }).action, 'insert');
-  assert.equal(mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'remove', after: { label: 'x' } }).action, 'none');
+  assert.equal(mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'remove', after: { color: '#000000' } }).action, 'none');
   // A new category takes every field, also when it is edited again before publishing.
   const created = mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'create', after: { label: 'Soups', sort_order: 4 } });
   assert.equal(created.action, 'insert');
