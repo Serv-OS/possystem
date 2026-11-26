@@ -357,6 +357,16 @@ export function demoMsm() {
     }
     return m;
   };
-  demo = { api, client, sites, costs, orgId: DEMO_ORG };
+  // Made up recipe targets for some of them (5.12.105): 70% on the coffees, 80% on the two that
+  // cannot reach it, none on the food, so the GP view shows all three states.
+  const targets = (loc) => {
+    const m = new Map();
+    for (const i of client.db.menu_items.filter((x) => x.location_id === loc)) {
+      if (/latte|flat white|americano/i.test(i.name)) m.set(i.id, 70);
+      else if (/cappuccino|espresso/i.test(i.name)) m.set(i.id, 80);
+    }
+    return m;
+  };
+  demo = { api, client, sites, costs, targets, orgId: DEMO_ORG };
   return demo;
 }

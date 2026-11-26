@@ -27,7 +27,7 @@ import {
   visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable, showLabel, noPriceWords,
 } from '../../../lib/msm/msmGrid';
 import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes } from '../../../lib/msm/msmEdit';
-import { marginFor, vatMaps } from '../../../lib/msm/msmMargin';
+import { marginFor, vatMaps, gpTone, gpCellWords, gpHoverWords } from '../../../lib/msm/msmMargin';
 import { shownPriceTypes, shownTaxTypes, vatCell } from '../../../lib/msm/msmOrderTypes';
 import { siteTaxCell, groupTaxCell, groupRunsOnProfiles } from '../../../lib/msm/msmTaxProfiles';
 import { TAX_TYPE_WORDS, colWord } from '../../../lib/msm/msmWords';
@@ -510,7 +510,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                   let gp = null;
                   if (gpOn && c.exists) {
                     const m = costs.byLoc[s.id];
-                    gp = m ? marginFor({ price: c.price, vatPct: vat[s.id] ? vat[s.id](p) : Number(p.tax_rate_percent) || 0, cost: m.get(ps?.venue_item_id) ?? null })
+                    gp = m ? marginFor({ price: c.price, vatPct: vat[s.id] ? vat[s.id](p) : Number(p.tax_rate_percent) || 0, cost: m.get(ps?.venue_item_id) ?? null, target: costs.targetsByLoc?.[s.id]?.get(ps?.venue_item_id) ?? null })
                       : costs.status[s.id] === 'failed' ? { noCost: true, noRecipe: true } : null;
                   }
                   return (
@@ -544,8 +544,11 @@ const headCell = { display: 'flex', flexDirection: 'column', alignItems: 'center
 const cellBase = { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7, padding: '0 10px', boxSizing: 'border-box', borderRight: '1px solid var(--bdr)', fontVariantNumeric: 'tabular-nums' };
 const stagedMark = { position: 'absolute', left: 0, top: 6, bottom: 6, width: 3, borderRadius: 2, background: 'var(--amber, #F5A623)' };
 // GP under 60% is shown in coral, never amber (amber means a change waiting to go live).
-const GP_LOW = 60;
+// 5.12.105 (Peter, 25 Nov 2026: "where are these figures getting pulled from ... we cant just make
+// this stuff up"). GP was green from a fixed 60% nobody chose. It is now judged against the
+// product's own recipe Target GP (lib/msm/msmMargin.js gpTone); with no target it has no colour.
 const GP_LOW_COLOUR = 'var(--coral, var(--red))';
+const GP_COLOUR = { good: 'var(--grn, var(--acc))', low: GP_LOW_COLOUR, plain: 'var(--t2)', none: 'var(--t4)' };
 const focusRing = { boxShadow: 'inset 0 0 0 2px var(--acc)' };
 
 function EditBox({ editing, setEditing, commitEdit }) {
@@ -613,8 +616,9 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, siteName =
             <Switch small on={!off} disabled={!editable} ariaLabel={`${nm} at ${siteName}: ${off ? 'off' : 'on'}`} title={off ? 'Off at this site: turn on' : 'On at this site: turn off'} onChange={(v) => onToggle(p, loc, v)} />
           </div>
           {gpOn && (
-            <span style={{ fontSize: 10.5, fontWeight: 650, color: gp && !gp.noRecipe ? (gp.gpPct != null && gp.gpPct < GP_LOW ? GP_LOW_COLOUR : 'var(--grn, var(--acc))') : 'var(--t4)' }}>
-              {gp ? (gp.noCost ? 'No cost' : gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`) : '…'}
+            <span style={{ fontSize: 10.5, fontWeight: 650, color: GP_COLOUR[gpTone(gp)], whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}
+              title={gpHoverWords(gp, money) || undefined}>
+              {gp ? (gp.noCost ? 'No cost' : gp.noRecipe ? 'No recipe' : gpCellWords(gp)) : '…'}
             </span>
           )}
         </>
@@ -667,8 +671,10 @@ function Key({ mode, onProfiles = false }) {
   const [open, setOpen] = useState(() => !keySeen());
   useEffect(() => { try { localStorage.setItem(KEY_SEEN, '1'); } catch { /* private mode: it opens again next time */ } }, []);
   const dot = (c) => <span style={{ width: 7, height: 7, borderRadius: 4, background: c, display: 'inline-block', flexShrink: 0 }} />;
-  const priceItems = [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>3.40</span>, 'Grey price: follows the group price.'],
-    [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>3.60</span>, 'Bold price: this site\'s own price.'],
+  // 5.12.105 (Peter, 25 Nov 2026: "where are these figures getting pulled from"): the key held
+  // sample figures (3.40, 3.60, 65% GP, 48% GP) that read as data. A key says what a mark means.
+  const priceItems = [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>Grey price</span>, 'follows the group price.'],
+    [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>Bold price</span>, 'this site\'s own price.'],
     [<span key="a" style={{ width: 3, height: 14, borderRadius: 2, background: 'var(--amber, #F5A623)', display: 'inline-block' }} />, 'Amber bar: a change waiting to go live.'],
     [<span key="f" style={{ color: 'var(--t4)' }}>Off here</span>, 'Turned off at that site.'],
     [<span key="s" style={{ border: '1px dashed var(--bdr2)', borderRadius: 6, padding: '0 5px', color: 'var(--t3)', fontWeight: 700 }}>+ Sell here</span>, 'Not sold at that site yet: tap to sell it there.'],
@@ -689,9 +695,10 @@ function Key({ mode, onProfiles = false }) {
       [<span key="c" style={{ color: 'var(--t1)', fontWeight: 750 }}>{tt('Group VAT')}</span>, 'The first column: what every site follows unless it keeps its own.']]
     : mode === 'gp'
       ? [...priceItems.slice(0, 4),
-        [<span key="gg" style={{ color: 'var(--grn, var(--acc))', fontWeight: 650 }}>65% GP</span>, `Green: GP ${GP_LOW}% or more.`],
-        [<span key="gl" style={{ color: GP_LOW_COLOUR, fontWeight: 650 }}>48% GP</span>, `Coral: GP under ${GP_LOW}%.`],
-        [<span key="gn" style={{ color: 'var(--t4)' }}>No recipe</span>, 'No recipe or no cost at that site.']]
+        [<span key="gg" style={{ color: GP_COLOUR.good, fontWeight: 650 }}>Green GP</span>, 'at or above the Target GP set on its recipe.'],
+        [<span key="gl" style={{ color: GP_COLOUR.low, fontWeight: 650 }}>Coral GP</span>, 'under the Target GP set on its recipe.'],
+        [<span key="gp" style={{ color: GP_COLOUR.plain, fontWeight: 650 }}>Plain GP</span>, 'its recipe has no Target GP, so it is not judged. Set one in Produce, Recipes.'],
+        [<span key="gn" style={{ color: 'var(--t4)' }}>No recipe</span>, 'no recipe or no cost at that site.']]
       : priceItems;
   if (!open) {
     return (

@@ -43,7 +43,7 @@ import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP,
 import { summarise } from '../../../lib/msm/msmSummary';
 import { profileChoices, profileChoiceOf, choiceToProfile, sitesMissingProfile, groupRunsOnProfiles, isProfileTax } from '../../../lib/msm/msmTaxProfiles';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
-import { marginFor } from '../../../lib/msm/msmMargin';
+import { marginFor, gpTone, gpWordsWithTarget } from '../../../lib/msm/msmMargin';
 import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue, pctText, noPriceAt } from '../../../../supabase/functions/_shared/msmModel.js';
 import { Btn, Pill, Switch, Sheet, Field, Notice, Segmented, SummaryBox, ConfirmTicks } from './msmUi';
 import { ui, money } from './msmStyle';
@@ -526,7 +526,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
               const kept = ps?.kept && typeof ps.kept === 'object' ? Object.entries(ps.kept).filter(([col]) => col !== 'no_price') : [];
               const noPrice = !!ps && noPriceAt(p, ps) && !sf.price;
               const costMap = costs.byLoc[s.id];
-              const gp = showGp && ps && costMap ? marginFor({ price: charge, vatPct: Number(form.tax_rate_percent) || 0, cost: costMap.get(ps.venue_item_id) ?? null }) : null;
+              const gp = showGp && ps && costMap ? marginFor({ price: charge, vatPct: Number(form.tax_rate_percent) || 0, cost: costMap.get(ps.venue_item_id) ?? null, target: costs.targetsByLoc?.[s.id]?.get(ps.venue_item_id) ?? null }) : null;
               const elsewhere = false;
               const ownTypeKeys = Object.keys(ps?.kept?.tax_overrides || {}).filter((k) => ['drive-thru', 'collection'].includes(k) && ps.kept.tax_overrides[k] != null);
               return (
@@ -568,7 +568,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                           {editable && <Btn small kind="link" onClick={() => toGroupValue(s.id, 'no_price')}>Use the group price</Btn>}
                         </span>
                       )}
-                      {gp && <Pill tone={gp.noRecipe ? 'neutral' : 'acc'}>{gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`}</Pill>}
+                      {gp && <Pill tone={{ good: 'acc', low: 'warn', plain: 'neutral', none: 'neutral' }[gpTone(gp)]}>{gpWordsWithTarget(gp, money)}</Pill>}
                       {kept.filter(([col, v]) => !(col === 'tax_overrides' && !Object.keys(v || {}).some((k) => ORDER_TYPE_TAX_KEYS.includes(k)))).map(([col, v]) => (
                         <span key={col} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                           <Pill tone="blue" title="This site keeps its own value; publishing never changes it there">{s.name} keeps its own {colWord(col)}{col === 'tax_overrides' ? '' : `: ${keptValueWords(col, v, { rates: ratesByLoc[s.id] })}`}</Pill>

@@ -37,16 +37,65 @@ export function netOf(price, vatPct) {
  *   cost     the plate cost from the venue's recipe, or null when there is no recipe
  * Returns { noRecipe: true, words: 'No recipe' } or { net, cost, gp, gpPct, words }.
  */
-export function marginFor({ price, vatPct = 0, cost = null }) {
+export function marginFor({ price, vatPct = 0, cost = null, target = null }) {
   if (cost == null || !Number.isFinite(Number(cost))) return { noRecipe: true, words: 'No recipe' };
   const net = netOf(price, vatPct);
-  if (net == null) return { noRecipe: false, net: null, cost: Number(cost), gp: null, gpPct: null, words: 'No price' };
+  const t = targetOf(target);
+  if (net == null) return { noRecipe: false, net: null, cost: Number(cost), gp: null, gpPct: null, target: t, under: null, words: 'No price' };
   const pct = gpPct(net, cost);
+  const shown = pct == null ? null : Math.round(pct * 10) / 10;
   return {
     noRecipe: false, net: round2(net), cost: round2(Number(cost)), gp: round2(gpAmount(net, cost)),
-    gpPct: pct == null ? null : Math.round(pct * 10) / 10,
+    gpPct: shown,
+    // 5.12.105: against the RECIPE's own Target GP, and nothing else. No target, no verdict.
+    target: t, under: t == null || shown == null ? null : shown < t,
     words: pct == null ? 'No price' : `${Math.round(pct)}% GP`,
   };
+}
+
+/** A recipe's Target GP as a number from 0 to 100, or null (none set, or not a number). */
+export function targetOf(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
+}
+
+/**
+ * The colour a GP figure takes (5.12.105; Peter, 25 Nov 2026: "we cant just make this stuff up").
+ * It used to be green from a fixed 60% that nobody chose. Now: 'good' at or above the recipe's own
+ * Target GP, 'low' under it, and 'plain' when the recipe has no target (a figure, no verdict).
+ */
+export function gpTone(margin) {
+  if (!margin || margin.noRecipe || margin.gpPct == null) return 'none';
+  if (margin.under == null) return 'plain';
+  return margin.under ? 'low' : 'good';
+}
+
+/**
+ * The grid's one line: "62% GP · target 70%" or "62% GP · no target". The box is as wide as the old
+ * "62% GP · cost 1.20", and three parts wrapped onto a second line and ran into the row below, so
+ * the cost moves to the hover words (gpHoverWords) and stays on the product sheet.
+ */
+export function gpCellWords(margin) {
+  if (!margin) return '';
+  if (margin.noRecipe) return margin.words || 'No recipe';
+  return `${margin.words} · ${margin.target == null ? 'no target' : `target ${Math.round(margin.target * 10) / 10}%`}`;
+}
+
+/** The hover words for a GP box: the cost, and the verdict against the recipe's target. */
+export function gpHoverWords(margin, money = (n) => String(n)) {
+  if (!margin || margin.noRecipe) return '';
+  const cost = `Cost ${money(margin.cost)}.`;
+  if (margin.target == null) return `${cost} This product's recipe has no Target GP, so the figure is not judged. Set one on the recipe (Produce, Recipes, Details).`;
+  return `${cost} ${margin.under ? 'Under' : 'At or above'} its recipe's Target GP of ${Math.round(margin.target * 10) / 10}%.`;
+}
+
+/** "62% GP · cost 1.20 · target 70%" or "... · no target set". */
+export function gpWordsWithTarget(margin, money = (n) => String(n)) {
+  if (!margin) return '';
+  if (margin.noRecipe) return margin.words || 'No recipe';
+  const target = margin.target == null ? 'no target set' : `target ${Math.round(margin.target * 10) / 10}%`;
+  return `${margin.words} · cost ${money(margin.cost)} · ${target}`;
 }
 
 /**
@@ -78,7 +127,7 @@ export function plateCosts(links, recipes, ctx) {
  *   vat        { [locationId]: (product) => vatPct }         (the site's mapped rate)
  * Returns Map(productId -> Map(locationId -> marginFor(...))).
  */
-export function siteMargins(central, costs, vat) {
+export function siteMargins(central, costs, vat, targets = null) {
   const prices = new Map((central?.products || []).map((p) => [p.id, p]));
   const out = new Map();
   for (const ps of central?.productSites || []) {
@@ -89,7 +138,8 @@ export function siteMargins(central, costs, vat) {
     const cost = costMap ? (costMap.get(ps.venue_item_id) ?? null) : null;
     const pct = typeof vat?.[ps.location_id] === 'function' ? vat[ps.location_id](p) : Number(p.tax_rate_percent) || 0;
     if (!out.has(p.id)) out.set(p.id, new Map());
-    out.get(p.id).set(ps.location_id, marginFor({ price, vatPct: pct, cost }));
+    const target = targets?.[ps.location_id] ? (targets[ps.location_id].get(ps.venue_item_id) ?? null) : null;
+    out.get(p.id).set(ps.location_id, marginFor({ price, vatPct: pct, cost, target }));
   }
   return out;
 }
@@ -98,7 +148,7 @@ export function siteMargins(central, costs, vat) {
  * GP before and after for the Change prices preview rows (msmPrice.js applyPriceChange rows).
  * Returns the rows with { gpBefore, gpAfter } added.
  */
-export function withMargins(rows, central, costs, vat) {
+export function withMargins(rows, central, costs, vat, targets = null) {
   const prod = new Map((central?.products || []).map((p) => [p.id, p]));
   const ps = new Map((central?.productSites || []).map((r) => [`${r.product_id}|${r.location_id}`, r]));
   return (rows || []).map((r) => {
@@ -107,7 +157,8 @@ export function withMargins(rows, central, costs, vat) {
     const s = ps.get(`${r.productId}|${r.locationId}`);
     const cost = s && costs?.[r.locationId] ? (costs[r.locationId].get(s.venue_item_id) ?? null) : null;
     const pct = typeof vat?.[r.locationId] === 'function' ? vat[r.locationId](p, r.channel || null) : Number(p?.tax_rate_percent) || 0;
-    return { ...r, gpBefore: marginFor({ price: r.before, vatPct: pct, cost }), gpAfter: marginFor({ price: r.after, vatPct: pct, cost }) };
+    const target = s && targets?.[r.locationId] ? (targets[r.locationId].get(s.venue_item_id) ?? null) : null;
+    return { ...r, gpBefore: marginFor({ price: r.before, vatPct: pct, cost, target }), gpAfter: marginFor({ price: r.after, vatPct: pct, cost, target }) };
   });
 }
 

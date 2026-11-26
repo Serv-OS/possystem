@@ -6,7 +6,8 @@ import { tillIsIdle, isMsmAutoApply, shouldCatchUp } from './msmTill.js';
 
 test('GP against the net price; no recipe says so and never shows a figure', () => {
   assert.equal(Math.round(netOf(3.6, 20) * 100) / 100, 3);
-  assert.deepEqual(marginFor({ price: 3.6, vatPct: 20, cost: 0.9 }), { noRecipe: false, net: 3, cost: 0.9, gp: 2.1, gpPct: 70, words: '70% GP' });
+  // 5.12.105: the figure carries its recipe's target and verdict (none given: no target, no verdict).
+  assert.deepEqual(marginFor({ price: 3.6, vatPct: 20, cost: 0.9 }), { noRecipe: false, net: 3, cost: 0.9, gp: 2.1, gpPct: 70, target: null, under: null, words: '70% GP' });
   assert.deepEqual(marginFor({ price: 3.6, vatPct: 20, cost: null }), { noRecipe: true, words: 'No recipe' });
   assert.equal(marginFor({ price: 0, vatPct: 20, cost: 1 }).words, 'No price');
 });
