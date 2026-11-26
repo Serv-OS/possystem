@@ -26,6 +26,7 @@ import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWor
 import { msmManagedState, subscribeMsmManaged, isMsmManaged } from '../../lib/msm/msmManaged.js';
 import { itemLock, groupLock, OWNED_TAX_KEYS } from '../../lib/msm/msmLock.js';
 import { ONCE_EACH, isOnceEach, isSeveral } from '../../lib/choiceKinds.js';
+import { SOLD_AS_TYPES, SOLD_AS_WORDS, notSoldAs, toggleSoldAs, withNotSoldAs, soldAsSummary, sameSoldAs } from '../../lib/soldAs.js';
 import { MsmLockBanner, MsmLocked } from './msm/MsmLockNote';
 import { useConfirm } from './msm/useConfirm';
 import { useMsmLockState } from './msm/useMsmLockState';
@@ -3135,6 +3136,48 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             })()}
 
             {/* v4.6.2b: visibility (POS/Kiosk/Online/Delivery) UI removed — surface targeting will move to per-menu assignment in v4.6.3+. Existing visibility data preserved on items. */}
+            {/* 5.12.115 "Sold as" (lib/soldAs.js; Peter, 26 Nov 2026: "we also need to be able to say if a
+                product can be sold as that order type", wine is dine in only). Ticked = sold on that
+                order type. A size follows its product, so a size has no boxes of its own. Head office
+                sets it for a product the group menu manages. */}
+            {!item.parentId && !isOptionOnlyItem(item) && (() => {
+              const no = notSoldAs(item);
+              const mates = (menuItems || []).filter(i => i && i.id !== item.id && !i.archived && !i.parentId && item.cat && i.cat === item.cat && !isOptionOnlyItem(i));
+              const differ = mates.filter(i => !sameSoldAs(i, item));
+              const catLabel = allCategories.find(c => c.id === item.cat)?.label || 'this category';
+              return (
+                <MsmLocked on={!!msmLock} label="Sold as">
+                <div data-testid="mm-sold-as">
+                  <span style={lbl}>Sold as <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0 }}>(untick an order type this is not sold on)</span></span>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                    {SOLD_AS_TYPES.map(k => {
+                      const on = !no.includes(k);
+                      return (
+                        <button key={k} type="button" aria-pressed={on} onClick={() => f('visibility', toggleSoldAs(item.visibility, k, !on))}
+                          style={{ padding:'5px 10px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:650,
+                            border:`1px solid ${on ? 'var(--acc)' : 'var(--bdr2)'}`, background: on ? 'var(--acc-d)' : 'transparent', color: on ? 'var(--acc)' : 'var(--t4)', textDecoration: on ? 'none' : 'line-through' }}>
+                          {on ? '✓ ' : ''}{SOLD_AS_WORDS[k]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize:10.5, color:'var(--t4)', marginTop:5, lineHeight:1.45 }}>
+                    {no.length ? `${soldAsSummary(item)}. On the POS it is greyed out on the other order types, and it is left off the kiosk and online for them.` : 'Sold on every order type.'}
+                    {differ.length > 0 && !msmLock && (
+                      <> <button type="button" data-testid="mm-sold-as-category" onClick={() => {
+                        differ.forEach(i => updateMenuItem(i.id, { visibility: withNotSoldAs(i.visibility, no) }));
+                        markBOChange?.();
+                        showToast?.(`${differ.length} more product${differ.length === 1 ? '' : 's'} in ${catLabel} now ${no.length ? `set to ${soldAsSummary(item).toLowerCase()}` : 'sold on every order type'}`, 'success');
+                      }} style={{ background:'none', border:'none', padding:0, color:'var(--acc)', fontWeight:700, cursor:'pointer', fontFamily:'inherit', fontSize:10.5 }}>
+                        Use this for all {mates.length} other product{mates.length === 1 ? '' : 's'} in {catLabel}
+                      </button></>
+                    )}
+                  </div>
+                </div>
+                </MsmLocked>
+              );
+            })()}
+
             {/* v4.6.3: Sharing & ownership scope. Only shown on top-level items (variants inherit). */}
             {/* v5.5.877 (Bug 1b): also hide on variant children (parentId set) — scope is a
                 product-level property; sharing a child directly used to create a standalone

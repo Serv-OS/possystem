@@ -143,6 +143,9 @@ export function buildCatalog(opts: {
     // v5.11.81: Back Office "Visible on" Online off, or Delivery off, keeps a product off the
     // delivery platforms (the rule every channel reads, src/lib/channelMenu.js channelVisible).
     (!it.visibility || (it.visibility.online !== false && it.visibility.onlineDelivery !== false)) &&
+    // 5.12.115 "Sold as" (src/lib/soldAs.js): a product not sold for delivery never goes to a
+    // delivery platform. The list sits beside the Visible on switches (visibility.notSoldAs).
+    !(Array.isArray(it.visibility?.notSoldAs) && it.visibility.notSoldAs.includes('delivery')) &&
     (!publishIds || publishIds.has(String(it.id)));
 
   const childrenOf = (parentId: string) =>

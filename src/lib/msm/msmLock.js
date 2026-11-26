@@ -63,6 +63,7 @@ const WORDS = {
   tags: 'dietary tags', image: 'photo', assigned_modifier_groups: 'option groups', visibility: 'channels it shows on',
   sold_alone: 'sold on its own setting', type: 'type', item_code: 'item code', parent_id: 'size link', pricing: 'prices',
   min: 'rules', max: 'rules', selection_type: 'kind of choice', options: 'options',
+  sold_as: 'order types it is sold on',
 };
 export const lockWord = (col) => tt(WORDS[col] || 'this setting', { mid: true });
 
@@ -110,6 +111,19 @@ export function lockedItemPatch(patch, cur, kept = []) {
       }
       if (changed) dropped.add('pricing');
       if (!same(next, was)) out.pricing = next;
+      continue;
+    }
+    // 5.12.115 "Sold as" (lib/soldAs.js): where a product shows stays the site's, but the order
+    // types it is sold on (visibility.notSoldAs) are head office's. A site's save keeps its own
+    // switches and the list goes back to what it was.
+    if (key === 'visibility') {
+      const was = cur && cur.visibility && typeof cur.visibility === 'object' ? cur.visibility : {};
+      const next = value && typeof value === 'object' ? { ...value } : value;
+      if (next && typeof next === 'object' && !same(next.notSoldAs ?? null, was.notSoldAs ?? null)) {
+        if (has(was, 'notSoldAs')) next.notSoldAs = was.notSoldAs; else delete next.notSoldAs;
+        dropped.add('sold_as');
+      }
+      if (!cur || !same(next, cur.visibility)) out[key] = next;
       continue;
     }
     const col = OWNED_ITEM_KEYS[key];
