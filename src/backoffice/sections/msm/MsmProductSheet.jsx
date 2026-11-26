@@ -115,7 +115,6 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   const [startForm] = useState(form);
   const [startSites] = useState(siteForm);
   const [ids] = useState(() => ({ product: newId(), category: newId() }));
-  const [moreNames, setMoreNames] = useState(false);
   const [newCat, setNewCat] = useState(null);     // { label, parent_id, route_like_id }
   const [words, setWords] = useState('');
   const [saving, setSaving] = useState(false);
@@ -281,7 +280,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     setSaving(true);
     const nm = plan.fields?.name || form.name;
     const done = create
-      ? `${nm} is in the draft${optionOnly ? ' as a sub item (only an option)' : ` at ${plan.chosen} site${plan.chosen === 1 ? '' : 's'}`}. Publish now, or schedule the draft for the time it must be on the tills.`
+      ? `${nm} is in the draft${optionOnly ? ' as a sub item (only an option)' : ` at ${plan.chosen} site${plan.chosen === 1 ? '' : 's'}`}. Publish now, or schedule the draft for the time it must be on the POS.`
       : `${nm}: in the draft (${draftCount(plan.changes, eff).words}).`;
     const res = await stage(plan.changes, { done });
     setSaving(false);
@@ -381,7 +380,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     <Sheet title={title} width={680} onClose={onClose}
       dirty={editable && !saving && dirty}
       dirtyWords={create ? 'Close without adding it? What you typed is lost.' : 'Close without saving? Your changes are not in the draft.'}
-      sub={create ? 'Goes into the draft. It reaches the tills when the draft is published, now or at a time you choose.' : `${categoryPath(ix, p.category_id) || (isSub ? 'Sub item' : 'No category')}${p.archived ? ' · removed' : ''}`}
+      sub={create ? 'Goes into the draft. It reaches the POS when the draft is published, now or at a time you choose.' : `${categoryPath(ix, p.category_id) || (isSub ? 'Sub item' : 'No category')}${p.archived ? ' · removed' : ''}`}
       footer={editable ? (
         <>
           <Btn kind="primary" disabled={sheetSaveBlocked({ saving, problems: create && problems.length > 0, words: plan.words, changes: plan.changes.length, create, ready, salesReading: sales === undefined })} onClick={save} data-testid="msm-product-save">
@@ -408,23 +407,23 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         )}
         <Field label="Name">
           {/* The menu, receipt and kitchen names that still say the old name follow it (17 Oct
-              verification: a rename left the till button, receipt and ticket on the old name). */}
+              verification: a rename left the POS button, receipt and ticket on the old name). */}
           <input style={ui.input} value={form.name} maxLength={120} onChange={(e) => { const v = e.target.value; setForm((f) => renameFields(f, v)); }} placeholder="Like Gingerbread latte" />
         </Field>
-        {!moreNames && <Btn small kind="link" style={{ marginTop: -8, marginBottom: 8 }} onClick={() => setMoreNames(true)}>Menu, receipt and kitchen names</Btn>}
-        {moreNames && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-            <Field label="On the menu" hint="Blank uses the name."><input style={ui.input} value={form.menu_name} placeholder={form.name} onChange={(e) => set('menu_name', e.target.value)} /></Field>
-            <Field label="On the receipt" hint="Blank uses the name."><input style={ui.input} value={form.receipt_name} placeholder={form.name} onChange={(e) => set('receipt_name', e.target.value)} /></Field>
-            <Field label="In the kitchen" hint="On kitchen screens and tickets."><input style={ui.input} value={form.kitchen_name} placeholder={form.name} onChange={(e) => set('kitchen_name', e.target.value)} /></Field>
-          </div>
-        )}
+        {/* 5.12.109 (Peter, 26 Nov 2026: "you cant change the various names POS, receipt and KDS"):
+            the three names were behind one small link, so nobody found them. They are always
+            shown now, with the same words as Menu Manager, where a group product's names are locked. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }} data-testid="msm-product-names">
+          <Field label="POS button name" hint="Also on the kiosk and online. Blank uses the name."><input style={ui.input} value={form.menu_name} maxLength={120} placeholder={form.name} onChange={(e) => set('menu_name', e.target.value)} data-testid="msm-name-pos" /></Field>
+          <Field label="Receipt name" hint="On the customer's receipt. Blank uses the name."><input style={ui.input} value={form.receipt_name} maxLength={120} placeholder={form.name} onChange={(e) => set('receipt_name', e.target.value)} data-testid="msm-name-receipt" /></Field>
+          <Field label="Kitchen / KDS name" hint="On kitchen screens and tickets. Blank uses the name."><input style={ui.input} value={form.kitchen_name} maxLength={120} placeholder={form.name} onChange={(e) => set('kitchen_name', e.target.value)} data-testid="msm-name-kitchen" /></Field>
+        </div>
         <Field label="Description" hint="Shown on the kiosk and online.">
           <textarea style={{ ...ui.input, minHeight: 58, resize: 'vertical' }} value={form.description} onChange={(e) => set('description', e.target.value)} />
         </Field>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-          <Field label="Category" hint={optionOnly ? 'Not needed: a sub item only used as an option is never on a menu.' : 'Where it sits on the till, kiosk and online.'}>
+          <Field label="Category" hint={optionOnly ? 'Not needed: a sub item only used as an option is never on a menu.' : 'Where it sits on the POS, kiosk and online.'}>
             {!newCat ? (
               <select style={ui.input} value={form.category_id} onChange={(e) => { if (e.target.value === '__new') { setNewCat({ label: '', parent_id: '', route_like_id: form.category_id || '' }); } else set('category_id', e.target.value); }}>
                 <option value="">{optionOnly ? 'No category' : 'Pick a category'}</option>
@@ -594,7 +593,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
               {orderTypes.hidden.length > 0 && <Btn small kind="link" onClick={() => setAllTypes((x) => !x)}>{allTypes ? 'Show fewer order types' : priceTypes.length ? 'Show every order type' : 'Set a price for an order type'}</Btn>}
             </div>
             <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: priceTypes.length ? 10 : 0 }}>
-              {priceTypes.length ? 'Blank uses what it falls back to, shown in grey. The till, kiosk and online all read these.' : 'Every order type charges the Standard price. That is the usual way.'}
+              {priceTypes.length ? 'Blank uses what it falls back to, shown in grey. The POS, kiosk and online all read these.' : 'Every order type charges the Standard price. That is the usual way.'}
             </div>
             {priceTypes.map((k) => {
               const fb = groupTypeFallback({ ...p, default_price: groupPrice, default_channels: groupChannels() || {}, [k]: undefined }, k);
@@ -661,14 +660,14 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                   )}
                 </div>
                 <div data-testid="msm-vat-example" style={{ fontSize: 13, fontWeight: 650, color: ex.ok ? 'var(--t1)' : 'var(--red)' }}>{ex.words}</div>
-                <div style={{ ...ui.sub, fontSize: 11 }}>Worked out by the same {tw().tax} rules the tills use. Collection and Drive thru use Takeaway.</div>
+                <div style={{ ...ui.sub, fontSize: 11 }}>Worked out by the same {tw().tax} rules the POS uses. Collection and Drive thru use Takeaway.</div>
               </div>
             )}
           </div>
         )}
 
         {!optionOnly && groups.length > 0 && (
-          <Field label="Option groups" hint="Tick the questions the till asks for this product, and put them in order. Build and change the groups themselves on the Option groups tab. Cooking preferences are set at each site in Menu Manager.">
+          <Field label="Option groups" hint="Tick the questions the POS asks for this product, and put them in order. Build and change the groups themselves on the Option groups tab. Cooking preferences are set at each site in Menu Manager.">
             {picked.length > 0 && (
               <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, marginBottom: 8 }}>
                 {picked.map((gid, i) => {
@@ -739,7 +738,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
           <Field label="Item code" hint="For barcodes and stock."><input style={ui.input} value={form.item_code} onChange={(e) => set('item_code', e.target.value)} /></Field>
         </div>
         {create && problems.length > 0 && <div style={{ ...ui.sub, color: 'var(--t3)' }}>To add it: {problems.join(' ')}</div>}
-        {!create && p && <div style={{ ...ui.sub, fontSize: 11.5, marginTop: 6 }}>Group price now {money(defaultFor(p))}. Changes go into the draft, not to the tills.</div>}
+        {!create && p && <div style={{ ...ui.sub, fontSize: 11.5, marginTop: 6 }}>Group price now {money(defaultFor(p))}. Changes go into the draft, not to the POS.</div>}
       </fieldset>
 
       {editable && dirty && (
