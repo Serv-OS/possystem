@@ -9,6 +9,7 @@
 // things), so the screens agree and no raw code reaches a person who is not technical (Peter:
 // "these people using this will not be techy people"). msmWords.test.js pins it.
 
+import { sameSoldAs, soldAsSummary } from '../soldAs.js';
 import { money2, toPence, pctText, CHANNELS } from '../../../supabase/functions/_shared/msmModel.js';
 import { CHANNEL_LABELS } from './msmGrid.js';
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax. The constants below keep the UK
@@ -200,6 +201,8 @@ export function changeWords(row, names = {}) {
       if (k === 'site_only_location_id') { parts.push('now sold at more than one site'); continue; }
       if (k === 'default_price') parts.push(`group price ${money2(b.default_price)} to ${money2(a.default_price)}`);
       else if (k === 'category_id') parts.push(`moved to ${cn(a.category_id)}`);
+      // 5.12.115 "Sold as" (lib/soldAs.js): the order types it is sold on live beside the switches.
+      else if (k === 'visibility' && !sameSoldAs({ visibility: a.visibility }, { visibility: row.before?.visibility })) parts.push(soldAsSummary({ visibility: a.visibility }) ? soldAsSummary({ visibility: a.visibility }).replace(/^./, (c) => c.toLowerCase()) : 'sold on every order type');
       else if (k === 'name' || k === 'menu_name') { if (!parts.some((x) => x.startsWith('renamed'))) parts.push(`renamed to ${a[k]}`); }
       else if (k === 'default_channels') {
         // Only the order types the till charges, compared as money (a blank and a missing key are

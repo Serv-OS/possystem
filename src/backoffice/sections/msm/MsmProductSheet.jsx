@@ -38,6 +38,7 @@ import * as groupEdit from '../../../lib/msm/msmGroupEdit';
 import { groupTickSiteRows } from '../../../lib/msm/msmGroupView';
 import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
 import { isOptionOnlyItem } from '../../../lib/menuRules';
+import { SOLD_AS_TYPES, SOLD_AS_WORDS, notSoldAs, toggleSoldAs, withNotSoldAs, soldAsSummary, sameSoldAs } from '../../../lib/soldAs';
 import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords, sizeVatWords } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
@@ -718,6 +719,33 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         {/* 5.12.101 (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info"):
             dietary tags are head office's (publish writes them, the site's boxes are locked), and
             this sheet had no boxes for them. Same four as the site editor (lib/dietary.js). */}
+        {/* 5.12.115 "Sold as" (lib/soldAs.js; Peter, 26 Nov 2026: "we also need to be able to say if a
+            product can be sold as that order type", wine is dine in only). Ticked = sold on that order
+            type, at every site. A size follows its product; a sub item that is only an option has none. */}
+        {!isSizeForm && !optionOnly && (() => {
+          const no = notSoldAs({ visibility: form.visibility });
+          const mates = p ? [...ix.products.values()].filter((x) => !x.archived && !x.parent_product_id && x.id !== p.id && form.category_id && x.category_id === form.category_id && !isOptionOnlyItem(x)) : [];
+          const differ = mates.filter((x) => !sameSoldAs(x, { visibility: form.visibility }));
+          const catName = ix.categories.get(form.category_id)?.label || 'this category';
+          return (
+            <Field label="Sold as" hint={no.length ? `${soldAsSummary({ visibility: form.visibility })}. On the POS it is greyed out on the other order types and says why when tapped. It is left off the kiosk and online for them.` : 'Sold on every order type. Untick one it must not be sold on, like wine to take away.'}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} data-testid="msm-sold-as">
+                {SOLD_AS_TYPES.map((k) => {
+                  const on = !no.includes(k);
+                  return <button key={k} type="button" aria-pressed={on} onClick={() => set('visibility', toggleSoldAs(form.visibility, k, !on))}
+                    style={{ padding: '5px 10px', borderRadius: 20, border: `1px solid ${on ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: on ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: on ? 'var(--t1)' : 'var(--t4)', textDecoration: on ? 'none' : 'line-through', fontSize: 12, fontWeight: 650, cursor: 'pointer', fontFamily: 'inherit' }}>{on ? '✓ ' : ''}{SOLD_AS_WORDS[k]}</button>;
+                })}
+              </div>
+              {editable && differ.length > 0 && (
+                <Btn small kind="link" data-testid="msm-sold-as-category" style={{ marginTop: 6 }} disabled={saving} onClick={async () => {
+                  const changes = differ.map((x) => productUpdate(ctx, x.id, { visibility: withNotSoldAs(x.visibility ?? null, no) ?? {} }).change).filter(Boolean);
+                  await stage(changes, { done: `${changes.length} more product${changes.length === 1 ? '' : 's'} in ${catName} ${changes.length === 1 ? 'is' : 'are'} now ${no.length ? soldAsSummary({ visibility: form.visibility }).toLowerCase() : 'sold on every order type'}, in the draft.`, undo: true });
+                }}>Use this for all {mates.length} other product{mates.length === 1 ? '' : 's'} in {catName}</Btn>
+              )}
+            </Field>
+          );
+        })()}
+
         <Field label="Dietary" hint="Shows as a badge (V, VG, GF, DF) on the print menu, the menu board and online.">
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {DIET_TAGS.map((d) => {

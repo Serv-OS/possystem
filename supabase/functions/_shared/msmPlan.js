@@ -72,6 +72,7 @@ import {
   newItemId, freeId, money2, toPence, KEPT_COLUMNS, pctText, NO_PRICE, keepsNoPrice, pricedBySizes, normName,
 } from './msmModel.js';
 import { mapRateDescriptor, effectiveTaxByType, venueProfileIsMirror, TAX_KEY_LABEL } from './msmTax.js';
+import { notSoldAs, withNotSoldAs, sameSoldAs, soldAsSummary } from './soldAs.js';
 
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 const listOf = (v) => (Array.isArray(v) ? v : []);
@@ -461,7 +462,9 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   // Where a product SOLD at a site shows when publish makes or promotes its row: the group menu's
   // value, unless it shows nowhere (a sub item made sold on its own keeps the hidden value it was
   // made with), then everywhere, as the normal menu builder does for a new product.
-  const soldVisibility = (p) => (p.visibility && typeof p.visibility === 'object' && Object.values(p.visibility).some((v) => v === true) ? p.visibility : SHOWN);
+  // 5.12.115: the order types it is not sold on (visibility.notSoldAs, src/lib/soldAs.js) always go
+  // with it, also when the row gets the default switches.
+  const soldVisibility = (p) => withNotSoldAs(p.visibility && typeof p.visibility === 'object' && Object.values(p.visibility).some((v) => v === true) ? p.visibility : SHOWN, notSoldAs(p));
   const basePrice = (p, ps) => (ps && ps.price != null ? Number(ps.price) : (p.default_price == null ? null : Number(p.default_price)));
   const channelPrice = (p, ps, k) => {
     const own = ps?.channel_prices && ps.channel_prices[k] != null ? ps.channel_prices[k] : null;
@@ -928,7 +931,16 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const col of cols) {
       // Where a product shows (till, kiosk, online, delivery) stays the site's own, as the normal
       // menu builder leaves it (Peter, 17 Oct 2026, UI issue 2). A new row still gets one.
-      if (col === 'visibility' && !promoting) continue;
+      if (col === 'visibility' && !promoting) {
+        // 5.12.115 "Sold as" (src/lib/soldAs.js; Peter, 26 Nov 2026: wine is dine in only). The
+        // switches for WHERE it shows stay the site's, exactly as before. The order types it is
+        // sold on are head office's: that one key is written, beside whatever the site has.
+        if (!sameSoldAs(p, vrow)) {
+          const want = notSoldAs(p);
+          setCol('items', vrow, 'visibility', withNotSoldAs(vrow.visibility ?? null, want) ?? {}, { ...meta, soldAs: soldAsSummary({ visibility: { notSoldAs: want } }) || 'sold on every order type' });
+        }
+        continue;
+      }
       // 5.12.114 (Peter, 26 Nov 2026, Mozz: "36 changes were made at" each of four sites nobody had
       // touched). A sub item that is only an option is on no menu, so WHERE it sits at a site is
       // never the group menu's to write or to compare. ensureSubItem (above) makes it at a site
@@ -1395,6 +1407,7 @@ export function lineWords(line, names = {}) {
   if (col === 'sold_alone') return `${who}: ${line.after ? 'now also sold on its own' : 'now only used as an option'}`;
   if (col === 'allergens') return `${who}: allergens change`;
   if (col === 'tags') return `${who}: dietary tags change`;
+  if (col === 'visibility' && line.soldAs) return `${who}: ${line.soldAs === 'sold on every order type' ? 'now sold on every order type' : `now ${line.soldAs.charAt(0).toLowerCase()}${line.soldAs.slice(1)}`}`;
   if (col === 'visibility') return `${who}: where it shows changes`;
   if (col === 'assigned_modifier_groups') {
     const b = groupIdsOf(line.before), a = groupIdsOf(line.after);
