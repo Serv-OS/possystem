@@ -673,7 +673,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
           </Field>
         )}
 
-        {/* 5.12.100 (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info"):
+        {/* 5.12.101 (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info"):
             dietary tags are head office's (publish writes them, the site's boxes are locked), and
             this sheet had no boxes for them. Same four as the site editor (lib/dietary.js). */}
         <Field label="Dietary" hint="Shows as a badge (V, VG, GF, DF) on the print menu, the menu board and online.">

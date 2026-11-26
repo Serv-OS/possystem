@@ -298,7 +298,7 @@ export function productUpdate(ctx, productId, fields) {
     if (!has(fields, k)) continue;
     if (k === 'tax_by_type' && isSize) continue;
     if (sameValue(p[k], fields[k])) continue;
-    // 5.12.100: no list and an empty list are the same thing (a product with no dietary tags, and
+    // 5.12.101: no list and an empty list are the same thing (a product with no dietary tags, and
     // a sheet with none ticked). Without this every save staged "dietary tags change".
     if (EMPTY_IS_NONE.has(k) && listOf(p[k]).length === 0 && listOf(fields[k]).length === 0) continue;
     // Spaces at either end are no change (the sheet trims what it sends; 17 Oct rehearsal).

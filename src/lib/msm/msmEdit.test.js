@@ -270,7 +270,7 @@ test('review: two photo uploads for one product get two different storage names 
   assert.match(a, /^msm-aaaaaaaa1111-/);
 });
 
-// 5.12.100 (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info").
+// 5.12.101 (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info").
 test('dietary tags are staged from the sheet like allergens, and an untouched sheet stages nothing', () => {
   const ctx = ctxOf();
   // The sheet always sends its tags. A product with none, and a sheet with none ticked: no change.

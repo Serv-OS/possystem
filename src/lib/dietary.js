@@ -23,7 +23,7 @@ export const DIET = {
 // The dietary tags the Back Office can tick, stored on menu_items.tags (jsonb). Every id is a key
 // of DIET above, so a ticked tag always has a badge on the print menu, the menu board and online.
 // One list for the site's product editor (MenuManager) and head office's product sheet
-// (MsmProductSheet): 5.12.100, Peter 25 Nov 2026, "in the multi site menu manager you cant add
+// (MsmProductSheet): 5.12.101, Peter 25 Nov 2026, "in the multi site menu manager you cant add
 // dietary info" (the site's boxes were locked to head office, and head office had no boxes).
 export const DIET_TAGS = [
   { id: 'vegetarian',  label: 'Vegetarian',  badge: 'V',  icon: 'salad' },

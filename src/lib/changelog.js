@@ -1,12 +1,23 @@
 export const CHANGELOG = [
   {
-    v: '5.12.100',
+    v: '5.12.101',
     date: '25 Nov 2026',
     items: [
       'Multi site menu: head office can now set dietary info on a product (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info"). Dietary tags (Vegetarian, Vegan, Gluten-free, Dairy-free) belong to head office once a group uses the multi site menu: publish writes them to every site, so the boxes on the site\'s own product are locked. But head office\'s product sheet had no boxes for them, so nobody could set them.',
       'The product sheet has a new Dietary row, above Allergens, with the same four choices as a site\'s product editor. Tick them, save, publish, and the badge (V, VG, GF, DF) shows on the print menu, the menu board and online at every site that sells the product.',
       'A product that already had dietary tags keeps them. Nothing is changed until you tick or untick a box.',
       'Saving a product sheet with no dietary tags and no allergens ticked no longer counts those empty lists as a change.',
+    ],
+  },
+  {
+    v: '5.12.100',
+    date: '25 Nov 2026',
+    items: [
+      'Stock items, Import: a file of unit bridges can now be imported (Peter, 25 Nov 2026: "yes build the unit links into the import"). A unit bridge says that this much of one unit of an item equals that much of another, for example 30 oz of olives = 40 fl oz. It is what lets an item bought by the gallon be used in a recipe by the ounce. Until now each one was typed on the item\'s Dimension and Measure tab.',
+      'The file has one bridge a line, with these headings: Item, This much, Unit, Equals, Equal unit. The check screen shows each line as New, Same or Change, and says in words what is wrong with a line: the item is not on the list, a unit ServOS does not know, an amount that is not above 0, or two units that measure the same thing (ounces and pounds need no bridge).',
+      'On Import the bridge is written for the company and at every site the item is on, and each site costs the item again, exactly as when a bridge is saved on the item page. The same file a second time changes nothing. A different amount for the same two kinds of unit changes the bridge it finds instead of adding a second one.',
+      'Why now: a group moving from another stock system brings these links with it (one customer had 51 of them, and 107 recipe lines that cost nothing without them).',
+      'Needs the database update 20261208a (Peter runs it). Until it is run an imported bridge file is refused with a message and nothing is changed. Every other import file reads exactly as before.',
     ],
   },
   {
