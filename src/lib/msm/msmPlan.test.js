@@ -431,3 +431,94 @@ test('a category already mapped at the site is never looked for again', () => {
   assert.deepEqual(p.adoptedCategories, []);
   assert.ok(K('Hot drinks'));
 });
+
+// ── 5.12.104: a product's tax by NAME is each site's own tax profile ──────────
+// Peter, Mozz, 25 Nov 2026: the group menu knew only old style rates, while every site charged
+// through its "Prepared food" profile (8.45% at three sites, 9.45% at two).
+function withProfiles(v, loc, names = ['Prepared food', 'Retail', 'Tax exempt']) {
+  const raw = v[loc];
+  raw.taxProfiles = names.map((name, i) => ({ id: `tp-${sfx(loc)}-${i}`, location_id: loc, name, active: true, generated_from_rate_id: null }));
+  raw.taxProfileLines = raw.taxProfiles.map((p, i) => ({ id: `tl-${sfx(loc)}-${i}`, profile_id: p.id, name: p.name, rate: [0.0845, 0.0745, 0][i] ?? 0, mode: 'exclusive', active: true }));
+  return raw;
+}
+const profileId = (v, loc, name) => v[loc].taxProfiles.find((p) => p.name === name).id;
+
+test('a tax name with no percent puts each site\'s OWN profile of that name on the item', () => {
+  const { v, central, P } = setup();
+  withProfiles(v, A); withProfiles(v, B);
+  const ch = [{ target: 'product', entity_id: P('Cola').id, op: 'update', after: { tax_rate_name: 'retail', tax_rate_percent: null } }];
+  const a = plan(central, ch, A, v[A]);
+  assert.deepEqual(a.writes.items.update, [{ id: 'm-cola', set: { tax_profile_id: profileId(v, A, 'Retail') } }], 'only the profile: the rate under it is left');
+  assert.deepEqual(a.problems.filter((p) => p.level === 'block'), []);
+  assert.match(lineWords(a.lines[0], { 'm-cola': 'Cola' }), /tax becomes this site's "Retail" profile/);
+  const b = plan(central, ch, B, v[B]);
+  assert.equal(b.writes.items.update[0].set.tax_profile_id, profileId(v, B, 'Retail'), "site B: its own Retail, never site A's id");
+  assert.notEqual(profileId(v, A, 'Retail'), profileId(v, B, 'Retail'));
+  // Published once, a second plan of the same change writes nothing.
+  v[A].items.find((i) => i.id === 'm-cola').tax_profile_id = profileId(v, A, 'Retail');
+  assert.deepEqual(plan(central, ch, A, v[A]).writes.items.update, []);
+});
+
+test('a new product at a site is born with the profile; a site with no profile of that name is blocked, in words', () => {
+  const { v, central, K } = setup();
+  withProfiles(v, A);
+  const pid = 'e3000000-0000-4000-8000-000000000001';
+  const ch = [
+    { target: 'product', entity_id: pid, op: 'create', after: { name: 'T shirt', category_id: K('Hot drinks').id, default_price: 20, tax_rate_name: 'Retail', tax_rate_percent: null, type: 'simple', sold_alone: true } },
+    { target: 'product_site', entity_id: pid, location_id: A, op: 'create', after: { venue_item_id: `msm-e30000000000_${sfx(A)}`, active: true } },
+    { target: 'product_site', entity_id: pid, location_id: B, op: 'create', after: { venue_item_id: `msm-e30000000000_${sfx(B)}`, active: true } },
+  ];
+  const a = plan(central, ch, A, v[A]);
+  const ins = a.writes.items.insert[0];
+  assert.equal(ins.tax_profile_id, profileId(v, A, 'Retail'));
+  assert.equal(ins.tax_rate_id, null);
+  assert.deepEqual(a.problems.filter((p) => p.level === 'block'), []);
+  // Site B has no profiles at all: nothing is guessed.
+  const b = plan(central, ch, B, v[B]);
+  const block = b.problems.find((p) => p.code === 'no_tax_rate');
+  assert.match(block.words, /This site has no tax profile or rate called "Retail" for "T shirt"/);
+  assert.equal(block.level, 'block');
+});
+
+test('no tax on the product means each site\'s own: nothing is written, and a profile the group put on comes off when the name is taken away', () => {
+  const { v, central, P } = setup();
+  withProfiles(v, A);
+  // A product with no tax, something else touched: tax is not written at all.
+  const mocha = central.products.find((p) => p.name === 'Mocha');
+  mocha.tax_rate_name = null; mocha.tax_rate_percent = null;
+  const quiet = plan(central, [{ target: 'product', entity_id: P('Mocha').id, op: 'update', after: { description: 'Rich' } }], A, v[A]);
+  assert.ok(!quiet.lines.some((l) => l.column === 'tax_profile_id' || l.column === 'tax_rate_id'));
+  // Cola was on Retail at the site; head office sets it back to each site's own.
+  v[A].items.find((i) => i.id === 'm-cola').tax_profile_id = profileId(v, A, 'Retail');
+  const off = plan(central, [{ target: 'product', entity_id: P('Cola').id, op: 'update', after: { tax_rate_name: null, tax_rate_percent: null } }], A, v[A]);
+  const line = off.lines.find((l) => l.column === 'tax_profile_id');
+  assert.equal(line.after, null);
+  assert.match(lineWords(line, { 'm-cola': 'Cola' }), /follows this site's own tax again/);
+});
+
+test('UK groups are untouched: a name WITH a percent is a rate, and a generated copy of a rate is never picked as a profile', () => {
+  const { v, central, P } = setup();
+  // A profile at A that is the generated copy of its VAT rate, with the same name as the rate.
+  v[A].taxProfiles = [{ id: 'tp-mirror', location_id: A, name: 'VAT', active: true, generated_from_rate_id: 'tr-a' }];
+  v[A].taxProfileLines = [];
+  const withPct = plan(central, [{ target: 'product', entity_id: P('Cola').id, op: 'update', after: { tax_rate_name: 'VAT', tax_rate_percent: 20 } }], A, v[A]);
+  assert.ok(!withPct.lines.some((l) => l.column === 'tax_profile_id'));
+  const nameOnly = plan(central, [{ target: 'product', entity_id: P('Cola').id, op: 'update', after: { tax_rate_name: 'VAT', tax_rate_percent: null } }], A, v[A]);
+  assert.ok(!nameOnly.lines.some((l) => l.column === 'tax_profile_id'), 'the copy is not a profile anybody chose');
+});
+
+test('two profiles of one name at a site, or a site that keeps its own tax: nothing is guessed, nothing is written', () => {
+  const { v, central, P } = setup();
+  withProfiles(v, A, ['Retail', 'retail ']);
+  const ch = [{ target: 'product', entity_id: P('Cola').id, op: 'update', after: { tax_rate_name: 'Retail', tax_rate_percent: null } }];
+  const two = plan(central, ch, A, v[A]);
+  assert.ok(two.problems.some((p) => p.code === 'no_tax_rate' && p.level === 'block'));
+  assert.ok(!two.lines.some((l) => l.column === 'tax_profile_id'));
+  // A site that keeps its own tax for the product is never written.
+  const { v: v2, central: c2, P: P2 } = setup();
+  withProfiles(v2, A);
+  const ps = c2.productSites.find((x) => x.product_id === P2('Cola').id && x.location_id === A);
+  ps.kept = { ...(ps.kept || {}), tax_rate_id: 'tr-a' };
+  const kept = plan(c2, [{ target: 'product', entity_id: P2('Cola').id, op: 'update', after: { tax_rate_name: 'Retail', tax_rate_percent: null } }], A, v2[A]);
+  assert.ok(!kept.lines.some((l) => l.column === 'tax_profile_id'));
+});

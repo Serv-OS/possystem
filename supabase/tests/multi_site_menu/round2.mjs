@@ -305,6 +305,85 @@ export async function run(h) {
   expect('apply refuses to put back a profile it never cleared', r.code !== 0 && /only put back the old VAT profile copy it cleared/.test(r.err), r.err);
   settle();
 
+  // ── 20261209a (5.12.104): a product's tax by NAME is each site's OWN tax profile ──────────
+  //    Peter, Mozz, 25 Nov 2026: one name ("Prepared food", "Retail"), each site's own rates.
+  {
+    const RET1 = 'd1000000-0000-4000-8000-0000000000a1', RET2 = 'd1000000-0000-4000-8000-0000000000a2', ALC1 = 'd1000000-0000-4000-8000-0000000000a3';
+    one(`insert into tax_profiles (id, location_id, name, rounding, active, sort_order, generated_from_rate_id) values
+         ('${RET1}', '${LA1}', 'Retail', '{"mode": "half_up", "level": "invoice"}', true, 5, null),
+         ('${RET2}', '${LA2}', ' retail', '{"mode": "half_up", "level": "invoice"}', true, 5, null),
+         ('${ALC1}', '${LA1}', 'Alcohol', '{"mode": "half_up", "level": "invoice"}', true, 6, null);
+         insert into tax_profile_lines (profile_id, location_id, name, rate, mode, tax_basis) values
+         ('${RET1}', '${LA1}', 'Sales tax', 0.0745, 'exclusive', 'post_discount'), ('${RET2}', '${LA2}', 'Sales tax', 0.0845, 'exclusive', 'post_discount'),
+         ('${ALC1}', '${LA1}', 'Sales tax', 0.0745, 'exclusive', 'post_discount')`);
+    C = central();
+    const at = (pid, loc) => C.productSites.find((ps) => ps.product_id === pid && ps.location_id === loc && ps.active !== false);
+    // The Latte is the one product on at both sites of company A.
+    const prod = C.products.find((x) => x.id === latte.id);
+    const i1 = at(prod.id, LA1).venue_item_id, i2 = at(prod.id, LA2).venue_item_id;
+    const prof = (id) => one(`select coalesce(tax_profile_id::text, 'none') from menu_items where id = '${id}'`);
+    const rateBefore = one(`select coalesce(tax_rate_id::text, 'none') from menu_items where id = '${i1}'`);
+    const GT = mkSet('Tax by name');
+    r = stage({ set: GT, target: 'product', entity: prod.id, op: 'update', after: { tax_rate_name: 'Retail', tax_rate_percent: null }, before: { tax_rate_name: prod.tax_rate_name ?? null, tax_rate_percent: prod.tax_rate_percent ?? null } });
+    expect('PROFILES: the guard takes a tax name with no percent', r.code === 0, r.err);
+    const VT = publish(GT);
+    const t1 = runSite(VT, LA1), t2 = runSite(VT, LA2);
+    expect('PROFILES: published at both sites, no blockers', t1.out?.ok === true && t2.out?.ok === true && t1.health.ok && t2.health.ok, `${t1.res.err} ${t2.res.err} ${JSON.stringify(t1.health)}`);
+    expect('PROFILES: each site\'s item is on its OWN "Retail" profile (never the other site\'s id)', prof(i1) === RET1 && prof(i2) === RET2, `${prof(i1)} ${prof(i2)}`);
+    expect('PROFILES: only the profile is written: the rate under it is as the site had it', one(`select coalesce(tax_rate_id::text, 'none') from menu_items where id = '${i1}'`) === rateBefore);
+    expect('PROFILES: the audit holds the write, so Undo can read it', json(`select writes from msm_version_sites where version_id = '${VT}' and location_id = '${LA1}'`).some((w) => w.table === 'items' && w.id === i1 && w.after.tax_profile_id === RET1));
+    expect('PROFILES: the till push carries the profile on the item', (() => { const snap = json(`select snapshot from config_pushes where location_id = '${LA1}' order by created_at desc limit 1`); const it = (snap.menuItems || []).find((x) => x.id === i1); return !!it && (it.taxProfileId === RET1 || it.tax_profile_id === RET1); })());
+    settle();
+
+    const GPr = mkSet('Profile probe two');
+    stage({ set: GPr, target: 'product', entity: prod.id, op: 'update', after: { description: 'tax probe' }, before: { description: prod.description ?? '' } });
+    const VPr = publish(GPr);
+    const probe2 = (writes) => runSite(VPr, LA1, { writesOverride: writes }).res;
+    r = probe2({ items: { update: [{ id: i1, set: { tax_profile_id: RET2 } }] } });
+    expect('PROFILES: apply refuses another site\'s profile', r.code !== 0 && /only put back the old VAT profile copy it cleared, or set a tax profile the group menu names/.test(r.err), r.err);
+    r = probe2({ items: { update: [{ id: i1, set: { tax_profile_id: ALC1 } }] } });
+    expect('PROFILES: apply refuses a profile of this site the group menu does not name', r.code !== 0 && /or set a tax profile the group menu names/.test(r.err), r.err);
+    r = probe2({ items: { update: [{ id: i1, set: { tax_profile_id: null } }] } });
+    expect('PROFILES: apply refuses to clear the profile while the group product still names it', r.code !== 0 && /only clear an old copy/.test(r.err), r.err);
+    r = probe2({ items: { insert: [{ id: 'msm-probe-prof', name: 'Probe', type: 'simple', pricing: { base: 1 }, tax_profile_id: RET2 }] } });
+    expect('PROFILES: apply refuses a NEW product on another site\'s profile', r.code !== 0 && /names a tax profile that is not one of this site's/.test(r.err), r.err);
+    one(`update tax_profiles set active = false where id = '${ALC1}'`);
+    r = probe2({ items: { insert: [{ id: 'msm-probe-prof', name: 'Probe', type: 'simple', pricing: { base: 1 }, tax_profile_id: ALC1 }] } });
+    expect('PROFILES: apply refuses a NEW product on a profile that is switched off', r.code !== 0 && /names a tax profile that is not one of this site's/.test(r.err), r.err);
+    expect('PROFILES: nothing was written by any refused probe', prof(i1) === RET1 && one(`select count(*) from menu_items where id = 'msm-probe-prof'`) === '0');
+    settle();
+
+    // A new product named "Retail", sold at site A1: born on the site's own profile.
+    C = central();
+    const NEWP = 'd2000000-0000-4000-8000-0000000000b1';
+    const catId = C.products.find((x) => x.id === prod.id).category_id;
+    const GN = mkSet('A new retail product');
+    stage({ set: GN, target: 'product', entity: NEWP, op: 'create', after: { name: 'Tee shirt', category_id: catId, default_price: 20, tax_rate_name: 'Retail', tax_rate_percent: null, type: 'simple', sold_alone: true } });
+    stage({ set: GN, target: 'product_site', entity: NEWP, loc: LA1, op: 'create', after: { venue_item_id: `msm-d20000000000_${sfx(LA1)}`, active: true } });
+    const VN = publish(GN);
+    const n1 = runSite(VN, LA1);
+    expect('PROFILES: a new product is born on the site\'s own profile, with no rate', n1.out?.ok === true
+      && one(`select coalesce(tax_profile_id::text, 'none') || '|' || coalesce(tax_rate_id::text, 'none') from menu_items where id = 'msm-d20000000000_${sfx(LA1)}'`) === `${RET1}|none`, n1.res.err || JSON.stringify(n1.health));
+    settle();
+
+    // Back to each site's own tax: the profile comes off, at both sites.
+    const GO = mkSet('Each site its own tax');
+    stage({ set: GO, target: 'product', entity: prod.id, op: 'update', after: { tax_rate_name: null, tax_rate_percent: null }, before: { tax_rate_name: 'Retail', tax_rate_percent: null } });
+    const VO = publish(GO);
+    const o1 = runSite(VO, LA1), o2 = runSite(VO, LA2);
+    expect('PROFILES: back to each site\'s own tax: the profile comes off at both sites', o1.out?.ok === true && o2.out?.ok === true && prof(i1) === 'none' && prof(i2) === 'none', `${o1.res.err} ${o2.res.err} ${prof(i1)} ${prof(i2)}`);
+    settle();
+    // The Latte's VAT as the rest of this file expects it: a name WITH a percent is a rate again.
+    const GR = mkSet('Latte VAT back');
+    stage({ set: GR, target: 'product', entity: prod.id, op: 'update', after: { tax_rate_name: prod.tax_rate_name ?? null, tax_rate_percent: prod.tax_rate_percent ?? null }, before: { tax_rate_name: null, tax_rate_percent: null } });
+    const VR = publish(GR);
+    const b1 = runSite(VR, LA1), b2 = runSite(VR, LA2);
+    expect('PROFILES: a name WITH a percent is a rate, as before: the rate is as it was and no profile is put on', b1.out?.ok === true && b2.out?.ok === true
+      && one(`select coalesce(tax_rate_id::text, 'none') from menu_items where id = '${i1}'`) === rateBefore && prof(i1) === 'none' && prof(i2) === 'none', `${b1.res.err} ${b2.res.err}`);
+    settle();
+    one(`update tax_profiles set active = true where id = '${ALC1}'`);
+  }
+
   // ── 17 Oct verification: a new VAT RATE over a generated copy of the OLD rate ──
   //    The till reads the item's profile first, so the copy is cleared in the same write (the
   //    database now accepts clearing a copy of the rate BEFORE the write too).
