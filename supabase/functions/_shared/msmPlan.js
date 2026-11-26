@@ -469,11 +469,31 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const def = p.default_channels && p.default_channels[k] != null ? p.default_channels[k] : null;
     return def == null ? null : Number(def);
   };
+  // 5.12.104 TAX PROFILES BY NAME (Peter, Mozz, 25 Nov 2026: the group menu's Tax view read "No
+  // tax rate" in every box, and the product sheet offered only old style rates, while every site
+  // charged through its "Prepared food" profile, 8.45% at three sites and 9.45% at two).
+  // A product's tax given as a NAME with no percent is a tax PROFILE at a site that has ONE real
+  // profile of that name (not a generated copy of a rate): publish puts that site's own profile on
+  // the item, so one name carries each site's own rates. A name with a percent is a rate, as before.
+  const lowerName = (x) => String(x ?? '').trim().toLowerCase();
+  const realProfilesHere = Array.isArray(V.taxProfiles)
+    ? V.taxProfiles.filter((x) => x && x.active !== false && !(x.generated_from_rate_id ?? x.generatedFromRateId)) : null;
+  const taxProfileFor = (p) => {
+    const name = lowerName(p?.tax_rate_name);
+    if (!name || !(p.tax_rate_percent == null || p.tax_rate_percent === '') || !realProfilesHere) return null;
+    const hit = realProfilesHere.filter((x) => lowerName(x.name) === name);
+    return hit.length === 1 ? hit[0] : null;
+  };
   const mapTax = (p, { quiet = false } = {}) => {
+    const profile = taxProfileFor(p);
+    if (profile) return { id: null, ok: true, profileId: profile.id };
     const r = mapTaxRate(p, applied.taxRates);
     if (!r.ok && !quiet) {
       const pct = p.tax_rate_percent == null ? '' : `${pctText(p.tax_rate_percent)} `;
-      problem('no_tax_rate', 'block', `This site has no ${pct}VAT rate${p.tax_rate_name ? ` called "${p.tax_rate_name}"` : ''} for "${p.name}". Add it in Settings, Tax.`, { productId: p.id });
+      const byName = (p.tax_rate_percent == null || p.tax_rate_percent === '') && p.tax_rate_name;
+      problem('no_tax_rate', 'block', byName
+        ? `This site has no tax profile or rate called "${p.tax_rate_name}" for "${p.name}". Add it in that site's Settings, Tax.`
+        : `This site has no ${pct}VAT rate${p.tax_rate_name ? ` called "${p.tax_rate_name}"` : ''} for "${p.name}". Add it in Settings, Tax.`, { productId: p.id });
     }
     return r;
   };
@@ -500,6 +520,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       pricing, allergens: listOf(p.allergens), assigned_modifier_groups: [],
       visibility: { pos: false, kiosk: false, online: false, onlineDelivery: false }, sold_alone: false, archived: false,
       tax_rate_id: tax.ok ? tax.id : null, image: p.image ?? null, scope: 'local', org_id: orgId, tags: listOf(p.tags), item_code: null,
+      ...(tax.profileId ? { tax_profile_id: tax.profileId } : {}),
     };
     W.items.insert.push(row);
     const vr = { ...row, location_id: loc };
@@ -801,6 +822,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         visibility: optionOnlyP(p) ? HIDDEN : soldVisibility(p), sold_alone: !!p.sold_alone, archived: false,
         tax_rate_id: tax.ok ? tax.id : null, image: p.image ?? null, scope: 'local', org_id: orgId,
         tags: listOf(p.tags), item_code: p.item_code ?? null, tax_overrides: newRowTaxOverrides(p, tax),
+        ...(tax.profileId ? { tax_profile_id: tax.profileId } : {}),
       };
       W.items.insert.push(row);
       const vr = { ...row, location_id: loc };
@@ -908,6 +930,23 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       // menu builder leaves it (Peter, 17 Oct 2026, UI issue 2). A new row still gets one.
       if (col === 'visibility' && !promoting) continue;
       if (col !== 'archived' && keptBlocks(col)) continue;
+      if (col === 'tax_rate_id') {
+        // 5.12.104: the product names this site's own tax profile. The item takes it (the profile
+        // comes before any rate on the item, which is left as the site has it).
+        const profile = taxProfileFor(p);
+        if (profile) {
+          if (!sameValue(vrow.tax_profile_id ?? null, profile.id)) setCol('items', vrow, 'tax_profile_id', profile.id, { ...meta, profileSet: profile.name });
+          continue;
+        }
+        // Back to "each site's own tax" (no name, no percent): a real profile on the item comes
+        // off, so it follows its category and the site's default again. A generated copy of the
+        // item's own rate is not a choice anybody made and stays, as before.
+        const noTax = (p.tax_rate_name == null || p.tax_rate_name === '') && (p.tax_rate_percent == null || p.tax_rate_percent === '');
+        if (noTax && vrow.tax_profile_id && venueProfileIsMirror(V, vrow.tax_profile_id, vrow.tax_rate_id ?? null) === false) {
+          setCol('items', vrow, 'tax_profile_id', null, { ...meta, profileOff: true });
+          continue;
+        }
+      }
       const v = col === 'visibility' ? soldVisibility(p) : columnValue(p, ps, col);
       if (v === undefined) continue;
       // A new VAT rate over a tax profile (17 Oct verification): the till reads the item's profile
@@ -1312,6 +1351,8 @@ export function lineWords(line, names = {}) {
     const to = line.after === undefined ? 'now the same as the product' : line.after === null ? "becomes the site's default VAT" : `becomes ${names[line.after] || 'another rate'}`;
     return `${who}: ${TAX_KEY_LABEL[k] || 'order type'} VAT ${to}`;
   }
+  if (line.column === 'tax_profile_id' && line.profileSet) return `${who}: tax becomes this site's "${line.profileSet}" profile`;
+  if (line.column === 'tax_profile_id' && line.profileOff) return `${who}: follows this site's own tax again`;
   if (line.column === 'tax_profile_id') {
     return line.after == null
       ? `${who}: the till now charges the VAT set here. Until now an old tax profile hid it.`
