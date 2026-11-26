@@ -1,5 +1,17 @@
 export const CHANGELOG = [
   {
+    v: '5.12.102',
+    date: '25 Nov 2026',
+    items: [
+      'Multi site menu, Bring in: a product now brings its category with it (Peter, Mozz, 25 Nov 2026: "I just brought in some items from sandy that have categories but it hasnt pulled the category in"). The group menu only knew the categories it read when it was first made. A product in a category made at a site after that came in with NO category, and the category was not in the dropdown either. At Sandy that was the salads and the breads.',
+      'Now, when you bring in a product whose category the group menu does not have, the category comes in too: same name, icon, colour and order, and its parent category first if it sits under one. A second product from the same category uses it, it is never made twice. If the group menu already has a category of that name with nothing at that site, that one is used.',
+      'Publishing does not make a second "Salads" at the site. The group category is matched to the site\'s own category of the same name and remembered, and nothing is written at the site. This applies whenever a group category first reaches a site that already has one of the same name, on the same menu and under the same parent.',
+      'A category matched this way keeps the site\'s own name, place and colour.',
+      'Rehearsed on a copy of Mozz\'s five menus: Sandy\'s six products came in under Salads and Other Eats, and a publish wrote nothing at any of the five sites.',
+      'If you brought products in before this version and they have no category: throw the draft away and bring them in again.',
+    ],
+  },
+  {
     v: '5.12.101',
     date: '25 Nov 2026',
     items: [

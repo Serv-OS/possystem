@@ -366,3 +366,101 @@ test('bring in all: own groups, own products and unmanaged sub items in one set,
   assert.match(r.words[r.words.length - 1], /Nothing changes at Site B when you publish/);
   assert.match(bringInAllChanges(after, B, raw, { siteName: 'Site B' }).problems[0], /Everything Site B sells is in the group menu/);
 });
+
+// ── 5.12.102: the category comes in with the product ─────────────────────────
+// Peter, Mozz, 25 Nov 2026: "I just brought in some items from sandy that have categories but it
+// hasnt pulled the category in". Sandy's group menu knew one category (Sourdough Pizza); the salads
+// and breads were made at Sandy afterwards, in categories the group menu had never read.
+function sandyStyle() {
+  const { v, central } = setup();
+  const raw = v[B];
+  const mB = raw.menus[0].id;
+  raw.categories.push(
+    { id: 'cat-b-salads', location_id: B, menu_id: mB, parent_id: null, label: 'Salads', icon: '🥗', color: '#22c55e', accounting_group: 'Food', sort_order: 5, default_course: 1, image: null },
+    { id: 'cat-b-sides', location_id: B, menu_id: mB, parent_id: null, label: 'Sides', icon: '🍽', color: '#e8a020', accounting_group: 'Food', sort_order: 6, default_course: 1, image: null },
+    { id: 'cat-b-breads', location_id: B, menu_id: mB, parent_id: 'cat-b-sides', label: 'Breads', icon: '🥐', color: '#e8a020', accounting_group: 'Food', sort_order: 1, default_course: 1, image: null },
+  );
+  raw.links.push({ menu_id: mB, category_id: 'cat-b-salads', sort_order: 5 }, { menu_id: mB, category_id: 'cat-b-sides', sort_order: 6 }, { menu_id: mB, category_id: 'cat-b-breads', sort_order: 7 });
+  const like = raw.items.find((i) => i.id === S('m-mocha', B));
+  const own = (id, name, cat, extra = {}) => ({ ...like, id, name, menu_name: name, receipt_name: name, kitchen_name: name.toUpperCase(), cat, cats: [], master_id: null, parent_id: null, assigned_modifier_groups: [], pricing: { base: 9 }, ...extra });
+  raw.items.push(own('own-caesar', 'Caesar Salad', 'cat-b-salads'), own('own-garden', 'Garden Salad', 'cat-b-salads'), own('own-garlic', 'Garlic Bread', 'cat-b-breads'));
+  raw.items.push(own('own-caesar-half', 'Half', 'cat-b-salads', { parent_id: 'own-caesar', type: 'variant', pricing: { base: 6 } }));
+  return { v, central, raw };
+}
+
+test('bring in: a product in a category the group menu never read brings the category in with it', () => {
+  const { v, central, raw } = sandyStyle();
+  assert.ok(!central.categories.some((c) => c.label === 'Salads'), 'the group menu has no Salads');
+  const r = bringInChanges(central, B, raw, 'own-caesar', { idGen: idGen('s'), siteName: 'Sandy' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  for (const c of r.changes) assert.ok(checkChange(c).ok, `${c.target}: ${checkChange(c).words}`);
+  const cat = r.changes.filter((c) => c.target === 'category');
+  assert.equal(cat.length, 1, 'one category, shared by the product and its size');
+  assert.deepEqual([cat[0].op, cat[0].after.label, cat[0].after.parent_id, cat[0].after.color, cat[0].after.sort_order, cat[0].after.archived], ['create', 'Salads', null, '#22c55e', 5, false]);
+  assert.equal(r.changes[0].target, 'category', 'the category comes first, before the product that points at it');
+  const prods = r.changes.filter((c) => c.target === 'product' && c.op === 'create');
+  assert.deepEqual(prods.map((c) => c.after.name).sort(), ['Caesar Salad', 'Half']);
+  for (const p of prods) assert.equal(p.after.category_id, cat[0].entity_id, `${p.after.name} is IN the category, not left blank`);
+  assert.match(r.words.join(' '), /The category "Salads" comes into the group menu with it\. Sandy keeps its own "Salads": nothing changes there\./);
+  // Nothing is written at the site, and it keeps no category "of its own": publish maps the
+  // group category to the site's own one.
+  assert.deepEqual(writesAt(central, r.changes, B, raw, false), []);
+  assert.deepEqual(writesAt(central, r.changes, B, raw), [].concat(writesAt(central, [], B, raw)), 'no more lines than before the bring in');
+  const ps = r.changes.filter((c) => c.target === 'product_site');
+  for (const c of ps) assert.ok(!('cat' in (c.after.kept || {})), 'the site does not keep a category of its own');
+  const after = applyChanges(central, r.changes).central;
+  const plan = planSite({ central: after, touched: touchedFromChanges(r.changes), locationId: B, orgId: ORG, venue: raw });
+  assert.deepEqual(plan.writes.categories.insert, [], 'no second Salads at the site');
+  assert.deepEqual(plan.writes.maps.categories, [{ category_id: cat[0].entity_id, venue_category_id: 'cat-b-salads' }]);
+  assert.deepEqual(plan.adoptedCategories.map((a) => a.label), ['Salads']);
+  assert.deepEqual(plan.problems.filter((p) => p.level === 'block'), []);
+  // The other site is not touched at all.
+  assert.deepEqual(writesAt(central, r.changes, A, v[A], false), []);
+});
+
+test('bring in: a second product from the same category uses the category already in the draft', () => {
+  const { central, raw } = sandyStyle();
+  const first = bringInChanges(central, B, raw, 'own-caesar', { idGen: idGen('s'), siteName: 'Sandy' });
+  const eff = applyChanges(central, first.changes).central;
+  const second = bringInChanges(eff, B, raw, 'own-garden', { idGen: idGen('t'), siteName: 'Sandy' });
+  assert.ok(second.ok, second.problems.join(' | '));
+  assert.equal(second.changes.filter((c) => c.target === 'category').length, 0, 'no second Salads in the group menu');
+  const catId = first.changes.find((c) => c.target === 'category').entity_id;
+  assert.equal(second.changes.find((c) => c.target === 'product').after.category_id, catId);
+  const both = [...first.changes, ...second.changes];
+  assert.deepEqual(writesAt(central, both, B, raw, false), []);
+});
+
+test('bring in: a category under another brings its parent first, and both map to the site\'s own', () => {
+  const { central, raw } = sandyStyle();
+  const r = bringInChanges(central, B, raw, 'own-garlic', { idGen: idGen('s'), siteName: 'Sandy' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  const cats = r.changes.filter((c) => c.target === 'category');
+  assert.deepEqual(cats.map((c) => c.after.label), ['Sides', 'Breads'], 'the parent first');
+  assert.equal(cats[1].after.parent_id, cats[0].entity_id);
+  assert.equal(r.changes.find((c) => c.target === 'product').after.category_id, cats[1].entity_id);
+  const after = applyChanges(central, r.changes).central;
+  const plan = planSite({ central: after, touched: touchedFromChanges(r.changes), locationId: B, orgId: ORG, venue: raw });
+  assert.deepEqual(plan.lines, []);
+  assert.deepEqual(plan.writes.maps.categories.map((m) => m.venue_category_id).sort(), ['cat-b-breads', 'cat-b-sides']);
+});
+
+test('bring in: a group category of the same name with no category at the site is used, not doubled', () => {
+  const { central, raw } = sandyStyle();
+  central.categories.push({ id: 'aaaaaaaa-0000-4000-8000-00000000000a', label: ' salads ', parent_id: null, sort_order: 9, archived: false, route_like_id: null });
+  const r = bringInChanges(central, B, raw, 'own-caesar', { idGen: idGen('s'), siteName: 'Sandy' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  assert.equal(r.changes.filter((c) => c.target === 'category').length, 0);
+  assert.equal(r.changes.find((c) => c.target === 'product').after.category_id, 'aaaaaaaa-0000-4000-8000-00000000000a');
+  assert.deepEqual(writesAt(central, r.changes, B, raw, false), []);
+});
+
+test('bring in: a product in a category the group menu already has is unchanged (no category staged)', () => {
+  const { central, raw } = sandyStyle();
+  const like = raw.items.find((i) => i.id === S('m-mocha', B));
+  raw.items.push({ ...like, id: 'own-hot', name: 'Chai', menu_name: 'Chai', receipt_name: 'Chai', kitchen_name: 'CHAI', master_id: null, assigned_modifier_groups: [] });
+  const r = bringInChanges(central, B, raw, 'own-hot', { idGen: idGen('s'), siteName: 'Sandy' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  assert.equal(r.changes.filter((c) => c.target === 'category').length, 0);
+  assert.ok(r.changes.find((c) => c.target === 'product').after.category_id, 'in the group category it was always given');
+});
