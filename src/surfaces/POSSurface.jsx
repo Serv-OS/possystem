@@ -710,7 +710,11 @@ export default function POSSurface() {
   // 5.12.31 (lib/menuRules.js rule 9): a category whose rows are all option only sub items
   // (the importer's Cheeses, a brought in option group) is not on the strip: nothing in it can
   // be rung up. The kiosk, online and QR already left such a section out.
-  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, MENU_ITEMS), [menuCategories, MENU_ITEMS]);
+  // 5.12.113 (Peter, 26 Nov 2026, Mozz Sandy: "Pizza Options, 0 items", still on the strip): the rule
+  // was handed MENU_ITEMS, which has ALREADY had the option only sub items taken out (rule 1,
+  // above). So it saw a category with nothing in it at all, which it leaves alone, and never hid
+  // one on this screen. It must be handed the store's own rows (rawItems), as the bar and phone are.
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, rawItems), [menuCategories, rawItems]);
 
   // Find subcategories of the active category
   const subCategories = useMemo(() =>
