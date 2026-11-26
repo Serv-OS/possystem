@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.109',
+    date: '26 Nov 2026',
+    items: [
+      'Multi site menu: the POS button name, the receipt name and the kitchen / KDS name of a product are now always shown on its sheet (Peter, 26 Nov 2026: "you cant change the various names POS, receipt and KDS").',
+      'They could be changed before, but only after tapping one small link, so nobody found them. Menu Manager locks these names for a group product and sends you to the Multi site menu, so they must be in plain sight there.',
+      'The three boxes use the same words as Menu Manager. A blank box uses the product name.',
+      'The product sheet in the Multi site menu now says POS where it said till.',
+    ],
+  },
+  {
     v: '5.12.108',
     date: '26 Nov 2026',
     items: [
