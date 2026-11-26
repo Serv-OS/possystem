@@ -33,7 +33,8 @@ export function pctText(rate) {
 }
 
 const liveLines = (profile) => (Array.isArray(profile?.lines) ? profile.lines.filter(l => l && l.active !== false) : []);
-const forAllOrderTypes = (line) => !Array.isArray(line.orderTypes) || line.orderTypes.length === 0 || line.orderTypes.includes('all');
+// Either spelling: the store's camel rows, or raw tax_profile_lines rows (the multi site menu reads those).
+const forAllOrderTypes = (line) => { const t = line.orderTypes ?? line.order_types; return !Array.isArray(t) || t.length === 0 || t.includes('all'); };
 const isPerUnit = (line) => (line.lineType ?? line.line_type ?? 'rate') === 'per_unit';
 
 /**

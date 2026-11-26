@@ -41,6 +41,7 @@ import { isOptionOnlyItem } from '../../../lib/menuRules';
 import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords, sizeVatWords } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
+import { profileChoices, profileChoiceOf, choiceToProfile, sitesMissingProfile, groupRunsOnProfiles, isProfileTax } from '../../../lib/msm/msmTaxProfiles';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { marginFor } from '../../../lib/msm/msmMargin';
 import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue, pctText, noPriceAt } from '../../../../supabase/functions/_shared/msmModel.js';
@@ -69,7 +70,7 @@ function withSoldVisibility(f) {
   return v && Object.values(v).some((x) => x === true) ? f : { ...f, visibility: ALL_ON };
 }
 
-export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, ratesByLoc = {}, sales, openGroup, openProduct, onClose, onCreated }) {
+export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, ratesByLoc = {}, profilesByLoc = {}, sales, openGroup, openProduct, onClose, onCreated }) {
   const p = productId ? ix.products.get(productId) : null;
   const tree = useMemo(() => categoryTree(ix), [ix]);
   const rateChoices = useMemo(() => {
@@ -204,6 +205,15 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     const pu = productUpdate({ ...ctx, eff: effCat }, p.id, fields);
     if (pu.words) return bad(pu.words);
     if (pu.change) changes.push(pu.change);
+    // 5.12.104: a tax PROFILE goes to the product's sizes with it. The till taxes a size by the
+    // size's own row, so a profile on the product alone would leave its sizes on the site default.
+    if (pu.change && ('tax_rate_name' in pu.change.after || 'tax_rate_percent' in pu.change.after) && (isProfileTax(fields) || isProfileTax(p))) {
+      for (const size of ix.products.values()) {
+        if (size.parent_product_id !== p.id || size.archived) continue;
+        const su = productUpdate({ ...ctx, eff: effCat }, size.id, { tax_rate_name: fields.tax_rate_name ?? null, tax_rate_percent: fields.tax_rate_percent ?? null });
+        if (su.change) changes.push(su.change);
+      }
+    }
     // Site prices are worked out against the group as it will be after this save.
     const effAfter = pu.change ? { ...eff, products: eff.products.map((x) => (x.id === p.id ? { ...x, ...pu.change.after } : x)) } : eff;
     const ctxSites = { live, eff: effAfter };
@@ -346,6 +356,13 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   // A size's VAT example reads its product's VAT by order type (what the till charges).
   const tbt = (isSizeForm ? parentOfForm?.tax_by_type : form.tax_by_type) || {};
   const productRate = form.tax_rate_percent == null ? null : { name: form.tax_rate_name, percent: form.tax_rate_percent };
+  // 5.12.104: tax profiles by name (lib/msm/msmTaxProfiles.js). A name with no percent is each
+  // site's own profile of that name; nothing at all is "each site's own tax".
+  const siteIdsHere = visibleSites.map((s) => s.id);
+  const taxProfileChoices = profileChoices(profilesByLoc, siteIdsHere);
+  const onProfiles = groupRunsOnProfiles(profilesByLoc, siteIdsHere);
+  const pickedProfile = isProfileTax(form) ? String(form.tax_rate_name).trim() : null;
+  const missingProfile = pickedProfile ? sitesMissingProfile(pickedProfile, profilesByLoc, siteIdsHere).map((l) => siteName.get(l)) : [];
   const missingFor = (rate) => sitesMissingRate(rate, ratesByLoc, visibleSites.map((s) => s.id)).map((l) => siteName.get(l));
   const exSite = example.loc && visibleSites.some((s) => s.id === example.loc) ? example.loc : visibleSites[0]?.id;
   const exPs = p && exSite ? ix.sites.get(`${p.id}|${exSite}`) : null;
@@ -463,13 +480,21 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             {!priceOk.ok && <div style={{ ...ui.err, marginTop: 4 }}>{priceOk.words}</div>}
           </Field>
           )}
-          <Field label={tt('VAT')} hint={tt('Each site uses its own VAT rate with this name.')}>
-            <select style={ui.input} value={productRate ? rateToChoice(productRate) : ''}
-              onChange={(e) => { const r = choiceToRate(e.target.value); setForm((f) => ({ ...f, tax_rate_name: r?.name ?? null, tax_rate_percent: r?.percent ?? null })); }}>
-              <option value="">{tt('No VAT rate')}</option>
+          <Field label={tt('VAT')} hint={onProfiles || taxProfileChoices.length ? 'A tax profile is matched by its name: each site uses its own profile of that name, with its own rates.' : tt('Each site uses its own VAT rate with this name.')}>
+            <select style={ui.input} data-testid="msm-product-tax" value={pickedProfile ? profileChoiceOf(form) : productRate ? rateToChoice(productRate) : ''}
+              onChange={(e) => {
+                const profile = choiceToProfile(e.target.value);
+                if (profile != null) { setForm((f) => ({ ...f, tax_rate_name: profile, tax_rate_percent: null })); return; }
+                const r = choiceToRate(e.target.value);
+                setForm((f) => ({ ...f, tax_rate_name: r?.name ?? null, tax_rate_percent: r?.percent ?? null }));
+              }}>
+              <option value="">{onProfiles ? "Each site's own tax (its category, then the site default)" : tt('No VAT rate')}</option>
+              {pickedProfile && !taxProfileChoices.some((t) => t.value === profileChoiceOf(form)) && <option value={profileChoiceOf(form)}>{pickedProfile} (no site has this profile)</option>}
+              {taxProfileChoices.length > 0 && <optgroup label="Tax profiles">{taxProfileChoices.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</optgroup>}
               {productRate && !rateChoices.some((t) => t.value === rateToChoice(productRate)) && <option value={rateToChoice(productRate)}>{productRate.name || tw().Tax} ({pctText(productRate.percent)})</option>}
               {rateChoices.map((t) => <option key={t.value} value={t.value}>{t.label}{t.sites != null && t.sites < sites.length ? ` (at ${t.sites} of ${sites.length} sites)` : ''}</option>)}
             </select>
+            {missingProfile.length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{missingProfile.join(', ')} {missingProfile.length === 1 ? 'has' : 'have'} no tax profile called "{pickedProfile}". Add it in {missingProfile.length === 1 ? "that site's" : "those sites'"} Tax settings, or {missingProfile.length === 1 ? 'that site' : 'those sites'} cannot be published.</div>}
             {productRate && missingFor(productRate).length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{missingFor(productRate).join(', ')} {missingFor(productRate).length === 1 ? 'has' : 'have'} no rate like this. Add it in Settings, Tax, or {missingFor(productRate).length === 1 ? 'that site' : 'those sites'} cannot be published.</div>}
           </Field>
         </div>
