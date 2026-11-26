@@ -135,3 +135,19 @@ export function productsOnOldRate(items, taxRates) {
   const live = new Set((taxRates || []).filter(r => r && r.active !== false).map(r => r.id));
   return (items || []).filter(i => i && !i.archived && !(i.taxProfileId ?? i.tax_profile_id) && live.has(i.taxRateId ?? i.tax_rate_id));
 }
+
+/**
+ * The old style rate a NEW product is born with, or null.
+ *
+ * Since v5.5.961 a new product is stamped with the venue's default rate, so a product priced before
+ * tax was set up is never left untaxed. At a venue that charges through a real tax profile that
+ * stamp is wrong: the old rate comes BEFORE the profile, so the product charges the old rate alone.
+ * Mozz Sandy, 25 Nov 2026: four salad sizes were born on "Sales tax 7.45%" while the venue profile
+ * was 8.45% (Sales tax + Restaurant tax). There, nothing is stamped and the product follows its
+ * category and the venue profile like every other.
+ */
+export function rateForNewProduct({ taxRates = [], taxProfiles = [], venueDefaultProfileId = null, isMirror = null } = {}) {
+  if (venueRunsOnProfiles({ taxProfiles, taxRates, venueDefaultProfileId, isMirror })) return null;
+  const def = (taxRates || []).find(r => r && (r.isDefault || r.is_default) && r.active !== false);
+  return def ? def.id : null;
+}

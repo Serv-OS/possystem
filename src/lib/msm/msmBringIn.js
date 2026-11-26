@@ -31,7 +31,7 @@
 import { planSite, touchedFromChanges, groupOptionRows } from '../../../supabase/functions/_shared/msmPlan.js';
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
 import { touchEverything } from '../../../supabase/functions/_shared/msmImport.js';
-import { importTaxByType, sizeKeptTax } from '../../../supabase/functions/_shared/msmTax.js';
+import { importTaxByType, sizeKeptTax, mapRateDescriptor } from '../../../supabase/functions/_shared/msmTax.js';
 import {
   familyOf, normName, has, samePrice, sameValue, money2, KEPT_COLUMNS, GROUP_KEPT_COLUMNS, PUBLISHED_CHANNELS,
 } from '../../../supabase/functions/_shared/msmModel.js';
@@ -903,6 +903,70 @@ export function bringInAllChanges(central, locationId, raw, opts = {}) {
 export function ownGroupCountWords(n, siteName) {
   if (!n) return `Every option group ${siteName} asks is in the group menu.`;
   return `${siteName} has ${n} option group${n === 1 ? '' : 's'} of its own, not in the group menu.`;
+}
+
+// ── A draft made before 5.12.102: products brought in with NO category ─────────────────────────
+// Peter, Mozz, 25 Nov 2026: "What about the catagories that still is not fixed". The fix above only
+// helps a product brought in after it. His draft already held 8 products with no category, and
+// "throw the draft away and bring them in again" is not an answer. This puts each such product in
+// the category its own site has it in, by the same rule as Bring in (catOf), and adds to the draft.
+
+/** The products (draft applied) that have no category and need one (an option only sub item needs none). */
+export function productsWithNoCategory(central) {
+  return listOf(central?.products).filter((p) => p && !p.archived && !p.category_id && !(p.type === 'subitem' && p.sold_alone !== true));
+}
+
+/**
+ * The draft changes that put every product with no category into the category its site has it in.
+ *   central     the group menu with the draft applied (eff)
+ *   rawBySite   { locationId: readVenueRaw(...) } for the sites those products are at
+ *   opts        { idGen, siteNames: { locationId: name } }
+ * Returns { changes, words, fixed: [names], left: [names] }.
+ * A product's tax rate is cleared too when it names a rate that the site it came from no longer
+ * holds on that product and that no site read here has (it would block every publish).
+ */
+export function repairNoCategoryChanges(central, rawBySite, opts = {}) {
+  const idGen = opts.idGen || defaultUuid;
+  const C = applyChanges(central, []).central;
+  const changes = [];
+  const words = [];
+  const fixed = [];
+  const left = [];
+  const raws = rawBySite || {};
+  const machines = new Map();
+  const machineFor = (loc) => {
+    if (!machines.has(loc)) {
+      const raw = raws[loc];
+      const items = listOf(raw?.items).filter(Boolean);
+      machines.set(loc, bringMachinery({
+        C, changes, loc, raw, items, idGen, siteName: opts.siteNames?.[loc] || 'the site', words,
+        productOfItem: new Map(), siteRows: { ps: new Map(), gs: new Map(), os: new Map() },
+        affected: { products: new Set(), groups: new Set() }, groupsHere: new Map(listOf(raw?.groups).filter(Boolean).map((g) => [g.id, g])),
+      }));
+    }
+    return machines.get(loc);
+  };
+  const someSiteHasRate = (p) => Object.values(raws).some((raw) => mapRateDescriptor({ name: p.tax_rate_name, percent: p.tax_rate_percent }, raw?.taxRates).ok);
+  for (const p of productsWithNoCategory(C)) {
+    let done = false;
+    for (const ps of listOf(C.productSites).filter((x) => x.product_id === p.id)) {
+      const raw = raws[ps.location_id];
+      const row = raw ? listOf(raw.items).find((i) => i && i.id === ps.venue_item_id) : null;
+      if (!row || !row.cat) continue;
+      const f = machineFor(ps.location_id).productFields(row, p.parent_product_id || null);
+      if (!f.category_id) continue;
+      const after = { category_id: f.category_id };
+      if (f.extra_category_ids.length && !listOf(p.extra_category_ids).length) after.extra_category_ids = f.extra_category_ids;
+      if ((p.tax_rate_name || p.tax_rate_percent != null) && !row.tax_rate_id && !someSiteHasRate(p)) { after.tax_rate_name = null; after.tax_rate_percent = null; }
+      changes.push({ target: 'product', entity_id: p.id, location_id: null, op: 'update', after, before: {} });
+      Object.assign(listOf(C.products).find((x) => x.id === p.id) || {}, after);
+      fixed.push(p.menu_name || p.name || 'Product');
+      done = true;
+      break;
+    }
+    if (!done) left.push(p.menu_name || p.name || 'Product');
+  }
+  return { changes: orderForGuard(changes), words: [...new Set(words)], fixed, left };
 }
 
 export { money2 };

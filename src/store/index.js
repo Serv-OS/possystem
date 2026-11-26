@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { propagatedFields, isMasterRow } from '../lib/shareCopy';
 import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, getResolvedLocationIdSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, readLocalDevice } from '../lib/supabase';
-import { taxCtxHasConfig } from '../lib/taxCompute';
+import { taxCtxHasConfig, isLegacyMirror } from '../lib/taxCompute';
+import { rateForNewProduct } from '../lib/taxProfileWords';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
@@ -2455,8 +2456,12 @@ export const useStore = create((set, get) => ({
     // one this tab resolved (tabVenue), whatever another tab switched rpos-bo-location to.
     if (!newItem.taxRateId && newItem.type !== 'spacer') {
       const rates = isBackOfficeMode() ? venueTaxRates(useStore.getState().taxRates, tabVenue()) : (useStore.getState().taxRates || []);
-      const def = rates.find(r => (r.isDefault || r.is_default) && r.active !== false);
-      if (def) newItem.taxRateId = def.id;
+      // 5.12.103 (Mozz Sandy, 25 Nov 2026): never at a venue that charges through a real tax
+      // profile. The old rate comes before the profile, so the stamp made four new salad sizes
+      // charge 7.45% where the venue charges 8.45% (lib/taxProfileWords.js rateForNewProduct).
+      const st = useStore.getState();
+      const stamp = rateForNewProduct({ taxRates: rates, taxProfiles: st.taxProfiles, venueDefaultProfileId: st.venueDefaultTaxProfileId, isMirror: isLegacyMirror });
+      if (stamp) newItem.taxRateId = stamp;
     }
     set(s => ({ menuItems: [...s.menuItems, newItem] }));
     // 27 Sep 2026: a creation is an INSERT that never overwrites (lib/menuWriters.js). The row is

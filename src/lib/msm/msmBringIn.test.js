@@ -464,3 +464,75 @@ test('bring in: a product in a category the group menu already has is unchanged 
   assert.equal(r.changes.filter((c) => c.target === 'category').length, 0);
   assert.ok(r.changes.find((c) => c.target === 'product').after.category_id, 'in the group category it was always given');
 });
+
+// ── 5.12.103: a draft made before 5.12.102 is repaired, not thrown away ───────
+// Peter, 25 Nov 2026: "What about the catagories that still is not fixed". His draft held 8 products
+// brought in with no category, and 4 of them named a tax rate the site no longer has.
+import { productsWithNoCategory, repairNoCategoryChanges } from './msmBringIn.js';
+
+function oldDraft() {
+  const { v, central, raw } = sandyStyle();
+  // What 5.12.101 staged: the products and their site rows, no category change, category blank.
+  let eff = central; const draft = [];
+  for (const id of ['own-caesar', 'own-garden', 'own-garlic']) {
+    const r = bringInChanges(eff, B, raw, id, { idGen: idGen(`o${id}`), siteName: 'Sandy' });
+    assert.ok(r.ok, r.problems.join(' | '));
+    draft.push(...r.changes);
+    eff = applyChanges(eff, r.changes).central;
+  }
+  const old = draft.filter((c) => c.target !== 'category').map((c) => (c.target === 'product' ? { ...c, after: { ...c.after, category_id: null } } : c));
+  // The size was born on the site's old default rate, which has since been removed there.
+  const half = old.find((c) => c.target === 'product' && c.after.name === 'Half');
+  half.after = { ...half.after, tax_rate_name: 'Sales tax', tax_rate_percent: 0.0745 };
+  raw.items.find((i) => i.id === 'own-caesar-half').tax_rate_id = null;      // the data fix cleared it at the site
+  return { v, central, raw, old };
+}
+
+test('products with no category are found; an option only sub item is not one of them', () => {
+  const { central, old } = oldDraft();
+  const eff = applyChanges(central, old).central;
+  assert.deepEqual(productsWithNoCategory(eff).map((p) => p.name).sort(), ['Caesar Salad', 'Garden Salad', 'Garlic Bread', 'Half']);
+  assert.deepEqual(productsWithNoCategory(central), [], 'the live group menu has none');
+  assert.deepEqual(productsWithNoCategory({ products: [{ id: 'x', name: 'Oat', type: 'subitem', sold_alone: false, category_id: null }] }), []);
+});
+
+test('the old draft is repaired: each product goes into its site\'s category, and a publish writes nothing there', () => {
+  const { v, central, raw, old } = oldDraft();
+  const eff = applyChanges(central, old).central;
+  const r = repairNoCategoryChanges(eff, { [B]: raw }, { idGen: idGen('r'), siteNames: { [B]: 'Sandy' } });
+  for (const c of r.changes) assert.ok(checkChange(c).ok, `${c.target}: ${checkChange(c).words}`);
+  const cats = r.changes.filter((c) => c.target === 'category');
+  assert.deepEqual(cats.map((c) => c.after.label), ['Salads', 'Sides', 'Breads'], 'each category once, a parent before its child');
+  assert.deepEqual(r.fixed.sort(), ['Caesar Salad', 'Garden Salad', 'Garlic Bread', 'Half']);
+  assert.deepEqual(r.left, []);
+  const upd = r.changes.filter((c) => c.target === 'product');
+  assert.ok(upd.every((c) => c.op === 'update' && c.after.category_id), 'updates that merge into the draft\'s creates');
+  const byLabel = new Map(cats.map((c) => [c.entity_id, c.after.label]));
+  const fixedEff = applyChanges(central, [...old, ...r.changes]).central;
+  const where = (name) => byLabel.get(fixedEff.products.find((p) => p.name === name).category_id);
+  assert.deepEqual([where('Caesar Salad'), where('Half'), where('Garden Salad'), where('Garlic Bread')], ['Salads', 'Salads', 'Salads', 'Breads']);
+  assert.deepEqual(productsWithNoCategory(fixedEff), []);
+  // The rate nobody holds any more is cleared, so the size follows its site's tax profile.
+  const half = fixedEff.products.find((p) => p.name === 'Half');
+  assert.deepEqual([half.tax_rate_name, half.tax_rate_percent], [null, null]);
+  // Publishing the repaired draft writes nothing at the site: only the category maps.
+  const all = [...old, ...r.changes];
+  const plan = planSite({ central: fixedEff, touched: touchedFromChanges(all), locationId: B, orgId: ORG, venue: raw });
+  assert.deepEqual(plan.lines, []);
+  assert.deepEqual(plan.writes.categories.insert, []);
+  assert.deepEqual(plan.writes.maps.categories.map((m) => m.venue_category_id).sort(), ['cat-b-breads', 'cat-b-salads', 'cat-b-sides']);
+  assert.deepEqual(writesAt(central, all, A, v[A], false), []);
+  // A second press finds nothing left to do.
+  assert.deepEqual(repairNoCategoryChanges(fixedEff, { [B]: raw }, { idGen: idGen('z') }).changes, []);
+});
+
+test('a tax rate a site still has is kept; a product whose site cannot be read is left and named', () => {
+  const { central, raw, old } = oldDraft();
+  raw.taxRates.push({ id: 'tr-b-sales', location_id: B, name: 'Sales tax', rate: 0.0745, active: true });
+  const eff = applyChanges(central, old).central;
+  const r = repairNoCategoryChanges(eff, { [B]: raw }, { idGen: idGen('r') });
+  assert.ok(!('tax_rate_name' in r.changes.find((c) => c.target === 'product' && eff.products.find((p) => p.id === c.entity_id).name === 'Half').after));
+  const none = repairNoCategoryChanges(eff, {}, { idGen: idGen('r') });
+  assert.deepEqual(none.changes, []);
+  assert.deepEqual(none.left.sort(), ['Caesar Salad', 'Garden Salad', 'Garlic Bread', 'Half']);
+});
