@@ -55,6 +55,7 @@ import {
   validateSelections, priceDelta, buildModsArray, summarizeForDisplay, kioskSheetNestedHint,
 } from '../lib/kioskOptionGroups';
 import KioskItemSheet from './kiosk/KioskItemSheet';
+import { isOnceEach } from '../lib/choiceKinds';
 import { subitemNameIndex } from '../lib/menuRules';
 
 // ============================================================
@@ -441,6 +442,17 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   const incOption = (group, optId) => {
     setShowError(false);
     setStockErr(null);
+    // 5.12.112: several choices, each option only once (lib/choiceKinds.js). A second tap on a
+    // picked option takes it off, with anything chosen under it.
+    if (isOnceEach(group) && (selections[group.id] || []).includes(optId)) {
+      setSelections(prev => ({ ...prev, [group.id]: (prev[group.id] || []).filter(id => id !== optId) }));
+      setNestedSelections(prev => {
+        const lead = group.id + ':' + optId + ':';
+        if (!Object.keys(prev).some(k => k.startsWith(lead))) return prev;
+        return Object.fromEntries(Object.entries(prev).filter(([k]) => !k.startsWith(lead)));
+      });
+      return;
+    }
     setSelections(prev => {
       const current = prev[group.id] || [];
       // v5.5.289: Check stock for this option's linked item.
@@ -877,7 +889,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                         ? '-£' + Math.abs(opt.price).toFixed(2)
                         : '';
                   const atCap = picked.length >= g._max && !g._isSingle;
-                  const showStepper = !g._isSingle && optCount > 0;
+                  const showStepper = (!g._isSingle && optCount > 0) && !isOnceEach(g);   // 5.12.112: once each has no stepper, a tap takes it off
                   const sub = opt.subGroupId ? subGroupsCache[opt.subGroupId] : null;
                   // v5.5.27: pull effective display fields (own option > matched sold-alone subitem).
                   const effective = resolveOpt(opt);

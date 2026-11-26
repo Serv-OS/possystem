@@ -18,6 +18,7 @@ import { Icon } from '../../components/ServOSIcons';
 import { flowOrderedMods } from '../../lib/optionFlow';
 import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
 import { subitemNameIndex } from '../../lib/menuRules';
+import { isOnceEach } from '../../lib/choiceKinds';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
   const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [], dailyCounts = {}, orderType, activeMenuId } = useStore();
@@ -51,6 +52,7 @@ export default function MItemDetail({ item, onClose, onAdded }) {
         name: def.name,
         min: a.min ?? def.min ?? 0,
         max: a.max ?? def.max ?? 99,
+        selectionType: def.selectionType ?? def.selection_type ?? null,   // 5.12.112: once each (lib/choiceKinds.js)
         options: def.options || [],
       };
     }).filter(Boolean);
@@ -127,6 +129,8 @@ export default function MItemDetail({ item, onClose, onAdded }) {
       if (group.max === 1) {
         return { ...prev, [group.id]: [{ ...opt, qty:1, groupLabel:group.name, subPicks:[] }] };
       }
+      // 5.12.112: several choices, each option only once. A second tap takes it off.
+      if (existing && isOnceEach(group)) return { ...prev, [group.id]: current.filter(m => m.id !== opt.id) };
       // Multi-select: hit the cap?
       if (totalNow >= group.max) return prev;
       if (existing) {
@@ -374,7 +378,7 @@ export default function MItemDetail({ item, onClose, onAdded }) {
                   const is86 = optIs86(opt);
                   // v5.6.69: sold-out by COUNT blocks another pick too (single-
                   // select can still switch to an already-picked option).
-                  const isFull = !isSelected || isMultiSelect ? optIsFull(opt) : false;
+                  const isFull = (!isSelected || isMultiSelect) && !(isSelected && isOnceEach(group)) ? optIsFull(opt) : false;
                   const blocked = is86 || isFull || (atMax && !isSelected && isMultiSelect);
 
                   return (

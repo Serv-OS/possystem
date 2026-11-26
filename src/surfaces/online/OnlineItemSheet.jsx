@@ -20,6 +20,7 @@ import AllergenChips, { allergenPaletteFromTheme, allergenChipLabels } from '../
 // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
 import { kcalWords, mayContainWords, kcalNote, ALLERGEN_CHECK_EN } from '../../lib/menuStockFacts';
+import { isOnceEach } from '../../lib/choiceKinds';
 
 const capFirst = (s) => { const v = String(s || ''); return v ? v.charAt(0).toUpperCase() + v.slice(1) : ''; };
 
@@ -753,6 +754,14 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                       : null;
                     const subKey = `${g.id}:${opt.id || opt.name}`;
                     const subPick = subPicks[subKey];
+                    // 5.12.112 (Peter, 26 Nov 2026: "it needs to work the same no matter where you order"):
+                    // a several choices group lets the same option be added again, as the POS and the
+                    // kiosk always have, unless the group is "each option only once" (lib/choiceKinds.js).
+                    // The server prices every copy at its menu price (_public_order_value).
+                    const picks = !isSingle && Array.isArray(value) ? value : [];
+                    const copies = picks.filter(o => o.id === opt.id).length;
+                    const canRepeat = !isSingle && !isOnceEach(g) && copies > 0;
+                    const full = picks.length >= max;
                     return (
                       <div key={opt.id || opt.name}>
                         <OptionRow
@@ -764,6 +773,17 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                           mode={isSingle ? 'single' : 'multi'}
                           is86={optIs86(opt)}
                           theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                        {canRepeat && (
+                          <div data-testid="online-option-repeat" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 6 }}>
+                            <button type="button" aria-label={`One fewer ${opt.name || opt.label || ''}`.trim()}
+                              onClick={() => { setErrors([]); setSelections(s => { const arr = Array.isArray(s[g.id]) ? [...s[g.id]] : []; const i = arr.map(o => o.id).lastIndexOf(opt.id); if (i < 0) return s; arr.splice(i, 1); return { ...s, [g.id]: arr }; }); }}
+                              style={{ width: 40, height: 40, borderRadius: 10, border: `1.5px solid ${theme.accent}`, background: 'transparent', color: theme.accent, fontSize: 20, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit' }}>−</button>
+                            <span aria-live="polite" style={{ minWidth: 20, textAlign: 'center', fontSize: 16, fontWeight: 800, color: theme.fg, fontVariantNumeric: 'tabular-nums' }}>{copies}</span>
+                            <button type="button" aria-label={`One more ${opt.name || opt.label || ''}`.trim()} disabled={full || optIs86(opt)}
+                              onClick={() => { setErrors([]); setSelections(s => { const arr = Array.isArray(s[g.id]) ? s[g.id] : []; if (arr.length >= max) return s; return { ...s, [g.id]: [...arr, opt] }; }); }}
+                              style={{ width: 40, height: 40, borderRadius: 10, border: `1.5px solid ${theme.accent}`, background: theme.accent, color: contrastFg(theme.accent), fontSize: 20, fontWeight: 800, cursor: full ? 'not-allowed' : 'pointer', opacity: full || optIs86(opt) ? 0.4 : 1, fontFamily: 'inherit' }}>+</button>
+                          </div>
+                        )}
                         {subGroup && (
                           <div style={{
                             marginTop: 8, marginLeft: 18,

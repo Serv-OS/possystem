@@ -1,5 +1,26 @@
 export const CHANGELOG = [
   {
+    v: '5.12.112',
+    date: '26 Nov 2026',
+    items: [
+      'Option groups: a new tick box, "Each option only once", for a group where customers pick several options but never the same one twice (Peter, 26 Nov 2026: "they can select multiple but only one of each").',
+      'It shows only under Several choices: Pick many in Menu Manager, and Several choices in the Multi site menu. It is off unless you tick it, so every group works as it did.',
+      'It works the same on the POS, the phone POS, the kiosk, online ordering, QR, catering and the booking widget.',
+      'Online ordering: in a Several choices group without the tick, a customer can now add the same option again with plus and minus, as the POS and kiosk always could. Every copy is charged.',
+      'Menu Manager: the Pick many hint said "each selectable once", which was not true on the POS. It now points at the tick box.',
+      'The Multi site menu needs SQL 20261213a on Ops to save the tick. Until it has run, the screen says so and nothing is changed. A site\'s own groups in Menu Manager do not need it.',
+    ],
+  },
+  {
+    v: '5.12.111',
+    date: '26 Nov 2026',
+    items: [
+      'Multi site menu, Option groups: an option made with "From an existing product" now starts at that product\'s own price, not 0.00 (Peter, 26 Nov 2026: "its populating as zero rather than inheriting from the product").',
+      'This is the same as Menu Manager, where a sub item picked as an option takes its price.',
+      'The picker shows each product\'s price. The price is only where the box starts: you can still type another one.',
+    ],
+  },
+  {
     v: '5.12.110',
     date: '26 Nov 2026',
     items: [

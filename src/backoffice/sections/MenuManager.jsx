@@ -25,6 +25,7 @@ import { attachCatOptions, splitLockedTargets, lockedResultLine } from '../../li
 import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords, runInMenuWriteQueue, MENU_WAIT_MS, loadVenueMenu, tabVenue } from '../../store';
 import { msmManagedState, subscribeMsmManaged, isMsmManaged } from '../../lib/msm/msmManaged.js';
 import { itemLock, groupLock, OWNED_TAX_KEYS } from '../../lib/msm/msmLock.js';
+import { ONCE_EACH, isOnceEach, isSeveral } from '../../lib/choiceKinds.js';
 import { MsmLockBanner, MsmLocked } from './msm/MsmLockNote';
 import { useConfirm } from './msm/useConfirm';
 import { useMsmLockState } from './msm/useMsmLockState';
@@ -3330,7 +3331,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 const def = (modifierGroupDefs||[]).find(g => g.id === ag.groupId);
                 if (!def) return null;
                 const isReq = (def.min||0) > 0; // read from group def — single source of truth
-                const modeLabel = def.selectionType==='quantity' ? `qty, up to ${def.max||'∞'}` : def.selectionType==='multiple' ? `up to ${def.max||'∞'}` : 'pick 1';
+                const modeLabel = def.selectionType==='quantity' ? `qty, up to ${def.max||'∞'}` : isSeveral(def) ? `up to ${def.max||'∞'}${isOnceEach(def) ? ', once each' : ''}` : 'pick 1';
                 return (
                   <div key={ag.groupId} draggable
                     onDragStart={e=>{setDragModIdx(i);beginDrag(e,i);}} onDragOver={e=>dragOver(e,i,overModIdx,setOverModIdx)}
@@ -3533,7 +3534,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     const def = (modifierGroupDefs||[]).find(g => g.id === ag.groupId);
                     if (!def) return null;
                     const isReq = (def.min||0) > 0; // single source of truth: group def
-                    const modeLabel = def.selectionType==='quantity' ? `qty pick, max ${def.max>=99?'∞':def.max}` : def.selectionType==='multiple' ? `multi, max ${def.max>=99?'∞':def.max}` : 'pick 1';
+                    const modeLabel = def.selectionType==='quantity' ? `qty pick, max ${def.max>=99?'∞':def.max}` : isSeveral(def) ? `multi, max ${def.max>=99?'∞':def.max}${isOnceEach(def) ? ', once each' : ''}` : 'pick 1';
                     return (
                       <div key={ag.groupId} draggable
                         onDragStart={e=>{setDragModIdx(i);beginDrag(e,i);}} onDragOver={e=>dragOver(e,i,overModIdx,setOverModIdx)}
@@ -4107,12 +4108,15 @@ function ModifiersTab() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:10 }}>
               {[
                 { id:'single',   label:'Pick 1',         hint:'Customer picks exactly one option',          icon:'◉' },
-                { id:'multiple', label:'Pick many',       hint:'Different options, each selectable once',    icon:'checkSquare' },
+                // 5.12.112: the hint said "each selectable once", which was never true on the POS or the kiosk
+                // (a second tap adds another). The tick box below is what makes it once each.
+                { id:'multiple', label:'Pick many',       hint:'Several options. Tick the box below for each only once', icon:'checkSquare' },
                 { id:'quantity', label:'Pick with qty',   hint:'Same option can be chosen more than once',   icon:'＋' },
               ].map(mode => {
-                const act = sel.selectionType === mode.id || (!sel.selectionType && mode.id === 'single');
+                const act = sel.selectionType === mode.id || (!sel.selectionType && mode.id === 'single') || (mode.id === 'multiple' && isOnceEach(sel));
                 return (
                   <button key={mode.id} onClick={()=>{
+                    if (act) return;   // already this kind: keep its numbers and its once each tick
                     // v5.5.34: when switching to 'quantity' mode (Pick with qty),
                     // default min to match max. Quantity-mode is for fixed-size
                     // containers like "Box of 3" / "Box of 6" where the customer
@@ -4132,6 +4136,18 @@ function ModifiersTab() {
                 );
               })}
             </div>
+
+            {/* 5.12.112 (Peter, 26 Nov 2026: "they can select multiple but only one of each"): only under
+                Pick many. Off = as before, the same option can be tapped again on the POS and the kiosk. */}
+            {isSeveral(sel) && (
+              <label data-testid="mm-group-once-each" style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:10, padding:'7px 10px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', cursor:'pointer' }}>
+                <input type="checkbox" checked={isOnceEach(sel)} onChange={e=>upd({ selectionType: e.target.checked ? ONCE_EACH : 'multiple' })} style={{ marginTop:2 }}/>
+                <span>
+                  <span style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t1)' }}>Each option only once</span>
+                  <span style={{ display:'block', fontSize:9.5, color:'var(--t4)', lineHeight:1.4 }}>Ticked: a customer can pick several options, but never the same one twice. Not ticked: tapping an option again adds another.</span>
+                </span>
+              </label>
+            )}
 
             {/* ── REQUIRED / OPTIONAL + MIN + MAX ── */}
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>

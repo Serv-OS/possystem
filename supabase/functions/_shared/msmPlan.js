@@ -1372,7 +1372,7 @@ export function lineWords(line, names = {}) {
     if (line.column === '(option order)') return `${g}: options in a new order`;
     if (line.column === '(off products)') return `${g}: taken off the group menu's products here`;
     if (line.column === 'min' || line.column === 'max') return `${g}: customers now choose ${line.column === 'min' ? 'at least' : 'up to'} ${line.after}`;
-    if (line.column === 'selection_type') return `${g}: ${{ single: 'one choice', multiple: 'several choices', quantity: 'the same choice more than once' }[line.after] || 'choices changed'}`;
+    if (line.column === 'selection_type') return `${g}: ${{ single: 'one choice', multiple: 'several choices', multiple_once: 'several choices, each option only once', quantity: 'the same choice more than once' }[line.after] || 'choices changed'}`;
     if (line.column === 'name') return `${g}: renamed to ${line.after}`;
     return `${g}: changed`;
   }

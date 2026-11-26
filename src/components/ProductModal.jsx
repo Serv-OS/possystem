@@ -5,6 +5,7 @@ import { ALLERGENS, PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } fro
 import { money, currencySymbol } from '../lib/currency';
 import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
 import { Icon } from './ServOSIcons';
+import { isOnceEach } from '../lib/choiceKinds';
 
 // ── Main product modal dispatcher ─────────────────────────────────────────────
 export default function ProductModal({ item, activeAllergens = [], onConfirm, onCancel }) {
@@ -314,7 +315,7 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                   } else {
                     const instances=(cur||[]).filter(o=>o.id===opt.id);
                     const qtyOpt=instances.length;
-                    const atMax=selCount>=maxSel;
+                    const atMax=selCount>=maxSel||(isOnceEach(group)&&qtyOpt>0);   // 5.12.112: once each
                     return (
                       <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'9px 12px', borderRadius:9, border:`1.5px solid ${qtyOpt>0?'var(--acc)':'var(--bdr)'}`, background:qtyOpt>0?'var(--acc-d)':'var(--bg3)' }}>
                         <span style={{ flex:1, minWidth:0, overflowWrap:'anywhere', fontSize:13, fontWeight:qtyOpt>0?700:400, color:qtyOpt>0?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
@@ -519,7 +520,7 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
                   // Multi-select: show qty controls, allow multiples of same item
                   const instances = (cur || []).filter(o => o.id === opt.id);
                   const qty = instances.length;
-                  const atMax = selectedCount >= maxSel;
+                  const atMax = selectedCount >= maxSel || (isOnceEach(group) && qty > 0);   // 5.12.112: once each
                   return (
                     <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${qty>0?'var(--acc)':'var(--bdr)'}`, background:qty>0?'var(--acc-d)':'var(--bg3)', transition:'all .12s' }}>
                       <span style={{ fontSize:14, fontWeight:500, color:qty>0?'var(--acc)':'var(--t1)', flex:1, minWidth:0, overflowWrap:'anywhere' }}>{opt.label||opt.name}</span>
