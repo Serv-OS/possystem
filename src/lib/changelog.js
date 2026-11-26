@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.101',
+    date: '25 Nov 2026',
+    items: [
+      'Multi site menu: head office can now set dietary info on a product (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info"). Dietary tags (Vegetarian, Vegan, Gluten-free, Dairy-free) belong to head office once a group uses the multi site menu: publish writes them to every site, so the boxes on the site\'s own product are locked. But head office\'s product sheet had no boxes for them, so nobody could set them.',
+      'The product sheet has a new Dietary row, above Allergens, with the same four choices as a site\'s product editor. Tick them, save, publish, and the badge (V, VG, GF, DF) shows on the print menu, the menu board and online at every site that sells the product.',
+      'A product that already had dietary tags keeps them. Nothing is changed until you tick or untick a box.',
+      'Saving a product sheet with no dietary tags and no allergens ticked no longer counts those empty lists as a change.',
+    ],
+  },
+  {
     v: '5.12.100',
     date: '25 Nov 2026',
     items: [

@@ -66,6 +66,7 @@ import { stockApi } from '../../lib/stock/stockApi';
 import { readPlateCostMap, costOrFallback } from '../../lib/stock/plateCostsRead';
 import { resolveTaxRate, netOf, formatRateLabel } from '../../lib/tax';
 import { profileLabel, rateLabel, taxRuleFor, taxRuleWords, venueRunsOnProfiles, productsOnOldRate } from '../../lib/taxProfileWords';
+import { DIET_TAGS } from '../../lib/dietary';
 import { isLegacyMirror } from '../../lib/taxCompute';
 import { productsWithoutOwnRate } from '../../lib/venueTaxRates';
 import { planBulkTax, bulkTaxWords, isSharedCopy, taxRefreshed } from '../../lib/bulkTax';
@@ -95,15 +96,8 @@ const venueRatesOf = (rates) => (isMock ? (rates || []) : venueTaxRates(rates, t
 const liveVenueRatesOf = (rates) => venueRatesOf(rates).filter(r => r && r.active !== false);
 const NO_VENUE_RATES = 'This venue has no tax rates yet';
 
-// Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
-// menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
-// so these ids MUST stay in that map's key set.
-const DIET_TAGS = [
-  { id:'vegetarian',  label:'Vegetarian', badge:'V',  icon:'salad' },
-  { id:'vegan',       label:'Vegan',      badge:'VG', icon:'sprout' },
-  { id:'gluten-free', label:'Gluten-free',badge:'GF', icon:'wheat' },
-  { id:'dairy-free',  label:'Dairy-free', badge:'DF', icon:'milk' },
-];
+// Dietary tags: the one list is lib/dietary.js DIET_TAGS (head office's product sheet ticks the
+// same four).
 
 // ── Add a size (v5.8.70) ──────────────────────────────────────────────────────
 // Options only ever live on SIZES (lib/menuRules.js rule 5). Adding a size to an item that

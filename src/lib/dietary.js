@@ -20,6 +20,24 @@ export const DIET = {
   df: 'DF', dairyfree: 'DF', 'dairy-free': 'DF',
 };
 
+// The dietary tags the Back Office can tick, stored on menu_items.tags (jsonb). Every id is a key
+// of DIET above, so a ticked tag always has a badge on the print menu, the menu board and online.
+// One list for the site's product editor (MenuManager) and head office's product sheet
+// (MsmProductSheet): 5.12.101, Peter 25 Nov 2026, "in the multi site menu manager you cant add
+// dietary info" (the site's boxes were locked to head office, and head office had no boxes).
+export const DIET_TAGS = [
+  { id: 'vegetarian',  label: 'Vegetarian',  badge: 'V',  icon: 'salad' },
+  { id: 'vegan',       label: 'Vegan',       badge: 'VG', icon: 'sprout' },
+  { id: 'gluten-free', label: 'Gluten-free', badge: 'GF', icon: 'wheat' },
+  { id: 'dairy-free',  label: 'Dairy-free',  badge: 'DF', icon: 'milk' },
+];
+
+/** Tick or untick one dietary tag, keeping any other tag the product already holds. */
+export function toggleDietTag(tags, id) {
+  const list = Array.isArray(tags) ? tags : [];
+  return list.includes(id) ? list.filter(t => t !== id) : [...list, id];
+}
+
 // Full customer-facing label for each badge (item sheet, tooltips).
 export const DIET_LABELS = { GF: 'Gluten free', V: 'Vegetarian', VG: 'Vegan', DF: 'Dairy free' };
 

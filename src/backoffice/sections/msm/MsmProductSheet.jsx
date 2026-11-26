@@ -28,6 +28,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { ALLERGENS } from '../../../data/seed';
+import { DIET_TAGS, toggleDietTag } from '../../../lib/dietary';
 import { categoryTree, categoryPath, priceInput, price2, defaultFor, noPriceWords } from '../../../lib/msm/msmGrid';
 import {
   productUpdate, newProductChanges, newCategoryChange, siteActiveChange, sitePriceChange,
@@ -86,13 +87,13 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   const blank = useMemo(() => ({
     name: '', menu_name: '', receipt_name: '', kitchen_name: '', description: '', category_id: '', parent_product_id: '',
     default_price: '', tax_rate_name: firstRate?.name ?? null, tax_rate_percent: firstRate?.percent ?? null, tax_by_type: {},
-    allergens: [], visibility: { pos: true, kiosk: true, online: true, onlineDelivery: true }, modifier_groups: [], image: '', item_code: '', sold_alone: true, type: 'simple',
+    allergens: [], tags: [], visibility: { pos: true, kiosk: true, online: true, onlineDelivery: true }, modifier_groups: [], image: '', item_code: '', sold_alone: true, type: 'simple',
     default_channels: {},
   }), [firstRate]);
   const fromProduct = (x) => ({
     name: x.name || '', menu_name: x.menu_name || '', receipt_name: x.receipt_name || '', kitchen_name: x.kitchen_name || '', description: x.description || '',
     category_id: x.category_id || '', parent_product_id: x.parent_product_id || '', default_price: price2(x.default_price),
-    tax_rate_name: x.tax_rate_name ?? null, tax_rate_percent: x.tax_rate_percent ?? null, tax_by_type: x.tax_by_type || {}, allergens: x.allergens || [],
+    tax_rate_name: x.tax_rate_name ?? null, tax_rate_percent: x.tax_rate_percent ?? null, tax_by_type: x.tax_by_type || {}, allergens: x.allergens || [], tags: x.tags || [],
     visibility: x.visibility || { pos: true, kiosk: true, online: true, onlineDelivery: true }, modifier_groups: x.modifier_groups || [],
     image: x.image || '', item_code: x.item_code || '', sold_alone: x.type === 'subitem' ? x.sold_alone === true : x.sold_alone !== false, type: x.type || 'simple',
     default_channels: chText(x.default_channels),
@@ -671,6 +672,19 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             </div>
           </Field>
         )}
+
+        {/* 5.12.101 (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info"):
+            dietary tags are head office's (publish writes them, the site's boxes are locked), and
+            this sheet had no boxes for them. Same four as the site editor (lib/dietary.js). */}
+        <Field label="Dietary" hint="Shows as a badge (V, VG, GF, DF) on the print menu, the menu board and online.">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {DIET_TAGS.map((d) => {
+              const on = (form.tags || []).includes(d.id);
+              return <button key={d.id} type="button" aria-pressed={on} onClick={() => set('tags', toggleDietTag(form.tags, d.id))}
+                style={{ padding: '5px 10px', borderRadius: 20, border: `1px solid ${on ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: on ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: on ? 'var(--t1)' : 'var(--t3)', fontSize: 12, fontWeight: 650, cursor: 'pointer', fontFamily: 'inherit' }}>{d.label} <b style={{ opacity: .7 }}>{d.badge}</b></button>;
+            })}
+          </div>
+        </Field>
 
         <Field label="Allergens">
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

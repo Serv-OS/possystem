@@ -260,6 +260,7 @@ export function defaultPriceChange(ctx, productId, value, channel = null) {
 
 const PRODUCT_EDITABLE = STAGE_FIELDS.product.filter((f) => !['family_base', 'site_only_location_id'].includes(f));
 const TEXT_FIELDS = new Set(['name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'item_code']);
+const EMPTY_IS_NONE = new Set(['tags', 'allergens']);
 
 /** Plain words for what is wrong with a product's fields ([] when nothing). */
 export function productProblems(fields, ctx = {}) {
@@ -297,6 +298,9 @@ export function productUpdate(ctx, productId, fields) {
     if (!has(fields, k)) continue;
     if (k === 'tax_by_type' && isSize) continue;
     if (sameValue(p[k], fields[k])) continue;
+    // 5.12.101: no list and an empty list are the same thing (a product with no dietary tags, and
+    // a sheet with none ticked). Without this every save staged "dietary tags change".
+    if (EMPTY_IS_NONE.has(k) && listOf(p[k]).length === 0 && listOf(fields[k]).length === 0) continue;
     // Spaces at either end are no change (the sheet trims what it sends; 17 Oct rehearsal).
     if (TEXT_FIELDS.has(k) && String(p[k] ?? '').trim() === String(fields[k] ?? '').trim()) continue;
     after[k] = clone(fields[k]);
