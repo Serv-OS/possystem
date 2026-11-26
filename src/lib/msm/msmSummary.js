@@ -11,6 +11,7 @@
 import { money2, toPence, has, PUBLISHED_CHANNELS, pctText, newItemId, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 import { fieldWord, colWord, PRICE_TYPE_WORDS, CHOICE_WORDS } from './msmWords.js';
+import { sameSoldAs, soldAsSummary } from '../soldAs.js';
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, as before).
 import { activeTaxWords } from '../taxWords.js';
 
@@ -234,7 +235,14 @@ export function summarise(changes, central, opts = {}) {
     }
     // Everything else: one plain line, so no change goes without a sentence.
     if (COVERED[ch.target] && !(ch.op === 'create' && ['product', 'modifier_group', 'modifier_option', 'product_site', 'modifier_option_site'].includes(ch.target))) {
-      const rest = Object.keys(a).filter((k) => !COVERED[ch.target].includes(k));
+      let rest = Object.keys(a).filter((k) => !COVERED[ch.target].includes(k));
+      // 5.12.115 "Sold as" (lib/soldAs.js): the order types a product is sold on live beside the
+      // "where it shows" switches. A change to them gets its own sentence, in its own words.
+      if (ch.target === 'product' && rest.includes('visibility') && !sameSoldAs({ visibility: a.visibility }, { visibility: b.visibility })) {
+        const sum = soldAsSummary({ visibility: a.visibility });
+        out.push(`${pName(ch.entity_id)}: now ${sum ? `${sum.charAt(0).toLowerCase()}${sum.slice(1)}` : 'sold on every order type'} at every site${when}.`);
+        rest = rest.filter((k) => k !== 'visibility');
+      }
       if (rest.length) {
         const words = [...new Set(rest.map(fieldWord))];
         const who = ch.target.startsWith('modifier_group') ? (group.get(ch.entity_id)?.name || 'An option group')

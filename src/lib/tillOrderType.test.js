@@ -222,7 +222,9 @@ test('POSSurface: the pop up is asked before Send and before Pay, and cannot be 
   // After the answers: onto the order, then the type (a type that needs details stops at that
   // form), then the usual send (as Table <n> with a flag, else the usual path) or the pay gates.
   has(src, "setWalkInOrderDetails(answers);", 'answers saved on the order');
-  has(src, "if (answers.orderType && answers.orderType !== orderType) {\n      handleTypeChange(answers.orderType);\n      if (promptsOnTypeChange({ orderType: answers.orderType, mode: takeawayCustomerDetails })) return;\n    }", 'type picked on the pop up');
+  // 5.12.115 (lib/soldAs.js): the switch can be refused (a line not sold on that order type), and
+  // then the pop up stops, or the order would be sent or paid on the old order type.
+  has(src, "if (answers.orderType && answers.orderType !== orderType) {\n      // A line on the order is not sold on that order type: the switch was refused and said so.\n      // Stop here, or the order would be sent or paid on the old order type.\n      if (handleTypeChange(answers.orderType) === false) return;\n      if (promptsOnTypeChange({ orderType: answers.orderType, mode: takeawayCustomerDetails })) return;\n    }", 'type picked on the pop up');
   has(src, "handleSend({ afterDetails: true });", 'send after the pop up skips the pop up');
   has(src, "} else if (next === 'pay') {\n      proceedToCheckout();", 'pay after the pop up');
   // The order header shows the flag; the covers are the guests typed (dine in only).

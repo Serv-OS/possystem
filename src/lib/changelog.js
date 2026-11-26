@@ -1,5 +1,17 @@
 export const CHANGELOG = [
   {
+    v: '5.12.115',
+    date: '26 Nov 2026',
+    items: [
+      'New: "Sold as". A product can be set as not sold on some order types, like wine that is dine in only (Peter, 26 Nov 2026: "we also need to be able to say if a product can be sold as that order type").',
+      'Set it on the product: Menu Manager, Details, Sold as. In the Multi site menu it is on the product sheet and goes to every site when published. Untick the order types it is not sold on. "Use this for all other products in the category" sets a whole category in one tap.',
+      'POS and phone POS: the product is greyed out on those order types and a tap says "not available for Takeaway". An order cannot be switched to an order type one of its lines is not sold on: it names the lines to take off first.',
+      'Kiosk, online ordering and QR: the product is not shown for those order types and can never be added. A QR order at a table and a bar tab count as dine in. Delivery platforms never get a product not sold for delivery.',
+      'A size follows its product. Nothing changes for any product until a box is unticked.',
+      'At a site in a group menu the boxes are head office\'s: Menu Manager shows them locked. The site\'s own "where it shows" switches are left exactly as they are.',
+    ],
+  },
+  {
     v: '5.12.114',
     date: '26 Nov 2026',
     items: [

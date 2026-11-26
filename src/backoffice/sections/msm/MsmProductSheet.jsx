@@ -732,7 +732,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} data-testid="msm-sold-as">
                 {SOLD_AS_TYPES.map((k) => {
                   const on = !no.includes(k);
-                  return <button key={k} type="button" aria-pressed={on} onClick={() => set('visibility', toggleSoldAs(form.visibility, k, !on))}
+                  return <button key={k} type="button" aria-pressed={on} onClick={() => setForm((f) => ({ ...f, visibility: toggleSoldAs(f.visibility, k, !on) }))}
                     style={{ padding: '5px 10px', borderRadius: 20, border: `1px solid ${on ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: on ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: on ? 'var(--t1)' : 'var(--t4)', textDecoration: on ? 'none' : 'line-through', fontSize: 12, fontWeight: 650, cursor: 'pointer', fontFamily: 'inherit' }}>{on ? '✓ ' : ''}{SOLD_AS_WORDS[k]}</button>;
                 })}
               </div>

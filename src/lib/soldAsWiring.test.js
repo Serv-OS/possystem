@@ -180,7 +180,8 @@ test('the tick boxes: Menu Manager (locked for a group product) and the Multi si
   assert.match(mm, /data-testid="mm-sold-as-category"/);
   const sheet = read('../backoffice/sections/msm/MsmProductSheet.jsx');
   assert.match(sheet, /data-testid="msm-sold-as"/);
-  assert.match(sheet, /onClick=\{\(\) => set\('visibility', toggleSoldAs\(form\.visibility, k, !on\)\)\}/);
+  // From the form as it is at the tap (not the one drawn), so two quick taps both count.
+  assert.match(sheet, /onClick=\{\(\) => setForm\(\(f\) => \(\{ \.\.\.f, visibility: toggleSoldAs\(f\.visibility, k, !on\) \}\)\)\}/);
   assert.match(sheet, /data-testid="msm-sold-as-category"/);
   assert.match(sheet, /\{!isSizeForm && !optionOnly && \(\(\) => \{\s+const no = notSoldAs\(\{ visibility: form\.visibility \}\);/, 'a size and an option only sub item have no boxes');
 });
@@ -190,4 +191,14 @@ test('nothing reads the list by hand: every screen goes through lib/soldAs.js', 
     assert.doesNotMatch(read(f), /\.notSoldAs\b/, `${f} asks the rule, it does not read the list`);
   }
   assert.deepEqual(notSoldAs({ visibility: { notSoldAs: ['delivery'] } }), ['delivery']);
+});
+
+test('the publish summary says it in its own words, never "where it shows"', async () => {
+  const { summarise } = await import('./msm/msmSummary.js');
+  const central = { products: [{ id: 'p1', name: 'House Wine' }], sites: [{ location_id: 'a' }, { location_id: 'b' }], categories: [], groups: [], options: [] };
+  const change = { target: 'product', entity_id: 'p1', location_id: null, op: 'update', after: { visibility: { pos: true, notSoldAs: DINE_IN_ONLY } }, before: { visibility: { pos: true } } };
+  const lines = summarise([change], central, { siteNames: {} });
+  const text = (Array.isArray(lines) ? lines : lines.lines || []).join(' ');
+  assert.match(text, /House Wine: now dine in only at every site/);
+  assert.doesNotMatch(text, /where it shows/);
 });
