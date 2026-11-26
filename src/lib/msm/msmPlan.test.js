@@ -343,3 +343,91 @@ test('a sub item brought in with its group: the planner writes nothing at the si
   // The repair finds nothing to do once the sub item is managed.
   assert.match(repairSubItemsChanges(after, B, raw, { siteName: 'Site B' }).problems[0], /Every sub item Site B's options use is in the group menu/);
 });
+
+// ── 5.12.102: a group category takes the site's own category of the same name ──
+// Peter, Mozz, 25 Nov 2026 ("I just brought in some items from sandy that have categories but it
+// hasnt pulled the category in"). A site that already has "Salads" never gets a second one.
+function withOwnCategory(v, loc, extra = {}) {
+  const raw = v[loc];
+  const menuId = raw.menus[0].id;
+  const row = { id: 'cat-own-salads', location_id: loc, menu_id: menuId, parent_id: null, label: 'Salads', icon: '🥗', color: '#22c55e', accounting_group: 'Food', sort_order: 7, default_course: 1, image: null, ...extra };
+  raw.categories.push(row);
+  raw.links.push({ menu_id: menuId, category_id: row.id, sort_order: 7 });
+  return row;
+}
+const saladChanges = (label = 'Salads', sites = [A]) => {
+  const catId = 'e1000000-0000-4000-8000-0000000000c1';
+  const pid = 'e1000000-0000-4000-8000-000000000001';
+  return { catId, pid, ch: [
+    { target: 'category', entity_id: catId, op: 'create', after: { label, sort_order: 7, route_like_id: null } },
+    { target: 'product', entity_id: pid, op: 'create', after: { name: 'Greek salad', category_id: catId, default_price: 8, tax_rate_name: 'VAT', tax_rate_percent: 20, type: 'simple', sold_alone: true } },
+    ...sites.map((loc) => ({ target: 'product_site', entity_id: pid, location_id: loc, op: 'create', after: { venue_item_id: `msm-e10000000000_${sfx(loc)}`, active: true } })),
+  ] };
+};
+
+test('a group category with none at the site takes the site\'s own of the same name: no second category, only the map', () => {
+  const { v, central } = setup();
+  withOwnCategory(v, A);
+  const { catId, ch } = saladChanges('  salads ');
+  const a = plan(central, ch, A, v[A]);
+  assert.deepEqual(a.writes.categories.insert, [], 'no second Salads');
+  assert.deepEqual(a.writes.links.insert, []);
+  assert.deepEqual(a.writes.routing, [], 'its printers are the site\'s own, untouched');
+  assert.deepEqual(a.writes.maps.categories, [{ category_id: catId, venue_category_id: 'cat-own-salads' }]);
+  assert.equal(a.writes.items.insert[0].cat, 'cat-own-salads', 'the new product goes into the site\'s own category');
+  assert.deepEqual(a.adoptedCategories, [{ categoryId: catId, venueCategoryId: 'cat-own-salads', label: 'Salads' }]);
+  assert.deepEqual(a.newCategories, []);
+  assert.deepEqual(a.problems.filter((p) => p.code === 'new_category_unrouted'), [], 'not new here, so no "prints nowhere" block');
+  assert.ok(!a.lines.some((l) => l.table === 'categories'));
+});
+
+test('it is NOT taken when the name differs, the parent differs, it is on another menu, or another group category has it', () => {
+  const routed = (p) => p.writes.categories.insert.length;
+  {
+    const { v, central } = setup();
+    withOwnCategory(v, A, { label: 'Side salads' });
+    assert.equal(routed(plan(central, saladChanges().ch, A, v[A])), 1, 'a different name: a new category, as before');
+  }
+  {
+    const { v, central } = setup();
+    withOwnCategory(v, A, { parent_id: 'cat-hot' });
+    assert.equal(routed(plan(central, saladChanges().ch, A, v[A])), 1, 'a Salads under Hot drinks is not the top level Salads');
+  }
+  {
+    const { v, central } = setup();
+    const row = withOwnCategory(v, A, { menu_id: 'menu-other' });
+    v[A].links = v[A].links.filter((l) => l.category_id !== row.id);
+    assert.equal(routed(plan(central, saladChanges().ch, A, v[A])), 1, 'on another menu at the site');
+  }
+  {
+    const { v, central } = setup();
+    withOwnCategory(v, A);
+    central.categories.push({ id: 'e2000000-0000-4000-8000-0000000000c2', label: 'Salads (old)', parent_id: null, sort_order: 9, archived: false });
+    central.catSites.push({ category_id: 'e2000000-0000-4000-8000-0000000000c2', location_id: A, venue_category_id: 'cat-own-salads' });
+    const p = plan(central, saladChanges().ch, A, v[A]);
+    assert.equal(routed(p), 1, 'already another group category\'s: never mapped twice');
+    assert.ok(!p.writes.maps.categories.some((m) => m.venue_category_id === 'cat-own-salads'));
+  }
+});
+
+test('a site with no category of that name still gets a new one, exactly as before', () => {
+  const { v, central } = setup();
+  withOwnCategory(v, A);
+  const { catId, ch } = saladChanges('Salads', [A, B]);
+  const b = plan(central, ch, B, v[B]);
+  assert.equal(b.writes.categories.insert.length, 1);
+  assert.equal(b.writes.categories.insert[0].label, 'Salads');
+  assert.deepEqual(b.adoptedCategories, []);
+  assert.deepEqual(b.writes.maps.categories.map((m) => m.category_id), [catId]);
+  assert.ok(b.problems.some((p) => p.code === 'new_category_unrouted' && p.level === 'block'), 'new at a trading site with no "prints like": still blocked, in words');
+});
+
+test('a category already mapped at the site is never looked for again', () => {
+  const { v, central, K, P } = setup();
+  // A second "Hot drinks" appears at A by hand. The mapped one stays the group's.
+  withOwnCategory(v, A, { id: 'cat-hot-two', label: 'Hot drinks' });
+  const p = plan(central, [{ target: 'product', entity_id: P('Mocha').id, op: 'update', after: { description: 'Rich' } }], A, v[A]);
+  assert.deepEqual(p.writes.maps.categories, []);
+  assert.deepEqual(p.adoptedCategories, []);
+  assert.ok(K('Hot drinks'));
+});

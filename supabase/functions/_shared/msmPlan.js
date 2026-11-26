@@ -69,7 +69,7 @@
 import {
   PUBLISHED_CHANNELS, ORDER_TYPE_TAX_KEYS, PRODUCT_COLUMN, has, sameValue, samePrice,
   newCategoryId, newMenuId, newGroupId, longCategoryId, longMenuId, longGroupId, newOptionId, longOptionId,
-  newItemId, freeId, money2, toPence, KEPT_COLUMNS, pctText, NO_PRICE, keepsNoPrice, pricedBySizes,
+  newItemId, freeId, money2, toPence, KEPT_COLUMNS, pctText, NO_PRICE, keepsNoPrice, pricedBySizes, normName,
 } from './msmModel.js';
 import { mapRateDescriptor, effectiveTaxByType, venueProfileIsMirror, TAX_KEY_LABEL } from './msmTax.js';
 
@@ -284,6 +284,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   const writtenItems = new Set();
   const writtenGroups = new Set();
   const newCategories = [];
+  const adoptedCategories = [];             // 5.12.102: group categories mapped to the site's own (declared here: finish() can run early)
 
   const setCol = (table, row, column, value, meta = {}) => {
     if (sameValue(row[column], value)) return false;
@@ -371,6 +372,19 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
 
   // ── Category helpers ──────────────────────────────────────────────────────
   const parentOf = () => new Map(applied.categories.map((c) => [c.id, c.parent_id || null]));
+  // The site's own category a group category can take as its own here: the same name (as
+  // normName reads it), the same parent, on the venue menu this group menu writes into, and not
+  // already mapped to a group category. Two that fit: the first by sort order, then id.
+  function adoptableCategory(c, parentVid) {
+    const want = normName(c.label);
+    if (!want) return null;
+    const taken = new Set([...catSite.values()].map((r) => r.venue_category_id).filter(Boolean));
+    const onMenu = (v) => v.menu_id === venueMenuId || applied.links.some((l) => l.menu_id === venueMenuId && l.category_id === v.id);
+    const fits = applied.categories.filter((v) => v && !taken.has(v.id) && normName(v.label) === want
+      && (v.parent_id || null) === (parentVid || null) && onMenu(v));
+    fits.sort((a, b) => ((Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)) || String(a.id).localeCompare(String(b.id)));
+    return fits[0] || null;
+  }
   const ensuring = new Set();
   function ensureCategory(cid, why) {
     if (!cid) return null;
@@ -383,6 +397,21 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (ensuring.has(cid)) return null;           // a parent loop: never recurse forever
     ensuring.add(cid);
     const parentVid = c.parent_id ? ensureCategory(c.parent_id, why) : null;
+    // 5.12.102 (Peter, Mozz, 25 Nov 2026: "I just brought in some items from sandy that have
+    // categories but it hasnt pulled the category in"). A group category with no category at this
+    // site yet TAKES the site's own category of the same name (same parent, on this menu, not
+    // another group category's) instead of making a second one beside it. Nothing is written at
+    // the site: only the map is saved, so the group menu knows which category is its own here.
+    if (!cs) {
+      const own = adoptableCategory(c, parentVid);
+      if (own) {
+        W.maps.categories.push({ category_id: cid, venue_category_id: own.id });
+        catSite.set(cid, { category_id: cid, location_id: loc, venue_category_id: own.id });
+        adoptedCategories.push({ categoryId: cid, venueCategoryId: own.id, label: own.label });
+        ensuring.delete(cid);
+        return own.id;
+      }
+    }
     const id = cs?.venue_category_id || freeId(newCategoryId(cid, loc), longCategoryId(cid, loc), (x) => vCatById.has(x));
     if (!id) { problem('id_taken', 'block', `The id for new category "${c.label}" is already taken at this site.`, { categoryId: cid }); ensuring.delete(cid); return null; }
     const row = {
@@ -920,6 +949,9 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (!vid) continue;                         // created lazily when a product needs it
     const vrow = vCatById.get(vid);
     const meta = { categoryId: cid };
+    // 5.12.102: a category this plan just mapped to the site's own keeps the site's name, place and
+    // colour (only a NEW category takes the group's): taking it writes nothing at the site.
+    if (adoptedCategories.some((a) => a.categoryId === cid)) continue;
     if (t.op === 'remove' || (t.fields.has('archived') && c.archived)) {
       if (vrow.menu_id === venueMenuId) setCol('categories', vrow, 'menu_id', null, meta);
       const had = applied.links.filter((l) => l.menu_id === venueMenuId && l.category_id === vid);
@@ -1167,7 +1199,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       && !W.groups.insert.length && !W.groups.update.length && !W.routing.length
       && !W.maps.options.length && !W.maps.items.length;
     return {
-      locationId: loc, notAtSite: noSite, writes: W, applied, lines, problems, counts, newCategories,
+      locationId: loc, notAtSite: noSite, writes: W, applied, lines, problems, counts, newCategories, adoptedCategories,
       insertedItemIds: [...insertedItems], writtenItemIds: [...writtenItems], writtenGroupIds: [...writtenGroups], venueMenuId, empty,
       managedItemIds: [...psBy.values()].map((x) => x.venue_item_id).filter(Boolean),
     };
