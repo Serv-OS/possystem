@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.110',
+    date: '26 Nov 2026',
+    items: [
+      'Multi site menu: a product can now be put in extra categories. The product sheet has "Also in", the same as Menu Manager, where it is locked for a group product (Peter, 26 Nov 2026: "in the normal menu we have this feature where you can add products to multiple categories").',
+      'Multi site menu: a category can now be renamed. Tap Rename on its row in the Products grid. The new name goes to that category at every site when the draft is published.',
+      'A category rename needs SQL 20261211a on Ops first. Until it has run, the screen says so in plain words and nothing is changed.',
+      'A category\'s place and colour still stay as each site has them.',
+    ],
+  },
+  {
     v: '5.12.109',
     date: '26 Nov 2026',
     items: [

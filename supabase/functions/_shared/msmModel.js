@@ -56,19 +56,25 @@ export const TARGET_OPS = Object.freeze({
   modifier_option_site: ['create', 'update'],
 });
 
-// A category the group menu already has (18 Oct follow up): only "send like" and removed or back.
-// No screen edits an existing category's name, place or colour yet, and the import keeps no per site
-// category differences (products have kept values, categories do not), so publish would write the
-// group's value over every site's own. A NEW category takes every field. The database refuses the
-// rest (trigger msm_changes_guard_category, 20261018, after msm_changes_guard); the screens say it
-// first (msmDiff.mergeStaged).
-export const CATEGORY_UPDATE_FIELDS = Object.freeze(['archived', 'route_like_id']);
+// A category the group menu already has (18 Oct follow up): "send like", removed or back, and
+// (5.12.110) its NAME. Peter, 26 Nov 2026: the names could not be changed in the Multi site menu,
+// "also in categories". A rename is made on purpose at head office, so publish writes the new
+// name to that category at every site (msmPlan section 4 writes only the fields a change set
+// touched, so a site's own name is never overwritten by any other publish).
+// Its place and colour still stay as each site has them: no screen edits them, and the import
+// keeps no per site category differences. A NEW category takes every field. The database refuses
+// the rest (trigger msm_changes_guard_category: 20261018, loosened for the name by 20261211a);
+// the screens say it first (msmDiff.mergeStaged).
+export const CATEGORY_UPDATE_FIELDS = Object.freeze(['archived', 'route_like_id', 'label']);
 /** Words when a change to a category the group menu already has carries any other field ('' when fine). */
 export function categoryUpdateWords(change, op = change?.op) {
   if (!change || change.target !== 'category' || op === 'create') return '';
   const bad = Object.keys(change.after && typeof change.after === 'object' ? change.after : {}).filter((k) => !CATEGORY_UPDATE_FIELDS.includes(k));
-  return bad.length ? "A category's name, place and colour stay as each site has them for now. Only a new category takes them here." : '';
+  return bad.length ? "A category's place and colour stay as each site has them for now. Only its name can be changed here." : '';
 }
+// What the database said before 20261211a ran (the 20261018 rule): the screens turn it into plain
+// words about the update that is missing (lib/msm/msmEdit.js categoryGuardWords).
+export const CATEGORY_RULE_OLD_WORDS = "A category's name, place and colour stay as each site has them for now. Only a new category takes them here.";
 
 // The fields a change may carry in `after`, per target. Anything else is refused by the
 // database (trigger msm_changes_guard) and dropped here (stageableFields).

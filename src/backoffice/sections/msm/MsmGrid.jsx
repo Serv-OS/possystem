@@ -26,7 +26,7 @@ import {
   ROW_H, NO_CATEGORY, SHOW_FILTERS, CHANNEL_LABELS, priceLabel, buildGridRows, cellFor, cellStaged, categoryTree,
   visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable, showLabel, noPriceWords,
 } from '../../../lib/msm/msmGrid';
-import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes } from '../../../lib/msm/msmEdit';
+import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes, categoryRenameChange } from '../../../lib/msm/msmEdit';
 import { marginFor, vatMaps, gpTone, gpCellWords, gpHoverWords } from '../../../lib/msm/msmMargin';
 import { shownPriceTypes, shownTaxTypes, vatCell } from '../../../lib/msm/msmOrderTypes';
 import { siteTaxCell, groupTaxCell, groupRunsOnProfiles } from '../../../lib/msm/msmTaxProfiles';
@@ -51,6 +51,8 @@ const HEAD_H = 46;
 export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, editable, canEdit, working, costs, channel, setChannel, ratesByLoc = {}, profilesByLoc = {}, setNote, onOpenProduct, onAddProduct, onChangePrices, onCsv }) {
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState('');
+  // 5.12.110: the category whose name is being typed on its own row ({ id, value }), or null.
+  const [renaming, setRenaming] = useState(null);
   const [show, setShow] = useState('all');
   const [mode, setMode] = useState('prices');       // prices | vat | gp
   const [taxKey, setTaxKey] = useState('takeaway');
@@ -119,6 +121,18 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     finally { setPending((p) => { const s = new Set(p); keys.forEach((k) => s.delete(k)); return s; }); }
   }, [stage, setNote]);
   const siteNameOf = (loc) => sites.find((x) => x.id === loc)?.name || 'that site';
+
+  // Rename a category on its row (Peter, 26 Nov 2026: names could not be changed here, "also in
+  // categories"). Enter or Save stages it; the new name reaches every site when the draft is published.
+  const saveRename = () => {
+    if (!renaming) return;
+    const r = categoryRenameChange(ctx, renaming.id, renaming.value);
+    if (r.words) { setNote?.({ tone: 'warn', text: r.words }); return; }
+    const was = ix.categories?.get?.(renaming.id)?.label || 'The category';
+    setRenaming(null);
+    if (!r.change) return;
+    run([], [r.change], `${was} is renamed to ${r.change.after.label} in the draft. It changes at every site when you publish.`);
+  };
 
   const colLoc = (col) => (col === 0 ? null : cols[col - 1]?.id || null);
   const productAt = (row) => (rows[row] && rows[row].kind === 'product' ? rows[row].product : null);
@@ -443,9 +457,23 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                   <div style={{ position: 'sticky', left: 0, zIndex: 2, display: 'flex', alignItems: 'center', gap: 8, padding: `0 12px 0 ${12 + r.depth * 18}px`, width: nameW + DEF_W, boxSizing: 'border-box', background: 'var(--bg2)' }}>
                     <button type="button" aria-label={r.collapsed ? 'Open' : 'Close'} onClick={() => setCollapsed((c) => { const n = new Set(c); if (n.has(r.id)) n.delete(r.id); else n.add(r.id); return n; })}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t3)', fontSize: 12, width: 18, padding: 0 }}>{r.collapsed ? '▸' : '▾'}</button>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: r.id === NO_CATEGORY ? 'var(--red)' : 'var(--t1)' }}>{r.label}</span>
-                    <span style={{ fontSize: 11.5, color: 'var(--t4)' }}>{r.count}</span>
-                    {editable && r.id !== NO_CATEGORY && <Btn small kind="link" onClick={() => onChangePrices({ categoryIds: [r.id] })}>Change prices</Btn>}
+                    {renaming?.id === r.id ? (
+                      <>
+                        <input autoFocus aria-label={`New name for ${r.label}`} data-testid="msm-category-rename-input" maxLength={80} value={renaming.value}
+                          onChange={(e) => setRenaming({ id: r.id, value: e.target.value })}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveRename(); else if (e.key === 'Escape') setRenaming(null); e.stopPropagation(); }}
+                          style={{ ...ui.input, height: 28, padding: '2px 8px', fontSize: 13, fontWeight: 700, width: 180 }} />
+                        <Btn small kind="primary" onClick={saveRename}>Save</Btn>
+                        <Btn small kind="link" onClick={() => setRenaming(null)}>Cancel</Btn>
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: r.id === NO_CATEGORY ? 'var(--red)' : 'var(--t1)' }}>{r.label}</span>
+                        <span style={{ fontSize: 11.5, color: 'var(--t4)' }}>{r.count}</span>
+                        {editable && r.id !== NO_CATEGORY && <Btn small kind="link" onClick={() => onChangePrices({ categoryIds: [r.id] })}>Change prices</Btn>}
+                        {editable && r.id !== NO_CATEGORY && <Btn small kind="link" data-testid="msm-category-rename" onClick={() => setRenaming({ id: r.id, value: r.label || '' })}>Rename</Btn>}
+                      </>
+                    )}
                   </div>
                 </div>
               );
