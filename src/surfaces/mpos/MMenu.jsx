@@ -15,6 +15,7 @@ import MVoiceOrder from './MVoiceOrder';
 import { resolveItemPrice, variantFromPrice } from '../../lib/menuPricing';
 import { channelVisible } from '../../lib/channelMenu';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../../lib/menuRules';
+import { isSoldAs, notSoldAsWords, soldAsKey, SOLD_AS_WORDS } from '../../lib/soldAs';
 
 // categoryLinks: the menu_category_links rows MPOSSurface resolved the active
 // menu with (store links, or its early-boot backstop fetch). Same list, same
@@ -25,8 +26,13 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
     menuCategories = [], menuItems = [], eightySixIds = [],
     allergens = [],
     categoryLinks: storeLinks = [],
-    orderType, activeMenuId,
+    orderType, activeMenuId, showToast,
   } = useStore();
+  // 5.12.115 (lib/soldAs.js): a product not sold on this order's order type is greyed and a tap
+  // says why. A table is always dine in.
+  const soldType = activeTableId ? 'dine-in' : orderType;
+  const notSoldHere = (item) => !isSoldAs(item, soldType, menuItems);
+  const sayNotSold = (item) => showToast?.(notSoldAsWords(item, soldType), 'error');
   const categoryLinks = Array.isArray(linksProp) ? linksProp : storeLinks;
 
   // The active menu is resolved ONCE, in MPOSSurface (always mounted while the
@@ -268,6 +274,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
             variantInfo={variantInfo}
             priceOf={priceOf}
             eightySixIds={eightySixIds}
+            notSoldHere={notSoldHere} onNotSold={sayNotSold} notSoldWords={`Not for ${SOLD_AS_WORDS[soldAsKey(soldType)] || 'this order'}`}
             empty={
               showSearch
                 ? { icon:'search', title:`No items match "${query}"`, sub:'Try a different search term.' }
@@ -377,7 +384,7 @@ function CategoriesGrid({ categories, countFor, onPick }) {
 }
 
 // ── Items list (used for both category drill-in and search results) ──────────
-function ItemsList({ items, empty, onPick, allergenHits, variantInfo, priceOf, eightySixIds = [] }) {
+function ItemsList({ items, empty, onPick, allergenHits, variantInfo, priceOf, eightySixIds = [], notSoldHere = null, onNotSold = null, notSoldWords = '' }) {
   if (!items.length) {
     return (
       <div style={Sx.emptyBlock}>
@@ -395,10 +402,12 @@ function ItemsList({ items, empty, onPick, allergenHits, variantInfo, priceOf, e
         const is86 = eightySixIds.includes(item.id)
           || (item.parentId && eightySixIds.includes(item.parentId))
           || (item.parent_id && eightySixIds.includes(item.parent_id));
+        const notFor = !is86 && !!notSoldHere && notSoldHere(item);
         return (
           <ItemRow
             key={item.id} item={item}
-            onTap={() => is86 ? null : onPick?.(item)}
+            notFor={notFor ? notSoldWords : ''}
+            onTap={() => is86 ? null : notFor ? onNotSold?.(item) : onPick?.(item)}
             allergenHits={allergenHits ? allergenHits(item) : []}
             variantInfo={variantInfo ? variantInfo(item) : null}
             ownPrice={priceOf ? priceOf(item) : (item?.pricing?.base ?? item?.price ?? 0)}
@@ -410,7 +419,7 @@ function ItemsList({ items, empty, onPick, allergenHits, variantInfo, priceOf, e
   );
 }
 
-function ItemRow({ item, onTap, allergenHits = [], variantInfo = null, ownPrice = 0, is86 = false }) {
+function ItemRow({ item, onTap, allergenHits = [], variantInfo = null, ownPrice = 0, is86 = false, notFor = '' }) {
   // If this item is a variant parent (children link to it via parentId), the
   // displayed price is "from £X" using the cheapest child — parents typically
   // have base price 0 since the price lives on the children. ownPrice arrives
@@ -433,10 +442,18 @@ function ItemRow({ item, onTap, allergenHits = [], variantInfo = null, ownPrice 
       marginBottom:8, display:'flex', gap:10, alignItems:'center',
       cursor: is86 ? 'not-allowed' : 'pointer',
       minHeight:64, fontFamily:'inherit', textAlign:'left',
-      opacity: is86 ? .5 : (flagged ? .85 : 1),
-      filter: is86 ? 'grayscale(0.6)' : undefined,
+      opacity: is86 ? .5 : notFor ? .45 : (flagged ? .85 : 1),
+      filter: is86 ? 'grayscale(0.6)' : notFor ? 'grayscale(0.85)' : undefined,
       position:'relative',
     }}>
+      {notFor && (
+        <div data-testid="mpos-not-sold-as" style={{
+          position:'absolute', top:8, right:10, zIndex:2,
+          padding:'2px 8px', borderRadius:8,
+          background:'#1a1a1a', color:'#fff',
+          fontSize:9, fontWeight:800, letterSpacing:'0.06em', textTransform:'uppercase',
+        }}>{notFor}</div>
+      )}
       {is86 && (
         <div style={{
           position:'absolute', top:8, right:10, zIndex:2,
