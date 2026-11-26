@@ -44,6 +44,7 @@ import { isNotInstalled } from '../../../../supabase/functions/_shared/msmAccess
 import { Btn, Pill, Notice, Count } from './msmUi';
 import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto, undoTarget, draftCount } from '../../../lib/msm/msmStatus';
 import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
+import { productsWithNoCategory, repairNoCategoryChanges } from '../../../lib/msm/msmBringIn';
 import MsmGroups from './MsmGroups';
 import { WORDS } from '../../../lib/msm/msmWords';
 import { ui } from './msmStyle';
@@ -301,6 +302,31 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   };
   const closeGuide = () => { setGuide(false); if (menu?.id) setGuideClosed(menu.id, true); };
 
+  // 5.12.103 (Peter, 25 Nov 2026: "What about the catagories that still is not fixed"): products in
+  // the group menu with no category (brought in before 5.12.102) are named, with one button that
+  // puts each in the category its own site has it in (lib/msm/msmBringIn.js repairNoCategoryChanges).
+  const noCategory = useMemo(() => (eff ? productsWithNoCategory(eff) : []), [eff]);
+  const [fixingCats, setFixingCats] = useState(false);
+  const fixCategories = async () => {
+    const now = effRef.current;
+    if (!now || fixingCats) return;
+    setFixingCats(true);
+    const ids = new Set(productsWithNoCategory(now).map((p) => p.id));
+    const locs = [...new Set((now.productSites || []).filter((ps) => ids.has(ps.product_id)).map((ps) => ps.location_id))];
+    const raws = {};
+    for (const loc of locs) { const r = await api.venue(loc); if (r?.ok) raws[loc] = r; }
+    const siteNames = Object.fromEntries(sites.map((x) => [x.id, x.name]));
+    const out = repairNoCategoryChanges(now, raws, { siteNames });
+    if (!out.changes.length) {
+      setNote({ tone: 'warn', text: `No category was found at the sites for ${out.left.slice(0, 6).join(', ') || 'these products'}. Open each one and pick its category.` });
+      setFixingCats(false);
+      return;
+    }
+    const leftWords = out.left.length ? ` ${out.left.length} could not be placed (${out.left.slice(0, 4).join(', ')}): open ${out.left.length === 1 ? 'it' : 'each'} and pick a category.` : '';
+    await stage(out.changes, { done: `${out.fixed.length} product${out.fixed.length === 1 ? ' is' : 's are'} now in ${out.fixed.length === 1 ? 'its' : 'their'} category. ${out.words.join(' ')}${leftWords}` });
+    setFixingCats(false);
+  };
+
   // ── Screens ────────────────────────────────────────────────────────────
   if (phase === 'loading') return <div style={ui.page}><Header /><div style={ui.sub}>Loading the group menu…</div></div>;
   if (phase === 'missing') return <div style={ui.page}><Header /><Notice>Not installed yet. The Multi site menu appears once ServOS has run its database update.</Notice></div>;
@@ -382,6 +408,13 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         onBack={() => setWorkingId(sets.find((d) => d.status === 'draft')?.id || null)} />
 
       {note && <div style={{ marginBottom: 12, flexShrink: 0 }}><Notice tone={note.tone} onClose={() => setNote(null)} actions={note.actions}>{note.text}</Notice></div>}
+      {editable && noCategory.length > 0 && (
+        <div style={{ marginBottom: 12, flexShrink: 0 }} data-testid="msm-no-category">
+          <Notice tone="warn" actions={[{ label: fixingCats ? 'Working…' : `Put ${noCategory.length === 1 ? 'it' : 'them'} in ${noCategory.length === 1 ? 'its' : 'their'} category`, kind: 'primary', disabled: fixingCats || busy > 0, onClick: fixCategories }]}>
+            <strong>{noCategory.length} product{noCategory.length === 1 ? ' has' : 's have'} no category</strong>: {noCategory.slice(0, 8).map((p) => p.menu_name || p.name).join(', ')}{noCategory.length > 8 ? ` and ${noCategory.length - 8} more` : ''}. Each one can be put in the category its own site already has it in. Nothing changes at any site.
+          </Notice>
+        </div>
+      )}
       {tab === 'grid' && recipeGaps.length > 0 && (
         <div style={{ marginBottom: 12, flexShrink: 0 }} data-testid="msm-recipe-gaps">
           <Notice tone="warn">{recipeGapWords(recipeGaps).join(' ')} Sales there take nothing off stock until a recipe is added in Back Office, Recipes, at that site.</Notice>

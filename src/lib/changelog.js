@@ -1,5 +1,18 @@
 export const CHANGELOG = [
   {
+    v: '5.12.103',
+    date: '25 Nov 2026',
+    items: [
+      'Tax: a new product is no longer stamped with an old style tax rate at a venue that charges through a tax profile (Peter, Mozz Sandy, 25 Nov 2026: "it hasnt brought the tax rate in either and the drop down for tax rate doesnt have the correct tax rates"). Every new product, and every new size, was born with the venue\'s default old style rate. At a venue on tax profiles that rate comes before the profile, so the product charged the old rate alone. At Sandy four new salad sizes were on "Sales tax 7.45%" where the venue charges 8.45% (sales tax plus restaurant tax).',
+      'At a venue whose default is a real tax profile, a new product now has no rate of its own and follows its category and the venue profile, like every other product there.',
+      'Nothing changes at a venue that works on tax rates, which is every UK venue: a new product is stamped with the default rate exactly as before.',
+      'Sandy\'s four sizes and its two old style rates are put right by a separate data fix (20261208b). Sandy had taken no sales.',
+      'Multi site menu: products with no category are now named at the top of the group menu, with one button, "Put them in their category" (Peter, 25 Nov 2026: "What about the catagories that still is not fixed"). 5.12.102 only helped a product brought in after it; a draft made before it kept its products with no category. The button puts each one in the category its own site already has it in, bringing that category into the group menu if needed, by the same rule as Bring in. It adds to the draft: nothing is thrown away, and nothing changes at any site.',
+      'The same button clears a tax rate on those products when no site holds that rate any more, so they follow each site\'s tax profile and the draft can publish.',
+      'Rehearsed on a copy of the real Mozz draft: all 8 products went into Salads and Other Eats, a publish wrote nothing at Sandy, and the other four sites took the products with no blockers.',
+    ],
+  },
+  {
     v: '5.12.102',
     date: '25 Nov 2026',
     items: [
