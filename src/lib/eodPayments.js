@@ -9,7 +9,7 @@
  *      till writes that stamp, but nothing read it back from the database, so the only sales
  *      that passed were ones made on the same device since it was last reloaded. Opened in
  *      Back Office on another computer, the page showed almost nothing.
- *   2. An order taken away from the tills (online, the app, a kiosk, QR at the table) and a
+ *   2. An order taken away from the POS (online, the app, a kiosk, QR at the table) and a
  *      till sale closed by the card reader route carry no shift stamp at all.
  *   3. The page added up from the till's working list, which holds the newest 500 sales.
  *   4. Cash and Card were added by the sale's method WORD, so an order paid part by card and
@@ -55,7 +55,7 @@ export function shiftWindowChecks(shift, ...lists) {
   return out;
 }
 
-/** How many of them were taken away from the tills (online, app, kiosk, QR, delivery apps). */
+/** How many of them were taken away from the POS (online, app, kiosk, QR, delivery apps). */
 export function awayFromTills(checks) {
   return (Array.isArray(checks) ? checks : []).filter((c) => c && c.status !== 'voided' && placeOf(c) !== 'till').length;
 }

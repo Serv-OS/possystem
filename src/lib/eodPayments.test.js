@@ -79,7 +79,7 @@ test('the shift is a window: every sale closed since it opened counts, stamped o
   assert.deepEqual(shiftWindowChecks(null, read), []);
   // stamped with the shift but closed a moment before its recorded start still belongs to it
   assert.deepEqual(shiftWindowChecks(shift, [{ id: 'early', shiftId: 'sh1', closedAt: at('07:59') }]).map((c) => c.id), ['early']);
-  assert.equal(awayFromTills(got), 1, 'one order was taken away from the tills');
+  assert.equal(awayFromTills(got), 1, 'one order was taken away from the POS');
   assert.equal(awayFromTills([{ id: 'v', source: 'online', status: 'voided' }]), 0);
 });
 

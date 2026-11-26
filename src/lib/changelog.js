@@ -5,6 +5,7 @@ export const CHANGELOG = [
     items: [
       'Reports: sales and payments taken on the till are now worded "POS", not "At the till" (Peter, 26 Nov 2026: "It needs to say POS").',
       'This is the same on every report that names where a sale or a payment was taken: the X and Z slip, the Back Office Z report, Close day and the Payments report.',
+      'Close day: the note under Payment methods now reads "taken away from the POS".',
       'Wording only. No figure changes.',
     ],
   },
