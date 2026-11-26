@@ -113,8 +113,8 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
 
   const rows = useMemo(() => {
     if (!result) return [];
-    return showGp ? withMargins(result.rows, eff, costs.byLoc, vatMaps(eff, costs.ratesByLoc || {})) : result.rows;
-  }, [result, showGp, eff, costs.byLoc, costs.ratesByLoc]);
+    return showGp ? withMargins(result.rows, eff, costs.byLoc, vatMaps(eff, costs.ratesByLoc || {}), costs.targetsByLoc) : result.rows;
+  }, [result, showGp, eff, costs.byLoc, costs.ratesByLoc, costs.targetsByLoc]);
   const groups = useMemo(() => {
     const by = new Map();
     for (const r of rows) {
@@ -422,5 +422,7 @@ const gpWords = (r) => {
   if (!a || !b) return '…';
   if (a.noRecipe) return 'No recipe';
   if (a.gpPct == null || b.gpPct == null) return 'No price';
-  return `${a.gpPct}% → ${b.gpPct}%`;
+  // 5.12.105: against the recipe's own Target GP when it has one.
+  const verdict = b.target == null ? '' : b.under ? ` (under its ${b.target}% target)` : ` (target ${b.target}%)`;
+  return `${a.gpPct}% → ${b.gpPct}%${verdict}`;
 };

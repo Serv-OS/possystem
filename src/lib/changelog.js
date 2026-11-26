@@ -1,5 +1,17 @@
 export const CHANGELOG = [
   {
+    v: '5.12.105',
+    date: '25 Nov 2026',
+    items: [
+      'Multi site menu, GP view: a product\'s GP is now judged against its own recipe\'s Target GP, and nothing else (Peter, 25 Nov 2026: "where are these figures getting pulled from ... these should be editable and managable we cant juts make this stuff up"). The colours came from a fixed 60% that nobody chose and nobody could change.',
+      'Green: at or above the Target GP set on the product\'s recipe. Coral: under it. Each box now says the target, for example "68% GP · cost 3.20 · target 70%".',
+      'A product whose recipe has no Target GP shows its GP in plain text, says "no target set", and is not judged either way. The overall GP target in Head office is for the business as a whole, so it is not used to judge one product.',
+      'The target is set where it always was: Produce, Recipes, open the recipe, Details, "Target GP (%)".',
+      'The key under the grid no longer holds sample figures (3.40, 3.60, 65% GP, 48% GP) that read as real numbers. It now says in words what each style means.',
+      'The product sheet\'s "Show GP" and the Change prices preview use the same rule and say the target.',
+    ],
+  },
+  {
     v: '5.12.104',
     date: '25 Nov 2026',
     items: [

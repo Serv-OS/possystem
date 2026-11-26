@@ -241,8 +241,12 @@ test('the grid key: the VAT sample has its dot, GP colours are explained (low GP
   const grid = read('MsmGrid.jsx');
   assert.match(grid, /\{dot\('var\(--blu\)'\)\}<span style=\{\{ color: 'var\(--t1\)', fontWeight: 750 \}\}>Zero 0%<\/span>/);
   assert.match(grid, /'Grey: follows the group\\'s VAT for this order type\.'/);
-  assert.match(grid, /`Coral: GP under \$\{GP_LOW\}%\.`/);
-  assert.match(grid, /gp\.gpPct < GP_LOW \? GP_LOW_COLOUR/);
+  // 5.12.105: the colours are judged against the recipe's own Target GP (msmMargin gpTone), never a
+  // fixed percent, and low GP is still coral, never the amber of a change waiting.
+  assert.match(grid, /'under the Target GP set on its recipe\.'/);
+  assert.match(grid, /color: GP_COLOUR\[gpTone\(gp\)\]/);
+  assert.match(grid, /low: GP_LOW_COLOUR/);
+  assert.doesNotMatch(grid, /GP_LOW\s*=\s*\d/);
   assert.doesNotMatch(grid, /gp\.gpPct < 60 \? 'var\(--amber/);
   assert.match(grid, /'\+ Sell here'|>\+ Sell here<\/span>, 'Not sold at that site yet/);
 });
