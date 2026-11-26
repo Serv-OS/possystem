@@ -110,7 +110,7 @@ export function sizeVatWords({ size = true, product = 'its product', sizes = 0, 
 // A site's own column names in words (one map for the product sheet, the preview and the grid).
 export const COL_WORDS = Object.freeze({
   cat: 'category', cats: 'extra categories', image: 'photo', name: 'name', menu_name: 'menu name', receipt_name: 'receipt name',
-  kitchen_name: 'kitchen name', description: 'description', tax_rate_id: 'VAT rate', allergens: 'allergens', tags: 'tags',   // taxText: colWord
+  kitchen_name: 'kitchen name', description: 'description', tax_rate_id: 'VAT rate', allergens: 'allergens', tags: 'dietary tags',   // taxText: colWord
   visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code', assigned_modifier_groups: 'option groups',
   type: 'type', parent_id: 'size of', tax_overrides: 'VAT by order type', label: 'name', sort_order: 'order',   // taxText: colWord
   min: 'choose at least', max: 'choose up to', selection_type: 'kind of choice', item_link: 'sub item link', sub_group: 'Then ask',
@@ -156,7 +156,7 @@ const FIELD = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
   category_id: 'category', extra_category_ids: 'extra categories', parent_product_id: 'size of', type: 'type',
   default_price: 'group price', default_channels: 'order type prices', tax_rate_name: 'VAT', tax_rate_percent: 'VAT',   // taxText: fieldWord
-  allergens: 'allergens', tags: 'tags', image: 'photo', modifier_groups: 'option groups', visibility: 'where it shows',
+  allergens: 'allergens', tags: 'dietary tags', image: 'photo', modifier_groups: 'option groups', visibility: 'where it shows',
   sold_alone: 'sold on its own', item_code: 'item code', archived: 'removed', sort_order: 'order', label: 'name',
   parent_id: 'under', route_like_id: 'prints like', icon: 'icon', color: 'colour', use_name_everywhere: 'name at every site',
   tax_by_type: 'VAT by order type', min: 'rule', max: 'rule', selection_type: 'kind of choice', group_id: 'option group',   // taxText: fieldWord

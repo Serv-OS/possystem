@@ -269,3 +269,19 @@ test('review: two photo uploads for one product get two different storage names 
   assert.notEqual(a, b);
   assert.match(a, /^msm-aaaaaaaa1111-/);
 });
+
+// 5.12.100 (Peter, 25 Nov 2026: "in the multi site menu manager you cant add dietary info").
+test('dietary tags are staged from the sheet like allergens, and an untouched sheet stages nothing', () => {
+  const ctx = ctxOf();
+  // The sheet always sends its tags. A product with none, and a sheet with none ticked: no change.
+  assert.equal(productUpdate(ctx, 'latte', { name: 'Latte', tags: [] }).change, null);
+  const r = productUpdate(ctx, 'latte', { name: 'Latte', tags: ['vegetarian', 'gluten-free'] });
+  assert.deepEqual(r.change.after, { tags: ['vegetarian', 'gluten-free'] });
+  // Unticking them all on a product that has some is a change too.
+  const had = ctxOf([r.change]);
+  assert.deepEqual(productUpdate(had, 'latte', { tags: [] }).change.after, { tags: [] });
+  assert.equal(productUpdate(had, 'latte', { tags: ['vegetarian', 'gluten-free'] }).change, null);
+  // A new product carries what was ticked.
+  const made = newProductChanges(ctx, { id: 'new-1', fields: { name: 'Vegan pie', category_id: 'cold', default_price: 5, tax_rate_name: 'VAT', tax_rate_percent: 20, tags: ['vegan'] }, sites: [{ location_id: L1, active: true, price: null }] });
+  assert.deepEqual(made.changes[0].after.tags, ['vegan']);
+});
