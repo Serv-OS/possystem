@@ -74,7 +74,7 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
   const refundRows = useMemo(() => applyFilters((siteId && lookback.rows[siteId]) || NONE, filters), [siteId, lookback.rows, filters]);
   const range = useMemo(() => (rangeFrom != null ? { fromMs: toMs(rangeFrom), toMs: toMs(rangeTo) } : null), [rangeFrom, rangeTo]);
   const currency = locationConfig?.currency || one?.currency || null;
-  const { sales, payments } = useMemo(() => summariseShift(checks, { range, refundRows, currency }), [checks, range, refundRows, currency]);
+  const { sales, payments, sources } = useMemo(() => summariseShift(checks, { range, refundRows, currency }), [checks, range, refundRows, currency]);
   const lines = useMemo(() => breakdownLines(sales), [sales]);
 
   // Order type breakdown
@@ -194,6 +194,18 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         {rewardsNote && <div style={{ ...ROW, color:'var(--t4)' }}><span>{rewardsNote}</span><span/></div>}
         <ZReportGroups checks={checks} fmt={fmt} siteId={scope?.homeId}/>
 
+        {/* 26 Nov 2026: the sales by order source (till, online and app, kiosk, QR, delivery apps).
+            The amounts add up to Net sales above and the counts to Checks closed (salesByPlace). */}
+        {sources.length > 0 && (
+          <div data-testid="z-sales-by-source">
+            <div style={DIV}/>
+            <div style={{ fontSize:11, fontWeight:700, color:'var(--t2)', letterSpacing:'.06em', marginBottom:4 }}>SALES BY SOURCE (EXCLUDING {sales.taxWord === 'tax' ? 'TAX' : 'VAT'})</div>
+            {sources.map(src => (
+              <div key={src.place} style={ROW}><span>{src.label} ({fmtN(src.checks)})</span><span>{src.net < 0 ? `−${fmt(-src.net)}` : fmt(src.net)}</span></div>
+            ))}
+          </div>
+        )}
+
         <div style={DIV}/>
 
         {/* Tax */}
@@ -217,6 +229,8 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         {payments.map(p => (
           <div key={p.kind}>
             <div style={ROW}><span>{p.label} ({p.count})</span><span>{fmt(p.amount)}</span></div>
+            {/* Where it was taken, when it was more than one place (as the till's own slip prints it). */}
+            {(p.split || []).map(part => <div key={part.place} style={{ ...ROW, paddingLeft:10 }}><span>{part.label}</span><span>{fmt(part.amount)}</span></div>)}
             {Math.abs(p.tips) >= 0.005 && <div style={{ ...ROW, paddingLeft:10 }}><span>of which tips</span><span>{fmt(p.tips)}</span></div>}
           </div>
         ))}

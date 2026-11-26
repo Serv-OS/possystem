@@ -155,8 +155,9 @@ test('wiring: X report button in the drawer menu, Z report at a successful cash 
   assert.match(pos, /onClick=\{\(\) => \{ if \(!requirePerm\(\)\) return; setShowDrawerMenu\(false\); printShiftReportNow\('X'\); \}\}/);
   assert.match(pos, /if \(result\) \{\n\s*printShiftReportNow\('Z', \{ expected: result\.expected, declared: result\.declared, variance: result\.variance \}\);\n\s*signOutAfterCashUp\?\.\(\);/);
   // 16 Oct 2026: the one sales rule over the business day, with the till's older checks for refunds.
-  assert.match(pos, /const \{ sales, payments \} = summariseShift\(checks, \{ range: businessDayRange\(\{ now, timezone, dayStart \}\), refundRows: st\.closedChecks, currency: cfg\.currency \}\);/);
-  assert.match(pos, /printedBy: st\.staff\?\.name \|\| '', sales, payments, drawer, currency: cfg\.currency,/);
+  // 26 Nov 2026 (5.12.107): it reads the sales by source too, and prints them.
+  assert.match(pos, /const \{ sales, payments, sources \} = summariseShift\(checks, \{ range: businessDayRange\(\{ now, timezone, dayStart \}\), refundRows: st\.closedChecks, currency: cfg\.currency \}\);/);
+  assert.match(pos, /printedBy: st\.staff\?\.name \|\| '', sales, payments, sources, drawer, currency: cfg\.currency,/);
   const pr = fs.readFileSync(new URL('./printer.js', import.meta.url), 'utf8');
   assert.match(pr, /async printShiftReport\(report, printerId = null, opts = \{\}\)/);
 });
@@ -168,7 +169,7 @@ test('28 Sep 2026: a dine-in order is never held back as a scheduled pre-order',
 
 test('16 Oct 2026: the Back Office Z report reads the same figures as the till slip', () => {
   const z = fs.readFileSync(new URL('../backoffice/sections/reports/ZReport.jsx', import.meta.url), 'utf8');
-  assert.match(z, /const \{ sales, payments \} = useMemo\(\(\) => summariseShift\(checks, \{ range, refundRows, currency \}\), \[checks, range, refundRows, currency\]\);/);
+  assert.match(z, /const \{ sales, payments, sources \} = useMemo\(\(\) => summariseShift\(checks, \{ range, refundRows, currency \}\), \[checks, range, refundRows, currency\]\);/);
   assert.match(z, /const lines = useMemo\(\(\) => breakdownLines\(sales\), \[sales\]\);/);
   assert.match(z, /<span>MONEY COLLECTED<\/span><span>\{fmt\(sales\.collected\)\}<\/span>/);
   assert.match(z, /const cash = payments\.find\(p => p\.kind === 'cash'\);/);

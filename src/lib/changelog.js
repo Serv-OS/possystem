@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.107',
+    date: '26 Nov 2026',
+    items: [
+      'X and Z reports: a new "Sales by source" section. It shows the checks and the net sales taken at the till, online and in the app, on the kiosk, by QR at the table and through delivery apps (Peter, 26 Nov 2026: "can we break down the Z report and X reports into order source too like kiosk, online, QR").',
+      'It is on the X and Z slip the till prints, and on the Z report in Back Office, Reports.',
+      'The sources add up, to the penny, to the Net sales and the Checks on the same report. Every sale sits in one source. A refund comes off the source of the sale it refunds. Nothing is estimated.',
+      'A source with no sales is left out, so a site that only sells at the till shows one line.',
+      'Back Office Z report: each payment now also names where it was taken (at the till, online and app, kiosk, QR), as the printed slip has done since 25 Nov.',
+    ],
+  },
+  {
     v: '5.12.106',
     date: '26 Nov 2026',
     items: [

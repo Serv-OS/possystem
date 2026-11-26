@@ -21,7 +21,7 @@
 // Money collected) and are named again under Payments, where their money sits inside Card and Cash.
 // Pure: no store, no printer, no clock of its own.
 
-import { salesBreakdown, breakdownLines, tendersByPlace, placeSplit, TENDER_ORDER, TENDER_WORDS } from './salesBreakdown.js';
+import { salesBreakdown, breakdownLines, tendersByPlace, placeSplit, salesByPlace, TENDER_ORDER, TENDER_WORDS } from './salesBreakdown.js';
 import { businessDayOf, businessDayWindow } from '../../supabase/functions/_shared/businessDay.js';
 import { DocBuilder } from './printDoc.js';
 import { money, signedMoney } from './currency.js';
@@ -51,7 +51,8 @@ export function businessDayRange({ now = Date.now(), timezone, dayStart } = {}) 
  *   refundRows  the till's older checks (a refund made today on yesterday's sale comes off today,
  *               as in Daily trading); a check in both lists counts once
  *   currency    the venue's currency
- * Returns { sales, payments }: `sales` is the Business summary's breakdown (salesBreakdown),
+ * Returns { sales, payments, places, sources }: `sales` is the Business summary's breakdown (salesBreakdown),
+ * `sources` the sales by order source ([{ place, label, checks, net, collected }]),
  * `payments` one row per money kind that took money ({ kind, label, count, amount, tips }),
  * Card, Cash and Gift card always, adding up to sales.collected.
  */
@@ -66,7 +67,11 @@ export function summariseShift(checks, { range = null, refundRows = null, curren
   // in one place only carries no split: it would repeat the line above it.
   const places = tendersByPlace(list, { range, refundRows });
   for (const p of payments) p.split = placeSplit(places, p.kind);
-  return { sales, payments, places };
+  // 26 Nov 2026 (Peter: "can we break down the Z report and X reports into order source too like
+  // kiosk, online, QR"): the SALES by source, one row per place that had a sale or a refund,
+  // adding up to Checks, Net sales and Money collected above (salesByPlace, the same sales rule).
+  const sources = salesByPlace(list, { range, refundRows });
+  return { sales, payments, places, sources };
 }
 
 // A narrow (58 mm) slip says "inc" and "ex" so a label and its amount share one line.
@@ -85,7 +90,7 @@ function wrapWords(text, cols) {
 
 /**
  * The printed document.
- * @param {object} r { kind: 'X'|'Z', venueName, dayLabel, printedAtText, printedBy, sales, payments,
+ * @param {object} r { kind: 'X'|'Z', venueName, dayLabel, printedAtText, printedBy, sales, payments, sources?,
  *                     drawer?: { expected, declared, variance }, currency }
  */
 export function buildShiftReportDoc(r, { cols = 42 } = {}) {
@@ -120,8 +125,16 @@ export function buildShiftReportDoc(r, { cols = 42 } = {}) {
     .twoCol('Checks', String(s.count || 0))
     .twoCol('Covers', String(s.covers || 0))
     .twoColTrunc(fitLabel(`Average check (excluding ${s.taxWord === 'tax' ? 'tax' : 'VAT'})`, cols), m(s.count ? s.net / s.count : 0))
-    .divider()
-    .bold(true).line('Payments').bold(false);
+    .divider();
+  // Sales by order source: "At the till (132)   1,203.30". The amounts add up to Net sales above
+  // and the counts to Checks. Left off a slip handed no sources (an older caller).
+  const sources = Array.isArray(r.sources) ? r.sources : [];
+  if (sources.length) {
+    b.bold(true).line(fitLabel(`Sales by source (excluding ${s.taxWord === 'tax' ? 'tax' : 'VAT'})`, cols)).bold(false);
+    for (const src of sources) b.twoColTrunc(`${src.label} (${src.checks || 0})`, m(src.net));
+    b.divider();
+  }
+  b.bold(true).line('Payments').bold(false);
   const payments = Array.isArray(r.payments) ? r.payments : [];
   for (const p of payments) {
     b.twoColTrunc(`${p.label} (${p.count || 0})`, m(p.amount));
