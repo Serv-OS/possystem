@@ -1,5 +1,23 @@
 export const CHANGELOG = [
   {
+    v: '5.12.114',
+    date: '26 Nov 2026',
+    items: [
+      'Multi site menu, Sites: a site is no longer marked "Changed at the site" for sub items that are only options (Peter, 26 Nov 2026, Mozz: "36 changes were made at" each of four sites nobody had touched).',
+      'Publishing makes such a sub item at a site with no category, because it is on no menu. The check for changes then wanted the group menu\'s category on it, so every one read as "category was changed". Where an option only sub item sits at a site is now never written and never compared.',
+      'A sub item made into a product sold on its own is still given its category. A product that is sold is still checked as before.',
+    ],
+  },
+  {
+    v: '5.12.113',
+    date: '26 Nov 2026',
+    items: [
+      'POS: a category that only holds sub items not sold on their own is now really left off the category list (Peter, 26 Nov 2026, Mozz Sandy: "Pizza Options, 0 items" was still showing).',
+      'The rule for this came in with 5.12.31 and worked on the bar screen, the phone POS, the kiosk and online. On the main POS it never did: the POS took those sub items out of its list before asking the rule, so the rule saw a category with nothing in it and left it showing.',
+      'A category with nothing in it at all still shows, as before.',
+    ],
+  },
+  {
     v: '5.12.112',
     date: '26 Nov 2026',
     items: [
