@@ -275,8 +275,12 @@ export function productProblems(fields, ctx = {}) {
   const price = Number(f.default_price);
   if (f.default_price == null || f.default_price === '' || !Number.isFinite(price)) out.push('Give the product a price (0.00 for free).');
   else if (price < 0) out.push('A price cannot be below zero.');
-  const needsTax = listOf(ctx.eff?.products).some((p) => p.tax_rate_name || p.tax_rate_percent != null);
-  if (needsTax && (f.tax_rate_percent == null || f.tax_rate_percent === '')) out.push('Pick the VAT rate.');
+  // 5.12.104: a rate is asked for only in a group that works on rates (some product has a percent).
+  // A tax profile by name (a name, no percent) is a tax; and a group on tax profiles, where a
+  // product with nothing set follows each site's own profile, is never asked (Mozz).
+  const blank = (v) => v == null || v === '';
+  const needsTax = listOf(ctx.eff?.products).some((p) => !blank(p.tax_rate_percent));
+  if (needsTax && blank(f.tax_rate_percent) && !String(f.tax_rate_name ?? '').trim()) out.push('Pick the VAT rate.');
   if (f.parent_product_id && f.parent_product_id === f.id) out.push('A product cannot be a size of itself.');
   return out;
 }

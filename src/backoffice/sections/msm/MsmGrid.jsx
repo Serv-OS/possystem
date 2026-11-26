@@ -29,6 +29,7 @@ import {
 import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes } from '../../../lib/msm/msmEdit';
 import { marginFor, vatMaps } from '../../../lib/msm/msmMargin';
 import { shownPriceTypes, shownTaxTypes, vatCell } from '../../../lib/msm/msmOrderTypes';
+import { siteTaxCell, groupTaxCell, groupRunsOnProfiles } from '../../../lib/msm/msmTaxProfiles';
 import { TAX_TYPE_WORDS, colWord } from '../../../lib/msm/msmWords';
 import { whyReadOnly, cellNoteWords, bulkActiveWords, noCategoryHint, draftCount } from '../../../lib/msm/msmStatus';
 import { addGroupWithSites } from '../../../lib/msm/msmGroupView';
@@ -47,7 +48,7 @@ const DEF_W = 116;
 const SITE_W = 132;
 const HEAD_H = 46;
 
-export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, editable, canEdit, working, costs, channel, setChannel, ratesByLoc = {}, setNote, onOpenProduct, onAddProduct, onChangePrices, onCsv }) {
+export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, editable, canEdit, working, costs, channel, setChannel, ratesByLoc = {}, profilesByLoc = {}, setNote, onOpenProduct, onAddProduct, onChangePrices, onCsv }) {
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [show, setShow] = useState('all');
@@ -360,7 +361,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
           <SiteChecklist sites={sites} value={shownSites} groups={groups} onChange={(v) => setShownSites(v.length ? v : shownSites)} />
         </Popover>
       </div>
-      <Key mode={mode} />
+      <Key mode={mode} onProfiles={groupRunsOnProfiles(profilesByLoc, sites.map((s) => s.id))} />
 
       {pinned && (
         <Notice tone="info" actions={[{ label: `Show ${CHANNEL_LABELS[pinned.ch]} prices`, onClick: () => setChannel(pinned.ch) }]}>
@@ -466,11 +467,11 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                 </div>
                 {mode === 'vat' ? (
                   <>
-                    <VatCellView width={DEF_W} cell={vatCell(p, p.parent_product_id ? ix.products.get(p.parent_product_id) : null, null, taxKey)} group onOpen={() => onOpenProduct(p.id)} />
+                    <VatCellView width={DEF_W} cell={profileVatCell(vatCell(p, p.parent_product_id ? ix.products.get(p.parent_product_id) : null, null, taxKey), groupTaxCell(p, profilesByLoc, cols.map((c) => c.id)))} group onOpen={() => onOpenProduct(p.id)} />
                     {cols.map((x) => {
                       const ps = ix.sites.get(`${p.id}|${x.id}`);
                       if (!ps) return <div key={x.id} role="gridcell" style={{ ...cellBase, width: SITE_W, justifyContent: 'center', color: 'var(--t4)', fontSize: 12 }}>Not sold</div>;
-                      return <VatCellView key={x.id} width={SITE_W} off={ps.active === false} cell={vatCell(p, p.parent_product_id ? ix.products.get(p.parent_product_id) : null, ps, taxKey, ratesByLoc[x.id])} onOpen={() => onOpenProduct(p.id)} />;
+                      return <VatCellView key={x.id} width={SITE_W} off={ps.active === false} cell={profileVatCell(vatCell(p, p.parent_product_id ? ix.products.get(p.parent_product_id) : null, ps, taxKey, ratesByLoc[x.id]), siteTaxCell(p, x.id, profilesByLoc))} onOpen={() => onOpenProduct(p.id)} />;
                     })}
                   </>
                 ) : !priceEditable(p, eff?.products) ? (
@@ -662,7 +663,7 @@ function CopyPricesPopover({ sites, groups, onApply }) {
 // after that (remembered in this browser, in try and catch), and opened again with one tap.
 const KEY_SEEN = 'msm-grid-key-seen';
 const keySeen = () => { try { return localStorage.getItem(KEY_SEEN) === '1'; } catch { return false; } };
-function Key({ mode }) {
+function Key({ mode, onProfiles = false }) {
   const [open, setOpen] = useState(() => !keySeen());
   useEffect(() => { try { localStorage.setItem(KEY_SEEN, '1'); } catch { /* private mode: it opens again next time */ } }, []);
   const dot = (c) => <span style={{ width: 7, height: 7, borderRadius: 4, background: c, display: 'inline-block', flexShrink: 0 }} />;
@@ -675,7 +676,14 @@ function Key({ mode }) {
     [<span key="n" style={{ color: 'var(--t3)' }}>↳</span>, 'A size, under its product.']];
   // 17 Oct verification: the VAT sample carries its dot, the group column is named, and the GP
   // colours are explained (low GP is coral, never the amber of a change waiting).
-  const items = mode === 'vat'
+  // 5.12.104: a group whose sites charge through tax profiles gets its own key, in its own words
+  // (no "VAT 20%" and "Zero 0%" at a US group), and no sample figures that look like data.
+  const profileItems = [
+    [<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>Grey</span>, 'the site\'s own tax profile decides (the product\'s category, then the site default).'],
+    [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>Bold</span>, 'the tax profile the group menu names for the product, with that site\'s own rates.'],
+    [<span key="m" style={{ color: 'var(--red)', fontWeight: 750 }}>Red</span>, 'that site has no profile of that name: add it there before publishing.'],
+    [<span key="c" style={{ color: 'var(--t1)', fontWeight: 750 }}>{tt('Group VAT')}</span>, 'the first column: what the group menu says for the product.']];
+  const items = mode === 'vat' && onProfiles ? profileItems : mode === 'vat'
     ? [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>{tt('VAT 20%')}</span>, tt('Grey: follows the group\'s VAT for this order type.')],
       [<span key="o" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{dot('var(--blu)')}<span style={{ color: 'var(--t1)', fontWeight: 750 }}>Zero 0%</span></span>, tt('Bold with a blue dot: this site keeps its own VAT for it.')],
       [<span key="c" style={{ color: 'var(--t1)', fontWeight: 750 }}>{tt('Group VAT')}</span>, 'The first column: what every site follows unless it keeps its own.']]
@@ -739,7 +747,25 @@ function KeptDotBody({ cols, editable, vatWords, onUseGroup }) {
 }
 
 // One VAT cell (the grid's VAT view): grey is the group's, bold a site that keeps its own.
+// 5.12.104: where a tax PROFILE decides the tax (lib/msm/msmTaxProfiles.js), the box says the
+// profile and its rate at that site, never "No tax rate". A site that keeps its own tax for the
+// order type, and a tax set by order type, still read as before.
+function profileVatCell(cell, profile) {
+  if (!profile || cell.own || cell.byType) return cell;
+  return { ...cell, words: profile.words, profile: true, named: profile.named, missing: !!profile.missing };
+}
+
 function VatCellView({ width, cell, group = false, off = false, onOpen }) {
+  if (cell.profile) {
+    const strong = cell.named;
+    return (
+      <div role="gridcell" onClick={onOpen}
+        title={cell.missing ? 'This site has no tax profile of that name: publishing would stop here. Add it in that site\'s Tax settings.' : group ? 'Open the product to change its tax' : strong ? 'The tax profile the group menu names, with this site\'s own rates' : 'This site\'s own tax profile decides (its category, then the site default)'}
+        style={{ ...cellBase, width, justifyContent: 'center', cursor: 'pointer', opacity: off ? 0.5 : 1, background: group ? 'color-mix(in srgb, var(--bg2) 55%, transparent)' : undefined }}>
+        <span style={{ fontSize: 11.5, lineHeight: 1.2, textAlign: 'center', fontWeight: strong ? 750 : 500, color: cell.missing ? 'var(--red)' : strong ? 'var(--t1)' : 'var(--t3)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{cell.words}</span>
+      </div>
+    );
+  }
   return (
     <div role="gridcell" onClick={onOpen} title={tt(group ? 'Open the product to change its VAT' : cell.own ? 'This site keeps its own VAT for this order type' : 'Follows the group')}
       style={{ ...cellBase, width, justifyContent: 'center', cursor: 'pointer', opacity: off ? 0.5 : 1, background: group ? 'color-mix(in srgb, var(--bg2) 55%, transparent)' : undefined }}>

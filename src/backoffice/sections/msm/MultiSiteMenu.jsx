@@ -45,6 +45,7 @@ import { Btn, Pill, Notice, Count } from './msmUi';
 import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto, undoTarget, draftCount } from '../../../lib/msm/msmStatus';
 import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { productsWithNoCategory, repairNoCategoryChanges } from '../../../lib/msm/msmBringIn';
+import { assembleProfilesByLoc } from '../../../lib/msm/msmTaxProfiles';
 import MsmGroups from './MsmGroups';
 import { WORDS } from '../../../lib/msm/msmWords';
 import { ui } from './msmStyle';
@@ -111,6 +112,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const [groupPick, setGroupPick] = useState(null);   // the option group to open on the Option groups tab
   const [guide, setGuide] = useState(false);          // the first run guide is showing
   const [ratesByLoc, setRatesByLoc] = useState({});   // each site's own VAT rates (tax_rates rows)
+  const [profilesByLoc, setProfilesByLoc] = useState({});   // 5.12.104: each site's tax profiles and its default
   const [sales, setSales] = useState(undefined);      // undefined reading, null not read, Map(loc|venueItemId -> sold in 7 days)
   const [recipeGaps, setRecipeGaps] = useState([]);   // v5.11.79: read only stock warning rows (msm_stock_recipe_gaps)
 
@@ -176,6 +178,17 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       for (const loc of siteKey.split('|')) m[loc] = [];
       for (const row of r.rows) (m[row.location_id] = m[row.location_id] || []).push(row);
       setRatesByLoc(m);
+    });
+    // 5.12.104: each site's tax profiles, their lines and its default profile, so the Tax view and
+    // the product sheet can say what a site really charges (a site on profiles has no rates at all).
+    const ids = siteKey.split('|');
+    Promise.all([
+      readAllRows(() => client.from('tax_profiles').select('*').in('location_id', ids).order('location_id').order('sort_order').order('id')),
+      readAllRows(() => client.from('tax_profile_lines').select('*').in('location_id', ids).order('profile_id').order('sort_order').order('id')),
+      readAllRows(() => client.from('locations').select('id,default_tax_profile_id').in('id', ids).order('id')),
+    ]).then(([p, l, loc]) => {
+      if (!on || !p.rows || !l.rows || !loc.rows) return;     // unread: the old words stand, nothing is guessed
+      setProfilesByLoc(assembleProfilesByLoc(ids, p.rows, l.rows, loc.rows));
     });
     return () => { on = false; };
   }, [phase, client, siteKey]);
@@ -371,7 +384,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const counted = draftCount(rows, eff);
   const shared = {
     counted, tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
-    refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, ratesByLoc, sales,
+    refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, ratesByLoc, profilesByLoc, sales,
     openProduct: (id) => setSheet({ productId: id }), openGroup: (id) => { setGroupPick(id); setTab('groups'); },
   };
   const showPicker = sets.filter((x) => x.status === 'draft').length >= 2 || sets.some((x) => x.status !== 'draft');
