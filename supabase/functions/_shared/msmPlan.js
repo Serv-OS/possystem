@@ -929,6 +929,14 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       // Where a product shows (till, kiosk, online, delivery) stays the site's own, as the normal
       // menu builder leaves it (Peter, 17 Oct 2026, UI issue 2). A new row still gets one.
       if (col === 'visibility' && !promoting) continue;
+      // 5.12.114 (Peter, 26 Nov 2026, Mozz: "36 changes were made at" each of four sites nobody had
+      // touched). A sub item that is only an option is on no menu, so WHERE it sits at a site is
+      // never the group menu's to write or to compare. ensureSubItem (above) makes it at a site
+      // with no category at all, while this loop wanted the group menu's category on it: the two
+      // disagreed the moment a publish finished, and every such sub item read as "category was
+      // changed at the site". It keeps whatever the site has (its section at the site it came
+      // from, none elsewhere). Made into a product sold on its own, it is written whole (promoting).
+      if ((col === 'cat' || col === 'cats') && !promoting && wasOptionOnly && optionOnlyP(p)) continue;
       if (col !== 'archived' && keptBlocks(col)) continue;
       if (col === 'tax_rate_id') {
         // 5.12.104: the product names this site's own tax profile. The item takes it (the profile
