@@ -222,7 +222,7 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
 // In the order the database guard checks references: a group before the products that use it, a
 // product before its site rows and the options that offer it, an option before its site rows.
 function orderForGuard(changes) {
-  const RANK = { modifier_group: 0, product: 1, product_site: 2, modifier_group_site: 3, modifier_option: 4, modifier_option_site: 5 };
+  const RANK = { category: -1, modifier_group: 0, product: 1, product_site: 2, modifier_group_site: 3, modifier_option: 4, modifier_option_site: 5 };
   return changes.map((c, i) => ({ c, i })).sort((a, b) => (RANK[a.c.target] - RANK[b.c.target]) || (a.i - b.i)).map((x) => x.c);
 }
 
@@ -246,7 +246,41 @@ function bringMachinery(ctx) {
   const { C, changes, loc, raw, items, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere } = ctx;
   const vItem = new Map(items.map((i) => [i.id, i]));
   const ratesOf = () => listOf(raw?.taxRates);
-  const catOf = (vcat) => (vcat ? listOf(C.catSites).find((cs) => cs.location_id === loc && cs.venue_category_id === vcat)?.category_id || null : null);
+  // THE CATEGORY COMES IN TOO (5.12.102). Peter, Mozz, 25 Nov 2026: "I just brought in some items
+  // from sandy that have categories but it hasnt pulled the category in". Only a category the group
+  // menu already had at this site was known; any other left the product with NO category (Sandy's
+  // Caesar Salad, Garden Salad, Cheese Bread and Garlic Bread). Now, in this order:
+  //   1. the group category already mapped to the site's category;
+  //   2. a group category of the same name and parent that has no category at this site yet;
+  //   3. a new group category, a copy of the site's (name, icon, colour, order), its parent first.
+  // In 2 and 3 publish maps it to the site's own category (msmPlan ensureCategory takes it, it does
+  // not make a second one), so nothing is written at the site.
+  const vCats = new Map(listOf(raw?.categories).filter(Boolean).map((c) => [c.id, c]));
+  const catOf = (vcat, depth = 0) => {
+    if (!vcat) return null;
+    const mapped = listOf(C.catSites).find((cs) => cs.location_id === loc && cs.venue_category_id === vcat)?.category_id || null;
+    if (mapped) return mapped;
+    const v = vCats.get(vcat);
+    if (!v || depth > 8) return null;
+    const parentId = v.parent_id ? catOf(v.parent_id, depth + 1) : null;
+    if (v.parent_id && !parentId) return null;      // its parent is not a category at the site: left for a person
+    const label = String(v.label ?? '').trim();
+    if (!label) return null;
+    const here = new Set(listOf(C.catSites).filter((cs) => cs.location_id === loc).map((cs) => cs.category_id));
+    const like = listOf(C.categories).find((c) => c && !c.archived && !here.has(c.id)
+      && (c.parent_id || null) === (parentId || null) && normName(c.label) === normName(label));
+    if (like) return like.id;
+    const id = idGen();
+    const after = {
+      label, parent_id: parentId, route_like_id: null, icon: v.icon ?? null, color: v.color ?? null,
+      accounting_group: v.accounting_group ?? '', default_course: v.default_course ?? 1, sort_order: v.sort_order ?? 0,
+      image: v.image ?? null, archived: false,
+    };
+    changes.push({ target: 'category', entity_id: id, location_id: null, op: 'create', after, before: {} });
+    C.categories = [...listOf(C.categories), { id, ...after }];
+    words.push(`The category "${label}" comes into the group menu with it. ${siteName} keeps its own "${label}": nothing changes there.`);
+    return id;
+  };
   const rateOf = (id) => listOf(raw?.taxRates).find((r) => r.id === id) || null;
   const productFields = (r, parentId) => {
     const rate = r.tax_rate_id ? rateOf(r.tax_rate_id) : null;
