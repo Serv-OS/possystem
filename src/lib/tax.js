@@ -210,7 +210,8 @@ export function purchaseNet(price, includesTax, rateDecimal) {
  */
 export function formatRateLabel(rate) {
   if (!rate) return '';
-  const pct = (parseFloat(rate.rate) * 100).toFixed(rate.rate % 0.01 === 0 ? 0 : 3).replace(/\.?0+$/, '');
+  // 5.12.99: a 0% rate read "% Tax Exempt" (the zeros were all trimmed away). It reads "0%".
+  const pct = (parseFloat(rate.rate) * 100).toFixed(rate.rate % 0.01 === 0 ? 0 : 3).replace(/\.?0+$/, '') || '0';
   return `${pct}% ${rate.name}`;
 }
 

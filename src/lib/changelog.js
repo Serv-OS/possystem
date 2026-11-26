@@ -1,6 +1,6 @@
 export const CHANGELOG = [
   {
-    v: '5.12.99',
+    v: '5.12.100',
     date: '25 Nov 2026',
     items: [
       'Stock items, Import: a file of unit bridges can now be imported (Peter, 25 Nov 2026: "yes build the unit links into the import"). A unit bridge says that this much of one unit of an item equals that much of another, for example 30 oz of olives = 40 fl oz. It is what lets an item bought by the gallon be used in a recipe by the ounce. Until now each one was typed on the item\'s Dimension and Measure tab.',
@@ -8,6 +8,21 @@ export const CHANGELOG = [
       'On Import the bridge is written for the company and at every site the item is on, and each site costs the item again, exactly as when a bridge is saved on the item page. The same file a second time changes nothing. A different amount for the same two kinds of unit changes the bridge it finds instead of adding a second one.',
       'Why now: a group moving from another stock system brings these links with it (one customer had 51 of them, and 107 recipe lines that cost nothing without them).',
       'Needs the database update 20261208a (Peter runs it). Until it is run an imported bridge file is refused with a message and nothing is changed. Every other import file reads exactly as before.',
+    ],
+  },
+  {
+    v: '5.12.99',
+    date: '25 Nov 2026',
+    items: [
+      'Back Office, Menu: the tax tools now speak the same language as tax profiles (Peter, Mozz Sandy, 25 Nov 2026: "none of the tools we built show the tax rates in the new version of taxes which means I cant do whats needed"). The venue charged through a tax profile (Prepared food: Sales tax 7.45% plus Restaurant tax 1%), and the Menu screen only knew the old style rates.',
+      'The yellow bar no longer says "14 products have no tax rate" at a venue whose default is a real tax profile. Those products were charging correctly through the profile. The bar also offered "Apply to all" with an old style rate, which would have put 7.45% in front of the 8.45% profile on every product. At such a venue there is nothing to fill, so it is not offered.',
+      'Every tax profile picker shows what the profile charges: "Prepared food (8.45%)", "Retail (7.45%)", "Tax exempt (0%)". That is the product Tax tab, the category box and the quick apply strip.',
+      'Product, Tax tab: a new first line, "This product charges:", says the rule in use and where it comes from (this product, its category, or the venue default). The first option in the profile picker names what the product follows when it has none of its own.',
+      'Product, Tax tab: the old sentence saying profiles do not charge yet is gone. They have charged since the switch over. At a venue on profiles the old rate box is now called "Old style rate", its first option is "None: follow the tax profile", and it says plainly that a rate picked there comes before the category and venue profiles.',
+      'Order type overrides: at a venue on profiles the tab now says these boxes take old style rates only, and that a different tax for an order type is set inside the profile (Tax, Tax profiles, the line, Order types).',
+      'The quick apply strip names any product that holds an old style rate in front of the profiles, so an undercharge is seen.',
+      'Rates read in full: 7.45% showed as "7.4%" on the product Tax tab, and a 0% rate showed as "% Tax Exempt". They read 7.45% and 0%.',
+      'Nothing about how tax is worked out has changed. UK venues, whose default profile is a copy of their VAT rate, see the same screens as before apart from the fuller figures and the corrected sentence.',
     ],
   },
   {

@@ -582,7 +582,7 @@ test('sites: All, names split by ;, case blind, by id too; an empty cell means t
   assert.equal(siteLookup(null).size, 0);
 });
 
-// ── unit bridges (5.12.99, migration 20261208a) ──
+// ── unit bridges (5.12.100, migration 20261208a) ──
 const BRIDGE_FILE = [
   'Item,This much,Unit,Equals,Equal unit',
   'Olives Pitted,30,oz,40,fl oz',

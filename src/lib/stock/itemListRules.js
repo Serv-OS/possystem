@@ -656,7 +656,7 @@ export function importCountWords(counts) {
   if (hasRecipeCount(c, 'new_recipes', 'new') || hasRecipeCount(c, 'changed_recipes', 'change')) {
     words += `, ${plural(recipeCount(c, 'new_recipes', 'new'), 'new recipe')}, ${plural(recipeCount(c, 'changed_recipes', 'change'), 'changed recipe')}`;
   }
-  // 5.12.99: unit bridges are said only when the file has some (every other file reads as before)
+  // 5.12.100: unit bridges are said only when the file has some (every other file reads as before)
   const newBridges = isNum(c.new_bridges) ? Number(c.new_bridges) : countOf(c, 'bridge', 'new');
   const changedBridges = isNum(c.changed_bridges) ? Number(c.changed_bridges) : countOf(c, 'bridge', 'change');
   if (newBridges > 0 || changedBridges > 0) {

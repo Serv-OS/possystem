@@ -14,7 +14,7 @@
  * Nothing is written to a site until Import, and nothing writes an on hand, a cost or the ledger
  * except through the normal cost step.
  *
- * 5.12.99: a file of unit bridges too ('30 oz of this item = 40 fl oz'): one bridge a line, checked and
+ * 5.12.100: a file of unit bridges too ('30 oz of this item = 40 fl oz'): one bridge a line, checked and
  * imported like the rest; the item's cost at each site follows.
  *
  * Used by Stock items (Import) and a supplier's Items tab ('Import price list': kind

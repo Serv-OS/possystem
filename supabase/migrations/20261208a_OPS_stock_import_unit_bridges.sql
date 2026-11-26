@@ -1,5 +1,5 @@
 -- 20261208a_OPS_stock_import_unit_bridges.sql
--- OPS DB ONLY. 5.12.99, 25 Nov 2026. Stock import: unit bridges.
+-- OPS DB ONLY. 5.12.100, 25 Nov 2026. Stock import: unit bridges.
 --
 -- WHY (Peter, 25 Nov 2026: "yes build the unit links into the import")
 --   Mozz are moving their stock from Restaurant365. Their recipes use an item by weight that is
@@ -27,7 +27,7 @@
 -- SAFE
 --   Changes no data. Refuses, changing nothing, if one of the three functions is not the body it was
 --   built from (md5 of the source) and is not already this file's body. Safe to run twice.
---   Until the app release 5.12.99 is live nothing sends a 'bridge' row, so nothing behaves differently.
+--   Until the app release 5.12.100 is live nothing sends a 'bridge' row, so nothing behaves differently.
 -- Rollback: 20261208a_OPS_stock_import_unit_bridges_ROLLBACK.sql. ASCII only.
 
 begin;
@@ -44,8 +44,8 @@ begin
   end if;
   for r in
     select * from (values ('stock_import_stage', 'a4a7f104ccc8fb94aa4e262bbc9a9bc1', '1d9e5845ed729c476e2ff9aa42c11696'),
-      ('stock_co__import_check_row', '0af01137551d69b5e3511eb4911f1025', '7007b29b56d6f961fe98e04ae50dbf4b'),
-      ('stock_co__import_apply', '53fdb5e3c97bda88307d87486d085f17', 'c5fe2a30a1fafd5deb31fb474f7e805b')) v(fn, before, after)
+      ('stock_co__import_check_row', '0af01137551d69b5e3511eb4911f1025', 'c010b92158f5a10be776240233f6ebd2'),
+      ('stock_co__import_apply', '53fdb5e3c97bda88307d87486d085f17', 'b1f8e13e31f770d7b6d62c0d4260f814')) v(fn, before, after)
   loop
     if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                     where n.nspname = 'public' and p.proname = r.fn and md5(p.prosrc) in (r.before, r.after)) then
@@ -413,7 +413,7 @@ begin
     end if;
     return jsonb_build_object('action', 'change', 'target_id', v_item);
   elsif p_kind = 'bridge' then
-    -- 5.12.99: a unit bridge row {item, item_sku, from_qty, from_unit, to_qty, to_unit}: this much of one unit of
+    -- 5.12.100: a unit bridge row {item, item_sku, from_qty, from_unit, to_qty, to_unit}: this much of one unit of
     -- the item equals that much of another (30 oz = 40 fl oz). The two units measure different things
     -- (weight, volume or count): units of the same kind convert by themselves.
     if coalesce(nullif(btrim(coalesce(p_data ->> 'item', '')), ''), nullif(btrim(coalesce(p_data ->> 'item_sku', '')), '')) is null then
@@ -771,7 +771,7 @@ begin
         update stock_co_import_rows x set target_id = v_id where x.job_id = p_job and x.row_no = r.row_no;
         v_weight := v_weight + 1 + (select count(*)::integer from stock_co_item_sites s where s.item_id = v_item);
       elsif r.kind = 'bridge' then
-        -- 5.12.99: a unit bridge. The company row is written here; its site rows and each site's cost are
+        -- 5.12.100: a unit bridge. The company row is written here; its site rows and each site's cost are
         -- written with the items of this step, below (stock_co__sync_site plans a bridge from the company row).
         select i.id into v_item from stock_co_items i
          where i.org_id = v_j.org_id and i.archived_at is null and lower(i.name) = lower(btrim(coalesce(d ->> 'item', '')))
@@ -874,8 +874,8 @@ declare
 begin
   for r in
     select * from (values ('stock_import_stage', 'a4a7f104ccc8fb94aa4e262bbc9a9bc1', '1d9e5845ed729c476e2ff9aa42c11696'),
-      ('stock_co__import_check_row', '0af01137551d69b5e3511eb4911f1025', '7007b29b56d6f961fe98e04ae50dbf4b'),
-      ('stock_co__import_apply', '53fdb5e3c97bda88307d87486d085f17', 'c5fe2a30a1fafd5deb31fb474f7e805b')) v(fn, before, after)
+      ('stock_co__import_check_row', '0af01137551d69b5e3511eb4911f1025', 'c010b92158f5a10be776240233f6ebd2'),
+      ('stock_co__import_apply', '53fdb5e3c97bda88307d87486d085f17', 'b1f8e13e31f770d7b6d62c0d4260f814')) v(fn, before, after)
   loop
     if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                     where n.nspname = 'public' and p.proname = r.fn and md5(p.prosrc) = r.after) then

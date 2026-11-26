@@ -410,7 +410,7 @@ test('importCountWords: "<n> new items, <n> price changes, <n> problems" from an
   assert.equal(R.importRecipeRows, undefined, 'recipes are not skipped any more');
 });
 
-test('importCountWords: unit bridges are said only when the file has some (5.12.99)', () => {
+test('importCountWords: unit bridges are said only when the file has some (5.12.100)', () => {
   assert.equal(R.importCountWords({ new_items: 0, price_changes: 0, problem: 0, new_bridges: 51, changed_bridges: 0 }), '0 new items, 0 price changes, 0 problems, 51 new unit bridges, 0 changed unit bridges');
   assert.equal(R.importCountWords({ new_items: 2, price_changes: 1, problem: 1, new_bridges: 0, changed_bridges: 1 }), '2 new items, 1 price change, 1 problem, 0 new unit bridges, 1 changed unit bridge');
   assert.equal(R.importCountWords({ new_items: 2, price_changes: 1, problem: 0, new_bridges: 0, changed_bridges: 0 }), '2 new items, 1 price change, 0 problems', 'a file with none reads as before');

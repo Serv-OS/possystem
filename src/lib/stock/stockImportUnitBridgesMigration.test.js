@@ -1,4 +1,4 @@
-// node --test: the text of 20261208a_OPS_stock_import_unit_bridges.sql and its rollback (5.12.99).
+// node --test: the text of 20261208a_OPS_stock_import_unit_bridges.sql and its rollback (5.12.100).
 // The behaviour is proved on a local PostgreSQL by supabase/tests/stock_native/unit_bridges_proof.sh
 // (36 checks); this pins what CI can see without a database: the two files exist, are plain ASCII,
 // guard themselves, and carry the same three functions.

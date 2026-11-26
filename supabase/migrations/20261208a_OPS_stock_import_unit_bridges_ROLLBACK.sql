@@ -3,7 +3,7 @@
 -- 25 Nov 2026). Unit bridges the import already made stay: they are ordinary unit bridges, and the item
 -- page still shows and edits them. Staged import rows of the kind 'bridge' are history; while any exist
 -- the kind check keeps allowing them (dropping it back would refuse the table), otherwise it goes back.
--- Run the app rollback first (below 5.12.99), or an import file of unit bridges is refused with
+-- Run the app rollback first (below 5.12.100), or an import file of unit bridges is refused with
 -- 'The field "kind" must be one of ...'. Safe to run twice.
 
 begin;
@@ -725,8 +725,8 @@ declare
 begin
   for r in
     select * from (values ('stock_import_stage', 'a4a7f104ccc8fb94aa4e262bbc9a9bc1', '1d9e5845ed729c476e2ff9aa42c11696'),
-      ('stock_co__import_check_row', '0af01137551d69b5e3511eb4911f1025', '7007b29b56d6f961fe98e04ae50dbf4b'),
-      ('stock_co__import_apply', '53fdb5e3c97bda88307d87486d085f17', 'c5fe2a30a1fafd5deb31fb474f7e805b')) v(fn, before, after)
+      ('stock_co__import_check_row', '0af01137551d69b5e3511eb4911f1025', 'c010b92158f5a10be776240233f6ebd2'),
+      ('stock_co__import_apply', '53fdb5e3c97bda88307d87486d085f17', 'b1f8e13e31f770d7b6d62c0d4260f814')) v(fn, before, after)
   loop
     if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                     where n.nspname = 'public' and p.proname = r.fn and md5(p.prosrc) = r.before) then

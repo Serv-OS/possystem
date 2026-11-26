@@ -7,7 +7,7 @@
 //   supplier items (a supplier's pack and price of an item), pars and, from Drop 2 (migration
 //   20261025a, contract 3.4), recipes: one ingredient a line in the file, grouped here into one
 //   staged row per recipe with its lines, kind, yield, made item, sites and till product.
-//   5.12.99 (migration 20261208a): a sixth kind, unit bridges: "this much of one unit of an item equals
+//   5.12.100 (migration 20261208a): a sixth kind, unit bridges: "this much of one unit of an item equals
 //   that much of another" (30 oz = 40 fl oz), one bridge a line: Item, This much, Unit, Equals, Equal unit.
 //   Nothing here writes or decides: the database checks every staged row (new, change, same, skip
 //   or problem) and the check screen shows its answer. These rules only read the file, match its
@@ -121,7 +121,7 @@ export const CSV_COLUMNS = Object.freeze({
   supplier_items: Object.freeze({ required: ['supplier', 'item'], oneOf: ['pack_price', 'price_with_vat'], fields: ['supplier', 'item', 'item_sku', 'supplier_sku', 'supplier_product_name', 'pack_description', 'pack_size', 'pack_qty', 'inner_qty', 'inner_unit', 'base_unit', 'pack_price', 'price_with_vat', 'currency', 'purchase_vat', 'includes_vat', 'site', 'sites'] }),
   pars: Object.freeze({ required: ['item', 'site'], oneOf: ['par_level', 'reorder_point', 'min_level'], fields: ['item', 'item_sku', 'site', 'par_level', 'reorder_point', 'min_level'] }),
   recipes: Object.freeze({ required: ['name', 'ingredient', 'qty', 'unit'], fields: ['name', 'kind', 'type', 'ingredient', 'item_sku', 'qty', 'unit', 'usable_pct', 'order_types', 'yield_qty', 'yield_unit', 'made_item', 'sites', 'till_product'] }),
-  // 5.12.99: a unit bridge of an item: this much of one unit = that much of another (weight, volume or count)
+  // 5.12.100: a unit bridge of an item: this much of one unit = that much of another (weight, volume or count)
   bridges: Object.freeze({ required: ['from_qty', 'from_unit', 'to_qty', 'to_unit'], oneOf: ['item', 'item_sku'], fields: ['item', 'item_sku', 'from_qty', 'from_unit', 'to_qty', 'to_unit'] }),
 });
 
@@ -247,7 +247,7 @@ const CSV_ALIASES = {
     sites: ['sites', 'at sites', 'locations'],
     till_product: ['till product', 'menu item', 'pos item', 'sold as', 'product'],
   },
-  // 5.12.99: 'Item, This much, Unit, Equals, Equal unit' (30, oz, 40, fl oz): the two units of one line
+  // 5.12.100: 'Item, This much, Unit, Equals, Equal unit' (30, oz, 40, fl oz): the two units of one line
   bridges: {
     item: ['item', 'item name', 'stock item', 'name'],
     item_sku: ['item sku', 'sku', 'item code'],
@@ -465,7 +465,7 @@ export function fileKinds(source, headerRow) {
   const head = (headerRow || []).map(headKey);
   const keys = new Set(head);
   if (RECIPE_MARKS.some((m) => keys.has(m))) return ['recipes'];
-  // 5.12.99: a unit bridge file names two amounts of one item ('This much' and 'Equals'): bridges only
+  // 5.12.100: a unit bridge file names two amounts of one item ('This much' and 'Equals'): bridges only
   if (BRIDGE_MARKS.filter((m) => keys.has(m)).length >= 2) return ['bridges'];
   const aliases = aliasesOf(source);
   if (SUPPLIER_DETAIL_MARKS.some((m) => keys.has(m)) && !ITEM_MARKS.some((m) => keys.has(m))) return ['suppliers'];
@@ -989,7 +989,7 @@ function parData(r, problems) {
   };
 }
 
-// 5.12.99: one unit bridge: both amounts as numbers, both units as our codes (a unit ServOS does not know
+// 5.12.100: one unit bridge: both amounts as numbers, both units as our codes (a unit ServOS does not know
 // goes as typed, so the database says so in its own words).
 function bridgeData(r, problems, cur = null) {
   const qty = (f, label) => {
@@ -1079,7 +1079,7 @@ function recipeRows(rows, { lookup, problems, rowBase, currency = null }) {
 
 /**
  * The rows of one kind as stock_import_stage takes them: [{ row_no, kind, data, sites }].
- *   kind: 'items' (or 'item'), 'suppliers', 'supplier_items', 'pars', 'recipes', 'bridges' (unit bridges, 5.12.99:
+ *   kind: 'items' (or 'item'), 'suppliers', 'supplier_items', 'pars', 'recipes', 'bridges' (unit bridges, 5.12.100:
  *     data { item, item_sku, from_qty, from_unit, to_qty, to_unit }, never any sites)
  *   rows: the rows of csvRowsFor, mapNory, mapMarketMan or mapFile
  *   siteIdByName: the company's sites (a Map, an object, or a list of { id, name }) for the sites

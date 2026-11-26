@@ -50,7 +50,7 @@ node --test src/lib/stock/stockNative4bMigration.test.js     # the CI text test 
 node --test src/lib/stock/storagePolicyGuard.test.js         # no table rule may call a function its logins cannot run (23 Oct)
 
 
-# Stock import: unit bridges (20261208a, release 5.12.99), on the rig's Drop 3 database (the import
+# Stock import: unit bridges (20261208a, release 5.12.100), on the rig's Drop 3 database (the import
 # functions there are byte for byte the live ones)
 STOCKN_KEEP=1 STOCKN_STOP_AT=40 node supabase/tests/stock_native/run.mjs --drop3 --quick   # prints: kept: psql -h <dir> -p <port> ...
 zsh supabase/tests/stock_native/unit_bridges_proof.sh <dir> <port>    # 36 checks: paste, check screen, commit, again, change, rollback
