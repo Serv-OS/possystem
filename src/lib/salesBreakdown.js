@@ -351,6 +351,40 @@ export function placeSplit(byPlace, kind = 'card', { always = false } = {}) {
   return rows.length > 1 || (always && rows.length === 1) ? rows : [];
 }
 
+/**
+ * SALES BY SOURCE (26 Nov 2026, Peter: "can we break down the Z report and X reports into order
+ * source too like kiosk, online, QR"). The payments were already split by place; the sales were
+ * one figure. Each check is put in ONE place by its source (placeOf) and read by the same sales
+ * rule as salesBreakdown, in pence, so the places add up to its figures exactly:
+ *   checks     add up to salesBreakdown().count
+ *   net        add up to salesBreakdown().net   (sales excluding VAT, after refunds made in range)
+ *   collected  add up to salesBreakdown().collected
+ * A refund counts against the place of the sale it refunds. Same arguments as salesBreakdown.
+ * Returns [{ place, label, checks, net, collected }] in place order, places with nothing left out.
+ */
+export function salesByPlace(checks, { range = null, refundRows = null } = {}) {
+  const acc = {};
+  const at = (place) => (acc[place] ||= { checks: 0, net: 0, collected: 0, touched: false });
+  for (const c of checks || []) {
+    if (!c) continue;
+    const p = checkPieces(c);
+    if (p.voided) continue;
+    const row = at(placeOf(c));
+    row.checks += 1; row.touched = true;
+    row.net += p.moneySales - p.moneyTax;
+    row.collected += p.moneySales + p.service + p.tips + p.gift;
+  }
+  eachRefund(checks, refundRows, range, (r, c) => {
+    const row = at(placeOf(c));
+    row.touched = true;
+    row.net -= r.sales - r.tax;
+    row.collected -= r.sales + r.service + r.tips;
+  });
+  return PLACE_ORDER
+    .filter((place) => acc[place]?.touched)
+    .map((place) => ({ place, label: PLACE_WORDS[place], checks: acc[place].checks, net: acc[place].net / 100, collected: acc[place].collected / 100 }));
+}
+
 /** One check's net sales (excluding VAT) after its own refunds made inside `range`. Major units. */
 export function checkNetSales(check, range = null) {
   const p = checkPieces(check);
