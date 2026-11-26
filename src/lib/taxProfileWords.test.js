@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { pctText, profileRateWords, profileLabel, rateLabel, taxRuleFor, taxRuleWords, venueRunsOnProfiles, productsOnOldRate } from './taxProfileWords.js';
+import { pctText, profileRateWords, profileLabel, rateLabel, taxRuleFor, taxRuleWords, venueRunsOnProfiles, productsOnOldRate, rateForNewProduct } from './taxProfileWords.js';
 import { isLegacyMirror, buildLocalTaxCtx, computeOrderTaxUnified } from './taxCompute.js';
 import { formatRateLabel } from './tax.js';
 
@@ -147,4 +147,42 @@ test('the Menu screen uses these words and no longer says profiles do not charge
   assert.ok(!src.includes('the legacy rate below is what actually charges'));
   assert.ok(!src.includes('Tills switch to profile based calculation in an upcoming update'));
   assert.ok(!src.includes(".toFixed(1).replace('.0','')"));
+});
+
+// 5.12.103. Mozz Sandy, 25 Nov 2026: Half and Entree under Caesar Salad and Garden Salad were born
+// on the old "Sales tax 7.45%" rate, in front of the 8.45% venue profile.
+test('a new product is not stamped with the old default rate at a venue that charges through a real profile', () => {
+  const args = { taxRates: rates, taxProfiles: profiles, venueDefaultProfileId: 'p-food', isMirror: isLegacyMirror };
+  assert.equal(rateForNewProduct(args), null, 'Sandy: nothing stamped, the product follows the profile');
+  // No venue profile (or one that is gone): the old default rate, as since v5.5.961.
+  assert.equal(rateForNewProduct({ ...args, venueDefaultProfileId: null }), 'r-sales');
+  assert.equal(rateForNewProduct({ ...args, venueDefaultProfileId: 'gone' }), 'r-sales');
+  // No default rate and no profile: nothing to stamp.
+  assert.equal(rateForNewProduct({ taxRates: [exemptRate] }), null);
+  assert.equal(rateForNewProduct(), null);
+  // An inactive default is not stamped.
+  assert.equal(rateForNewProduct({ taxRates: [{ ...salesTax, active: false }] }), null);
+});
+
+test('a UK venue (its default profile is a copy of its VAT rate) is stamped exactly as before', () => {
+  const vat = { id: 'r-vat', name: 'Standard', rate: 0.2, type: 'inclusive', isDefault: true, active: true };
+  const mirror = { id: 'p-vat', name: 'Standard', active: true, generatedFromRateId: 'r-vat', rounding: { mode: 'half_up', level: 'invoice' },
+    lines: [{ id: 'l', name: 'Standard', lineType: 'rate', rate: 0.2, mode: 'inclusive', compound: false, taxable: false, orderTypes: ['all'], active: true, taxBasis: 'pre_discount', taxServiceCharge: false, taxDeliveryFee: false }] };
+  assert.equal(rateForNewProduct({ taxRates: [vat], taxProfiles: [mirror], venueDefaultProfileId: 'p-vat', isMirror: isLegacyMirror }), 'r-vat');
+});
+
+test('the store stamps a new product through that one rule', () => {
+  const store = readFileSync(new URL('../store/index.js', import.meta.url), 'utf8');
+  assert.ok(store.includes('const stamp = rateForNewProduct({ taxRates: rates, taxProfiles: st.taxProfiles, venueDefaultProfileId: st.venueDefaultTaxProfileId, isMirror: isLegacyMirror });'));
+  assert.ok(store.includes('if (stamp) newItem.taxRateId = stamp;'));
+  assert.ok(!store.includes('if (def) newItem.taxRateId = def.id;'));
+});
+
+test('the engine agrees: a new size with no stamp charges the venue profile, 8.45%', () => {
+  const size = { id: 'half', name: 'Half', parentId: 'caesar', cat: 'c1' };
+  const ctx = buildLocalTaxCtx({ taxProfiles: profiles, menuItems: [size], menuCategories: [cat], venueDefaultProfileId: 'p-food', taxRates: rates });
+  const unstamped = computeOrderTaxUnified([{ ...size, itemId: 'half', price: 10, qty: 1 }], ctx, 'dine-in');
+  assert.equal(unstamped.exclusiveTax.toFixed(2), '0.85');
+  const stamped = computeOrderTaxUnified([{ ...size, itemId: 'half', price: 10, qty: 1, taxRateId: 'r-sales' }], ctx, 'dine-in');
+  assert.equal(stamped.exclusiveTax.toFixed(2), '0.75', 'what the four sizes charged: the restaurant tax missing');
 });

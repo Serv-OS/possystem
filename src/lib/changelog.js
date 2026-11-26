@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.103',
+    date: '25 Nov 2026',
+    items: [
+      'Tax: a new product is no longer stamped with an old style tax rate at a venue that charges through a tax profile (Peter, Mozz Sandy, 25 Nov 2026: "it hasnt brought the tax rate in either and the drop down for tax rate doesnt have the correct tax rates"). Every new product, and every new size, was born with the venue\'s default old style rate. At a venue on tax profiles that rate comes before the profile, so the product charged the old rate alone. At Sandy four new salad sizes were on "Sales tax 7.45%" where the venue charges 8.45% (sales tax plus restaurant tax).',
+      'At a venue whose default is a real tax profile, a new product now has no rate of its own and follows its category and the venue profile, like every other product there.',
+      'Nothing changes at a venue that works on tax rates, which is every UK venue: a new product is stamped with the default rate exactly as before.',
+      'Sandy\'s four sizes and its two old style rates are put right by a separate data fix (20261208b). Sandy had taken no sales.',
+    ],
+  },
+  {
     v: '5.12.102',
     date: '25 Nov 2026',
     items: [
