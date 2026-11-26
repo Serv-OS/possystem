@@ -1516,7 +1516,21 @@ function channelTier(item: any, channel: string | null): 'card_present' | 'card_
   const ch = String(channel ?? '').toLowerCase();
   if (['online', 'booking', 'qr', 'gift', 'web', 'ecommerce'].includes(ch)) return 'card_not_present';
   if (si === 'ecommerce') return 'card_not_present';
-  if ('checkout.cardAddedBrand' in ad || 'threeds2.cardEnrolled' in ad || 'isCardCommercial' in ad || 'scaExemptionRequested' in ad) return 'card_not_present';
+  // 26 Nov 2026 (5.12.106): Adyen's own word for a card reader payment. Until today this was
+  // not read here at all, and a reader payment was called online whenever the event carried
+  // isCardCommercial, which three in four reader events do. Only the rule engine's later
+  // answer hid it; where the engine fell back to this one (a venue with no recorded cutover)
+  // twelve declined reader payments at Castleford showed as "Online debit".
+  if (si === 'pos') return 'card_present';
+  // Keys only an online checkout sends.
+  if ('checkout.cardAddedBrand' in ad || 'threeds2.cardEnrolled' in ad || 'scaExemptionRequested' in ad) return 'card_not_present';
+  // A card reader job (the webhook's channel 'pos'; a tab hold shares that channel but is
+  // paid on the guest's phone, so it is left to the line below as before).
+  if (ch === 'pos' && !String(item?.merchantReference ?? '').startsWith('tabhold-')) return 'card_present';
+  // isCardCommercial says what KIND of card it is, not where it was used. It stays as the
+  // last word for a payment with no channel and no other sign (an older QR payment), so
+  // those keep today's answer.
+  if ('isCardCommercial' in ad) return 'card_not_present';
   return 'card_present';
 }
 // TODAY'S CATEGORY: one of the four base tiers, exactly as the webhook has

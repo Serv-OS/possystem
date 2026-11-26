@@ -315,7 +315,14 @@ export function paymentFacts(item, channel) {
   else if (entry.includes('key') || entry.includes('manual')) shopperInteraction = 'Moto';
   else if (str(ad.recurringProcessingModel)) shopperInteraction = 'ContAuth';
   else if (ONLINE_CHANNELS.includes(lower(channel))) shopperInteraction = 'Ecommerce';
-  else if ('checkout.cardAddedBrand' in ad || 'threeds2.cardEnrolled' in ad || 'isCardCommercial' in ad || 'scaExemptionRequested' in ad) shopperInteraction = 'Ecommerce';
+  // Keys only an online checkout sends.
+  else if ('checkout.cardAddedBrand' in ad || 'threeds2.cardEnrolled' in ad || 'scaExemptionRequested' in ad) shopperInteraction = 'Ecommerce';
+  // 26 Nov 2026 (5.12.106): a card reader job is in person. isCardCommercial says what KIND of
+  // card it is, not where it was used, and most reader events carry it; it used to make a
+  // reader payment with no shopperInteraction read as online. A tab hold shares the channel
+  // but is paid on the guest's phone, so it is left to the line below as before.
+  else if (lower(channel) === 'pos' && !str(item?.merchantReference).startsWith('tabhold-')) shopperInteraction = 'POS';
+  else if ('isCardCommercial' in ad) shopperInteraction = 'Ecommerce';
   else shopperInteraction = 'POS';
   return {
     currency: str(item?.amount?.currency).toUpperCase() || null,

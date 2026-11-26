@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.106',
+    date: '26 Nov 2026',
+    items: [
+      'Card payments: a payment taken on the card reader is never labelled "Online" again. A venue owner asked why "a lot of online payments failed". None had: twelve declined card reader payments were shown as "Online debit".',
+      'The cause was in the oldest labelling rule. It did not read Adyen\'s own word for a reader payment, and it called a payment online whenever the event said what kind of card it was (business or not), which most reader events do. A later step put the label right for nearly every payment, so the mistake only showed where that step had nothing to go on.',
+      'The rule now reads Adyen\'s own word first, then the signs only an online checkout sends, then whether the payment ran as a card reader job. The kind of card is the last thing it looks at.',
+      'Checked against every live payment on the ledger (56,248): the old rule called 39,218 card reader payments online; the new rule calls none online, and agrees with the label the ledger holds on every payment. No fee changes on any payment.',
+      'Online orders, QR payments, bookings, gift cards and tab holds are labelled exactly as before.',
+    ],
+  },
+  {
     v: '5.12.105',
     date: '25 Nov 2026',
     items: [
