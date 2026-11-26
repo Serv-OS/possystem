@@ -249,6 +249,8 @@ export function changeWords(row, names = {}) {
   if (row.target === 'category') {
     const subject = a.label || cn(row.entity_id);
     if (row.op === 'create') return { subject, words: `New category${a.parent_id ? ` under ${cn(a.parent_id)}` : ''}${a.route_like_id ? `, prints like ${cn(a.route_like_id)}` : ''}` };
+    // 5.12.110: a rename says the new name (the only field of a category that can change here).
+    if ('label' in a && row.op !== 'remove') return { subject: cn(row.entity_id), words: `renamed to ${a.label} at every site` };
     return { subject, words: Object.keys(a).map((k) => `${fieldWord(k)} changed`).join(', ') };
   }
   if (row.target === 'menu') return { subject: 'Menu details', words: Object.keys(a).map((k) => `${fieldWord(k)} changed`).join(', ') };

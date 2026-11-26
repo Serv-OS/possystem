@@ -248,6 +248,7 @@ export function summarise(changes, central, opts = {}) {
       if (ch.op === 'create') out.push(`New category: ${label}.`);
       else if (a.archived === true) out.push(`${label} comes off the menu at every site (nothing is deleted).`);
       else if (a.archived === false) out.push(`${label} comes back on the menu.`);
+      else if ('label' in a) out.push(`Category ${ch.before?.label && ch.before.label !== a.label ? `${ch.before.label} is` : 'is'} renamed to ${a.label} at every site.`);
       else { const words = [...new Set(Object.keys(a).map(fieldWord))]; out.push(`Category ${label}: ${andList(words)} change${words.length === 1 && !/s$/.test(words[0]) ? 's' : ''} at every site.`); }
     }
     if (ch.target === 'menu') out.push(`The menu's ${andList([...new Set(Object.keys(a).map(fieldWord))])} change${Object.keys(a).length === 1 ? 's' : ''}.`);
