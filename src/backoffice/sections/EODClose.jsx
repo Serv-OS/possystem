@@ -335,7 +335,7 @@ export default function EODClose() {
           </div>
           {offTillCount > 0 && (
             <div style={{ fontSize:12, color:'var(--t3)', margin:'-12px 0 20px', lineHeight:1.6 }}>
-              Includes {offTillCount} order{offTillCount === 1 ? '' : 's'} taken away from the tills since the shift opened (online, app, kiosk or QR).
+              Includes {offTillCount} order{offTillCount === 1 ? '' : 's'} taken away from the POS since the shift opened (online, app, kiosk or QR).
             </div>
           )}
         </>

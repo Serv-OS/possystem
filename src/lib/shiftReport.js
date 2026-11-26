@@ -126,7 +126,7 @@ export function buildShiftReportDoc(r, { cols = 42 } = {}) {
     .twoCol('Covers', String(s.covers || 0))
     .twoColTrunc(fitLabel(`Average check (excluding ${s.taxWord === 'tax' ? 'tax' : 'VAT'})`, cols), m(s.count ? s.net / s.count : 0))
     .divider();
-  // Sales by order source: "At the till (132)   1,203.30". The amounts add up to Net sales above
+  // Sales by order source: "POS (132)   1,203.30". The amounts add up to Net sales above
   // and the counts to Checks. Left off a slip handed no sources (an older caller).
   const sources = Array.isArray(r.sources) ? r.sources : [];
   if (sources.length) {
@@ -138,7 +138,7 @@ export function buildShiftReportDoc(r, { cols = 42 } = {}) {
   const payments = Array.isArray(r.payments) ? r.payments : [];
   for (const p of payments) {
     b.twoColTrunc(`${p.label} (${p.count || 0})`, m(p.amount));
-    // Where it was taken, when it was more than one place: "  At the till", "  Online and app".
+    // Where it was taken, when it was more than one place: "  POS", "  Online and app".
     for (const part of (Array.isArray(p.split) ? p.split : [])) b.twoColTrunc(`  ${part.label}`, m(part.amount));
     if (Math.abs(Number(p.tips) || 0) >= 0.005) b.twoColTrunc('  of which tips', m(p.tips));
   }
