@@ -78,8 +78,8 @@ test('the rule form is always a valid rule (Menu Manager\'s rules)', () => {
   assert.deepEqual(ruleFromForm({ choice: 'multiple', mustChoose: true, min: 5, max: 3 }), { min: 3, max: 3, selection_type: 'multiple' }, 'at least never above up to');
   assert.deepEqual(ruleFromForm({ choice: 'quantity', max: 3 }), { min: 3, max: 3, selection_type: 'quantity' }, 'a box of 3 is exactly 3');
   assert.deepEqual(ruleFromForm({ choice: 'multiple', max: 500 }), { min: 0, max: 99, selection_type: 'multiple' });
-  assert.equal(formSentence({ choice: 'single', mustChoose: true }), 'Choose exactly 1. Customers must choose before the till moves on.');
-  assert.deepEqual(formFromGroup({ min: 1, max: 1, selection_type: 'single' }), { mustChoose: true, choice: 'single', min: 1, max: 1 });
+  assert.equal(formSentence({ choice: 'single', mustChoose: true }), 'Choose exactly 1. Customers must choose before the POS moves on.');
+  assert.deepEqual(formFromGroup({ min: 1, max: 1, selection_type: 'single' }), { mustChoose: true, choice: 'single', onceEach: false, min: 1, max: 1 });
 });
 
 test('Add to products: categories in order, sizes under their product, ticked when it already has the group, no option only sub items', () => {

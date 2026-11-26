@@ -117,7 +117,10 @@ export const ORDER_TYPE_TAX_KEYS = Object.freeze(['dine-in', 'takeaway', 'delive
 export const ORDER_TYPES = Object.freeze([...CHANNELS, 'bar']);
 
 // An option group's choice kinds (modifier_groups.selection_type).
-export const SELECTION_TYPES = Object.freeze(['single', 'multiple', 'quantity']);
+// 5.12.112: multiple_once is "several choices, each option only once" (src/lib/choiceKinds.js
+// ONCE_EACH; Peter, 26 Nov 2026). The database guards take it since 20261213a: msm_changes_guard
+// (a staged change) and msm_apply_site (a publish). Plain "multiple" is unchanged.
+export const SELECTION_TYPES = Object.freeze(['single', 'multiple', 'quantity', 'multiple_once']);
 
 // What a site may keep as its own on a group (msm_modifier_group_sites.kept, keyed by venue column)
 // and on an option (msm_modifier_option_sites.kept): its own name, its own sub item link
@@ -391,7 +394,7 @@ export function checkChange(change) {
       || (c.target === 'modifier_option_site' && c.op !== 'create' && has(after, 'venue_option_id'))) return { ok: false, words: 'A site\'s own id never changes.' };
   if (c.target === 'modifier_option' && c.op === 'create' && !after.group_id) return { ok: false, words: 'A new option needs its option group.' };
   if (c.target === 'modifier_option' && c.op !== 'create' && has(after, 'group_id')) return { ok: false, words: 'An option cannot move to another group. Remove it and add it there.' };
-  if (c.target === 'modifier_group' && has(after, 'selection_type') && !SELECTION_TYPES.includes(after.selection_type)) return { ok: false, words: 'Pick one choice, several choices, or the same choice more than once.' };
+  if (c.target === 'modifier_group' && has(after, 'selection_type') && !SELECTION_TYPES.includes(after.selection_type)) return { ok: false, words: 'Pick one choice, several choices (each only once or not), or the same choice more than once.' };
   return { ok: true, words: '' };
 }
 

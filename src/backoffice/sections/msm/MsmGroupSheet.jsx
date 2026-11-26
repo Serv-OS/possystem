@@ -239,6 +239,15 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
               </div>
             </Field>
           )}
+          {/* 5.12.112 (Peter, 26 Nov 2026: "they can select multiple but only one of each"): only under
+              Several choices. Off = as before: the same option can be picked again. */}
+          {f.choice === 'multiple' && (
+            <Field label="The same option twice" hint="Not ticked: a customer can pick the same option again. Ticked: each option only once, on the POS, kiosk and online." style={{ marginBottom: 0 }}>
+              <label style={{ ...ui.row, fontSize: 12.5, cursor: 'pointer' }}>
+                <input type="checkbox" data-testid="msm-group-once-each" disabled={!editable} checked={!!f.onceEach} onChange={(e) => setForm({ onceEach: e.target.checked })} /> Each option only once
+              </label>
+            </Field>
+          )}
           {f.choice === 'quantity' && (
             <Field label="How many in the box" hint={HELP.quantity} style={{ marginBottom: 0, maxWidth: 300 }}>
               <NumBox value={f.max} min={1} max={98} disabled={!editable} onChange={(v) => setForm({ max: v, min: v })} />

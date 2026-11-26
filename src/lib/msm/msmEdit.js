@@ -472,10 +472,14 @@ export function categoryRenameChange(ctx, categoryId, label) {
  * what to do about it. Any other words come back as they are.
  */
 export function categoryGuardWords(words) {
-  return String(words || '').includes(CATEGORY_RULE_OLD_WORDS)
-    ? 'Renaming a category needs one database update that has not been run yet (SQL 20261211a). Nothing was changed. Ask ServOS to run it.'
-    : words;
+  const w = String(words || '');
+  if (w.includes(CATEGORY_RULE_OLD_WORDS)) return 'Renaming a category needs one database update that has not been run yet (SQL 20261211a). Nothing was changed. Ask ServOS to run it.';
+  // 5.12.112: the database's words from before 20261213a ran (it knows three kinds of choice).
+  if (w.includes(KINDS_RULE_OLD_WORDS)) return 'Each option only once needs one database update that has not been run yet (SQL 20261213a). Nothing was changed. Ask ServOS to run it.';
+  return words;
 }
+// What msm_changes_guard says to a kind of choice it does not know (20261017c, as run on Ops).
+export const KINDS_RULE_OLD_WORDS = 'Pick one choice, several choices, or the same choice more than once.';
 
 // ── Many at once (the bulk bar) ─────────────────────────────────────────────
 

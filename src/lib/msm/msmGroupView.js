@@ -21,6 +21,7 @@
 import { groupOptionRows } from '../../../supabase/functions/_shared/msmPlan.js';
 import { normName, money2 } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
+import { ONCE_EACH } from '../choiceKinds.js';
 import { ruleSentence } from './msmWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
@@ -147,13 +148,16 @@ export function keptRuleLines(central, groupId, siteName = (l) => l) {
 export function formFromGroup(g) {
   const min = Math.max(0, Number(g?.min) || 0);
   const max = Math.max(0, Number(g?.max ?? 1) || 0);
-  return { mustChoose: min > 0, choice: ['single', 'multiple', 'quantity'].includes(g?.selection_type) ? g.selection_type : (max > 1 ? 'multiple' : 'single'), min, max: max || 1 };
+  // 5.12.112: "each option only once" is a tick under Several choices, never a fourth button.
+  const onceEach = g?.selection_type === ONCE_EACH;
+  return { mustChoose: min > 0, choice: onceEach ? 'multiple' : ['single', 'multiple', 'quantity'].includes(g?.selection_type) ? g.selection_type : (max > 1 ? 'multiple' : 'single'), onceEach, min, max: max || 1 };
 }
 
 /**
  * The form back to a valid rule { min, max, selection_type }:
  *   One choice              up to 1 (exactly 1 when they must choose)
- *   Several choices         up to max (99 = as many as they like); must choose = at least 1 (or min)
+ *   Several choices         up to max (99 = as many as they like); must choose = at least 1 (or min).
+ *                           Ticked "each option only once" it is multiple_once, else multiple.
  *   Same choice more than once   exactly N (Menu Manager's quantity rule)
  */
 export function ruleFromForm(f) {
@@ -162,14 +166,15 @@ export function ruleFromForm(f) {
   const max = Math.max(1, Math.min(99, Math.round(Number(f?.max) || 1)));
   if (choice === 'quantity') return { min: max, max, selection_type: 'quantity' };
   const min = f?.mustChoose ? Math.max(1, Math.min(max, Math.round(Number(f?.min) || 1))) : 0;
-  return { min, max, selection_type: 'multiple' };
+  return { min, max, selection_type: f?.onceEach ? ONCE_EACH : 'multiple' };
 }
 
 /** Plain words for a rule from the form, for the sentence under the boxes. */
 export function formSentence(f) {
   const r = ruleFromForm(f);
   const s = ruleSentence(r.min, r.max);
-  return r.min > 0 ? `${s}. Customers must choose before the till moves on.` : `${s}. Customers can skip it.`;
+  const once = r.selection_type === ONCE_EACH ? ' Each option only once.' : '';
+  return r.min > 0 ? `${s}. Customers must choose before the POS moves on.${once}` : `${s}. Customers can skip it.${once}`;
 }
 
 // ── Putting a group on products ─────────────────────────────────────────────
@@ -236,7 +241,7 @@ export function groupForm(central, groupId) {
 
 /** A blank form for a new group (its options will be on at every site). */
 export function newGroupForm(id) {
-  return { id, isNew: true, name: '', form: { mustChoose: false, choice: 'single', min: 0, max: 1 }, options: [], removed: [] };
+  return { id, isNew: true, name: '', form: { mustChoose: false, choice: 'single', onceEach: false, min: 0, max: 1 }, options: [], removed: [] };
 }
 
 /** A new option line for the form: on at every site of the group menu, following the default price. */

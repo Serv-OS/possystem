@@ -6,6 +6,7 @@ import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
 import { resolveItemPrice } from '../lib/menuPricing';
 import { sizeOrMainOptions, modifierGroupRequired, instructionGroupMin } from '../lib/menuRules';
 import { Icon } from './ServOSIcons';
+import { isOnceEach } from '../lib/choiceKinds';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -543,6 +544,8 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
         const minPicks      = group.min || 0;
         const isQuantityMode = group.selectionType === 'quantity'; // same option multiple times
         const isMulti        = maxPicks > 1;
+        // 5.12.112: several choices, each option only once (lib/choiceKinds.js). A second tap takes it off.
+        const onceEach       = isMulti && isOnceEach(group);
         const cur            = selections[group.id];
         // Total picks across all options
         const totalPicked    = isQuantityMode
@@ -674,8 +677,9 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                   // v5.6.69 — numeric cap. Multi: every tap adds a pick, so the
                   // next one costs (optQty+1) × line qty units; single: switching
                   // here costs qty units (only when not already selected).
+                  // Once each: a picked option's next tap takes it off, so stock never blocks that tap.
                   const optFull = !!(optStock && Number.isFinite(Number(optStock.remaining))
-                    && (isMulti || !isSel)
+                    && ((isMulti && !(onceEach && isSel)) || !isSel)
                     && ((isMulti ? optQty + 1 : 1) * qty > Number(optStock.remaining)));
                   const optDisabled = opt86 || optFull || (atMax && !isSel);
 
@@ -688,7 +692,9 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                       <button
                         onClick={() => {
                           if (opt86 || optFull) return; // 86'd or no stock left for another pick
-                          if (isMulti) {
+                          if (onceEach && isSel) {
+                            onRemoveMulti(group.id, (cur || []).find(o => (o.id || o.label) === id)?._uid);
+                          } else if (isMulti) {
                             if (!atMax) onAddMulti(group.id, { ...opt, id, label: opt.name || opt.label || id }, maxPicks);
                           } else {
                             onToggleSingle(group.id, { ...opt, id, label: opt.name || opt.label || id });
@@ -698,7 +704,7 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                           width:'100%', height:'100%', display:'flex', alignItems:'center', gap:10,
                           padding: optImage ? '8px 14px' : '10px 14px',
                           // reserve the right edge for the absolute qty stepper so a long name never runs under it
-                          paddingRight: isSel && isMulti ? 62 : 14,
+                          paddingRight: isSel && isMulti && !onceEach ? 62 : 14,
                           borderRadius:12,
                           cursor: optDisabled ? 'not-allowed' : 'pointer',
                           fontFamily:'inherit', textAlign:'left', transition:'all .1s',
@@ -730,8 +736,9 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                           )}
                         </div>
                       </button>
-                      {/* Qty badge + minus for multi — absolute, with paddingRight above keeping content clear */}
-                      {isSel && isMulti && (
+                      {/* Qty badge + minus for multi — absolute, with paddingRight above keeping content clear.
+                          Not for a once each group: there is never more than one, and a tap takes it off. */}
+                      {isSel && isMulti && !onceEach && (
                         <div style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', display:'flex', alignItems:'center', gap:4 }}>
                           <button
                             onClick={e => { e.stopPropagation(); const all=(cur||[]).filter(o=>(o.id||o.label)===id); onRemoveMulti(group.id, all[all.length-1]?._uid); }}

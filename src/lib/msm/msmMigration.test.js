@@ -46,7 +46,9 @@ test('kept columns, channels, order type VAT keys, group and option kept keys, c
   assert.deepEqual(arr(between(guard, 'v_tax_keys constant text[] := array[', ']')), [...ORDER_TYPE_TAX_KEYS]);
   assert.deepEqual(arr(between(guard, 'v_group_kept  constant text[] := array[', ']')), [...GROUP_KEPT_COLUMNS]);
   assert.deepEqual(arr(between(guard, 'v_option_kept constant text[] := array[', ']')), [...OPTION_KEPT_KEYS]);
-  assert.deepEqual(arr(between(guard, 'v_selection   constant text[] := array[', ']')), [...SELECTION_TYPES]);
+  // 5.12.112: the file as Ops ran it holds the three kinds of then. multiple_once is added to the
+  // live functions by 20261213a (pinned by src/lib/optionGroupOnceEach.test.js).
+  assert.deepEqual(arr(between(guard, 'v_selection   constant text[] := array[', ']')), SELECTION_TYPES.filter((k) => k !== 'multiple_once'));
   const imp = newest('msm_import_commit');
   assert.deepEqual(arr(between(imp, "where k <> all (array['cat'", ']')).length + 1, KEPT_COLUMNS.length, 'the import checks the same kept list');
   assert.deepEqual(['cat', ...arr(between(imp, "where k <> all (array['cat'", ']'))], [...KEPT_COLUMNS]);
