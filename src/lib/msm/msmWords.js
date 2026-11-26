@@ -150,7 +150,7 @@ export function keptValueWords(col, v, opts = {}) {
 }
 
 // The kinds of choice an option group asks (modifier_groups.selection_type).
-export const CHOICE_WORDS = Object.freeze({ single: 'One choice', multiple: 'Several choices', quantity: 'Same choice more than once' });
+export const CHOICE_WORDS = Object.freeze({ single: 'One choice', multiple: 'Several choices', multiple_once: 'Several choices, each option only once', quantity: 'Same choice more than once' });
 
 const FIELD = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',

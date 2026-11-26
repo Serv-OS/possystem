@@ -30,6 +30,7 @@ import { useKioskKeyboardLift, kioskRevealOnFocus } from '../../lib/kioskKeyboar
 import { kcalWords, mayContainWords, kcalNote, ALLERGEN_CHECK_KEY } from '../../lib/menuStockFacts';
 import { KioskCloseButton, KioskPhoto } from './KioskChrome';
 import { MinusIcon, PlusIcon, TickIcon, WarningIcon } from './KioskIcons';
+import { isOnceEach } from '../../lib/choiceKinds';
 
 export default function KioskItemSheet(props) {
   const {
@@ -405,7 +406,7 @@ function OptionPill({ g, opt, ...props }) {
   );
 
   // Several picks allowed and at least one made: the pill becomes a stepper chip.
-  if (!g._isSingle && st.count > 0) {
+  if (!g._isSingle && !isOnceEach(g) && st.count > 0) {   // 5.12.112: once each stays a button, a tap takes it off
     return (
       <div style={{ ...pillBase(true, false), padding: '4px 6px', gap: 14, cursor: 'default' }}>
         <SmallStep label={`${t('k2.common.less')}: ${optionName(g, opt)}`} onClick={() => props.decOption(g, opt.id)}>
@@ -435,7 +436,7 @@ function OptionCard({ g, opt, ...props }) {
   const st = optionState(g, opt, props);
   const eff = props.resolveOpt(opt);
   const price = priceText(opt, false);
-  const stepper = !g._isSingle && st.count > 0;
+  const stepper = !g._isSingle && !isOnceEach(g) && st.count > 0;   // 5.12.112: once each stays a button
   const tap = st.blocked || stepper ? undefined : () => props.incOption(g, opt.id);
   return (
     <div
