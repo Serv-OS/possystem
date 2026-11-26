@@ -245,6 +245,17 @@ export function newOptionForm(central, { id, name = '', price = '0.00', product_
 }
 
 /**
+ * The price an option starts at when it is made from an existing product: the product's own group
+ * price, as Menu Manager does when a sub item is picked (5.12.111). Peter, 26 Nov 2026: "its
+ * populating as zero rather than inheriting from the product". Always two decimals, never minus,
+ * and 0.00 when the product has no usable price. It is only where the box starts: it can be typed over.
+ */
+export function optionPriceFromProduct(product) {
+  const n = Number(product?.default_price);
+  return Number.isFinite(n) && n > 0 ? n.toFixed(2) : '0.00';
+}
+
+/**
  * The changes the form stages, in an order the database accepts (a group before its options, a
  * sub item before the option that points at it, an option before its site rows).
  *   ctx      { eff } (and live, unused here)

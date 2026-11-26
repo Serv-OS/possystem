@@ -20,7 +20,7 @@ import { useMemo, useState } from 'react';
 import * as edit from '../../../lib/msm/msmGroupEdit';
 import {
   groupForm, newGroupForm, newOptionForm, groupSaveChanges, addGroupWithSites, copyGroupWithSites, keptRuleLines, formSentence,
-  optionsOf, optionPriceWords, groupSiteIds, groupPendingSiteIds,
+  optionsOf, optionPriceWords, groupSiteIds, groupPendingSiteIds, optionPriceFromProduct,
 } from '../../../lib/msm/msmGroupView';
 import { applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { summarise, siteList } from '../../../lib/msm/msmSummary';
@@ -264,7 +264,7 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
             <>
               <Btn small kind="soft" onClick={() => addOpt(newOptionForm(eff, { id: newId(), name: '', price: '0.00' }))}>+ Add option</Btn>
               <Btn small kind="soft" onClick={() => setNewSub({})}>+ New sub item</Btn>
-              <ExistingProductPicker eff={eff} onPick={(p) => addOpt(newOptionForm(eff, { id: newId(), name: p.menu_name || p.name, price: '0.00', product_id: p.id }))} />
+              <ExistingProductPicker eff={eff} onPick={(p) => addOpt(newOptionForm(eff, { id: newId(), name: p.menu_name || p.name, price: optionPriceFromProduct(p), product_id: p.id }))} />
               {draft.options.length > 1 && <SetEveryPrice onApply={setEvery} />}
             </>
           )}
@@ -457,7 +457,7 @@ function ExistingProductPicker({ eff, onPick }) {
     <Popover label="+ From an existing product" width={320}>
       {(close) => (
         <div>
-          <div style={{ ...ui.sub, marginBottom: 6 }}>Pick a product to be an option. It becomes a sub item here; its own price when sold on its own does not change.</div>
+          <div style={{ ...ui.sub, marginBottom: 6 }}>Pick a product to be an option. It becomes a sub item here and starts at the product's price, which you can change. Its own price when sold on its own does not change.</div>
           <input autoFocus aria-label="Find a product" style={{ ...ui.input, marginBottom: 8 }} placeholder="Find a product" value={q} onChange={(e) => setQ(e.target.value)} />
           <div style={{ maxHeight: 240, overflowY: 'auto' }}>
             {!list.length && <div style={ui.sub}>No products match.</div>}
@@ -465,6 +465,7 @@ function ExistingProductPicker({ eff, onPick }) {
               <button key={p.id} type="button" onClick={() => { onPick(p); close(); }}
                 style={{ display: 'flex', width: '100%', gap: 8, alignItems: 'center', textAlign: 'left', padding: '6px 8px', borderRadius: 8, border: 'none', background: 'transparent', color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
                 <span style={{ flex: 1 }}>{p.menu_name || p.name}</span>
+                <span style={{ ...ui.sub, fontSize: 12 }}>{money(Number(optionPriceFromProduct(p)))}</span>
                 {p.type === 'subitem' && <Pill tone="blue">Sub item</Pill>}
               </button>
             ))}

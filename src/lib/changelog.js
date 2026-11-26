@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.111',
+    date: '26 Nov 2026',
+    items: [
+      'Multi site menu, Option groups: an option made with "From an existing product" now starts at that product\'s own price, not 0.00 (Peter, 26 Nov 2026: "its populating as zero rather than inheriting from the product").',
+      'This is the same as Menu Manager, where a sub item picked as an option takes its price.',
+      'The picker shows each product\'s price. The price is only where the box starts: you can still type another one.',
+    ],
+  },
+  {
     v: '5.12.110',
     date: '26 Nov 2026',
     items: [
