@@ -33,6 +33,27 @@ export function plateCostMap(rows) {
 }
 
 /**
+ * Map(menu item id -> the Target GP % of the recipe linked to it), from stock_plate_costs rows and
+ * that site's recipe rows ({ id, gp_target_pct }). A product whose recipe has no target is left
+ * out: it has no target, and nothing is put in its place (5.12.105).
+ */
+export function plateTargetMap(rows, recipeRows) {
+  const byRecipe = new Map();
+  for (const r of recipeRows || []) {
+    if (!r || r.id == null || r.gp_target_pct == null || r.gp_target_pct === '') continue;
+    const n = Number(r.gp_target_pct);
+    if (Number.isFinite(n) && n >= 0 && n <= 100) byRecipe.set(String(r.id), n);
+  }
+  const out = new Map();
+  for (const r of rows || []) {
+    if (!r || r.menu_item_id == null || r.menu_item_id === '' || r.site_recipe_id == null) continue;
+    const t = byRecipe.get(String(r.site_recipe_id));
+    if (t != null) out.set(String(r.menu_item_id), t);
+  }
+  return out;
+}
+
+/**
  * Every page of a site's plate costs, through api.plateCosts(loc, after) until `next` is null.
  * A failed page is a failure (never part of a menu as if it were all of it); a database without
  * the function says needsUpdate.
