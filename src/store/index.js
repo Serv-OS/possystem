@@ -74,6 +74,7 @@ import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
 import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLineUnitPrice } from '../lib/tillLine';
+import { isSoldAs, notSoldAsWords } from '../lib/soldAs.js';
 import { logActivity } from '../lib/activity';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
@@ -3192,6 +3193,15 @@ export const useStore = create((set, get) => ({
     // multi site menu's "no price" rule). Paid options can still price it.
     if (refusesNoPriceLine(item, _currentOrderType, get().activeMenuId, price)) {
       get().showToast?.(`${opts.displayName || item.name} has no price set. Set one in Back Office before selling it.`, 'error');
+      return null;
+    }
+    // 5.12.115 (lib/soldAs.js; Peter, 26 Nov 2026: wine is dine in only): a product is never added
+    // to an order of a type it is not sold on, whichever way it was asked for (a tile, a scan, a
+    // search, the assistant). A floor table is always dine in. A booking's pre ordered line is
+    // what the guest already chose and paid towards, so it is left alone.
+    const _soldAsType = activeTableId ? 'dine-in' : _currentOrderType;
+    if (!opts.fromPreorder && !isSoldAs(item, _soldAsType, get().menuItems)) {
+      get().showToast?.(notSoldAsWords({ ...item, name: opts.displayName || item.name, menuName: null }, _soldAsType), 'error');
       return null;
     }
     const newItem = {
