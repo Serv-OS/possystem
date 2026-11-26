@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.113',
+    date: '26 Nov 2026',
+    items: [
+      'POS: a category that only holds sub items not sold on their own is now really left off the category list (Peter, 26 Nov 2026, Mozz Sandy: "Pizza Options, 0 items" was still showing).',
+      'The rule for this came in with 5.12.31 and worked on the bar screen, the phone POS, the kiosk and online. On the main POS it never did: the POS took those sub items out of its list before asking the rule, so the rule saw a category with nothing in it and left it showing.',
+      'A category with nothing in it at all still shows, as before.',
+    ],
+  },
+  {
     v: '5.12.112',
     date: '26 Nov 2026',
     items: [

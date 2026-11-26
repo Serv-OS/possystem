@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isOptionOnlyItem, optionOnlyCategoryIds } from './menuRules.js';
 
 const SRC = new URL('../', import.meta.url);
 const read = (rel) => fs.readFileSync(new URL(rel, SRC), 'utf8');
@@ -46,12 +47,32 @@ test('nobody writes the "option only sub item" rule again: they call isOptionOnl
   }
 });
 
+// 5.12.113: what the till saw. The same category, the rule asked twice: with the till's product
+// list (sub items already gone) it hides nothing; with the store's rows it hides the category.
+test('the rule needs the rows with the sub items still in them (the Mozz Sandy fault)', () => {
+  const cats = [{ id: 'pizza' }, { id: 'opts' }];
+  const rows = [
+    { id: 'p1', type: 'simple', cat: 'pizza' },
+    { id: 's1', type: 'subitem', soldAlone: false, cat: 'opts' },
+    { id: 's2', type: 'subitem', soldAlone: false, cat: 'opts' },
+  ];
+  const tillProducts = rows.filter((i) => !isOptionOnlyItem(i));
+  assert.deepEqual([...optionOnlyCategoryIds(cats, tillProducts)], [], 'the fault: nothing is hidden');
+  assert.deepEqual([...optionOnlyCategoryIds(cats, rows)], ['opts'], 'the fix: the category is hidden');
+});
+
 // 5.12.31 (Peter, 2 Nov 2026): a category holding only option only sub items is not on the
 // till's strip, the bar's tabs or the phone's list (rule 9). The kiosk (kioskRailRoots,
 // kioskLegacyCategoryShown), online, QR and catering already drop a section with no product.
 test('the till, bar and phone leave out a category that holds only option only sub items (rule 9)', () => {
   const till = read('surfaces/POSSurface.jsx');
-  assert.match(till, /optionOnlyCategoryIds\(menuCategories, MENU_ITEMS\)/);
+  // 5.12.113: the rows the rule is handed must still HOLD the option only sub items. The till's
+  // MENU_ITEMS has had them filtered out, and this test once pinned that very mistake, so the
+  // category showed with "0 items" (Mozz Sandy, Pizza Options, 26 Nov 2026).
+  assert.match(till, /optionOnlyCategoryIds\(menuCategories, rawItems\)/);
+  assert.doesNotMatch(till, /optionOnlyCategoryIds\(menuCategories, MENU_ITEMS\)/);
+  assert.match(till, /const rawItems = storeMenuItems \|\| SEED_MENU_ITEMS;/, 'rawItems is the store list, nothing taken out');
+  assert.match(till, /const MENU_ITEMS = useMemo\(\(\) => rawItems\s+\.filter\(i => !isOptionOnlyItem\(i\)\)/, 'MENU_ITEMS has them taken out');
   assert.match(till, /!c\.parentId && !c\.isSpecial && !optionOnlyCats\.has\(c\.id\)/, 'root strip');
   assert.match(till, /c\.parentId === cat && !optionOnlyCats\.has\(c\.id\)/, 'sub category strip');
   const bar = read('surfaces/BarSurface.jsx');
