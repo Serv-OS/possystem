@@ -65,6 +65,8 @@ import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/r
 import { stockApi } from '../../lib/stock/stockApi';
 import { readPlateCostMap, costOrFallback } from '../../lib/stock/plateCostsRead';
 import { resolveTaxRate, netOf, formatRateLabel } from '../../lib/tax';
+import { profileLabel, rateLabel, taxRuleFor, taxRuleWords, venueRunsOnProfiles, productsOnOldRate } from '../../lib/taxProfileWords';
+import { isLegacyMirror } from '../../lib/taxCompute';
 import { productsWithoutOwnRate } from '../../lib/venueTaxRates';
 import { planBulkTax, bulkTaxWords, isSharedCopy, taxRefreshed } from '../../lib/bulkTax';
 import { isOptionOnlyItem, moveMainProductOptions, resolveSoldAlone } from '../../lib/menuRules';
@@ -321,7 +323,7 @@ function useItemCodes() {
 }
 
 function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverrides = false }) {
-  const { taxRates: allTaxRates, taxProfiles } = useStore();
+  const { taxRates: allTaxRates, taxProfiles, venueDefaultTaxProfileId, menuCategories } = useStore();
   // 5.12.57: a US venue's tax words (its menu is called Tax; it has no VAT). UK words unchanged.
   const tw = activeTaxWords();
   const taxMenu = tw.us ? 'Tax' : 'Tax & VAT';
@@ -356,36 +358,50 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
   // 27 Sep 2026 (the tax root cause port): a product with no rate is charged the venue's DEFAULT
   // rate (lib/tax.js resolveTaxRate, v5.5.857), on every till and path. "No tax" said the opposite.
   const venueDefault = taxRates.find(r => (r.isDefault || r.is_default) && r.active !== false);
-  const noneOption = <option value="">{venueDefault ? `Venue default (${venueDefault.name})` : 'Venue default (none set: records no tax)'}</option>;
+  const noneOptionWords = (onProfiles) => (onProfiles
+    ? 'None: follow the tax profile'
+    : venueDefault ? `Venue default (${venueDefault.name})` : 'Venue default (none set: records no tax)');
   const copyNote = isSharedCopy(item);
   // 27 Sep 2026: a rate this product holds that is not one of this venue's live rates (another
   // venue's, or switched off) is shown as such, never silently as the first option.
   const notOffered = (id) => (id && !taxRates.some(r => r.id === id)
     ? <option value={id} disabled>Not one of this venue's live rates: pick one</option>
     : null);
-  const rateOptions = taxRates.map(r => {
-    const pct = (parseFloat(r.rate) * 100).toFixed(1).replace('.0','');
-    return <option key={r.id} value={r.id}>{r.name} ({pct}% {r.type === 'inclusive' ? 'incl.' : 'excl.'})</option>;
-  });
+  const rateOptions = taxRates.map(r => <option key={r.id} value={r.id}>{rateLabel(r)}</option>);
 
   const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
+  // 5.12.99 (Peter, Mozz Sandy, 25 Nov 2026): the tab says what this product really charges,
+  // by the engine's own order (lib/taxProfileWords.js), and every picker shows its rate.
+  const onProfiles = venueRunsOnProfiles({ taxProfiles: activeProfiles, taxRates, venueDefaultProfileId: venueDefaultTaxProfileId, isMirror: isLegacyMirror });
+  const catId = item.categoryId ?? item.cat ?? (Array.isArray(item.cats) && item.cats.length ? item.cats[0] : null);
+  const category = (menuCategories || []).find(c => c.id === catId) || null;
+  const ruleArgs = { item, category, taxRates, taxProfiles: activeProfiles, venueDefaultProfileId: venueDefaultTaxProfileId };
+  const rule = taxRuleFor(ruleArgs);
+  const followed = taxRuleFor({ ...ruleArgs, skipOwn: true });
+  const ownProfile = rule.from === 'product' && rule.kind === 'profile';
 
   // Multi site menu: the rate and the order type overrides are locked separately, so a site that
   // keeps its own VAT by order type (Leeds and its 3 donuts) can still change it here (design 3.2).
   return (
     <div>
       <MsmLocked on={lockRate} label={tw.Tax}>
-      {/* v5.7.33: tax PROFILE override — setup only, nothing charges with it yet */}
+      {/* 5.12.99: what this product charges, in one line, before any picker. */}
+      {activeProfiles.length > 0 && (
+        <div style={{ marginBottom:14, padding:'9px 11px', borderRadius:9, background:'var(--bg3)', border:'1px solid var(--bdr)', fontSize:12, color:'var(--t2)', lineHeight:1.6 }}>
+          <strong style={{ color:'var(--t1)' }}>This product charges:</strong> {taxRuleWords(rule)}
+        </div>
+      )}
+      {/* The product's own tax profile. It comes before everything else on the product. */}
       {activeProfiles.length > 0 && (
         <div style={{ marginBottom:16 }}>
           <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>Tax profile (override)</span>
           <select value={item.taxProfileId || ''} onChange={e => setTaxProfile(e.target.value)}
             style={{ width:'100%', padding:'8px 11px', borderRadius:9, border:'1.5px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
-            <option value="">Inherit (category, then venue default)</option>
-            {activeProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            <option value="">{followed.kind === 'none' ? 'None of its own (no tax set anywhere)' : `None of its own: follows ${followed.label}`}</option>
+            {activeProfiles.map(p => <option key={p.id} value={p.id}>{profileLabel(p)}</option>)}
           </select>
           <div style={{ fontSize:11, color:'var(--t4)', marginTop:5, lineHeight:1.6 }}>
-            Profiles are the new way to set up tax ({taxMenu} → Tax profiles). Until the calculation switchover, the legacy rate below is what actually charges.
+            A profile picked here is what this product charges, before its category and the venue default. Profiles are made in {taxMenu} → Tax profiles.
           </div>
         </div>
       )}
@@ -399,13 +415,17 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
       )}
 
       <div style={{ marginBottom:16 }}>
-        <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>Default tax rate</span>
+        <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>{onProfiles ? 'Old style rate' : 'Default tax rate'}</span>
         <select value={item.taxRateId || ''} onChange={e => setTaxRate(e.target.value)}
           style={{ width:'100%', padding:'8px 11px', borderRadius:9, border:'1.5px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
-          {noneOption}{notOffered(item.taxRateId)}{rateOptions}
+          <option value="">{noneOptionWords(onProfiles)}</option>{notOffered(item.taxRateId)}{rateOptions}
         </select>
         <div style={{ fontSize:11, color:'var(--t4)', marginTop:5, lineHeight:1.6 }}>
-          Applied to all order types unless overridden below.
+          {!onProfiles
+            ? 'Applied to all order types unless overridden below.'
+            : ownProfile
+              ? 'Not used: this product has its own tax profile, which comes first.'
+              : 'This venue charges through tax profiles. A rate picked here comes BEFORE the category and venue profiles, so leave it on None unless this product must not follow them.'}
         </div>
       </div>
       </MsmLocked>
@@ -419,6 +439,11 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
         <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.6 }}>
           Override the tax rate for specific order types. {tw.us ? 'For example, set packaged food to go to Tax Exempt.' : 'Common UK use: set takeaway to Zero Rate for food items.'}{' '}
           Drive thru, collection and online collection use the takeaway override unless they have their own.
+          {onProfiles && (
+            <span style={{ display:'block', marginTop:6, color:'var(--t3)' }}>
+              These boxes take old style rates only{ownProfile ? ', and are not used while this product has its own tax profile' : ''}. With tax profiles, a different tax for an order type is set inside the profile: {taxMenu} → Tax profiles → the line → Order types.
+            </span>
+          )}
         </div>
         {ORDER_TYPES_TAX.map(ot => (
           <MsmLocked key={ot} on={lockOverrides && OWNED_TAX_KEYS.includes(ot)} label={`${ORDER_TYPE_TAX_LABEL[ot] || 'Order type'} ${tw.tax}`}>
@@ -1988,7 +2013,13 @@ function ItemsLibrary() {
           const loc = tabVenue();
           const locKey = loc || 'this-venue';
           const taggedOwn = ownTaxRates.map(r => ({ ...r, locationId: locKey }));
-          const noRate = productsWithoutOwnRate(menuItems, taggedOwn, locKey);
+          // 5.12.99 (Peter, Mozz Sandy, 25 Nov 2026): a venue whose default is a real tax profile
+          // charges every product with no rate of its own through it. "14 products have no tax
+          // rate" was untrue there, and Apply would have put an old style rate (7.45%) in front of
+          // the profile (8.45%) on every one. Nothing to fill, so nothing is offered.
+          const onProfiles = venueRunsOnProfiles({ taxProfiles: (taxProfiles || []).filter(p => p.active !== false), taxRates: taggedOwn, venueDefaultProfileId: venueDefaultTaxProfileId, isMirror: isLegacyMirror });
+          const found = productsWithoutOwnRate(menuItems, taggedOwn, locKey);
+          const noRate = onProfiles ? { ...found, all: [] } : found;
           // A venue whose tax is set up as tax profiles charges through them (a US venue is never
           // seeded with rates on purpose), so "no rates" is not a fault there.
           const hasProfiles = (taxProfiles || []).length > 0 || !!venueDefaultTaxProfileId;
@@ -2240,6 +2271,19 @@ function ItemsLibrary() {
           const activeItems = menuItems.filter(i => !i.archived);
           const missingProfile = activeItems.filter(i => !i.taxProfileId);
           if (!activeItems.length) return null;
+          // 5.12.99: say what covers the rest, with its rate, and name any product whose old style
+          // rate sits in front of the profiles (the one way a profile venue undercharges).
+          const venueProfile = profiles.find(p => p.id === venueDefaultTaxProfileId) || null;
+          const coverWords = venueProfile
+            ? `Items with no profile of their own follow their category, then the venue default: ${profileLabel(venueProfile)}.`
+            : 'Categories and the venue default cover items with no profile of their own.';
+          const stripOnProfiles = venueRunsOnProfiles({ taxProfiles: profiles, taxRates: ownTaxRates, venueDefaultProfileId: venueDefaultTaxProfileId, isMirror: isLegacyMirror });
+          const onOldRate = stripOnProfiles ? productsOnOldRate(activeItems, ownTaxRates) : [];
+          const oldRateNote = onOldRate.length > 0 && (
+            <span style={{ fontSize:11, color:'var(--amber, #F5A623)', flexBasis:'100%' }}>
+              {onOldRate.length} product{onOldRate.length === 1 ? ' holds' : 's hold'} an old style rate, which comes before the category and venue profiles: {onOldRate.slice(0, 8).map(i => `${i.menuName || i.name || 'Item'} (${rateLabel(ownTaxRates.find(r => r.id === i.taxRateId))})`).join(', ')}{onOldRate.length > 8 ? ` and ${onOldRate.length - 8} more` : ''}. Open the product, Tax, and set Old style rate to None to follow the profiles.
+            </span>
+          );
           // 27 Sep 2026: bounded, awaited, only the profile column, compare and set per product,
           // and one honest summary ("set on 428, 3 skipped: changed elsewhere").
           const apply = async (targets, label, onlyMissing) => {
@@ -2258,7 +2302,7 @@ function ItemsLibrary() {
               <span style={{ fontSize:12, fontWeight:700, color:'var(--t2)' }}>Tax profile quick apply</span>
               <select value={bulkProfileId} onChange={e=>setBulkProfileId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
                 <option value="">— pick a profile —</option>
-                {profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                {profiles.map(p=><option key={p.id} value={p.id}>{profileLabel(p)}</option>)}
               </select>
               <button disabled={!bulkProfileId || !missingProfile.length}
                 onClick={()=>apply(missingProfile, 'items without a profile', true)}
@@ -2266,11 +2310,12 @@ function ItemsLibrary() {
                 Fill {missingProfile.length} without one
               </button>
               <button disabled={!bulkProfileId}
-                onClick={()=>{ if (window.confirm(`Set this profile on ALL ${activeItems.length} items? Existing item profiles are replaced. Per-item legacy tax settings still take priority where set.`)) apply(activeItems, 'all items', false); }}
+                onClick={()=>{ if (window.confirm(`Set this profile on ALL ${activeItems.length} items? Existing item profiles are replaced. A product's own profile comes before any old style rate on it.`)) apply(activeItems, 'all items', false); }}
                 style={{ padding:'6px 14px', borderRadius:8, cursor:bulkProfileId?'pointer':'not-allowed', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:bulkProfileId?'var(--t1)':'var(--t4)', fontSize:12, fontWeight:800 }}>
                 Apply to all {activeItems.length}
               </button>
-              <span style={{ fontSize:10.5, color:'var(--t4)' }}>Categories and the venue default cover items with no profile of their own.</span>
+              <span style={{ fontSize:10.5, color:'var(--t4)' }}>{coverWords}</span>
+              {oldRateNote}
             </div>
           );
         })()}
@@ -4470,8 +4515,9 @@ function CatModal({ cat, roots, onSave, onDelete, onClose }) {
   const [opened] = useState(() => categoryFormOf(cat));
   const [f, setF] = useState(opened);
   const set = (k,v) => setF(p=>({...p,[k]:v}));
-  const { taxProfiles } = useStore();
+  const { taxProfiles, venueDefaultTaxProfileId } = useStore();
   const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
+  const venueProfile = activeProfiles.find(p => p.id === venueDefaultTaxProfileId) || null;
   const COURSES = [{v:0,l:'Immediate',hint:'Drinks, bread — fires instantly with order'},{v:1,l:'Course 1',hint:'Starters / first plates'},{v:2,l:'Course 2',hint:'Mains'},{v:3,l:'Course 3',hint:'Desserts'}];
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -4507,11 +4553,11 @@ function CatModal({ cat, roots, onSave, onDelete, onClose }) {
           {activeProfiles.length > 0 && (
             <div><span style={lbl}>Tax profile</span>
               <select value={f.taxProfileId} onChange={e=>set('taxProfileId',e.target.value)} style={{ ...inp, cursor:'pointer' }}>
-                <option value="">Inherit venue default</option>
-                {activeProfiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                <option value="">{venueProfile ? `None of its own: follows ${profileLabel(venueProfile)}` : 'Inherit venue default'}</option>
+                {activeProfiles.map(p=><option key={p.id} value={p.id}>{profileLabel(p)}</option>)}
               </select>
               <div style={{ fontSize:10, color:'var(--t4)', marginTop:4, lineHeight:1.5 }}>
-                Items in this category use this profile unless the item has its own override. Tills switch to profile based calculation in an upcoming update.
+                Items in this category charge through this profile unless the item has its own profile or its own rate.
               </div>
             </div>
           )}
