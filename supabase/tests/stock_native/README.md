@@ -48,6 +48,13 @@ node supabase/tests/stock_native/run.mjs --drop4b           # 50 sites by 500 it
 STOCKN_DEMO=... STOCKN_CHECKS=... node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a --align --drop4b
 node --test src/lib/stock/stockNative4bMigration.test.js     # the CI text test of 4b, its rollback and 20261029b
 node --test src/lib/stock/storagePolicyGuard.test.js         # no table rule may call a function its logins cannot run (23 Oct)
+
+
+# Stock import: unit bridges (20261208a, release 5.12.100), on the rig's Drop 3 database (the import
+# functions there are byte for byte the live ones)
+STOCKN_KEEP=1 STOCKN_STOP_AT=40 node supabase/tests/stock_native/run.mjs --drop3 --quick   # prints: kept: psql -h <dir> -p <port> ...
+zsh supabase/tests/stock_native/unit_bridges_proof.sh <dir> <port>    # 36 checks: paste, check screen, commit, again, change, rollback
+node --test src/lib/stock/stockImportUnitBridgesMigration.test.js    # the CI text test of 20261208a and its rollback
 ```
 
 Exit code 0 only when every check holds. Needs `/opt/homebrew/bin` (initdb, pg_ctl, postgres, psql,

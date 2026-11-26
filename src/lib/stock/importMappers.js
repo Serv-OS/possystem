@@ -7,6 +7,8 @@
 //   supplier items (a supplier's pack and price of an item), pars and, from Drop 2 (migration
 //   20261025a, contract 3.4), recipes: one ingredient a line in the file, grouped here into one
 //   staged row per recipe with its lines, kind, yield, made item, sites and till product.
+//   5.12.100 (migration 20261208a): a sixth kind, unit bridges: "this much of one unit of an item equals
+//   that much of another" (30 oz = 40 fl oz), one bridge a line: Item, This much, Unit, Equals, Equal unit.
 //   Nothing here writes or decides: the database checks every staged row (new, change, same, skip
 //   or problem) and the check screen shows its answer. These rules only read the file, match its
 //   headings to our fields, turn text into values ('1.38', '6 x 1L', 'Mon-Fri', '2pm') and say in
@@ -119,13 +121,15 @@ export const CSV_COLUMNS = Object.freeze({
   supplier_items: Object.freeze({ required: ['supplier', 'item'], oneOf: ['pack_price', 'price_with_vat'], fields: ['supplier', 'item', 'item_sku', 'supplier_sku', 'supplier_product_name', 'pack_description', 'pack_size', 'pack_qty', 'inner_qty', 'inner_unit', 'base_unit', 'pack_price', 'price_with_vat', 'currency', 'purchase_vat', 'includes_vat', 'site', 'sites'] }),
   pars: Object.freeze({ required: ['item', 'site'], oneOf: ['par_level', 'reorder_point', 'min_level'], fields: ['item', 'item_sku', 'site', 'par_level', 'reorder_point', 'min_level'] }),
   recipes: Object.freeze({ required: ['name', 'ingredient', 'qty', 'unit'], fields: ['name', 'kind', 'type', 'ingredient', 'item_sku', 'qty', 'unit', 'usable_pct', 'order_types', 'yield_qty', 'yield_unit', 'made_item', 'sites', 'till_product'] }),
+  // 5.12.100: a unit bridge of an item: this much of one unit = that much of another (weight, volume or count)
+  bridges: Object.freeze({ required: ['from_qty', 'from_unit', 'to_qty', 'to_unit'], oneOf: ['item', 'item_sku'], fields: ['item', 'item_sku', 'from_qty', 'from_unit', 'to_qty', 'to_unit'] }),
 });
 
-export const IMPORT_KINDS = Object.freeze(['items', 'suppliers', 'supplier_items', 'pars', 'recipes']);
+export const IMPORT_KINDS = Object.freeze(['items', 'suppliers', 'supplier_items', 'pars', 'recipes', 'bridges']);
 
 /** The staged row kind of each file kind (stock_co_import_rows.kind). */
-export const STAGE_KIND = Object.freeze({ items: 'item', suppliers: 'supplier', supplier_items: 'supplier_item', pars: 'par', recipes: 'recipe' });
-const FILE_KIND = Object.freeze({ item: 'items', supplier: 'suppliers', supplier_item: 'supplier_items', par: 'pars', recipe: 'recipes' });
+export const STAGE_KIND = Object.freeze({ items: 'item', suppliers: 'supplier', supplier_items: 'supplier_item', pars: 'par', recipes: 'recipe', bridges: 'bridge' });
+const FILE_KIND = Object.freeze({ item: 'items', supplier: 'suppliers', supplier_item: 'supplier_items', par: 'pars', recipe: 'recipes', bridge: 'bridges' });
 const fileKind = (k) => (CSV_COLUMNS[k] ? k : FILE_KIND[k] || null);
 
 /** Our field names in plain words, for 'These columns are missing: Name, Price.' */
@@ -141,6 +145,7 @@ export const FIELD_WORDS = Object.freeze({
   reorder_point: 'Reorder at', min_level: 'Min',
   kind: 'Kind', ingredient: 'Ingredient', qty: 'Amount', unit: 'Unit', usable_pct: 'Usable %', order_types: 'Order types',
   yield_qty: 'Yield', yield_unit: 'Yield unit', made_item: 'Made item', till_product: 'Till product',
+  from_qty: 'This much', from_unit: 'Unit', to_qty: 'Equals', to_unit: 'Equal unit',
 });
 
 /**
@@ -241,6 +246,15 @@ const CSV_ALIASES = {
     made_item: ['made item', 'output item', 'makes item', 'produces'],
     sites: ['sites', 'at sites', 'locations'],
     till_product: ['till product', 'menu item', 'pos item', 'sold as', 'product'],
+  },
+  // 5.12.100: 'Item, This much, Unit, Equals, Equal unit' (30, oz, 40, fl oz): the two units of one line
+  bridges: {
+    item: ['item', 'item name', 'stock item', 'name'],
+    item_sku: ['item sku', 'sku', 'item code'],
+    from_qty: ['this much', 'from qty', 'from amount', 'from quantity', 'from'],
+    from_unit: ['unit', 'from unit', 'of unit'],
+    to_qty: ['equals', 'equals this much', 'to qty', 'to amount', 'to quantity', 'to'],
+    to_unit: ['equal unit', 'equals unit', 'to unit', 'of equal unit'],
   },
 };
 
@@ -433,6 +447,7 @@ function missingOf(kind, at) {
 }
 
 const RECIPE_MARKS = ['recipe', 'recipename', 'ingredient', 'ingredients', 'ingredientname', 'yield', 'portions', 'method', 'menuitem', 'prepname'];
+const BRIDGE_MARKS = ['thismuch', 'equals', 'equalsthismuch', 'equalunit', 'equalsunit', 'fromqty', 'toqty', 'fromunit', 'tounit', 'fromamount', 'toamount'];
 const SUPPLIER_DETAIL_MARKS = ['email', 'orderemail', 'vendoremail', 'supplieremail', 'phone', 'vendorphone', 'contact', 'contactname', 'accountnumber',
   'deliverydays', 'cutoff', 'cutofftime', 'paymentterms', 'minimumorder', 'minorder', 'minordervalue', 'minimumordervalue', 'orderbytime'];
 const ITEM_MARKS = ['unit', 'baseunit', 'uom', 'uomname', 'unitofmeasure', 'category', 'categoryname', 'sku', 'barcode', 'price', 'packprice', 'packsize',
@@ -450,6 +465,8 @@ export function fileKinds(source, headerRow) {
   const head = (headerRow || []).map(headKey);
   const keys = new Set(head);
   if (RECIPE_MARKS.some((m) => keys.has(m))) return ['recipes'];
+  // 5.12.100: a unit bridge file names two amounts of one item ('This much' and 'Equals'): bridges only
+  if (BRIDGE_MARKS.filter((m) => keys.has(m)).length >= 2) return ['bridges'];
   const aliases = aliasesOf(source);
   if (SUPPLIER_DETAIL_MARKS.some((m) => keys.has(m)) && !ITEM_MARKS.some((m) => keys.has(m))) return ['suppliers'];
   const out = [];
@@ -476,6 +493,7 @@ function hasContent(kind, r) {
   if (kind === 'supplier_items') return !!(r.supplier && r.item);
   if (kind === 'pars') return !!(r.item && r.site && (r.par_level || r.reorder_point || r.min_level));
   if (kind === 'recipes') return !!(r.name && (r.ingredient || r.yield_qty || r.made_item || r.till_product));
+  if (kind === 'bridges') return !!(r.item || r.item_sku);
   return !!r.name;
 }
 
@@ -496,6 +514,8 @@ function dedupe(kind, rows, { perSite = false } = {}) {
       : `${low(r.supplier)}|${low(r.item)}|${low(r.item_sku)}|${low(r.pack_size)}|${low(r.pack_qty)}|${low(r.inner_qty)}|${low(r.inner_unit)}|${siteOf(r)}`),
     pars: (r) => `${low(r.item)}|${low(r.item_sku)}|${low(r.site)}`,
     recipes: (r) => low(r.name),
+    // one bridge of an item per pair of units, written either way round
+    bridges: (r) => `${low(r.item)}|${low(r.item_sku)}|${[unitOf(r.from_unit) || low(r.from_unit), unitOf(r.to_unit) || low(r.to_unit)].sort().join('=')}`,
   }[kind];
   const collects = kind === 'items' || kind === 'suppliers';
   const byKey = new Map();
@@ -867,7 +887,7 @@ export function sitesOf(cell, lookup) {
  * imports in row number order) makes every item before the supplier items and pars that name it.
  * fileRowOf gives the line in the file back.
  */
-export const KIND_BLOCK = Object.freeze({ item: 1000000, supplier: 2000000, supplier_item: 3000000, par: 4000000, recipe: 5000000 });
+export const KIND_BLOCK = Object.freeze({ item: 1000000, supplier: 2000000, supplier_item: 3000000, par: 4000000, recipe: 5000000, bridge: 6000000 });
 export const fileRowOf = (rowNo) => (Number.isFinite(Number(rowNo)) ? Number(rowNo) % 1000000 : null);
 
 const str = (v) => { const t = String(v ?? '').trim(); return t === '' ? null : t; };
@@ -969,6 +989,22 @@ function parData(r, problems) {
   };
 }
 
+// 5.12.100: one unit bridge: both amounts as numbers, both units as our codes (a unit ServOS does not know
+// goes as typed, so the database says so in its own words).
+function bridgeData(r, problems, cur = null) {
+  const qty = (f, label) => {
+    const v = numberOf(r[f]);
+    if (v === null || !Number.isFinite(v) || v <= 0) { say(problems, r._row, 'bridge', `"${r[f] ?? ''}" is not an amount above 0 (${label}).`); return null; }
+    return v;
+  };
+  const unit = (f) => unitOf(r[f], cur) || str(r[f]);
+  return {
+    item: str(r.item), item_sku: str(r.item_sku),
+    from_qty: qty('from_qty', 'This much'), from_unit: unit('from_unit'),
+    to_qty: qty('to_qty', 'Equals'), to_unit: unit('to_unit'),
+  };
+}
+
 // One recipe line from one file row: { item, item_sku, qty, unit, usable_pct, order_types }, or null
 // when the row has no ingredient (a row that only carries the recipe's own fields).
 function recipeLine(r, problems, cur = null) {
@@ -1043,7 +1079,8 @@ function recipeRows(rows, { lookup, problems, rowBase, currency = null }) {
 
 /**
  * The rows of one kind as stock_import_stage takes them: [{ row_no, kind, data, sites }].
- *   kind: 'items' (or 'item'), 'suppliers', 'supplier_items', 'pars', 'recipes'
+ *   kind: 'items' (or 'item'), 'suppliers', 'supplier_items', 'pars', 'recipes', 'bridges' (unit bridges, 5.12.100:
+ *     data { item, item_sku, from_qty, from_unit, to_qty, to_unit }, never any sites)
  *   rows: the rows of csvRowsFor, mapNory, mapMarketMan or mapFile
  *   siteIdByName: the company's sites (a Map, an object, or a list of { id, name }) for the sites
  *     column ('All', or names split by ';') and the site column of items and suppliers
@@ -1072,6 +1109,7 @@ export function toStageRows(kind, rows, { siteIdByName = null, problems = null, 
     if (k === 'items') data = itemData(row, problems, currency);
     else if (k === 'suppliers') data = supplierData(row, problems);
     else if (k === 'supplier_items') data = supplierItemData(row, problems, currency);
+    else if (k === 'bridges') data = bridgeData(row, problems, currency);
     else data = parData(row, problems);
     // where it goes: the sites column, else (items, suppliers) the sites its rows named
     let cell = row.sites;
@@ -1095,7 +1133,7 @@ export function stageFile(mapped, { siteIdByName = null, currency = null } = {})
   const problems = [];
   const rows = [];
   const counts = {};
-  for (const k of ['items', 'suppliers', 'supplier_items', 'pars', 'recipes']) {
+  for (const k of ['items', 'suppliers', 'supplier_items', 'pars', 'recipes', 'bridges']) {
     const part = mapped?.kinds?.[k];
     if (!part || !part.rows?.length) continue;
     const staged = toStageRows(k, part.rows, { siteIdByName, problems, rowBase: KIND_BLOCK[STAGE_KIND[k]], currency });

@@ -386,7 +386,9 @@ test('addItemSavedWords (contract 4.2)', () => {
 
 // ── import ──
 test('import kinds: the staged kind and the importMappers CSV key, both ways (Drop 2 adds recipes)', () => {
-  assert.deepEqual(R.IMPORT_KINDS.map((k) => [k.kind, k.key]), [['item', 'items'], ['supplier', 'suppliers'], ['supplier_item', 'supplier_items'], ['par', 'pars'], ['recipe', 'recipes']]);
+  assert.deepEqual(R.IMPORT_KINDS.map((k) => [k.kind, k.key]), [['item', 'items'], ['supplier', 'suppliers'], ['supplier_item', 'supplier_items'], ['par', 'pars'], ['recipe', 'recipes'], ['bridge', 'bridges']]);
+  assert.equal(R.importKey('bridge'), 'bridges');
+  assert.equal(R.importKindsWords(['bridges']), 'unit bridges');
   assert.equal(R.importKey('supplier_item'), 'supplier_items');
   assert.equal(R.importKey('pars'), 'pars');
   assert.equal(R.importKind('items'), 'item');
@@ -406,6 +408,13 @@ test('importCountWords: "<n> new items, <n> price changes, <n> problems" from an
   assert.equal(R.importProblems({ item: { problem: 1 }, par: { problem: 2 } }), 3);
   assert.equal(R.importProblems({ recipe: { problem: 2 } }), 2, 'a recipe line the database refuses counts');
   assert.equal(R.importRecipeRows, undefined, 'recipes are not skipped any more');
+});
+
+test('importCountWords: unit bridges are said only when the file has some (5.12.100)', () => {
+  assert.equal(R.importCountWords({ new_items: 0, price_changes: 0, problem: 0, new_bridges: 51, changed_bridges: 0 }), '0 new items, 0 price changes, 0 problems, 51 new unit bridges, 0 changed unit bridges');
+  assert.equal(R.importCountWords({ new_items: 2, price_changes: 1, problem: 1, new_bridges: 0, changed_bridges: 1 }), '2 new items, 1 price change, 1 problem, 0 new unit bridges, 1 changed unit bridge');
+  assert.equal(R.importCountWords({ new_items: 2, price_changes: 1, problem: 0, new_bridges: 0, changed_bridges: 0 }), '2 new items, 1 price change, 0 problems', 'a file with none reads as before');
+  assert.equal(R.importProblems({ 'bridge:problem': 2, 'item:problem': 1 }), 3);
 });
 
 test('importCountWords: "<n> new recipes, <n> changed recipes" only when the server counts recipes (Drop 2)', () => {
@@ -541,7 +550,7 @@ test('the modals: the contract words and the calls', () => {
   assert.match(prices, /disabled=\{busy \|\| !rows\.length\} onClick=\{apply\}/, 'Apply only after a preview with rows');
   assert.match(prices, /dateBoxWords\(fromDay, \{ set: 'From', empty: 'No day picked yet\.' \}\)/, 'the From a date box says whether a day is set');
   has('CategoriesModal.jsx', ['title="Categories"', 'sub="One list for every site. Each category can carry an accounting code and a GP target."', '<Th>Category</Th>', '<Th>Accounting code</Th>', '<Th right>GP target</Th>', '<Th right>Items</Th>', '+ Add a category', '>Archive<', 'stockApi.archiveCategory(']);
-  const imp = has('ImportModal.jsx', ["label: 'Import CSV'", "label: 'Import from Nory or MarketMan'", 'pars, or recipes (one ingredient a line)', 'No till product is linked on import.', '{unusedWords(unknown)}', "'Import'", 'stockApi.importCommit(jobId, chosen)', 'stockApi.importCancel(', 'stageFile(mapped, { siteIdByName: sc.sites, currency: unitPicks.code })']);
+  const imp = has('ImportModal.jsx', ["label: 'Import CSV'", "label: 'Import from Nory or MarketMan'", 'pars, recipes (one ingredient a line), or unit bridges (Item, This much, Unit, Equals, Equal unit)', 'No till product is linked on import.', '{unusedWords(unknown)}', "'Import'", 'stockApi.importCommit(jobId, chosen)', 'stockApi.importCancel(', 'stageFile(mapped, { siteIdByName: sc.sites, currency: unitPicks.code })']);
   assert.doesNotMatch(imp, /Recipes come in with the recipe update|importRecipeRows|skipped/, 'Drop 2: recipes import for real');
   assert.match(imp, /const STAGE_ROWS = 2000;/);
   assert.ok(imp.indexOf('stockApi.importStage(') < imp.indexOf('stockApi.importCheck(') || imp.indexOf('readCheck(id)') > imp.indexOf('stockApi.importStage('), 'stage, then the check screen');
