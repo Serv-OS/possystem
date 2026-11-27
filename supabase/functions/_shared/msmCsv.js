@@ -36,7 +36,7 @@ export function exportCsv(central, sites, opts = {}) {
   const ps = new Map(listOf(central?.productSites).map((r) => [`${r.product_id}|${r.location_id}`, r]));
   // Round 2 words (design 2, item 9): "ServOS ID (do not change)" and "Group price". Files made
   // before still import (the old names are read too).
-  const head = ['ServOS ID (do not change)', 'Product', 'Category', 'Size of', 'Group price'];
+  const head = ['ServOS ID (do not change)', 'Product', 'Category', 'Variant of', 'Group price'];
   for (const s of listOf(sites)) head.push(`${s.name} price`, `${s.name} active`);
   const lines = [head.map(cell).join(',')];
   for (const p of prods) {

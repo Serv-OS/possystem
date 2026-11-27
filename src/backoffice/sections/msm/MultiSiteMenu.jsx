@@ -464,7 +464,8 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       {extra && extra.render(shared)}
 
       {sheet && (
-        <MsmProductSheet key={sheet.productId || 'new'} {...shared} productId={sheet.productId || null} create={!!sheet.create}
+        <MsmProductSheet key={sheet.productId || (sheet.variantOf ? `new-of-${sheet.variantOf}` : 'new')} {...shared} productId={sheet.productId || null} create={!!sheet.create}
+          variantOf={sheet.variantOf || null} onAddVariant={(id) => setSheet({ create: true, variantOf: id })}
           onClose={() => setSheet(null)} onCreated={(id) => setSheet({ productId: id })} />
       )}
       {tool && <MsmChangePrices {...shared} initialScope={tool} onClose={() => setTool(null)} />}

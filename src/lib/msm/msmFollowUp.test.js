@@ -50,7 +50,7 @@ test('follow up 1: the Review and publish tab badge is the button\'s count (prod
   const eff = applyChanges(central, rows).central;
   assert.equal(rows.length, 4);
   assert.equal(status.draftCount(rows, eff).total, 1);
-  assert.equal(status.publishBadge({ working: draft, rows, eff }), 1, 'a new size at every site is 1, as the button says');
+  assert.equal(status.publishBadge({ working: draft, rows, eff }), 1, 'a new variant at every site is 1, as the button says');
   // One price at every site for Cola: 3 rows, 1 product changed.
   const cola = central.products.find((p) => p.name === 'Cola');
   const prices = central.sites.map((s) => ({ target: 'product_site', entity_id: cola.id, location_id: s.location_id, op: 'update', after: { price: 2.5 } }));
@@ -208,22 +208,22 @@ function noRateSizes() {
   return { v, sites, central: build(v, sites) };
 }
 
-test('follow up 5: a size with no VAT rate of its own never gets its product\'s order type keys (blocked in words, nothing written)', () => {
+test('follow up 5: a variant with no VAT rate of its own never gets its product\'s order type keys (blocked in words, nothing written)', () => {
   const { sites, central } = noRateSizes();
   const latte = central.products.find((p) => p.name === 'Latte');
   const size = central.products.find((p) => p.name === 'Large latte');
-  assert.equal(size.tax_rate_name ?? null, null, 'the import kept the size without a rate');
+  assert.equal(size.tax_rate_name ?? null, null, 'the import kept the variant without a rate');
   const ch = [{ target: 'product', entity_id: latte.id, op: 'update', after: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } }, before: { tax_by_type: latte.tax_by_type ?? null } }];
   for (const s of sites) {
     const p = planAt(central, ch, s.location_id, s.raw);
     const h = checkSite(p);
-    if (s.location_id === C) { assert.ok(h.ok, 'C sells no size'); continue; }
+    if (s.location_id === C) { assert.ok(h.ok, 'C sells no variant'); continue; }
     const sizeRow = s.location_id === A ? 'm-latte-l' : S('m-latte-l', B);
     const block = h.blocking.find((x) => x.code === 'size_no_rate');
     assert.ok(block, `${s.name}: ${JSON.stringify(p.problems)}`);
-    assert.match(block.words, /The size "Large latte" has no VAT rate of its own at this site/);
+    assert.match(block.words, /The variant "Large latte" has no VAT rate of its own at this site/);
     assert.match(block.words, /Nothing was changed\.$/);
-    assert.ok(!p.lines.some((l) => l.id === sizeRow && /^tax_overrides\./.test(l.column)), 'no key written on the size');
+    assert.ok(!p.lines.some((l) => l.id === sizeRow && /^tax_overrides\./.test(l.column)), 'no key written on the variant');
   }
   // A size that has its own rate takes the keys as before (17 Oct recheck).
   const v2 = groupVenues();
@@ -234,7 +234,7 @@ test('follow up 5: a size with no VAT rate of its own never gets its product\'s 
   assert.deepEqual(p2.writes.items.update.find((u) => u.id === 'm-latte-l').tax_overrides, { set: { takeaway: ZERO.A }, remove: [] });
 });
 
-test('follow up 5: a size with no VAT rate turned on where its product has order type keys is blocked; with none it goes in with none', () => {
+test('follow up 5: a variant with no VAT rate turned on where its product has order type keys is blocked; with none it goes in with none', () => {
   const { v, central } = noRateSizes();
   const size = central.products.find((p) => p.name === 'Large latte');
   // C sells Latte with a takeaway Zero Rate key of its own: the new size row would carry it and no rate.

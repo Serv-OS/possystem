@@ -45,7 +45,7 @@ export default function MsmAddToProducts({ ix, groupId, groupName, initial = nul
 
   return (
     <Modal title={groupName ? `Which products ask "${groupName}"?` : 'Which products ask this option group?'} width={640} onClose={onClose}
-      sub="Tick the products that should ask this question. A product with sizes means every size."
+      sub="Tick the products that should ask this question. A product with variants means every variant."
       footer={(
         <>
           <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>
@@ -77,7 +77,7 @@ export default function MsmAddToProducts({ ix, groupId, groupName, initial = nul
                   <label style={{ ...ui.row, padding: '5px 4px', fontSize: 13, cursor: 'pointer' }}>
                     <input type="checkbox" checked={on} ref={(el) => { if (el) el.indeterminate = some; }} onChange={() => flip(pids, !on)} />
                     <span style={{ flex: 1 }}>{p.product.menu_name || p.product.name}</span>
-                    {p.sizes.length > 0 && <span style={ui.sub}>{p.sizes.length} size{p.sizes.length === 1 ? '' : 's'}</span>}
+                    {p.sizes.length > 0 && <span style={ui.sub}>{p.sizes.length} variant{p.sizes.length === 1 ? '' : 's'}</span>}
                   </label>
                   {p.sizes.map((s) => (
                     <label key={s.product.id} style={{ ...ui.row, padding: '3px 4px 3px 28px', fontSize: 12.5, cursor: 'pointer', color: 'var(--t2)' }}>

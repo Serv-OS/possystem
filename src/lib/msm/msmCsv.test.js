@@ -24,7 +24,7 @@ test('export: Excel safe, a byte order mark, plain numbers, the column order the
   const csv = exportCsv(central, sites);
   assert.equal(csv.charCodeAt(0), 0xFEFF);
   const rows = parseCsv(csv);
-  assert.deepEqual(rows[0], ['ServOS ID (do not change)', 'Product', 'Category', 'Size of', 'Group price', 'Site One price', 'Site One active', 'Site Two price', 'Site Two active']);
+  assert.deepEqual(rows[0], ['ServOS ID (do not change)', 'Product', 'Category', 'Variant of', 'Group price', 'Site One price', 'Site One active', 'Site Two price', 'Site Two active']);
   assert.deepEqual(rows[1], ['p1', 'Latte', 'Hot drinks', '', '2.80', '', 'Yes', '3.00', 'Yes']);
   assert.deepEqual(rows[2], ['p2', 'Large latte', 'Hot drinks', 'Latte', '3.20', '', 'No', '', '']);
   assert.equal(rows[3][1], `'=HYPERLINK("x")`, 'a formula is never run by Excel');

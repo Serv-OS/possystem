@@ -191,7 +191,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     // Sizes that go with it, and a product with no category yet, are said at the moment it is
     // flipped (17 Oct verification: UI items 8 and 10).
     const sizes = [r.change, ...(r.extra || [])].filter((c) => c && c.target === 'product_site' && c.entity_id !== p.id && ix.products.get(c.entity_id)?.parent_product_id === p.id).length;
-    const sizeWords = sizes ? ` Its ${sizes === 1 ? 'size goes' : `${sizes} sizes go`} with it.` : '';
+    const sizeWords = sizes ? ` Its ${sizes === 1 ? 'variant goes' : `${sizes} variants go`} with it.` : '';
     const hint = on ? noCategoryHint(p) : '';
     const words = r.change?.dropCreate ? `${nm} at ${siteNameOf(loc)} is taken out of the draft again: nothing changes there.`
       : existed ? cellNoteWords({ product: nm, site: siteNameOf(loc), active: on }) : `${nm} will be sold at ${siteNameOf(loc)} (in the draft).`;
@@ -253,7 +253,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     }
     // A variants parent draws no price cell (its sizes are priced): no edit, no clear.
     if (!priceEditable(p, eff?.products)) {
-      if (e.key === 'Enter' || e.key === 'F2' || /^[0-9.]$/.test(e.key) || e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); setNote?.({ tone: 'warn', text: 'This product is priced by its sizes. Change the price on each size.' }); }
+      if (e.key === 'Enter' || e.key === 'F2' || /^[0-9.]$/.test(e.key) || e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); setNote?.({ tone: 'warn', text: 'This product is priced by its variants. Change the price on each variant.' }); }
       return;
     }
     // Never a silent nothing (UI item 10): a price on a product not sold there says so.
@@ -437,7 +437,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                 <Popover label="Add option group" width={280}>
                   {(close) => (
                     <div style={{ maxHeight: 280, overflowY: 'auto' }}>
-                      <div style={{ ...ui.sub, marginBottom: 6 }}>Ask this question on the {selIds.length} product{selIds.length === 1 ? '' : 's'} ticked (a product with sizes means its sizes).</div>
+                      <div style={{ ...ui.sub, marginBottom: 6 }}>Ask this question on the {selIds.length} product{selIds.length === 1 ? '' : 's'} ticked (a product with variants means its variants).</div>
                       {(eff?.groups || []).filter((g) => !g.archived).map((g) => (
                         <div key={g.id}><Btn small kind="link" onClick={() => { close(); const ch = addGroupWithSites(ctx, g.id, selIds, groupEdit); const n = ch.filter((c) => c.target === 'product').length; run([], ch, n ? `${g.name} added to ${n} product${n === 1 ? '' : 's'} (in the draft).` : `They all ask ${g.name} already.`); }}>{g.name}</Btn></div>
                       ))}
@@ -583,12 +583,12 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                           onClick={() => setFocus({ row: rowIndex, col: ci + 1 })}>
                           {(st.active || st.kept) && <span style={stagedMark} />}
                           {!c.exists
-                            ? (editable ? <button type="button" aria-label={`Sell ${p.menu_name || p.name} and its sizes at ${s.name}`} onClick={(e) => { e.stopPropagation(); toggle(p, s.id, true); }} title="Sell it and its sizes at this site"
+                            ? (editable ? <button type="button" aria-label={`Sell ${p.menu_name || p.name} and its variants at ${s.name}`} onClick={(e) => { e.stopPropagation(); toggle(p, s.id, true); }} title="Sell it and its variants at this site"
                               style={{ background: 'none', border: '1px dashed var(--bdr2)', borderRadius: 7, color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>+ Sell here</button>
                               : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Not sold</span>)
                             : <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                               <span style={{ fontSize: 12, color: c.active ? 'var(--t3)' : 'var(--t4)' }}>{c.active ? 'Sold here' : 'Off here'}</span>
-                              <Switch small on={!!c.active} disabled={!editable} ariaLabel={`${p.menu_name || p.name} at ${s.name}: ${c.active ? 'on' : 'off'}`} title={c.active ? 'On here with its sizes: turn off' : 'Off here: turn on with its sizes'} onChange={(v) => toggle(p, s.id, v)} />
+                              <Switch small on={!!c.active} disabled={!editable} ariaLabel={`${p.menu_name || p.name} at ${s.name}: ${c.active ? 'on' : 'off'}`} title={c.active ? 'On here with its variants: turn off' : 'Off here: turn on with its variants'} onChange={(v) => toggle(p, s.id, v)} />
                             </div>}
                         </div>
                       );
@@ -685,7 +685,7 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, siteName =
     return (
       <div role="gridcell" aria-label={`${nm} at ${siteName}: not sold`} style={{ ...cellBase, width, justifyContent: 'center', ...(isFocus ? focusRing : {}), opacity: pending ? 0.5 : 1 }} onClick={() => setFocus({ row: rowIndex, col })}>
         {st.active && <span style={stagedMark} />}
-        {editable ? <button type="button" aria-label={`Sell ${nm} at ${siteName}`} onClick={(e) => { e.stopPropagation(); onToggle(p, loc, true); }} title={withSizes ? 'Sell it and its sizes at this site' : 'Sell it at this site too'}
+        {editable ? <button type="button" aria-label={`Sell ${nm} at ${siteName}`} onClick={(e) => { e.stopPropagation(); onToggle(p, loc, true); }} title={withSizes ? 'Sell it and its variants at this site' : 'Sell it at this site too'}
             style={{ background: 'none', border: '1px dashed var(--bdr2)', borderRadius: 7, color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>+ Sell here</button>
             : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Not sold</span>}
       </div>
@@ -773,7 +773,7 @@ function Key({ mode, onProfiles = false }) {
     [<span key="f" style={{ color: 'var(--t4)' }}>Off here</span>, 'Turned off at that site.'],
     [<span key="s" style={{ border: '1px dashed var(--bdr2)', borderRadius: 6, padding: '0 5px', color: 'var(--t3)', fontWeight: 700 }}>+ Sell here</span>, 'Not sold at that site yet: tap to sell it there.'],
     [dot('var(--blu)'), 'Blue dot: this site keeps its own settings for this product. Tap it to see which.'],
-    [<span key="n" style={{ color: 'var(--t3)' }}>↳</span>, 'A size, under its product.']];
+    [<span key="n" style={{ color: 'var(--t3)' }}>↳</span>, 'A variant, under its product.']];
   // 17 Oct verification: the VAT sample carries its dot, the group column is named, and the GP
   // colours are explained (low GP is coral, never the amber of a change waiting).
   // 5.12.104: a group whose sites charge through tax profiles gets its own key, in its own words

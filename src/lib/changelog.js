@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.120',
+    date: '27 Nov 2026',
+    items: [
+      'Multi site menu: a delivery price can now be set (Peter, 27 Nov 2026: "I cant set a delivery price in the multi site menu manager"). It works like every other order type: one price for the group, or one per site. Tick Delivery under Menu details, Order types, and save, or use "Set a price for an order type" on a product. The Prices view and Change prices have Delivery too.',
+      'A delivery price a site set for itself is never wiped: publish writes a delivery price only where the group menu holds one, or where you took one away on purpose.',
+      'Multi site menu: it now says variant, not size (Peter: "variants are not just sizes"). A variant is one version of a product with its own price: a size, a flavour or a type. Nothing about how they work has changed.',
+      'A product in the Multi site menu has an Add a variant button. It opens a new product already set as a variant of it, in its category, on sale at the same sites.',
+    ],
+  },
+  {
     v: '5.12.119',
     date: '27 Nov 2026',
     items: [
