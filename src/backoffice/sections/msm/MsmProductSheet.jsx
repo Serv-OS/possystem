@@ -39,7 +39,7 @@ import * as groupEdit from '../../../lib/msm/msmGroupEdit';
 import { groupTickSiteRows } from '../../../lib/msm/msmGroupView';
 import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
 import { isOptionOnlyItem } from '../../../lib/menuRules';
-import { SOLD_AS_TYPES, SOLD_AS_WORDS, notSoldAs, toggleSoldAs, withNotSoldAs, soldAsSummary, sameSoldAs, SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, toggleShownOn, withNotShownOn, shownOnSummary, sameShownOn, sameGroupRules, withGroupRules } from '../../../lib/soldAs';
+import { SOLD_AS_TYPES, SOLD_AS_WORDS, notSoldAs, toggleSoldAs, withNotSoldAs, soldAsSummary, sameSoldAs, SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, toggleShownOn, withNotShownOn, applyNotShownOn, shownOnSummary, sameShownOn, sameGroupRules, withGroupRules } from '../../../lib/soldAs';
 import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords, sizeVatWords } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
@@ -80,7 +80,9 @@ function withCategoryRules(ix, f) {
 function withSoldVisibility(f) {
   if (isOptionOnlyItem(f)) return f;
   const v = f.visibility && typeof f.visibility === 'object' ? f.visibility : null;
-  return v && Object.values(v).some((x) => x === true) ? f : { ...f, visibility: ALL_ON };
+  // 5.12.119: head office's two lists stay with it (a sub item hidden as an option on Online that
+  // becomes sold on its own is still hidden on Online).
+  return v && Object.values(v).some((x) => x === true) ? f : { ...f, visibility: applyNotShownOn(withNotSoldAs(ALL_ON, notSoldAs(f)), notShownOn(f)) };
 }
 
 export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, ratesByLoc = {}, profilesByLoc = {}, sales, openGroup, openProduct, onClose, onCreated }) {
@@ -787,14 +789,20 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             "I dont want certain categories to show at all ... the less menus the better"). Ticked =
             it shows there. Unticked = head office hides it there at every site, and a site cannot
             turn it back on. A site's own switches for the places left ticked stay the site's. */}
-        {!isSizeForm && !optionOnly && (() => {
+        {/* 5.12.119 (Peter, 27 Nov 2026: "I cannot hide a subitem from options ... dine in soda
+            which needs to not show on ordering online etc but does need to show on the POS"): a
+            sub item that is only an option has the same ticks. Unticked = that option is left out
+            of every option group on that screen, at every site (soldAs.js optionHiddenOn). */}
+        {!isSizeForm && (() => {
           const no = notShownOn({ visibility: form.visibility });
-          const mates = p ? [...ix.products.values()].filter((x) => !x.archived && !x.parent_product_id && x.id !== p.id && form.category_id && x.category_id === form.category_id && !isOptionOnlyItem(x)) : [];
+          const mates = p && !optionOnly ? [...ix.products.values()].filter((x) => !x.archived && !x.parent_product_id && x.id !== p.id && form.category_id && x.category_id === form.category_id && !isOptionOnlyItem(x)) : [];
           const differ = mates.filter((x) => !sameShownOn(x, { visibility: form.visibility }));
           const catName = ix.categories.get(form.category_id)?.label || 'this category';
           return (
-            <Field label="Shows on" hint={no.length ? `${shownOnSummary({ visibility: form.visibility })} at every site. A site cannot turn it back on. Online also covers QR at the table and the catering page.` : 'Shows everywhere a site lets it. Untick a place to hide it there at every site, like a staff only product on Online.'}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} data-testid="msm-shown-on">
+            <Field label={optionOnly ? 'This option shows on' : 'Shows on'} hint={optionOnly
+              ? (no.length ? `${shownOnSummary({ visibility: form.visibility })} at every site: left out of every option group there. Online also covers QR at the table and the catering page.` : 'Shows as an option everywhere. Untick a place to leave it out there at every site, like a dine in only drink on Online and Delivery.')
+              : (no.length ? `${shownOnSummary({ visibility: form.visibility })} at every site${usedAsOption.length ? ', as a product and as an option' : ''}. A site cannot turn it back on. Online also covers QR at the table and the catering page.` : 'Shows everywhere a site lets it. Untick a place to hide it there at every site, like a staff only product on Online.')}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} data-testid={optionOnly ? 'msm-option-shown-on' : 'msm-shown-on'}>
                 {SHOWN_ON_KEYS.map((k) => {
                   const on = !no.includes(k);
                   return <button key={k} type="button" aria-pressed={on} onClick={() => setForm((f) => ({ ...f, visibility: toggleShownOn(f.visibility, k, !on) }))}

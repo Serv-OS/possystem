@@ -330,21 +330,34 @@ export function buildCatalog(opts: {
     products.push(product);
   }
 
+  // 5.12.119 (src/lib/soldAs.js optionHiddenOn): an option linked to a product that head office
+  // hides on Online or on Delivery (visibility.notShownOn) never goes to a delivery platform. Only
+  // that list counts, never the plain switches: a sub item that is only an option has every
+  // switch off by design and is still an option.
+  const optionHidden = new Set<string>(items
+    .filter((it: any) => Array.isArray(it?.visibility?.notShownOn) && (it.visibility.notShownOn.includes('online') || it.visibility.notShownOn.includes('onlineDelivery')))
+    .map((it: any) => String(it.id)));
+  const optionShown = (o: any) => { const id = o && (o.itemId || o.item_id); return !(id && optionHidden.has(String(id))); };
+
   // Option lists for every referenced modifier group.
   const option_lists = groups
     .filter((g) => g && usedGroupIds.has(String(g.id)))
-    .map((g) => ({
-      ref: String(g.id),
-      name: g.name || 'Options',
-      min_selections: Number(g.min) || 0,
-      max_selections: g.max == null ? null : Number(g.max),
-      multiple_selection: g.selection_type !== 'single',
-      options: (g.options || []).map((o: any) => ({
-        ref: resolveOptionRef(o),
-        name: o.name || 'Option',
-        price: toMoney(o.price ?? 0, ccy),
-      })),
-    }));
+    .map((g) => {
+      const shown = (g.options || []).filter(optionShown);
+      return {
+        ref: String(g.id),
+        name: g.name || 'Options',
+        // Never asks for more picks than it has options left.
+        min_selections: Math.min(Number(g.min) || 0, shown.length),
+        max_selections: g.max == null ? null : Number(g.max),
+        multiple_selection: g.selection_type !== 'single',
+        options: shown.map((o: any) => ({
+          ref: resolveOptionRef(o),
+          name: o.name || 'Option',
+          price: toMoney(o.price ?? 0, ccy),
+        })),
+      };
+    });
 
   // Plus option_lists for the cooking-instruction groups (single-select; options are plain
   // strings so we synthesise refs). Appended after modifier lists.

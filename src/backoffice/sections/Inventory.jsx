@@ -21,8 +21,23 @@ function getStatus(count) {
   return STATUS_LEVELS[0];
 }
 
+// 5.12.119: the Category filter that lists only sub items (options).
+const OPTIONS_FILTER = '__options__';
+
 export default function Inventory() {
-  const { menuItems: storeItems, dailyCounts, setDailyCount, clearDailyCount, eightySixIds, toggle86, showToast, markBOChange , menuCategories } = useStore();
+  const { menuItems: storeItems, dailyCounts, setDailyCount, clearDailyCount, eightySixIds, toggle86, showToast, markBOChange , menuCategories, modifierGroupDefs } = useStore();
+  // Which option groups each sub item is an option in, so a row says where it shows up.
+  const optionGroups = useMemo(() => {
+    const m = new Map();
+    for (const g of (modifierGroupDefs || [])) for (const o of (g?.options || [])) {
+      const id = o && (o.itemId || o.item_id);
+      if (!id) continue;
+      if (!m.has(id)) m.set(id, []);
+      if (g.name && !m.get(id).includes(g.name)) m.get(id).push(g.name);
+    }
+    return m;
+  }, [modifierGroupDefs]);
+  const optionGroupsOf = (id) => optionGroups.get(id) || [];
   const MENU_ITEMS = (isMock && (!storeItems || storeItems.length === 0)) ? SEED_ITEMS : (storeItems || []);
   const cats = (menuCategories||[]).filter(c => !c.isSpecial && !c.parentId).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
 
@@ -51,18 +66,22 @@ export default function Inventory() {
 
   const itemsWithStatus = useMemo(() => {
     return MENU_ITEMS
-      // Hide modifier sub-items (e.g. "half and half") and variant PARENT containers;
-      // show the sellable variants themselves with a parent-qualified name.
-      .filter(i => !i.archived && i.type !== 'subitem' && !meta.parents.has(String(i.id)))
+      // Hide variant PARENT containers; show the sellable variants themselves with a
+      // parent-qualified name.
+      // 5.12.119 (Peter, 27 Nov 2026: "I also cant find a way to 86 a sub item"): sub items are
+      // listed too. They were hidden here, and an option has no tile on the POS to long press, so
+      // nothing could 86 one. Every screen already greys an option whose sub item is 86'd.
+      .filter(i => !i.archived && i.type !== 'spacer' && !meta.parents.has(String(i.id)))
       .map(i => ({
         ...i,
+        isOption: i.type === 'subitem',
         displayName: meta.label(i),
         count: dailyCounts[i.id] || null,
         status: getStatus(dailyCounts[i.id]),
         is86: eightySixIds.includes(i.id),
       }))
       .filter(i => {
-        if (catFilter !== 'all' && i.cat !== catFilter) return false;
+        if (catFilter === OPTIONS_FILTER ? !i.isOption : (catFilter !== 'all' && (i.isOption || i.cat !== catFilter))) return false;
         if (statusFilter === 'tracked' && !i.count) return false;
         if (statusFilter === 'low' && i.status.id !== 'low' && i.status.id !== 'critical') return false;
         if (statusFilter === '86d' && !i.is86) return false;
@@ -73,7 +92,7 @@ export default function Inventory() {
   }, [MENU_ITEMS, dailyCounts, eightySixIds, catFilter, statusFilter, search, meta]);
 
   const summary = useMemo(() => {
-    const all = MENU_ITEMS.filter(i => !i.archived);
+    const all = MENU_ITEMS.filter(i => !i.archived && i.type !== 'spacer');
     return {
       tracked:  all.filter(i => dailyCounts[i.id]).length,
       low:      all.filter(i => { const c = dailyCounts[i.id]; return c && c.remaining / c.par <= 0.4 && c.remaining > 0; }).length,
@@ -107,7 +126,7 @@ export default function Inventory() {
 
         <div style={{ height:1, background:'var(--bdr)', margin:'12px 0' }}/>
         <div style={{ fontSize:9, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.1em', marginBottom:8, padding:'0 4px' }}>Category</div>
-        {[{id:'all',label:'All categories'}, ...cats].map(c => (
+        {[{id:'all',label:'All categories'}, {id:OPTIONS_FILTER,label:'Options (sub items)'}, ...cats].map(c => (
           <button key={c.id} onClick={() => setCatFilter(c.id)} style={{ width:'100%', padding:'7px 8px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:catFilter===c.id?700:400, border:'none', background:catFilter===c.id?'var(--acc-d)':'transparent', color:catFilter===c.id?'var(--acc)':'var(--t2)', textAlign:'left', marginBottom:1, borderLeft:`2px solid ${catFilter===c.id?'var(--acc)':'transparent'}` }}>{c.label}</button>
         ))}
       </div>
@@ -163,7 +182,9 @@ export default function Inventory() {
                       <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>{item.displayName || item.name}</div>
                     </td>
                     <td style={{ padding:'10px 14px', fontSize:11, color:'var(--t3)', textTransform:'capitalize' }}>
-                      {(menuCategories||[]).find(c => c.id === item.cat)?.label || item.cat}
+                      {item.isOption
+                        ? <span data-testid="inventory-option-row" title={optionGroupsOf(item.id).length ? `An option in ${optionGroupsOf(item.id).join(', ')}` : 'A sub item'} style={{ textTransform:'none' }}>Option{optionGroupsOf(item.id).length ? `: ${optionGroupsOf(item.id).slice(0, 2).join(', ')}${optionGroupsOf(item.id).length > 2 ? ' and more' : ''}` : ''}</span>
+                        : ((menuCategories||[]).find(c => c.id === item.cat)?.label || item.cat)}
                     </td>
                     <td style={{ padding:'10px 14px' }}>
                       {item.is86 ? (

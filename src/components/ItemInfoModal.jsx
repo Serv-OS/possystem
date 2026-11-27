@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import { useStore } from '../store';
 import { CAT_META } from '../data/seed';
 import AllergenChips, { TILL_ALLERGEN_PALETTE, allergenChipIds } from './AllergenChips.js';
@@ -10,6 +10,7 @@ import { supabase, getActiveLocationSync } from '../lib/supabase';
 import { useRecipeCard, buildRows, cardSteps, cardKcalWords, portionHeading } from '../lib/recipeCard';
 import { kcalWords } from '../lib/menuStockFacts';
 import { Icon, EmojiIcon } from './ServOSIcons';
+import { itemOptionGroups } from '../lib/menuRules';
 
 // ── Set daily count numpad ────────────────────────────────────────────────────
 function CountSetter({ itemId, current, onClose }) {
@@ -80,7 +81,10 @@ function CountSetter({ itemId, current, onClose }) {
 
 // ── Main item info modal ──────────────────────────────────────────────────────
 export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddToOrder }) {
-  const { dailyCounts } = useStore();
+  const { dailyCounts, menuItems, modifierGroupDefs, eightySixIds, toggle86, showToast } = useStore();
+  // 5.12.119 (Peter, 27 Nov 2026: "I also cant find a way to 86 a sub item"). An option has no
+  // tile to long press, so the product's panel lists its options, each with its own 86.
+  const optionGroups = useMemo(() => itemOptionGroups(item, menuItems, modifierGroupDefs), [item, menuItems, modifierGroupDefs]);
   const [tab, setTab] = useState('info');   // info | recipe | count
   const m = CAT_META[item.cat] || {};
   // The card: null when nothing is linked here, when the database has no Drop 2 yet, or when this
@@ -172,6 +176,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
             ['info', 'Info'],
             ...(recipe ? [['recipe','Recipe & method']] : []),
             ['count', count ? `Count (${count.remaining}/${count.par})` : 'Daily count'],
+            ...(onToggle86 && optionGroups.length ? [['options', 'Options']] : []),
           ].map(([t,l]) => (
             <button key={t} onClick={()=>setTab(t)} style={{
               padding:'8px 14px', cursor:'pointer', fontFamily:'inherit', border:'none',
@@ -185,6 +190,31 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
 
         {/* ── Tab content ── */}
         <div style={{ flex:1, overflowY:'auto', padding:'16px 20px' }}>
+
+          {/* ── Options tab (5.12.119): 86 one option, at once on every screen ── */}
+          {tab==='options' && (
+            <div data-testid="item-info-options">
+              <div style={{ fontSize:12, color:'var(--t3)', marginBottom:12 }}>86 an option and it is greyed out everywhere it is offered, on every product, until it is put back.</div>
+              {optionGroups.map(g => (
+                <div key={g.id} style={{ marginBottom:14 }}>
+                  <div style={{ fontSize:11, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 }}>{g.name}</div>
+                  {g.options.map(o => {
+                    const out = (eightySixIds || []).includes(o.itemId);
+                    return (
+                      <div key={`${g.id}|${o.itemId}`} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0', borderBottom:'1px solid var(--bdr)' }}>
+                        <div style={{ flex:1, minWidth:0, fontSize:14, fontWeight:650, color: out ? 'var(--red)' : 'var(--t1)', textDecoration: out ? 'line-through' : 'none' }}>{o.name}</div>
+                        <button data-testid="item-info-option-86" onClick={() => { toggle86(o.itemId); showToast?.(out ? `${o.name} is back on` : `${o.name} 86'd`, 'warning'); }}
+                          style={{ height:38, minWidth:86, padding:'0 14px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:800,
+                            border:`1.5px solid ${out ? 'var(--grn-b)' : 'var(--red-b)'}`, background: out ? 'var(--grn-d)' : 'var(--red-d)', color: out ? 'var(--grn)' : 'var(--red)' }}>
+                          {out ? 'Put back' : '86'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* ── Info tab ── */}
           {tab==='info' && (

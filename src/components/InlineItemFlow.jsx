@@ -7,6 +7,7 @@ import { resolveItemPrice } from '../lib/menuPricing';
 import { sizeOrMainOptions, modifierGroupRequired, instructionGroupMin } from '../lib/menuRules';
 import { Icon } from './ServOSIcons';
 import { isOnceEach } from '../lib/choiceKinds';
+import { groupsShownOn } from '../lib/soldAs';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -40,7 +41,15 @@ function resolveOptItemId(opt, menuItems) {
 // menu (a bar tab is priced as eat in on the bar's own menu) show the size price it will charge.
 // Absent, the till's store order type and active menu, as before.
 export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId }) {
-  const { modifierGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts, orderType: storeOrderType, activeMenuId: storeMenuId } = useStore();
+  const { modifierGroupDefs: allGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts, orderType: storeOrderType, activeMenuId: storeMenuId, menuItems: storeRows } = useStore();
+  // 5.12.119: the rows an OPTION is looked up in are the store's own, every one of them. The
+  // `menuItems` prop is the POS's product list, which leaves out a sub item that is only an option
+  // (rule 1), so an option's row was never found there: an 86'd option matched by name was not
+  // greyed, and nothing could be hidden. Sizes still read the prop.
+  const optionRows = (Array.isArray(storeRows) && storeRows.length) ? storeRows : menuItems;
+  // An option whose product head office hides on the POS is left out (lib/soldAs.js
+  // groupsShownOn). Every lookup below, nested groups too, reads this list.
+  const modifierGroupDefs = useMemo(() => groupsShownOn(allGroupDefs, optionRows, 'pos'), [allGroupDefs, optionRows]);
   const orderType = priceChannel || storeOrderType;
   const activeMenuId = priceMenuId !== undefined ? priceMenuId : storeMenuId;
 
@@ -179,12 +188,12 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
         Object.entries(sel).forEach(([id, q]) => {
           if (!(q > 0)) return;
           const opt = (g.options || []).find(o => (o.id || o.name) === id);
-          const rid = opt?.itemId || resolveOptItemId(opt, menuItems);
+          const rid = opt?.itemId || resolveOptItemId(opt, optionRows);
           if (rid) need[rid] = (need[rid] || 0) + q;
         });
       } else {
         (Array.isArray(sel) ? sel : [sel]).filter(Boolean).forEach(m => {
-          const rid = m.itemId || resolveOptItemId(m, menuItems);
+          const rid = m.itemId || resolveOptItemId(m, optionRows);
           if (rid) need[rid] = (need[rid] || 0) + 1;
         });
       }
@@ -194,12 +203,12 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
       const banned = (eightySixIds || []).includes(rid);
       const want = units * qty;
       if (banned || (stock && Number.isFinite(Number(stock.remaining)) && want > Number(stock.remaining))) {
-        const mi = (menuItems || []).find(i => i.id === rid);
+        const mi = (optionRows || []).find(i => i.id === rid);
         return { name: mi?.menuName || mi?.name || 'that option', have: banned ? 0 : Number(stock.remaining), want };
       }
     }
     return null;
-  }, [modGroups, selections, qty, dailyCounts, eightySixIds, menuItems]);
+  }, [modGroups, selections, qty, dailyCounts, eightySixIds, optionRows]);
 
   const extraCost = modGroups.reduce((total, group) => {
     const cur = selections[group.id];
@@ -240,7 +249,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
           const opt = (group.options||[]).find(o => (o.id||o.name) === id);
           const label = opt?.name || opt?.label || id;
           // v5.5.189: resolve itemId so daily count decrements for sub-items
-          const resolvedItemId = opt?.itemId || resolveOptItemId(opt, menuItems);
+          const resolvedItemId = opt?.itemId || resolveOptItemId(opt, optionRows);
           return {
             // id + name preserved so reports can attribute this option back to
             // its menu_item row (e.g. count "Bueno Filled" sales when sold as
@@ -259,7 +268,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
       const arr = Array.isArray(val) ? val : [val];
       return arr.filter(Boolean).map(m => {
         // v5.5.189: resolve itemId so daily count decrements for sub-items
-        const resolvedItemId = m.itemId || resolveOptItemId(m, menuItems);
+        const resolvedItemId = m.itemId || resolveOptItemId(m, optionRows);
         return {
           // Same audit-trail fields as quantity mode above.
           id: m.id || null,
@@ -371,6 +380,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
             flowOrder={item?.optionGroupOrder || item?.option_group_order || null}
             allModDefs={modifierGroupDefs}
             menuItems={menuItems}
+            optionRows={optionRows}
             eightySixIds={eightySixIds}
             dailyCounts={dailyCounts}
             selections={selections}
@@ -484,7 +494,7 @@ function VariantStep({ item, variantChildren, onPick, priceOf = null }) {
 }
 
 // ── Modifier step: sequential groups ─────────────────────────────────────────
-function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, menuItems, eightySixIds = [], dailyCounts = {}, selections, instSelections, qty, notes, missingRequired = [], onToggleSingle, onAddMulti, onRemoveMulti, onQtyChange, onToggleInst, onQty, onNotes }) {
+function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, menuItems, optionRows = menuItems, eightySixIds = [], dailyCounts = {}, selections, instSelections, qty, notes, missingRequired = [], onToggleSingle, onAddMulti, onRemoveMulti, onQtyChange, onToggleInst, onQty, onNotes }) {
   // Resolve image for a modifier option: option's own image > matching sub-item image
   const resolveOptImage = (opt) => {
     if (opt.image) return opt.image;
@@ -594,7 +604,7 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                   const id = opt.id || opt.label || opt.name;
                   const optQty = (cur || {})[id] || 0;
                   // v5.5.189: resolve sub-item and check 86'd / stock
-                  const optItemId = resolveOptItemId(opt, menuItems);
+                  const optItemId = resolveOptItemId(opt, optionRows);
                   const opt86 = optItemId && eightySixIds.includes(optItemId);
                   const optStock = optItemId && dailyCounts[optItemId];
                   // v5.6.69 — numeric cap: one more pick of this option costs
@@ -671,7 +681,7 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                   const isSel = optQty > 0;
                   const optImage = resolveOptImage(opt);
                   // v5.5.189: resolve sub-item and check 86'd / stock
-                  const optItemId = resolveOptItemId(opt, menuItems);
+                  const optItemId = resolveOptItemId(opt, optionRows);
                   const opt86 = optItemId && eightySixIds.includes(optItemId);
                   const optStock = optItemId && dailyCounts[optItemId];
                   // v5.6.69 — numeric cap. Multi: every tap adds a pick, so the

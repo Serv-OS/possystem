@@ -33,7 +33,7 @@ import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, 
 export { noPriceAt };
 import { optionRowsForNewSites } from './msmGroupEdit.js';
 import { isOptionOnlyItem } from '../menuRules.js';
-import { SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, toggleShownOn } from '../soldAs.js';
+import { SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, withNotShownOn, toggleShownOn } from '../soldAs.js';
 import {
   MAIN_MENU, MAIN_MENU_WORDS, MAX_EXTRA_MENUS, allExtraMenus, extraMenus, extraMenusValue, extraMenuNameProblem, newExtraMenu, matchSiteMenus, menuKeysOf, menuKeysValue,
   toggleMenuKey, menuKeysWords, rootCategory, extraMenuAt,
@@ -360,7 +360,8 @@ export function newProductChanges(ctx, { id, fields, sites }) {
   };
   const tbt = f.tax_by_type && typeof f.tax_by_type === 'object' && Object.keys(f.tax_by_type).length ? clone(f.tax_by_type) : null;
   if (tbt) after.tax_by_type = tbt;
-  if (optionOnly) { after.category_id = f.category_id || null; after.visibility = { pos: false, kiosk: false, online: false, onlineDelivery: false }; }
+  // 5.12.119: where head office hides it AS AN OPTION (visibility.notShownOn) goes with it.
+  if (optionOnly) { after.category_id = f.category_id || null; after.visibility = withNotShownOn({ pos: false, kiosk: false, online: false, onlineDelivery: false }, notShownOn(f)); }
   const product = { id, family_base: null };
   const changes = [{ target: 'product', entity_id: id, location_id: null, op: 'create', after, before: {} }];
   for (const s of chosen) {

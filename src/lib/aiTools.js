@@ -4,6 +4,7 @@
  * Write tools return a "pending" action — the user must confirm before execution.
  */
 
+import { propose86, confirm86 } from './ai86.js';
 import { supabase, getLocationId } from './supabase';
 import { money, getActiveCurrencyCode } from './currency.js';
 import { localeDateString, localeTimeString, localeString, zoneOr } from './venueDates';
@@ -783,18 +784,9 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
     }
 
     case 'eighty_six_item': {
-      return {
-        result: {
-          preview: true,
-          message: `Proposed 86 — awaiting your confirmation`,
-          item: toolInput.item_name || toolInput.item_id,
-        },
-        pendingAction: {
-          type:    'eighty_six_item',
-          label:   `86 "${toolInput.item_name || toolInput.item_id}" — mark as sold out`,
-          payload: toolInput,
-        },
-      };
+      // 5.12.119 (Peter, 27 Nov 2026: "the AI said its done it but doesnt"): lib/ai86.js. The
+      // app finds the row itself, options included, and never proposes an 86 on a guessed id.
+      return propose86(toolInput, storeState);
     }
 
     case 'get_current_order': {
@@ -938,10 +930,8 @@ export async function executeConfirmedAction(action, storeActions = {}) {
     }
 
     case 'eighty_six_item': {
-      const { toggle86 } = storeActions;
-      if (!toggle86) return { ok: false, error: 'Not available' };
-      toggle86(payload.item_id);
-      return { ok: true, message: `"${payload.item_name}" has been 86'd` };
+      // 5.12.119: it only says "86'd" when the 86 list holds the row afterwards (lib/ai86.js).
+      return confirm86(payload, storeActions);
     }
 
     case 'add_to_order': {

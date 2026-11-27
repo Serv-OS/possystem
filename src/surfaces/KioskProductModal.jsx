@@ -56,6 +56,7 @@ import {
 } from '../lib/kioskOptionGroups';
 import KioskItemSheet from './kiosk/KioskItemSheet';
 import { isOnceEach } from '../lib/choiceKinds';
+import { groupsShownOn } from '../lib/soldAs';
 import { subitemNameIndex } from '../lib/menuRules';
 
 // ============================================================
@@ -323,7 +324,9 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             .in('id', ids));
           if (error) throw error;
           if (!alive) return;
-          for (const g of (data || [])) {
+          // 5.12.119: an option whose product head office hides on the Kiosk is left out
+          // (lib/soldAs.js groupsShownOn). A group with no option left is not asked.
+          for (const g of groupsShownOn(data || [], allItems, 'kiosk')) {
             if (g && g.id != null && ids.includes(g.id)) rows[g.id] = g;
           }
           // A group row that is not found is skipped when the groups are built.
@@ -360,7 +363,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             .in('id', Array.from(subGroupIds)));
           if (error) throw error;
           if (!alive) return;
-          for (const row of (data || [])) {
+          for (const row of groupsShownOn(data || [], allItems, 'kiosk')) {
             subCache[row.id] = normalizeGroup(row);
           }
         } catch (e) {
