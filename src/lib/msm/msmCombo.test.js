@@ -33,13 +33,15 @@ const stepsAt = (treat = ['own-brownie', 'l-cookie-b']) => ({ v: 1, steps: [
   { id: 'st-treat', name: 'Add a treat?', selectionType: 'multiple', min: 0, max: 2, pricing: 'own', products: treat.map((itemId) => ({ itemId, bump: 0 })) },
 ] });
 
-function setup({ comboAtImport = false } = {}) {
+function setup({ comboAtImport = false, sqlRun = true } = {}) {
   const v = groupVenues();
   if (comboAtImport) addOwn(v[B]);
   const sites = groupSites(v);
   const proposal = proposeImport(sites, { idGen: idGen() });
   const built = buildCentral(proposal, sites, {}, { idGen: idGen('g') });
   const central = built.central;
+  // Rows read from the database carry the steps column once SQL 20261216a has run.
+  if (sqlRun) central.products = central.products.map((p) => ({ ...p, combo: p.combo ?? null }));
   central.menu = { id: '99999999-0000-4000-8000-000000000001', name: 'Group menu', description: '', use_name_everywhere: false, refreshed_at: '2026-10-17' };
   return { v, central, proposal };
 }
@@ -152,6 +154,19 @@ test('a variant the site added to a group menu product comes in as that product\
   assert.deepEqual(comboStepsOf(after.products.find((p) => p.name === 'Big coffee deal').combo)[0].products.map((x) => x.itemId), [xl.id]);
   assert.ok(r.words.includes('Extra large comes in as a new variant of Latte, on at Site B only.'), r.words.join(' | '));
   assert.deepEqual(planAt(after, r.changes, B, raw).lines, []);
+});
+
+test('before SQL 20261216a the group menu cannot hold steps: Bring in says so in words, and the rest still comes in', () => {
+  const { v, central } = setup({ sqlRun: false });
+  const raw = addOwn(v[B]);
+  const r = bringInChanges(central, B, raw, 'own-byo', { idGen: idGen('n'), siteName: 'Site B' });
+  assert.deepEqual(r, { ok: false, changes: [], words: [], problems: ['Coffee and a treat is a Combo with steps. The group menu can hold its steps once one database update has run (SQL 20261216a). Ask ServOS to run it. Nothing was added to the draft.'] });
+  // A Combo with no steps, and every other product, comes in as before.
+  assert.ok(bringInChanges(central, B, raw, 'own-plain', { idGen: idGen('m'), siteName: 'Site B' }).ok);
+  const all = bringInAllChanges(central, B, raw, { idGen: idGen('k'), siteName: 'Site B', orgId: ORG });
+  assert.ok(all.ok, all.problems.join(' | '));
+  assert.ok(all.problems.some((w) => /SQL 20261216a/.test(w)));
+  assert.ok(!applyChanges(central, all.changes).central.products.some((p) => p.name === 'Coffee and a treat'));
 });
 
 test('a step product that cannot come in stops the Combo, in words, and nothing is added', () => {

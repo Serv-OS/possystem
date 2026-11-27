@@ -34,6 +34,7 @@ import { MAIN_MENU, extraMenus, extraMenuAt, menuKeysValue } from '../../../supa
 import { touchEverything, comboWithSteps } from '../../../supabase/functions/_shared/msmImport.js';
 // 5.12.124: a site's Combo comes in WITH its steps (the same rules as everywhere: src/lib/combo.js).
 import { comboStepsOf, comboColumnValue, comboProductIds, mapStepProducts, stepProductBlock, stepsSummary } from '../combo.js';
+import { comboColumnReady } from './msmComboRows.js';
 import { importTaxByType, sizeKeptTax, mapRateDescriptor } from '../../../supabase/functions/_shared/msmTax.js';
 import {
   familyOf, normName, has, samePrice, sameValue, money2, KEPT_COLUMNS, GROUP_KEPT_COLUMNS, PUBLISHED_CHANNELS,
@@ -208,6 +209,9 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   // in words, and nothing is added to the draft. A product that is no longer at the site is left
   // out of the step (the settle below then keeps the site's own list, so nothing changes there).
   if (comboWithSteps(row)) {
+    // The group menu can hold steps once SQL 20261216a has run (its products then carry the column).
+    // Before that the database would refuse the draft with a code: it is said here, in words.
+    if (!comboColumnReady(C.products)) return fail(`${nameOf(row)} is a Combo with steps. The group menu can hold its steps once one database update has run (SQL 20261216a). Ask ServOS to run it. Nothing was added to the draft.`);
     const stepNameOf = new Map();
     for (const st of comboStepsOf(row.combo)) for (const x of st.products) if (!stepNameOf.has(x.itemId)) stepNameOf.set(x.itemId, st.name);
     const notHere = [];                    // step products that cannot be picked at the site today
