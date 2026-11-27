@@ -29,6 +29,12 @@ import { isQuoteOfOrder } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: 
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
+// 5.12.123: Combo products (lib/combo.js). A Combo with steps is built in its own flow, shows as one
+// block in the order panel and moves as one.
+import ComboFlow from '../components/ComboFlow';
+import ComboOrderBlock from '../components/ComboOrderBlock';
+import { comboHasSteps, comboSteps, comboUnsellable, comboIsFixed, comboMissing, startingPicks, orderBlocks, comboLinesOf, comboLinesTotal, isComboLine, isComboPick, unitsUsed } from '../lib/combo';
+import { pickFlowSetup, stepForLine, comboPosContext } from '../lib/comboLines';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
 import { isSoldAs, notSoldAsWords, linesNotSoldAs, switchBlockedWords, soldAsKey, SOLD_AS_WORDS } from '../lib/soldAs';
 import CheckoutModal from './CheckoutModal';
@@ -90,6 +96,7 @@ export default function POSSurface() {
   const {
     staff, allergens, toggleAllergen, clearAllergens,
     addItem, addCustomItem, addGiftCardLine, removeItem, updateItemQty, updateItemNote, configureLineOptions,
+    addCombo, removeCombo, configureComboPick, duplicateCombo,
     updateItemSeat, updateItemCourse, setOrderNote,
     sendToKitchen, fireCourse, saveTableSession, toggleServiceCharge,
     reprintKitchenTickets,
@@ -440,9 +447,14 @@ export default function POSSurface() {
   // (edit mode) — { uid, menuItem, basePrice, qty }. Mutually exclusive with
   // modalItem (the add flow); both render in the same right-panel slot.
   const [editLine, setEditLine] = useState(null);
+  // 5.12.123: the Combo being built in the centre panel (ComboFlow), and the pick of a Combo
+  // already on the order whose own options are open ({ uid }). Both belong to one order, so
+  // neither survives a table switch.
+  const [comboItem, setComboItem] = useState(null);
+  const [editPick, setEditPick] = useState(null);
   // The edit targets one line uid on one table — never let it survive a table
   // switch (confirming would silently no-op against the wrong session).
-  useEffect(() => { setEditLine(null); }, [activeTableId]);
+  useEffect(() => { setEditLine(null); setComboItem(null); setEditPick(null); }, [activeTableId]);
   const [showCheckout, setShowCheckout] = useState(false);
   // 30 Sep 2026 / 5 Nov 2026: 'send' | 'pay' while the Order details pop up is up, so it knows what to do next.
   const [detailsFor, setDetailsFor] = useState(null);
@@ -496,7 +508,7 @@ export default function POSSurface() {
   // 17 Oct 2026 (Multi site menu): a head office menu update waits until this till is idle (no
   // lines, no payment screen, nothing open). Only lib/msm/msmTillWatch.js reads this; an ordinary
   // Push to POS is not affected.
-  const _tillModalOpen = !!(modalItem || editLine || detailsFor || showAllergens || showCustom || showGift || giftActivate || showCustomerModal
+  const _tillModalOpen = !!(modalItem || editLine || comboItem || editPick || detailsFor || showAllergens || showCustom || showGift || giftActivate || showCustomerModal
     || linkMemberFor || pendingOrderType || voidTarget || showDiscount || showReceipt || showReprint || infoItem
     || showReview || showSendModal || showAllergenGate || showTableActions);
   useEffect(() => {
@@ -761,13 +773,28 @@ export default function POSSurface() {
     );
   }, [cat, search, catItems, MENU_ITEMS, allowedCatIds]);
 
+  // 5.12.123: a Combo is ONE block in the order panel (lib/combo.js orderBlocks): its line and its
+  // picks under it, above the course groups. The lines grouped by course below are every OTHER line.
+  // Courses still count every line (a pick fires with its own course), so Fire is offered for a
+  // course that holds only picks.
+  const comboBlocks = useMemo(() => orderBlocks(items).filter(b => b.kind === 'combo'), [items]);
   const byCourse = useMemo(()=>{
+    const inBlock = new Set(comboBlocks.flatMap(b => [b.parent.uid, ...b.picks.map(p => p.uid)]));
     const g = {};
-    items.forEach(item => { const c=item.course??1; if(!g[c])g[c]=[]; g[c].push(item); });
+    items.forEach(item => { if (inBlock.has(item.uid)) return; const c=item.course??1; if(!g[c])g[c]=[]; g[c].push(item); });
     return g;
-  },[items]);
+  },[items, comboBlocks]);
   const courseNums = Object.keys(byCourse).map(Number).sort();
-  const nextToFire = courseNums.find(c=>c>1&&!firedCourses.includes(c)&&(firedCourses.includes(c-1)||firedCourses.includes(1)));
+  const allCourseNums = useMemo(() => [...new Set(items.filter(i => !i.noKitchen).map(i => i.course ?? 1))].sort(), [items]);
+  const nextToFire = allCourseNums.find(c=>c>1&&!firedCourses.includes(c)&&(firedCourses.includes(c-1)||firedCourses.includes(1)));
+  // What the POS knows for the Combo rules (does a pick's product have options to change?). Only
+  // worked out while a Combo is on the order.
+  const _modGroupDefsNow = useStore(s => s.modifierGroupDefs);
+  const _hasCombo = comboBlocks.length > 0;
+  const comboOptionCtx = useMemo(() => (_hasCombo ? comboPosContext({
+    menuItems: rawItems, eightySixIds, dailyCounts, orderType: activeTableId ? 'dine-in' : orderType,
+    modifierGroupDefs: _modGroupDefsNow || [], instructionGroupDefs: instructionGroupDefs || [],
+  }) : null), [_hasCombo, rawItems, eightySixIds, dailyCounts, orderType, activeTableId, _modGroupDefsNow, instructionGroupDefs]);
 
   // 5.12.115 (lib/soldAs.js): an order cannot become an order type one of its lines is not sold
   // on (wine on a takeaway). The switch is refused with the names, and the caller is told (false).
@@ -803,7 +830,8 @@ export default function POSSurface() {
     // v5.5.189: block item if ALL options in any required modifier group are 86'd.
     // The combo/modifiable item can't be fulfilled if no choices remain.
     const _modGroupDefs = useStore.getState().modifierGroupDefs || [];
-    const assignedGroups = item.assignedModifierGroups || [];
+    // 5.12.123: a Combo with steps asks no option groups of its own (its steps do the asking).
+    const assignedGroups = comboHasSteps(item) ? [] : (item.assignedModifierGroups || []);
     for (const ag of assignedGroups) {
       const def = _modGroupDefs.find(d => d.id === ag.groupId);
       if (!def || (def.min || 0) === 0) continue; // not required — skip
@@ -825,8 +853,32 @@ export default function POSSurface() {
     if (allergens.some(a=>(item.allergens||[]).includes(a))) { setPendingItem(item); return; }
     openFlow(item);
   };
+  // 5.12.123 (Peter, 27 Nov 2026): a Combo with steps. It cannot be made right now: say why and
+  // open nothing. Every step fills itself and nothing needs an answer (a fixed Combo): it is added
+  // in one tap, and each pick can still be changed on the order. Otherwise walk the steps.
+  const openCombo = (item) => {
+    const st = useStore.getState();
+    const ctx = st.comboContext(item);
+    const cant = comboUnsellable(item, ctx);
+    if (cant) { showToast(cant, 'error'); return; }
+    const steps = comboSteps(item);
+    if (comboIsFixed(steps, ctx)) {
+      let n = 0;
+      const picks = startingPicks(steps, ctx, (stepId, entryId) => ({ key: `fx-${++n}`, stepId, entryId, itemId: ctx.sizesOf(entryId).length ? null : entryId, mods: [], notes: '', answers: null, configured: false }));
+      if (!comboMissing(steps, picks, ctx)) {
+        const r = addCombo(item, picks);
+        if (r.ok) showToast(`${item.menuName || item.name} added`, 'success');
+        return;
+      }
+    }
+    setModalItem(null); setEditLine(null); setEditPick(null);
+    setRightTab('menu');
+    setComboItem(item);
+  };
   const openFlow = (item) => {
     if (isOptionOnlyItem(item)) return;
+    // A Combo with NO steps is the product it always was and goes on as before.
+    if (comboHasSteps(item)) { openCombo(item); return; }
 
     // Variant parent: detected by type OR by having linked children
     const variantChildren = MENU_ITEMS
@@ -881,6 +933,7 @@ export default function POSSurface() {
   // unanswered, so the badge stays until it is (same per item min rule as
   // InlineItemFlow, preorderChoices.missingInstructionGroups).
   const lineNeedsOptions = (line) => {
+    if (isComboLine(line)) return false;   // 5.12.123: a Combo pick has its own Change (openPickOptions)
     if (!line?.fromPreorder || line.voided || line.status === 'sent') return false;
     const mi = MENU_ITEMS.find(m => m.id === line.itemId);
     if ((line.mods?.length || 0) > 0 || line.variantName) {
@@ -900,6 +953,18 @@ export default function POSSurface() {
     setModalItem(null);
     setRightTab('menu');
     setEditLine({ uid: line.uid, menuItem: mi, basePrice: line.price, qty: line.qty || 1 });
+  };
+  // 5.12.123: Change on a pick of a Combo already on the order: its product's own option flow,
+  // opened with what it already has. Only before the Combo has gone to the kitchen.
+  const pickCanChange = (line) => {
+    if (!isComboPick(line) || line.voided) return false;
+    const row = rawItems.find(r => r.id === (line.comboEntryId ?? line.itemId));
+    return !!row && !!comboOptionCtx && comboOptionCtx.hasOptions(row);
+  };
+  const openPickOptions = (line) => {
+    setModalItem(null); setEditLine(null); setComboItem(null);
+    setRightTab('menu');
+    setEditPick({ uid: line.uid });
   };
 
   const handleSave = () => {
@@ -1721,13 +1786,31 @@ export default function POSSurface() {
             </div>
           )}
 
+          {/* 5.12.123: each Combo is one block (its line, its picks under it). It is removed, voided,
+              seated and discounted as one; a pick keeps only its own options, note and course. */}
+          {comboBlocks.map(block => (
+            <ComboOrderBlock key={block.comboId} block={block} namesOnly={namesOnly} hideCourses={hideCourses} compact={compact}
+              flash={flashLineUid===block.parent.uid || block.picks.some(p => p.uid===flashLineUid)}
+              orderType={orderType} covers={covers} seatList={seatList}
+              canChange={pickCanChange}
+              onRemove={()=>removeCombo(block.comboId)}
+              onVoid={()=>setVoidTarget({type:'item',item:block.parent})}
+              onDuplicate={()=>{ const r=duplicateCombo(block.comboId); if(r?.ok) showToast(`${block.parent.name} added again`,'success'); }}
+              onSeat={s=>updateItemSeat(block.parent.uid,s)}
+              onRemoveDiscount={()=>removeItemDiscount(activeTableId,block.parent.uid)}
+              onChangePick={openPickOptions}
+              onPickNote={(line,n)=>updateItemNote(line.uid,n)}
+              onPickCourse={(line,c)=>updateItemCourse(line.uid,c)}
+            />
+          ))}
+
           {courseNums.map(courseNum=>{
             const cc=COURSE_COLORS[courseNum]||COURSE_COLORS[1];
             const isFired=firedCourses.includes(courseNum)||courseNum===0;
             const canFire=hasSent&&!isFired&&courseNum>1&&(firedCourses.includes(courseNum-1)||firedCourses.includes(1));
             return(
               <div key={courseNum} style={{marginBottom:8}}>
-                {!hideCourses && courseNums.length>1&&(
+                {!hideCourses && allCourseNums.length>1&&(
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:5,marginTop:3}}>
                     <div style={{height:1,flex:1,background:'var(--bdr)'}}/>
                     <div style={{display:'flex',alignItems:'center',gap:5}}>
@@ -2084,7 +2167,64 @@ export default function POSSurface() {
             pre-order line (choose cooking temp etc.). Confirm replaces the
             line's mods/variant/notes in place; the line's base price (0.00 on
             prepay packages) is untouched and modifier prices add on top. */}
-        {editLine && rightTab==='menu' && (
+        {/* 5.12.123: a Combo with steps is built here, in the same centre panel frame (ComboFlow).
+            The store has the last word on every rule (addCombo): it adds every line or none. */}
+        {comboItem && (
+          /* Kept mounted while another tab (History, Deliveries) is looked at, so the picks made so far are not lost. */
+          <div style={{flex:1, overflow:'hidden', display: rightTab==='menu' ? undefined : 'none'}}>
+            <ComboFlow
+              key={`combo-${comboItem.id}`}
+              item={comboItem}
+              menuItems={MENU_ITEMS}
+              activeAllergens={allergens}
+              onAdd={(picks)=>{ const r=addCombo(comboItem, picks); if(r.ok){ setComboItem(null); showToast(`${comboItem.menuName||comboItem.name} added`,'success'); } }}
+              onCancel={()=>setComboItem(null)}
+            />
+          </div>
+        )}
+        {/* 5.12.123: Change on a pick of a Combo already on the order: the product's own option flow,
+            opened with what the pick already has. Its price follows its own rule (configureComboPick). */}
+        {!comboItem && editPick && rightTab==='menu' && (() => {
+          const st = useStore.getState();
+          const line = items.find(i => i.uid === editPick.uid);
+          const comboRow = line ? rawItems.find(r => r.id === items.find(i => i.comboId === line.comboId && i.comboRole === 'parent')?.itemId) : null;
+          const held = line ? unitsUsed([{ itemId: line.itemId, mods: line.mods }], { rowsById: new Map(rawItems.map(r => [r.id, r])) }) : null;
+          const ctx = line ? st.comboContext(comboRow || null, { giveBack: held }) : null;
+          const setup = line && isComboPick(line) ? pickFlowSetup({
+            entryId: line.comboEntryId ?? line.itemId, itemId: line.itemId, answers: line.optionAnswers || null,
+            step: stepForLine(line, comboRow), ctx, picks: [], menuItems: MENU_ITEMS,
+            priceOf: (row) => getItemPrice(row, orderType, deviceMenuId), money,
+          }) : null;
+          if (!setup) return (
+            <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:14,padding:24}}>
+              <div style={{fontSize:14,fontWeight:700,color:'var(--t2)',textAlign:'center'}}>That pick cannot be changed any more.</div>
+              <button className="btn btn-ghost" style={{height:44,padding:'0 20px'}} onClick={()=>setEditPick(null)}>Back to the menu</button>
+            </div>
+          );
+          return (
+            <div style={{flex:1, overflow:'hidden'}}>
+              <InlineItemFlow
+                key={`pick-${editPick.uid}`}
+                item={setup.flowItem}
+                menuItems={setup.flowMenu}
+                activeAllergens={allergens}
+                mode="edit"
+                lockedQty={1}
+                basePriceOf={setup.baseOf}
+                sizePriceWords={setup.sizeWords}
+                initialAnswers={setup.answers}
+                onConfirm={(target,mods,cfg,opts)=>{
+                  const row = rawItems.find(r => r.id === target.id) || target;
+                  const ok = configureComboPick(editPick.uid, { target: row, mods, notes: opts.notes, answers: opts.answers || null });
+                  setEditPick(null);
+                  if (ok) showToast('Pick changed', 'success');
+                }}
+                onCancel={()=>setEditPick(null)}
+              />
+            </div>
+          );
+        })()}
+        {!comboItem && !editPick && editLine && rightTab==='menu' && (
           <div style={{flex:1, overflow:'hidden'}}>
             <InlineItemFlow
               key={`edit-${editLine.uid}`}
@@ -2105,7 +2245,7 @@ export default function POSSurface() {
           </div>
         )}
         {/* InlineItemFlow: variants/modifiers shown inline. Pizza uses modal overlay instead. */}
-        {!editLine && modalItem && modalItem.type !== 'pizza' && rightTab==='menu' && (
+        {!comboItem && !editPick && !editLine && modalItem && modalItem.type !== 'pizza' && rightTab==='menu' && (
           <div style={{flex:1, overflow:'hidden'}}>
             <InlineItemFlow
               key={modalItem.id}
@@ -2117,7 +2257,7 @@ export default function POSSurface() {
             />
           </div>
         )}
-        {!editLine && (!modalItem || modalItem.type === 'pizza') && rightTab==='menu'&&(
+        {!comboItem && !editPick && !editLine && (!modalItem || modalItem.type === 'pizza') && rightTab==='menu'&&(
           <>
             {showAllergens&&(
               <div style={{padding:'8px 14px',borderBottom:'1px solid var(--bdr)',background:'var(--bg1)',flexShrink:0}}>
@@ -2158,10 +2298,10 @@ export default function POSSurface() {
             {/* Subcategory pills */}
             {!search && cat !== 'quick' && subCategories.length > 0 && (
               <div style={{ display:'flex', gap:4, padding:'6px 0 10px', flexWrap:'wrap' }}>
-                <button onClick={() => { setSubCat(null); setRightTab('menu'); setModalItem(null); setEditLine(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:!subCat?800:500, border:'none', background:!subCat?'var(--acc)':'var(--bg3)', color:!subCat?'#0b0c10':'var(--t3)' }}>All</button>
+                <button onClick={() => { setSubCat(null); setRightTab('menu'); setModalItem(null); setEditLine(null); setComboItem(null); setEditPick(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:!subCat?800:500, border:'none', background:!subCat?'var(--acc)':'var(--bg3)', color:!subCat?'#0b0c10':'var(--t3)' }}>All</button>
                 {subCategories.map(sc => {
                   const a = subCat === sc.id, cl = sc.color||'var(--acc)';
-                  return (<button key={sc.id} onClick={() => { setSubCat(sc.id); setRightTab('menu'); setModalItem(null); setEditLine(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && <EmojiIcon value={sc.icon} size={13}/>}{sc.label}</button>);
+                  return (<button key={sc.id} onClick={() => { setSubCat(sc.id); setRightTab('menu'); setModalItem(null); setEditLine(null); setComboItem(null); setEditPick(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && <EmojiIcon value={sc.icon} size={13}/>}{sc.label}</button>);
                 })}
               </div>
             )}
@@ -2310,7 +2450,7 @@ export default function POSSurface() {
                               letterSpacing:.02,
                               border:hasImg?'1px solid rgba(255,255,255,.3)':'none',
                             }}>
-                              {item.type==='variants'?'▾ sizes':'⊕ opts'}
+                              {comboHasSteps(item)?'Combo':item.type==='variants'?'▾ sizes':'⊕ opts'}
                             </span>}
 
                           </div>
@@ -2370,8 +2510,9 @@ export default function POSSurface() {
       {voidTarget&&(
         <VoidModal
           type={voidTarget.type}
-          items={voidTarget.type==='item'?[voidTarget.item]:items.filter(i=>!i.voided)}
-          totalValue={voidTarget.type==='item'?voidTarget.item.price*voidTarget.item.qty:subtotal}
+          title={voidTarget.type==='item'&&isComboLine(voidTarget.item)?'Void Combo':null}
+          items={voidTarget.type==='item'?comboLinesOf(items, voidTarget.item).filter(i=>!i.voided):items.filter(i=>!i.voided)}
+          totalValue={voidTarget.type==='item'?(isComboLine(voidTarget.item)?comboLinesTotal(comboLinesOf(items, voidTarget.item)):voidTarget.item.price*voidTarget.item.qty):subtotal}
           onConfirm={(opts)=>{
             // activeTableId null = the walk in order (store voidItem / voidCheck take both).
             if (voidTarget.type==='item') voidItem(activeTableId||null, voidTarget.item.uid, opts);
@@ -2385,7 +2526,9 @@ export default function POSSurface() {
       {/* Discount modal */}
       {showDiscount&&(
         <DiscountModal
-          items={items.filter(i=>!isNoDiscountLine(i)) /* v5.11.118: a gift card is never discounted */}
+          items={items.filter(i=>!isNoDiscountLine(i)) /* v5.11.118: a gift card is never discounted */
+            /* 5.12.123: a Combo is ONE row, at what the whole Combo comes to: its picks are not offered on their own (a discount on it covers all of it) */
+            .filter(i=>!isComboPick(i)).map(i => isComboLine(i) ? { ...i, price: comboLinesTotal(comboLinesOf(items, i)), qty: 1 } : i)}
           subtotal={linesAfterItemDiscounts(items)}
           onConfirm={(disc)=>{
             if (disc.scope==='check') {
@@ -2423,7 +2566,7 @@ export default function POSSurface() {
       {/* Reprint modal */}
       {showReprint&&(
         <ReprintModal
-          items={items.filter(i=>i.status==='sent')}
+          items={items.filter(i=>i.status==='sent' && !i.noKitchen) /* 5.12.123: a Combo's own line never went to the kitchen */}
           tableLabel={activeTable?.label || orderTypeLabel}
           onClose={()=>setShowReprint(false)}
           onReprint={(uids)=>{

@@ -18,9 +18,9 @@
 import { kitchenOverride, receiptOverride } from './itemDisplay.js';
 import { tillLineCat, tillLineCats, tillLineTaxRefs, tillLineTaxFields } from './tillLine.js';
 import { sizeOrMainOptions, modifierGroupRequired, instructionGroupMin, assignmentGroupId } from './menuRules.js';
-import { isSoldAs, notSoldAsWords, optionHiddenOn, groupsShownOn } from './soldAs.js';
+import { isSoldAs, notSoldAsWords, optionHiddenOn, groupsShownOn, soldAsKey, SOLD_AS_WORDS } from './soldAs.js';
 import { compareMenuItems } from './menuItemOrder.js';
-import { comboLinePlan, comboSteps, pickPrice, pickLineName, isComboPick, cents } from './combo.js';
+import { comboLinePlan, comboSteps, pickPrice, pickLineName, isComboPick, entryState, normaliseStep, PRICING_OWN, PRICING_SET, cents } from './combo.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const parentIdOf = (row) => row?.parentId ?? row?.parent_id ?? null;
@@ -235,8 +235,50 @@ export function comboPosContext({ item = null, menuItems = [], eightySixIds = []
     },
     soldAs: (row) => isSoldAs(row, orderType, rowsById),
     notSoldWords: (row) => notSoldAsWords(row, orderType),
+    /** The short words for a greyed tile: "Not for Takeaway". */
+    notSoldShort: () => { const k = soldAsKey(orderType); return k ? `Not for ${SOLD_AS_WORDS[k]}` : 'Not available'; },
     hiddenHere: (row) => optionHiddenOn(row, 'pos'),
     requiresAnswers: (row) => factsOf(row).requiresAnswers,
     hasOptions: (row) => factsOf(row).hasOptions,
   };
+}
+
+// ── Opening a pick's own options ─────────────────────────────────────────────
+
+/**
+ * The step a pick line's price follows: the Combo's own step when it still has it, else the rule
+ * the line itself recorded when it was rung up (the step was renamed away or removed since).
+ */
+export function stepForLine(line, item) {
+  return stepOfLine(line, item) || normaliseStep({
+    id: line?.comboStepId || 'step', name: line?.comboStepName || 'Step',
+    pricing: line?.comboKeepsPrice ? PRICING_OWN : PRICING_SET,
+    products: [{ itemId: line?.comboEntryId ?? line?.itemId, bump: line?.comboBump || 0 }],
+  });
+}
+
+/**
+ * Everything the POS option flow (components/InlineItemFlow.jsx) needs to ask ONE pick's own
+ * options, the same for a pick still being built and for a pick already on the order:
+ *   flowItem   the product the flow opens (a step that lists one size opens its product, with
+ *              that size already picked, so options kept on the product are still asked)
+ *   flowMenu   the POS product list with this product's sizes cut down to the ones that can be
+ *              picked (not 86'd, not run out, sold on this order type), plus the size it already has
+ *   answers    the earlier answers to start from
+ *   baseOf     (row) => what the pick costs before its options: 0.00 or its bump, or its own price
+ *   sizeWords  (size) => the words under a size button: "Included", "+2.50" or its own price
+ * picks: the other picks being built (their units are not free). Returns null when the product has gone.
+ */
+export function pickFlowSetup({ entryId, itemId = null, answers = null, step, ctx, picks = [], menuItems = [], priceOf = () => 0, money = (n) => Number(n).toFixed(2) } = {}) {
+  const entryRow = ctx?.rowsById?.get(entryId) || null;
+  if (!entryRow || !step) return null;
+  const entryParent = ctx.rowsById.get(parentIdOf(entryRow)) || null;
+  const flowItem = entryParent || entryRow;
+  const open = entryParent ? [entryRow] : entryState({ itemId: entryId, bump: 0 }, ctx, picks).sizes;
+  const kept = !entryParent && itemId && itemId !== entryId ? ctx.rowsById.get(itemId) : null;
+  const sizes = kept && !open.some((s) => s.id === kept.id) ? [...open, kept] : open;
+  const flowMenu = [...listOf(menuItems).filter((i) => i && parentIdOf(i) !== flowItem.id), ...sizes];
+  const baseOf = (row) => { const p = pickPrice({ step, entryId, mods: [], ownPrice: priceOf(row) }); return cents(p.base + p.bump); };
+  const sizeWords = (size) => { const b = baseOf(size); return step.pricing === PRICING_OWN ? money(b) : (b > 0 ? `+${money(b)}` : 'Included'); };
+  return { flowItem, flowMenu, answers: entryParent ? { ...(answers || {}), v: entryRow.id } : answers, baseOf, sizeWords };
 }
