@@ -255,14 +255,14 @@ const TOOL_DEFINITIONS = {
 
   eighty_six_item: {
     name: 'eighty_six_item',
-    description: 'Propose marking a menu item as sold out (86\'d). Requires confirmation.',
+    description: 'Propose marking something on the menu as sold out (86\'d): a product, a size, or an option (a sub item such as a drink inside an option group). Give the name as the person said it; the app finds the row. Requires confirmation, and nothing is 86\'d until the person confirms. If the result says nothing was changed, tell the person exactly that. Never say it is done unless the result says it has been 86\'d.',
     input_schema: {
       type: 'object',
       properties: {
-        item_id:   { type: 'string', description: 'The menu item ID' },
-        item_name: { type: 'string', description: 'The menu item name' },
+        item_name: { type: 'string', description: 'The name as the person said it' },
+        item_id:   { type: 'string', description: 'Only an id a tool result gave you (for example from the choices of an earlier eighty_six_item call). Never make one up; leave it out when unsure.' },
       },
-      required: ['item_id', 'item_name'],
+      required: ['item_name'],
     },
   },
 

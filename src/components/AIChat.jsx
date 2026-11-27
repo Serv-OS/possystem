@@ -104,6 +104,9 @@ export default function AIChat({ mode = 'foh', initialContext = '', placeholder 
     addMenuItem:    store.addMenuItem,
     updateMenuItem: store.updateMenuItem,
     toggle86:       store.toggle86,
+    // 5.12.119: the live lists, so an 86 is checked before and after (never a stale snapshot).
+    getMenuItems:     () => useStore.getState().menuItems || [],
+    getEightySixIds:  () => useStore.getState().eightySixIds || [],
     addItem:        store.addItem,
     voidItem:       store.voidItem,
     activeTableId:  store.activeTableId,

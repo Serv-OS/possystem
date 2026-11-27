@@ -3,7 +3,7 @@
 // at top, name + description, variant picker if applicable, modifier groups
 // with clear required/optional labels, qty stepper, sticky bottom CTA.
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { productImage } from '../../lib/productImage';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
@@ -21,6 +21,7 @@ import AllergenChips, { allergenPaletteFromTheme, allergenChipLabels } from '../
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
 import { kcalWords, mayContainWords, kcalNote, ALLERGEN_CHECK_EN } from '../../lib/menuStockFacts';
 import { isOnceEach } from '../../lib/choiceKinds';
+import { groupsShownOn } from '../../lib/soldAs';
 
 const capFirst = (s) => { const v = String(s || ''); return v ? v.charAt(0).toUpperCase() + v.slice(1) : ''; };
 
@@ -50,12 +51,16 @@ const extraLabel = (n, prefix = '+') => {
 //   extraPrices     priceFor returns what is EXTRA on top of a package, so
 //                   sizes, options and the button read "+£x" or "Included"
 // All of these default to the storefront's behaviour.
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null, avoidAllergens = [], showCalories = false }) {
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null, avoidAllergens = [], showCalories = false, fulfilment = null }) {
   useMenuText();
   const facts = item?.stockFacts || null;   // v5.11.93: the stock recipe's facts at this site, when any
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
+  // 5.12.119: what the option rule needs when the groups load (the menu rows and the order type),
+  // held so a menu refresh under an open sheet never reloads it and clears the picks.
+  const shownOnRef = useRef({ allItems, fulfilment });
+  shownOnRef.current = { allItems, fulfilment };
   const [instGroups, setInstGroups] = useState([]); // cooking prefs etc — no price impact
   const [selections, setSelections] = useState({});
   // Sub-picks for nested modifiers. Key: `${parentGroupId}:${parentOptionId}`,
@@ -206,7 +211,9 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           }));
         }
         if (!alive) return;
-        const all = [...fetched.values()].sort(compareMenuItems);
+        // 5.12.119: an option whose product head office hides on Online (or on Delivery, for a
+        // delivery order) is left out; a group with no option left is not asked (lib/soldAs.js).
+        const all = groupsShownOn([...fetched.values()], shownOnRef.current.allItems, 'online', shownOnRef.current.fulfilment).sort(compareMenuItems);
         const subGroupIds = new Set();
         all.forEach(g => (g.options || []).forEach(o => o?.subGroupId && subGroupIds.add(o.subGroupId)));
         // Top-level groups are the ones in modGroupIds that aren't sub-groups

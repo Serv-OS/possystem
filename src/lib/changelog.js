@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.119',
+    date: '27 Nov 2026',
+    items: [
+      'An option can now be hidden per screen (Peter, 27 Nov 2026: "I cannot hide a subitem from options ... dine in soda which needs to not show on ordering online etc but does need to show on the POS"). In the Multi site menu, Option groups, each option that is a sub item has Shows on ticks: POS, Kiosk, Online, Delivery. Untick one and that option is left out there at every site. The same ticks are on the sub item\'s own product sheet.',
+      'Every screen follows it: the POS and bar, the phone POS, both kiosk designs, online ordering, QR at the table, the catering page and the delivery platform catalogue. Nothing changes for any option until a tick is taken off.',
+      'A sub item can now be 86\'d (Peter: "I also cant find a way to 86 a sub item"). On the POS, long press a product and open the new Options tab: each option has its own 86 and Put back. In the Back Office, Inventory, Daily counts now lists sub items too, with an Options filter.',
+      'The POS option picker now greys an 86\'d option that is matched by name. It was looking in a list that left out sub items that are only options.',
+      'The assistant no longer says it has 86\'d something when it has not (Peter: "the AI said its done it but doesnt"). It now finds the product, size or option by name itself, asks which one when two share a name, leaves alone anything already 86\'d, and only says done when the 86 list holds it.',
+    ],
+  },
+  {
     v: '5.12.118',
     date: '27 Nov 2026',
     items: [

@@ -19,9 +19,12 @@ import { flowOrderedMods } from '../../lib/optionFlow';
 import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
 import { subitemNameIndex } from '../../lib/menuRules';
 import { isOnceEach } from '../../lib/choiceKinds';
+import { groupsShownOn } from '../../lib/soldAs';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
-  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [], dailyCounts = {}, orderType, activeMenuId } = useStore();
+  const { addItem, modifierGroupDefs: allGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [], dailyCounts = {}, orderType, activeMenuId } = useStore();
+  // 5.12.119: an option whose product head office hides on the POS is left out (lib/soldAs.js).
+  const modifierGroupDefs = useMemo(() => groupsShownOn(allGroupDefs, menuItems, 'pos'), [allGroupDefs, menuItems]);
   const [qty, setQty] = useState(1);
   const [stockErr, setStockErr] = useState(null);   // v5.6.69 — "Only N × X left"
   const [notes, setNotes] = useState('');

@@ -1412,6 +1412,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineItemSheet
           defaultImage={defaultImage}
           item={openItem} theme={theme} allItems={items} priceFor={priceFor}
+          fulfilment={priceType}
           avoidAllergens={activeAllergens} showCalories={showKcal}
           instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds}

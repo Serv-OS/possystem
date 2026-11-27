@@ -73,7 +73,7 @@ import {
 } from './msmModel.js';
 import { MAIN_MENU, MAIN_MENU_WORDS, allExtraMenus, menuKeysOf, extraMenuAt, extraVenueMenuId, longExtraVenueMenuId } from './msmMenus.js';
 import { mapRateDescriptor, effectiveTaxByType, venueProfileIsMirror, TAX_KEY_LABEL } from './msmTax.js';
-import { notSoldAs, withNotSoldAs, sameSoldAs, soldAsSummary, notShownOn, applyNotShownOn, holdsNotShownOn, shownOnSummary } from './soldAs.js';
+import { notSoldAs, withNotSoldAs, sameSoldAs, soldAsSummary, notShownOn, withNotShownOn, applyNotShownOn, holdsNotShownOn, shownOnSummary } from './soldAs.js';
 
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 const listOf = (v) => (Array.isArray(v) ? v : []);
@@ -887,7 +887,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: venueType(p),
         cat: columnValue(p, ps, 'cat'), cats: mapCats(p), parent_id: mapParent(p), sort_order: p.sort_order ?? 0,
         pricing, allergens: listOf(p.allergens), assigned_modifier_groups: mapGroups(p),
-        visibility: optionOnlyP(p) ? HIDDEN : soldVisibility(p), sold_alone: !!p.sold_alone, archived: false,
+        visibility: optionOnlyP(p) ? withNotShownOn(HIDDEN, notShownOn(p)) : soldVisibility(p), sold_alone: !!p.sold_alone, archived: false,
         tax_rate_id: tax.ok ? tax.id : null, image: p.image ?? null, scope: 'local', org_id: orgId,
         tags: listOf(p.tags), item_code: p.item_code ?? null, tax_overrides: newRowTaxOverrides(p, tax),
         ...(tax.profileId ? { tax_profile_id: tax.profileId } : {}),
@@ -1008,9 +1008,13 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         // ... the less menus the better"). Where head office hides a product is the second thing
         // written here: each switch it names goes off, one it stopped naming comes back on, the
         // site's other switches stay as they are.
+        // 5.12.119: a sub item that is only an option is never a product on a screen, so its
+        // switches stay as they are (all off). Only the list is written: every screen leaves an
+        // option out where its product's list names that screen (soldAs.js optionHiddenOn).
         const hide = notShownOn(p);
-        if (!holdsNotShownOn(vrow, hide)) {
-          setCol('items', vrow, 'visibility', applyNotShownOn(vrow.visibility ?? null, hide), { ...meta, shownOn: shownOnSummary({ visibility: { notShownOn: hide } }) || 'shown everywhere' });
+        const listOnly = optionOnlyP(p);
+        if (!holdsNotShownOn(vrow, hide, { listOnly })) {
+          setCol('items', vrow, 'visibility', applyNotShownOn(vrow.visibility ?? null, hide, { listOnly }), { ...meta, shownOn: shownOnSummary({ visibility: { notShownOn: hide } }) || 'shown everywhere', asOption: listOnly });
         }
         continue;
       }
@@ -1558,7 +1562,7 @@ export function lineWords(line, names = {}) {
   if (col === 'sold_alone') return `${who}: ${line.after ? 'now also sold on its own' : 'now only used as an option'}`;
   if (col === 'allergens') return `${who}: allergens change`;
   if (col === 'tags') return `${who}: dietary tags change`;
-  if (col === 'visibility' && line.shownOn) return `${who}: ${line.shownOn === 'shown everywhere' ? 'no longer hidden by head office' : `now ${line.shownOn.charAt(0).toLowerCase()}${line.shownOn.slice(1)}`}`;
+  if (col === 'visibility' && line.shownOn) return `${who}: ${line.shownOn === 'shown everywhere' ? 'no longer hidden by head office' : `now ${line.shownOn.charAt(0).toLowerCase()}${line.shownOn.slice(1)}`}${line.asOption ? ' as an option' : ''}`;
   if (col === 'visibility' && line.soldAs) return `${who}: ${line.soldAs === 'sold on every order type' ? 'now sold on every order type' : `now ${line.soldAs.charAt(0).toLowerCase()}${line.soldAs.slice(1)}`}`;
   if (col === 'visibility') return `${who}: where it shows changes`;
   if (col === 'assigned_modifier_groups') {
