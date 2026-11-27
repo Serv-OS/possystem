@@ -91,6 +91,12 @@ function venueTables() {
       t.menu_categories.push({ id: S(`dm-cat-${c.key}`, loc, i), location_id: loc, menu_id: menuId, parent_id: null, label: c.label, icon: c.icon, color: c.color, accounting_group: '', sort_order: ci + 1, default_course: 1, image: null, master_id: i === 0 ? null : `dm-cat-${c.key}` });
       t.menu_category_links.push({ menu_id: menuId, category_id: S(`dm-cat-${c.key}`, loc, i), sort_order: ci + 1 });
     });
+    // 5.12.118: the second site has its own Catering menu (as Mozz Sandy does), with one category
+    // linked onto it, so the Menus card has a menu to FIND.
+    if (i === 1) {
+      t.menus.push({ id: S('dm-menu-cater', loc, i), location_id: loc, name: 'Catering', description: '', is_default: false, is_active: true, sort_order: 1, updated_at: '2026-10-01T10:00:00+00:00' });
+      t.menu_category_links.push({ menu_id: S('dm-menu-cater', loc, i), category_id: S('dm-cat-food', loc, i), sort_order: 1 });
+    }
     t.print_routing.push({ id: `dm-pr-${i}`, location_id: loc, centres: [{ id: 'k', name: 'Kitchen' }, { id: 'b', name: 'Bar' }], routing: { k: { assignedCategories: [S('dm-cat-food', loc, i), S('dm-cat-bake', loc, i)], excludedItems: [] }, b: { assignedCategories: [S('dm-cat-hot', loc, i), S('dm-cat-cold', loc, i)], excludedItems: [] } } });
     PRODUCTS.forEach(([ck, name, base], pi) => {
       // Old Town (site 4) does not sell smoothies or the turmeric latte.

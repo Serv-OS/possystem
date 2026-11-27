@@ -12,7 +12,7 @@
 // (a setting, saved at once, never a draft: public.msm_set_order_types); the one time option group
 // refresh when the menu still needs it; the "every site" switch now saves with the Save button.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { groupsNeedRefresh } from '../../../../supabase/functions/_shared/msmPlan.js';
 import { Btn, Pill, Switch, Field, Notice } from './msmUi';
@@ -22,7 +22,7 @@ import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP } from '../../../lib/msm/msmWords';
 import { ui } from './msmStyle';
 import { useConfirm } from './useConfirm';
 import { extraMenus, extraMenuAt, MAIN_MENU_WORDS, menuKeysOf } from '../../../../supabase/functions/_shared/msmMenus.js';
-import { menusReady, addMenuChanges, renameMenuChange, removeMenuChange, menuSiteChange, menuAtSiteWords } from '../../../lib/msm/msmEdit';
+import { menusReady, addMenuChanges, renameMenuChange, removeMenuChange, menuSiteChange, menuAtSiteWords, foundSiteMenus, foundMenuWords } from '../../../lib/msm/msmEdit';
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
 import { activeTaxText as tt } from '../../../lib/taxWords';
 
@@ -31,7 +31,7 @@ import { activeTaxText as tt } from '../../../lib/taxWords';
 const TYPE_CHOICES = ['dineIn', 'takeaway', 'collection', 'driveThru', 'bar'];
 const TYPE_HELP = { ...PRICE_TYPE_HELP, bar: 'Shows a Bar tab VAT row. Bar tabs have no price of their own.' };   // taxText: read through tt() below
 
-export default function MsmDetails({ api, client, menu, live, eff, sites, stage, editable, canEdit, rows = [], setNote, reload }) {
+export default function MsmDetails({ api, client, menu, live, eff, sites, stage, editable, canEdit, rows = [], setNote, reload, venueMenus }) {
   const effMenu = eff?.menu || menu;
   // What the person is typing; null = show the menu as it is (with the draft).
   const [typed, setTyped] = useState(null);
@@ -42,24 +42,17 @@ export default function MsmDetails({ api, client, menu, live, eff, sites, stage,
   const setDescription = (v) => setTyped((t) => ({ name: t?.name ?? name, description: v, everywhere: t?.everywhere ?? everywhere }));
   const setEverywhere = (v) => setTyped((t) => ({ name: t?.name ?? name, description: t?.description ?? description, everywhere: v }));
   const dirty = !!typed && (name.trim() !== (effMenu?.name || '') || description !== (effMenu?.description || '') || everywhere !== !!effMenu?.use_name_everywhere);
-  const [read, setRead] = useState({ key: '', menus: null });
   const [saving, setSaving] = useState(false);
-
-  // Every menu at every site of the group menu (the one it writes into, and the site's others).
-  const ids = useMemo(() => (live?.sites || []).map((s) => s.location_id).filter(Boolean), [live]);
-  const idsKey = ids.join('|');
-  useEffect(() => {
-    let on = true;
-    if (!client || !ids.length) return undefined;
-    readAllRows(() => client.from('menus').select('*').in('location_id', ids).order('sort_order').order('id')).then((r) => {
-      if (on) setRead({ key: idsKey, menus: r.rows ? new Map(r.rows.map((m) => [m.id, m])) : null });
-    });
-    return () => { on = false; };
-  }, [client, ids, idsKey]);
-  // null while reading or when the read failed (failed shows a notice once the read is back).
-  const venueMenus = !ids.length ? new Map() : read.key === idsKey ? read.menus : undefined;
+  // venueMenus: every menu at every site of the group menu (the one it writes into, and the site's
+  // others), read by the screen (useSiteMenus). undefined while reading, null when the read failed.
 
   const products = (eff?.products || []).filter((p) => !p.archived);
+  const foundIds = useMemo(() => new Set(venueMenus ? foundSiteMenus({ live, eff }, venueMenus).flatMap((f) => f.ids) : []), [live, eff, venueMenus]);
+  const managedIds = useMemo(() => {
+    const out = new Set();
+    if (venueMenus) for (const m of extraMenus(eff?.menu)) for (const x of eff?.sites || []) { const at = extraMenuAt(m, x.location_id, venueMenus); if (at.id) out.add(at.id); }
+    return out;
+  }, [eff, venueMenus]);
   const counts = useMemo(() => {
     const m = new Map();
     for (const ps of eff?.productSites || []) if (ps.active !== false) m.set(ps.location_id, (m.get(ps.location_id) || 0) + 1);
@@ -116,7 +109,8 @@ export default function MsmDetails({ api, client, menu, live, eff, sites, stage,
         {sites.map((s) => {
           const ms = (live?.sites || []).find((x) => x.location_id === s.id);
           const vm = venueMenus?.get(ms?.venue_menu_id);
-          const others = venueMenus ? [...venueMenus.values()].filter((m) => m.location_id === s.id && m.id !== ms?.venue_menu_id && m.is_active !== false) : [];
+          // Its menus the group menu does not manage (one of the group's other menus is under Menus).
+          const others = venueMenus ? [...venueMenus.values()].filter((m) => m.location_id === s.id && m.id !== ms?.venue_menu_id && m.is_active !== false && !managedIds.has(m.id)) : [];
           return (
             <div key={s.id} style={{ padding: '10px 0', borderTop: '1px solid var(--bdr)' }}>
               <div style={{ ...ui.row }}>
@@ -131,7 +125,7 @@ export default function MsmDetails({ api, client, menu, live, eff, sites, stage,
               </div>
               {others.length > 0 && (
                 <div style={{ ...ui.sub, fontSize: 12, marginTop: 4, paddingLeft: 10, borderLeft: '2px solid var(--bdr2)' }}>
-                  Its other menus (not changed here): {others.map((m) => `${m.name || 'Menu'} (${menuTimesWords(m)}${m.is_default ? ', the default' : ''})`).join('; ')}
+                  Its other menus (not changed here): {others.map((m) => `${m.name || 'Menu'} (${menuTimesWords(m)}${m.is_default ? ', the default' : ''})`).join('; ')}{others.some((m) => foundIds.has(m.id)) ? '. To manage one here, add it under Menus.' : ''}
                 </div>
               )}
             </div>
@@ -159,10 +153,15 @@ function Menus({ client, live, eff, sites, venueMenus, stage, editable, setNote 
   const cats = useMemo(() => new Map((eff?.categories || []).map((c) => [c.id, c])), [eff]);
   const countOn = (key) => (eff?.categories || []).filter((c) => !c.archived && !c.parent_id && menuKeysOf(c, cats, eff?.menu).includes(key)).length;
   const say = (r) => { if (r?.words) setNote?.({ tone: 'warn', text: r.words }); };
+  // 5.12.118: the menus the sites already have that are not managed here yet (found, never typed).
+  const found = useMemo(() => (venueMenus ? foundSiteMenus(ctx, venueMenus) : []), [ctx, venueMenus]);
+  const siteNames = useMemo(() => new Map(sites.map((x) => [x.id, x.name])), [sites]);
 
-  const add = async () => {
+  // typed: the name box. A found menu passes its own name (nobody types what a site already has).
+  const add = async (foundName = null) => {
+    const want = foundName ?? name;
     const all = venueMenus ? [...venueMenus.values()] : [];
-    const first = addMenuChanges(ctx, name, { venueMenus: all });
+    const first = addMenuChanges(ctx, want, { venueMenus: all });
     if (first.words) { say(first); return; }
     setBusy(true);
     // The site categories already on a matched menu, so they come in ticked and nothing is taken off.
@@ -176,13 +175,14 @@ function Menus({ client, live, eff, sites, venueMenus, stage, editable, setNote 
       if (!home.rows || !links.rows) { setBusy(false); setNote?.({ tone: 'bad', text: 'Could not read what is on the sites\' own menus of that name. Nothing was changed. Try again.' }); return; }
       on = [...home.rows.map((c) => ({ menu_id: c.menu_id, category_id: c.id })), ...links.rows];
     }
-    const r = addMenuChanges(ctx, name, { venueMenus: all, onVenueMenus: on });
+    const r = addMenuChanges(ctx, want, { venueMenus: all, onVenueMenus: on });
     if (r.words) { setBusy(false); say(r); return; }
-    const nm = name.trim();
+    const nm = want.trim();
     const matched = r.matched.map((loc) => sites.find((x) => x.id === loc)?.name).filter(Boolean);
-    const res = await stage(r.changes, { done: `${nm} is in the draft as a new menu.${matched.length ? ` It uses the ${nm} menu ${matched.join(', ')} already ${matched.length === 1 ? 'has' : 'have'}.` : ''}${r.ticked.length ? ` Already on it there, so ticked in: ${r.ticked.join(', ')}.` : ''} Now tick categories into it on the Products tab.` });
+    const others = sites.filter((x) => !r.matched.includes(x.id)).length;
+    const res = await stage(r.changes, { done: `${nm} is in the draft as a new menu.${matched.length ? ` It uses the ${nm} menu ${matched.join(', ')} already ${matched.length === 1 ? 'has' : 'have'}.${others ? ` Publishing makes one at the other ${others === 1 ? 'site' : `${others} sites`}.` : ''}` : ''}${r.ticked.length ? ` Already on it there, so ticked in: ${r.ticked.join(', ')}.` : ''}${r.notInGroup ? ` ${r.notInGroup === 1 ? '1 category on it is' : `${r.notInGroup} categories on it are`} the site's own and not in the group menu yet: bring ${r.notInGroup === 1 ? 'its' : 'their'} products in on the Sites tab.` : ''} Tick more categories into it on the Products tab.` });
     setBusy(false);
-    if (res?.ok) setName('');
+    if (res?.ok && foundName == null) setName('');
   };
   const rename = async () => {
     if (!renaming) return;
@@ -263,10 +263,25 @@ function Menus({ client, live, eff, sites, venueMenus, stage, editable, setNote 
           })}
         </div>
       ))}
+      {ready && found.length > 0 && (
+        <div style={{ padding: '10px 0 2px', borderTop: '1px solid var(--bdr)' }} data-testid="msm-menus-found">
+          <div style={{ fontSize: 13.5, fontWeight: 700 }}>Found at your sites</div>
+          <div style={{ ...ui.sub, marginBottom: 6 }}>{found.length === 1 ? 'A menu a site has' : 'Menus your sites have'} that {found.length === 1 ? 'is' : 'are'} not managed here yet. Add {found.length === 1 ? 'it' : 'one'} and publishing puts it on every site.</div>
+          {found.map((f) => (
+            <div key={f.ids.join('|')} style={{ ...ui.row, padding: '6px 0 6px 10px', flexWrap: 'wrap' }} data-testid="msm-menu-found">
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{f.name}</div>
+                <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>{foundMenuWords(f, siteNames, sites.length)}</div>
+              </div>
+              {editable && <Btn small kind="primary" data-testid="msm-menu-found-add" disabled={busy || f.full} title={f.full ? 'The group menu has as many menus as it can hold' : `Manage ${f.name} here and publish it to every site`} onClick={() => add(f.name)}>{busy ? 'Adding…' : 'Add to the group menu'}</Btn>}
+            </div>
+          ))}
+        </div>
+      )}
       {editable && ready && (
         <div style={{ ...ui.row, marginTop: 12 }}>
           <input aria-label="New menu name" data-testid="msm-menu-name" style={{ ...ui.input, flex: 1 }} placeholder="A new menu, like Catering" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && name.trim() && !busy) add(); }} />
-          <Btn kind="primary" data-testid="msm-menu-add" disabled={busy || !name.trim() || venueMenus === undefined} onClick={add}>{busy ? 'Adding…' : 'Add menu'}</Btn>
+          <Btn kind="primary" data-testid="msm-menu-add" disabled={busy || !name.trim() || venueMenus === undefined} onClick={() => add()}>{busy ? 'Adding…' : 'Add menu'}</Btn>
         </div>
       )}
       <div style={{ ...ui.sub, marginTop: 10 }}>A product is on a menu through its category. Which menu a POS, a kiosk, the online page and catering use is picked at each site, in its Back Office.</div>
