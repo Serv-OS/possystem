@@ -22,6 +22,7 @@ import { Sx, money } from './MShellStyles';
 import MBottomSheet from './MBottomSheet';
 import { Icon } from '../../components/ServOSIcons';
 import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
+import { comboPosOnly } from '../../lib/combo.js';
 
 const SpeechRecognitionImpl =
   typeof window !== 'undefined'
@@ -143,7 +144,8 @@ export default function MVoiceOrder({ onClose }) {
         headers:{ 'content-type':'application/json' },
         body: JSON.stringify({
           transcript: fullText,
-          menu: menuItems,
+          // 5.12.123: a Combo with steps is rung up on the main POS, so the parser never hears of it.
+          menu: menuItems.filter(m => !comboPosOnly(m)),
           modifierGroups: modifierGroupDefs,
         }),
       });

@@ -21,6 +21,7 @@ import { countUpcomingBookingsForPackage } from '../../lib/bookings/bookingsData
 import { venueToday } from '../../lib/bookings/venueClock.js';
 import { packagePaymentNeed } from '../../lib/bookings/bookingPayment.js';
 import { courseColor } from '../../surfaces/bookings/bits.jsx';
+import { comboPosOnly } from '../../lib/combo.js';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 const DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];   // ints 0-6, Sunday first
@@ -80,7 +81,9 @@ export default function PackageBuilder() {
   useEffect(() => { loadBookingsFromDB?.(); }, [loadBookingsFromDB]);
 
   const items = useMemo(
-    () => (menuItems || []).filter(m => !m.archived).sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    // 5.12.123: a Combo with steps is rung up on the POS, where its steps are asked. A booking package
+    // cannot ask them, so such a Combo is never offered as a package line (lib/combo.js comboPosOnly).
+    () => (menuItems || []).filter(m => !m.archived && !comboPosOnly(m)).sort((a, b) => (a.name || '').localeCompare(b.name || '')),
     [menuItems]
   );
 

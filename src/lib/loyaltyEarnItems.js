@@ -54,6 +54,11 @@ export function loyaltyEarnItems(items, menuItems = []) {
       // 29 Oct 2026 (v5.11.118): a gift card sold at the till (kind gift_card_sale) earns nothing;
       // loyalty-earn already leaves isGiftCard lines out of points and stamps.
       isGiftCard: !!i.isGiftCard || i.kind === 'gift_card_sale',
+      // 5.12.123 Combos (lib/combo.js): a product picked inside a Combo earns no stamp of its own.
+      // The Combo's own line is what was sold, and it stamps as any product does. The key is only
+      // there on a pick, so every other line is exactly what it was. The server sets the same flag
+      // from the check itself (supabase/functions/_shared/earnFromCheck.ts).
+      ...(i.comboId && i.comboRole === 'pick' ? { noStamp: true } : {}),
     };
   });
 }

@@ -17,7 +17,8 @@
 // The server prices the same basket the same way (migration 20261019a, _public_order_value no
 // longer floors catering at base): it is sent the one menu when one is chosen, else none, and with
 // none it floors each line at the lowest price above zero, never above what this page charged.
-// PURE: no imports.
+// PURE: only lib/combo.js (itself import free), so node --test can load it.
+import { comboPosOnly } from './combo.js';
 
 /** The menu an item is priced on, or null. */
 export function cateringMenuIdFor(item, { menuIds = [], items = [], categories = [] } = {}) {
@@ -47,6 +48,9 @@ export function cateringOrderMenuId(menuIds = []) {
  * before. The kiosk (visibility.kiosk) and the till (visibility.pos) read their own switch.
  */
 export function cateringVisible(item, fulfilment = null) {
+  // 5.12.123: a Combo with steps is rung up on the POS only for now (lib/combo.js comboPosOnly).
+  // The catering page cannot ask its steps yet, so it is left off, whatever its switches say.
+  if (comboPosOnly(item)) return false;
   const v = item && typeof item.visibility === 'object' && item.visibility ? item.visibility : null;
   if (!v) return true;
   if (v.online === false) return false;

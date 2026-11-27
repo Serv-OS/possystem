@@ -27,9 +27,16 @@
 // Online and QR lines carry the menu they were priced on (line.menuId), so the server values each
 // line on its own menu (_public_order_value, migration 20261020a).
 //
-// PURE: only lib/menus/resolveActiveMenu.js (itself pure), so node --test can load it.
+// PURE: only lib/menus/resolveActiveMenu.js and lib/combo.js (both pure), so node --test can load it.
 
 import { resolveActiveMenu } from './menus/resolveActiveMenu.js';
+import { comboPosOnly } from './combo.js';
+
+// 5.12.123 (Combos, stage 1): the screens that can ring up a Combo with steps. Only the POS walks
+// the steps so far, so every other channel leaves such a Combo out, whatever its "Visible on"
+// switches say. Selling it without its steps would take the set price and send no food to the
+// kitchen. A Combo with no steps is an ordinary product and is never held back here.
+const SELLS_COMBO_STEPS = new Set(['pos', 'till']);
 
 const vis = (item) => (item && typeof item.visibility === 'object' && item.visibility) ? item.visibility : null;
 
@@ -49,6 +56,7 @@ const CHANNEL_SWITCH = {
  * @param {string} [fulfilment] the order type on an online page ('delivery' reads the Delivery switch)
  */
 export function channelVisible(item, channel, fulfilment = null) {
+  if (!SELLS_COMBO_STEPS.has(channel) && comboPosOnly(item)) return false;
   const v = vis(item);
   if (!v) return true;
   const key = CHANNEL_SWITCH[channel];

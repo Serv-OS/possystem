@@ -6,6 +6,7 @@ import InlineItemFlow from '../components/InlineItemFlow';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
 import { isSoldAs, notSoldAsWords } from '../lib/soldAs';
 import { channelVisible } from '../lib/channelMenu';
+import { comboPosOnly, comboNotHereWords } from '../lib/combo.js';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
@@ -291,6 +292,9 @@ export default function BarSurface() {
     // Tax: the size rule and this venue's rates, so a zero rated or reduced rate item, and the
     // Bar override set in Back Office, are booked on a tab as at the counter (tab lines carried
     // no tax references, so every line took the venue default). Category: a size's product's.
+    // 5.12.123 (lib/combo.js): a Combo with steps is rung up on the POS only for now. The bar screen
+    // never lists one (channelVisible); this is the same rule at the door every add goes through.
+    if (comboPosOnly(item)) { showToast(comboNotHereWords(item), 'error'); return; }
     const price = tillLineUnitPrice(item, 'bar-tab', barMenuId, opts.linePrice ?? null, opts.qty || 1);
     // v5.11.81: never a 0.00 line for a row with no price set (the till's rule, store.addItem).
     if (refusesNoPriceLine(item, 'bar-tab', barMenuId, price)) { showToast(`${item.name || 'This item'} has no price set. Set one in Back Office before selling it.`, 'error'); return; }

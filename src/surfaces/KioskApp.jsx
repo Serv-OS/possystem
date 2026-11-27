@@ -84,6 +84,7 @@ import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
+import { comboPosOnly } from '../lib/combo.js';
 import { setActiveMemberSession } from '../lib/memberSession.js';
 import { kioskCounterCollect } from '../lib/counterOrder';
 // v5.5.871: a kiosk card payment goes to the venue's Adyen terminal through the same "send to
@@ -1022,6 +1023,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
     // 5.12.115 (lib/soldAs.js): never added to an order of a type it is not sold on, whichever
     // card, search or shortcut asked for it (both kiosk designs add through here).
     if (!isSoldAs(variantItem || item, orderType, items) || !isSoldAs(item, orderType, items)) { console.warn('[kiosk] not added: not sold on', orderType, (variantItem || item)?.name); return; }
+    // 5.12.123 (lib/combo.js): a Combo with steps is rung up on the POS only for now. It is never a
+    // card here (kioskCardEligible); this is the same rule at the one door every add goes through.
+    if (comboPosOnly(item)) { console.warn('[kiosk] not added: a Combo with steps is rung up on the POS', item?.name); return; }
     const linePrice = priceEachOverride ?? resolvePrice(item, orderType, activeMenuId);
     // v5.11.81: a row with no price set is never sold for 0.00 (the till's rule, menuPricing).
     if (refusesNoPriceLine(variantItem || item, orderType, activeMenuId, linePrice)) { console.warn('[kiosk] not added: no price set for', (variantItem || item)?.name); return; }

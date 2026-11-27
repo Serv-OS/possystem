@@ -271,12 +271,14 @@ function BringIn({ site, own, raw, central, editable, stage, onClose }) {
             <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
               <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}{o.sizes.length ? <span style={{ ...ui.sub, fontWeight: 500 }}> · {o.sizes.length} variant{o.sizes.length === 1 ? '' : 's'}</span> : null}</div>
-                <div style={ui.sub}>
-                  {o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}
-                  {o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}
+                <div style={ui.sub} data-testid={o.held ? 'msm-own-combo-held' : undefined}>
+                  {o.held ? o.held : <>
+                    {o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}
+                    {o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}
+                  </>}
                 </div>
               </div>
-              {editable && (
+              {editable && !o.held && (
                 <>
                   {o.match && <Btn small kind="primary" onClick={() => work(o, o.match.productId)}>Link to {o.match.name}</Btn>}
                   <Btn small kind={o.match ? 'soft' : 'primary'} onClick={() => work(o, null)}>Bring in as a new product</Btn>
@@ -485,9 +487,9 @@ function SyncSheet({ sites, check, checking, derived, central, editable, stage, 
                 <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
                   <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}<span style={{ ...ui.sub, fontWeight: 500 }}> · product{o.sizes.length ? `, ${o.sizes.length} variant${o.sizes.length === 1 ? '' : 's'}` : ''}</span></div>
-                    <div style={ui.sub}>{o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}{o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}</div>
+                    <div style={ui.sub} data-testid={o.held ? 'msm-own-combo-held' : undefined}>{o.held ? o.held : <>{o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}{o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}</>}</div>
                   </div>
-                  {editable && (
+                  {editable && !o.held && (
                     <>
                       {o.match && <Btn small kind="primary" onClick={() => propose(`p|${o.id}`, bringInChanges(central, s.id, raw, o.id, { linkTo: o.match.productId, siteName: s.name }))}>Link to {o.match.name}</Btn>}
                       <Btn small kind={o.match ? 'soft' : 'primary'} onClick={() => propose(`p|${o.id}`, bringInChanges(central, s.id, raw, o.id, { linkTo: null, siteName: s.name }))}>Bring in as a new product</Btn>

@@ -101,3 +101,25 @@ test('the SQL: one empty column, a check that refuses rubbish, and a rollback th
   assert.match(rig, /20261215a_OPS_menu_item_combo_steps\.sql/);
   assert.match(rig, /20261215a_OPS_menu_item_combo_steps_ROLLBACK\.sql/);
 });
+
+// ── The push to the POS, and the Multi site menu's own reader ─────────────────
+test('Push to POS carries the steps: the fresh read keeps them on the row it sends', async () => {
+  const { menuSnapshotFromRead } = await import('./venueMenuRead.js');
+  const row = mapMenuItemRow(dbRow({ combo: STEPS }));
+  const snap = menuSnapshotFromRead({ menus: [], menuCategories: [], menuItems: [row, mapMenuItemRow(dbRow({ id: 'm-plain', combo: null }))], modifierGroupDefs: [], taxRates: [], stockFacts: null }, { extrasFrom: [] });
+  const sent = snap.menuItems.find((i) => i.id === 'm-byo');
+  assert.deepEqual(sent.combo, STEPS);
+  assert.equal(comboHasSteps(sent), true);
+  assert.equal(comboHasSteps(snap.menuItems.find((i) => i.id === 'm-plain')), false);
+  // A POS applies a pushed menu whole (store applyConfigUpdate), never field by field.
+  assert.match(read('../store/index.js'), /\.\.\.\(snap\.menuItems\?\.length \? \{ menuItems: snap\.menuItems \} : \{\}\)|menuItems: snap\.menuItems/);
+});
+
+test('the Multi site menu\'s reader (the server side copy of the mapper) carries the steps too', async () => {
+  const shared = await import('../../supabase/functions/_shared/venueMenuCore.js');
+  const got = shared.mapMenuItemRow(dbRow({ combo: STEPS }));
+  assert.deepEqual(got.combo, STEPS);
+  assert.equal(comboHasSteps(got), true);
+  assert.equal('combo' in shared.mapMenuItemRow(dbRow()), false);         // before the column: no field
+  assert.equal(shared.mapMenuItemRow(dbRow({ combo: null })).combo, null);
+});

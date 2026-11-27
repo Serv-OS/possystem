@@ -574,7 +574,7 @@ test('a selection of lines never cuts a Combo', () => {
 });
 
 test('the words every screen uses', () => {
-  assert.equal(comboNotHereWords(BYO), 'Build Your Own Package is a Combo with choices. Ring it up on the POS.');
+  assert.equal(comboNotHereWords(BYO), 'Build Your Own Package is a Combo with choices. Ring it up from the menu on the main POS.');
   assert.match(COMBO_WORDS.posOnly, /POS only for now/);
   for (const w of Object.values(COMBO_WORDS)) {
     assert.ok(!/[–—]/.test(w), w);                              // no dashes (Peter's rule)

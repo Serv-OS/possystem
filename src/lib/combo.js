@@ -828,9 +828,9 @@ export const COMBO_WORDS = Object.freeze({
   needsUpdate: 'Steps need one database update that has not been run yet (SQL 20261215a). Nothing can be saved until then. Ask ServOS to run it.',
 });
 
-/** "Build Your Own Package is a Combo with choices. Ring it up on the POS." */
+/** "Build Your Own Package is a Combo with choices. Ring it up from the menu on the main POS." */
 export function comboNotHereWords(item) {
-  return `${nameOf(item)} is a Combo with choices. Ring it up on the POS.`;
+  return `${nameOf(item)} is a Combo with choices. Ring it up from the menu on the main POS.`;
 }
 
 // ── 11. SCREENS THAT HAVE NOT LEARNED COMBOS YET ─────────────────────────────
