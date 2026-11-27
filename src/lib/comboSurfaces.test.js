@@ -99,12 +99,15 @@ test('the three copies of "a Combo with steps" outside src read it exactly as th
 test('every door onto an order is closed to it, and says so where a person is asking', () => {
   // The lists.
   const online = read('../surfaces/online/OnlineSurface.jsx');
-  assert.match(online, /if \(!channelVisible\(i, visibleChannel, priceType\)\) return false;/);
-  assert.match(online, /if \(!channelVisible\(item, visibleChannel, priceType\) \|\|[^\n]*\n\s+alert\(`Sorry, \$\{item\.menu_name \|\| item\.name\} cannot be ordered here\.`\); return;/);
+  // 5.12.125 (stage 3): online ordering and the catering link show a Combo with steps only once the
+  // server values its picks (combosReady, asked of public_order_features: SQL 20261217a); until then
+  // these are the very same doors, closed (comboOnline.test.js pins the rest).
+  assert.match(online, /if \(!channelVisible\(i, visibleChannel, priceType, \{ comboSteps: combosReady \}\)\) return false;/);
+  assert.match(online, /if \(!channelVisible\(item, visibleChannel, priceType, \{ comboSteps: combosReady \}\) \|\|[^\n]*\n\s+alert\(`Sorry, \$\{item\.menu_name \|\| item\.name\} cannot be ordered here\.`\); return;/);
   assert.match(read('../surfaces/BarSurface.jsx'), /if \(!channelVisible\(i, 'bar'\)\) return false;/);
   assert.match(read('../surfaces/mpos/MMenu.jsx'), /channelVisible\(i, 'mpos'\)/);
   assert.match(read('../surfaces/KioskApp.jsx'), /\.filter\(kioskCardEligible\)/);
-  assert.match(read('../surfaces/catering/CateringSurface.jsx'), /cateringVisible\(i, fulfilment\)/);
+  assert.match(read('../surfaces/catering/CateringSurface.jsx'), /cateringVisible\(i, fulfilment, \{ comboSteps: combosReady \}\)/);
   // The add doors behind the lists.
   assert.match(read('../surfaces/KioskApp.jsx'), /if \(comboPosOnly\(item\)\) \{ console\.warn\('\[kiosk\] not added: a Combo with steps is rung up on the POS', item\?\.name\); return; \}/);
   assert.match(read('../surfaces/catering/CateringSurface.jsx'), /if \(comboPosOnly\(item\)\) \{ alert\(`Sorry, \$\{item\.menu_name \|\| item\.name\} cannot be ordered here yet\. Please call us to order it\.`\); return; \}/);
@@ -124,5 +127,7 @@ test('every door onto an order is closed to it, and says so where a person is as
 
 test('the Back Office says where it is sold, in words', () => {
   const tab = read('../backoffice/sections/ComboStepsTab.jsx');
-  assert.match(tab, /COMBO_WORDS\.posOnly \+ ' It is left off the kiosk, online ordering, QR, catering, the phone POS and the delivery apps until they learn it\.'/);
+  // 5.12.125: online ordering and the catering link sell it too (once SQL 20261217a has run).
+  assert.match(tab, /export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, online ordering and the catering link\. It is left off QR, the kiosk, the phone POS and the delivery apps until they learn it\.';/);
+  assert.match(tab, /note\('info', COMBO_SOLD_WHERE, 'pos'\)/);
 });

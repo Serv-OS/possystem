@@ -13,6 +13,7 @@ import { trackDelivery } from '../../lib/delivery/dispatch';
 import { courierPhase, courierLegs, courierLateness } from '../../lib/delivery/courierTimes';
 import { collectionLabel } from '../../lib/collectionLabel';
 import { Icon } from '../../components/ServOSIcons';
+import { displayOrder, isComboPick } from '../../lib/combo';   // 5.12.125: a Combo's picks sit under it
 
 const STEPS = [
   { key: 'received', label: 'Received',  icon: 'inbox', desc: 'We\'ve got your order.' },
@@ -282,13 +283,14 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
             <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: muted, marginBottom: 10 }}>
               Order summary
             </div>
-            {(order.items || []).map((line, i) => {
+            {displayOrder(order.items || []).map((line, i) => {
               const qty = line.qty || 1;
               const unit = (Number(line.price) || 0) + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+              const pick = isComboPick(line);
               return (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>{qty} × {line.name}</span>
-                  <span style={{ fontWeight: 700 }}>{money((unit * qty))}</span>
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: pick ? '1px 0 1px 14px' : '4px 0', fontSize: pick ? 12 : 13, color: pick ? muted : undefined }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>{pick ? line.name : `${qty} × ${line.name}`}</span>
+                  <span style={{ fontWeight: 700 }}>{pick ? (unit > 0 ? `+${money(unit * qty)}` : '') : money((unit * qty))}</span>
                 </div>
               );
             })}

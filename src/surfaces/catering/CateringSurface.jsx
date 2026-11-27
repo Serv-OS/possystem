@@ -18,7 +18,10 @@ import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: a s
 import { resolveItemPrice, variantFromPrice, repriceCartLines, refusesNoPriceLine } from '../../lib/menuPricing';
 import { isOptionOnlyItem } from '../../lib/menuRules';
 import { cateringVisible } from '../../lib/cateringPricing';
-import { comboPosOnly } from '../../lib/combo.js';
+import { comboPosOnly, comboHasSteps } from '../../lib/combo.js';
+// 5.12.125 (Combos, stage 3): Mozz's "Build Your Own Package", built step by step with the guest.
+import { comboCartLines, newComboId, comboPicksInBasket, replaceComboLines, removeBasketLine, basketCount } from '../../lib/online/comboCart';
+import { combosReadyOn, menuHasStepCombos } from '../../lib/online/comboReady';
 import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricing';
 // v5.11.81 (channel parity round 2): the kiosk's allergen rule (marked, never hidden), the venue's
 // menu translations (shown only, the order keeps the English) and a paged menu read.
@@ -31,6 +34,7 @@ import { readAllRows } from '../../lib/venueMenuRead';
 // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
 import { withFacts, showCalories as venueShowsCalories, kcalWords, kcalNote } from '../../lib/menuStockFacts';
 import OnlineItemSheet from '../online/OnlineItemSheet';
+import OnlineComboSheet from '../online/OnlineComboSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
 import MenuHeader from '../menu/MenuHeader';
@@ -88,6 +92,9 @@ export default function CateringSurface({ location }) {
   const [instGroupDefs, setInstGroupDefs] = useState([]);
   const [cart, setCart] = useState([]);
   const [openItem, setOpenItem] = useState(null);
+  // 5.12.125: a Combo built from steps is offered once the server values its picks (SQL 20261217a).
+  const [combosReady, setCombosReady] = useState(false);
+  const [comboEdit, setComboEdit] = useState(null);
   const [showCart, setShowCart] = useState(false);
   const [activeAllergens, setActiveAllergens] = useState([]);   // customer-picked allergens to MARK (v5.11.81: never hidden)
   const [showAllergyPicker, setShowAllergyPicker] = useState(false);
@@ -242,6 +249,14 @@ export default function CateringSurface({ location }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [priceChannel, items, cfg, taxCatRows]);
 
+  // 5.12.125: a menu with a Combo built from steps asks once whether the server values its picks.
+  useEffect(() => {
+    if (combosReady || !menuHasStepCombos(items)) return undefined;
+    let alive = true;
+    combosReadyOn(supabase).then((yes) => { if (alive && yes) setCombosReady(true); });
+    return () => { alive = false; };
+  }, [items, combosReady]);
+
   // Allergen vocabulary across the catering menu (for the filter chips).
   const knownAllergens = useMemo(() => {
     const set = new Set();
@@ -260,7 +275,7 @@ export default function CateringSurface({ location }) {
   // warns before it is added (unsafeFor, OnlineItemSheet avoidAllergens).
   const itemsForCat = (catId) => items.filter((i) =>
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id && !isOptionOnlyItem(i) &&
-    cateringVisible(i, fulfilment));
+    cateringVisible(i, fulfilment, { comboSteps: combosReady }));
   const unsafeFor = (item) => unsafeAllergenIds(item, activeAllergens, items.filter((k) => k.parent_id === item.id));
   // v5.5.743: match OnlineSurface exactly — show only TOP-LEVEL categories (no sub-categories) in the
   // nav + sections, sorted by (sort_order||0) with a stable tie-break. Catering was rendering every
@@ -273,8 +288,8 @@ export default function CateringSurface({ location }) {
   const limitFor = (id) => (cfg?.item_limits || {})[id] || {};
   const is86 = (id) => eightySix.includes(id) || limitFor(id).max === 0;   // max 0 = operator-hidden (86)
   const addToCart = (item, mods, qty, notes = '') => {
-    // 5.12.123 (lib/combo.js): a Combo with steps is rung up on the POS only for now. It is never
-    // listed here (cateringVisible); this is the same rule at the one door every add goes through.
+    // 5.12.123 (lib/combo.js): a Combo with steps is never added as a plain line: it goes in through
+    // addCombo (5.12.125) once the server values its picks, and is not listed before that.
     if (comboPosOnly(item)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here yet. Please call us to order it.`); return; }
     const lim = limitFor(item.id);
     let q = qty;
@@ -290,6 +305,26 @@ export default function CateringSurface({ location }) {
     const optionsEach = (mods || []).reduce((s0, m) => s0 + (Number(m?.price) || 0) * Math.max(1, Number(m?.qty) || 1), 0);
     if (refusesNoPriceLine(item, priceChannel, menuIdOf(item), price + optionsEach)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
     setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: kitchenOverride(item), receiptName: receiptOverride(item), ...lineCategories(item, items), parentId: item.parent_id || null, ...lineTaxRefsFor(item, items), price, qty: q, mods, notes }]);
+  };
+
+  // 5.12.125: a finished Combo goes in as its own line (the set price, never to the kitchen) and one
+  // line per pick (lib/online/comboCart.js). The catering limits count it as they count any line: the
+  // Combo against its own, and each pick against its product's (the kitchen makes it all the same).
+  const addCombo = (item, picks) => {
+    if (!combosReady || !cateringVisible(item, fulfilment, { comboSteps: true })) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here.`); return; }
+    if (refusesNoPriceLine(item, priceChannel, menuIdOf(item), priceFor(item))) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
+    const editing = comboEdit && cart.some((l) => l.comboId === comboEdit) ? comboEdit : null;
+    const lines = comboCartLines({ item, picks, rows: items, priceFor, comboId: editing || newComboId() });
+    const others = editing ? cart.filter((l) => l.comboId !== editing) : cart;
+    for (const l of lines) {
+      const lim = limitFor(l.itemId);
+      if (lim.max == null) continue;
+      const n = [...others, ...lines].filter((x) => x.itemId === l.itemId).reduce((s, x) => s + (x.qty || 1), 0);
+      if (n > lim.max) { alert(`You've reached the maximum (${lim.max}) for ${l.name}.`); return; }
+    }
+    setCart((c) => (editing ? replaceComboLines(c, editing, lines) : [...c, ...lines]));
+    setComboEdit(null);
+    setOpenItem(null);
   };
 
   // v5.7.34: the unified seam's tax context — this surface's own fetches
@@ -508,7 +543,7 @@ export default function CateringSurface({ location }) {
       {cart.length > 0 && (
         <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, background: '#fff', borderTop: '1px solid #e2e8f0', padding: '12px 0' }}>
           <div style={{ ...center, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <button onClick={() => setShowCart(true)} style={{ ...pill }}>View basket ({cart.reduce((n, l) => n + (l.qty || 1), 0)}) · {money(subtotal, cur)}</button>
+            <button onClick={() => setShowCart(true)} style={{ ...pill }}>View basket ({basketCount(cart)}) · {money(subtotal, cur)}</button>
             <button onClick={goCheckout} style={{ ...btnPrimary(theme), opacity: canCheckout ? 1 : 0.85 }}>
               {belowMin ? `Min ${money(minOrder, cur)}` : dateProblem ? 'Set event details' : 'Proceed to checkout'}
             </button>
@@ -516,7 +551,18 @@ export default function CateringSurface({ location }) {
         </div>
       )}
 
-      {openItem && (
+      {openItem && combosReady && comboHasSteps(openItem) && (
+        <OnlineComboSheet key={comboEdit || openItem.id} item={openItem} theme={theme} rows={items} priceFor={priceFor}
+          orderType={fulfilment || 'collection'} fulfilment={fulfilment}
+          eightySixIds={[...eightySix, ...Object.keys(cfg?.item_limits || {}).filter((id) => limitFor(id).max === 0)]}
+          stockLevels={stockLevels} basket={comboEdit ? cart.filter((l) => l.comboId !== comboEdit) : cart}
+          instGroupDefs={instGroupDefs} avoidAllergens={activeAllergens} showCalories={showKcal}
+          initialPicks={comboEdit ? comboPicksInBasket(cart, comboEdit) : null}
+          addLabel={comboEdit ? 'Save changes' : 'Add to basket'}
+          onClose={() => { setOpenItem(null); setComboEdit(null); }}
+          onAdd={(picks) => addCombo(openItem, picks)} />
+      )}
+      {openItem && !(combosReady && comboHasSteps(openItem)) && (
         <OnlineItemSheet item={openItem} theme={theme} allItems={items} instGroupDefs={instGroupDefs} eightySixIds={eightySix} fulfilment={fulfilment}
           avoidAllergens={activeAllergens} showCalories={showKcal}
           stockLevels={stockLevels} cart={cart} priceFor={priceFor}
@@ -524,7 +570,13 @@ export default function CateringSurface({ location }) {
       )}
       {showCart && (
         <OnlineCart cart={cart} theme={theme} orderType={fulfilment || 'collection'} taxRates={taxRates} taxCtx={taxCtx}
-          onClose={() => setShowCart(false)} onRemove={(uid) => setCart((c) => c.filter((l) => l.uid !== uid))}
+          onClose={() => setShowCart(false)} onRemove={(uid) => setCart((c) => removeBasketLine(c, uid))}
+          onEditCombo={(comboId) => {
+            const parent = cart.find((l) => l.comboId === comboId && l.comboRole === 'parent');
+            const row = parent ? items.find((r) => r.id === parent.itemId) : null;
+            if (!row || !comboHasSteps(row)) { alert('This one cannot be changed any more. Remove it and add it again.'); return; }
+            setShowCart(false); setComboEdit(comboId); setOpenItem(row);
+          }}
           onUpdateQty={(uid, q) => setCart((c) => c.map((l) => (l.uid === uid ? { ...l, qty: Math.max(1, q) } : l)))}
           onCheckout={goCheckout} />
       )}

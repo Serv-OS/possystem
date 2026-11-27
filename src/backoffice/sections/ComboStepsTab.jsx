@@ -63,6 +63,10 @@ function NumBox({ value, min = 1, max = 98, onCommit, label, width = 58 }) {
 //   needsUpdateWords, priceWhere   the group menu's own words for the SQL it needs and its price.
 // The group menu uses this same tab through a small adapter (msm/MsmComboSteps.jsx): its products
 // are shaped like the store's menu rows, so the rules and the words are the same in both places.
+// 5.12.125 (stage 3): where a Combo with steps is sold. Online ordering and the catering link offer it
+// once their one database update has run (SQL 20261217a: until then they still leave it off).
+export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, online ordering and the catering link. It is left off QR, the kiosk, the phone POS and the delivery apps until they learn it.';
+
 export default function ComboStepsTab({ item, menuItems = [], categories = [], onUpdate, markBOChange, columnReady = true, eightySixIds = [], readOnly = false, keptSteps = false, posOnlyNote = true, needsUpdateWords = COMBO_WORDS.needsUpdate, priceWhere = '(the price on Details)', noPriceWhere = 'on Details' }) {
   const steps = comboSteps(item);
   const [open, setOpen] = useState(() => (steps.length === 1 ? steps[0].id : null));   // the step whose form is open
@@ -193,7 +197,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
 
       {!block && columnReady && (
         <>
-          {posOnlyNote && note('info', COMBO_WORDS.posOnly + ' It is left off the kiosk, online ordering, QR, catering, the phone POS and the delivery apps until they learn it.', 'pos')}
+          {posOnlyNote && note('info', COMBO_SOLD_WHERE, 'pos')}
           {steps.length > 0 && note((item.assignedModifierGroups || []).length ? 'note' : 'info', COMBO_WORDS.noOwnOptions + ((item.assignedModifierGroups || []).length ? ` This product still has ${(item.assignedModifierGroups || []).length} option group${(item.assignedModifierGroups || []).length === 1 ? '' : 's'} from before: they are not asked while it has steps.` : ''), 'opts')}
           {warnings.filter(w => !w.stepId).map((w, i) => note(w.level, w.words, `w${i}`))}
 

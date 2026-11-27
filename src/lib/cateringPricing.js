@@ -47,10 +47,12 @@ export function cateringOrderMenuId(menuIds = []) {
  * switch (visibility.onlineDelivery false) hides it too. A row with no visibility set is shown, as
  * before. The kiosk (visibility.kiosk) and the till (visibility.pos) read their own switch.
  */
-export function cateringVisible(item, fulfilment = null) {
-  // 5.12.123: a Combo with steps is rung up on the POS only for now (lib/combo.js comboPosOnly).
-  // The catering page cannot ask its steps yet, so it is left off, whatever its switches say.
-  if (comboPosOnly(item)) return false;
+export function cateringVisible(item, fulfilment = null, { comboSteps = false } = {}) {
+  // 5.12.123: a Combo with steps was rung up on the POS only (lib/combo.js comboPosOnly).
+  // 5.12.125 (stage 3): the catering page builds it with the guest, step by step, once the server
+  // values a Combo's picks (SQL 20261217a: the page asks public_order_features, then passes
+  // { comboSteps: true }). Until then it is left off, whatever its switches say.
+  if (!comboSteps && comboPosOnly(item)) return false;
   const v = item && typeof item.visibility === 'object' && item.visibility ? item.visibility : null;
   if (!v) return true;
   if (v.online === false) return false;

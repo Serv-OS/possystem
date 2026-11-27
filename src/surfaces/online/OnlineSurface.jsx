@@ -25,7 +25,7 @@ import { resolveItemPrice, repriceCartLines, refusesNoPriceLine } from '../../li
 // v5.11.81 (channel parity round 2): one rule per channel for the menu shown (lib/channelMenu.js),
 // the kiosk's allergen marking (lib/kioskAllergens.js) and the venue's menu translations (lib/menuText.js).
 import { channelVisible, storefrontMenuId, categoriesOnMenu, storefrontPriceType } from '../../lib/channelMenu';
-import { isSoldAs, notSoldAsWords } from '../../lib/soldAs';
+import { isSoldAs, notSoldAsWords, optionHiddenOn } from '../../lib/soldAs';
 import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { allergenPaletteFromTheme } from '../../components/AllergenChips.js';
@@ -47,6 +47,11 @@ import { isMissingRpc } from '../../lib/deviceFence';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
+// 5.12.125 (Combos, stage 3): a Combo built from steps, step by step, with the guest (lib/combo.js).
+import OnlineComboSheet from './OnlineComboSheet';
+import { comboHasSteps } from '../../lib/combo';
+import { comboCartLines, newComboId, comboPicksInBasket, replaceComboLines, removeBasketLine, basketCount, dropHidden } from '../../lib/online/comboCart';
+import { combosReadyOn, menuHasStepCombos } from '../../lib/online/comboReady';
 import OrderTracker from './OrderTracker';
 import QrCheckout from '../qr/QrCheckout';
 import TabResumeScreen from '../qr/TabResumeScreen';
@@ -150,6 +155,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
   const [openItem, setOpenItem]     = useState(null);
+  // 5.12.125: a Combo built from steps is offered once the server values its picks (SQL 20261217a),
+  // and a Combo in the basket can be opened again to change it (its comboId).
+  const [combosReady, setCombosReady] = useState(false);
+  const [comboEdit, setComboEdit]   = useState(null);
   const [showCart, setShowCart]     = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [confirmation, setConfirmation] = useState(null); // { id, when, type }
@@ -679,18 +688,30 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       if (!row) return false;
       const parent = row.parent_id ? byId.get(row.parent_id) : null;
       // 5.12.115 (lib/soldAs.js): or it is not sold on this order type at all (wine, on a collection).
-      return !channelVisible(row, channel, orderType) || (!!parent && !channelVisible(parent, channel, orderType)) || !isSoldAs(row, isQr ? 'dine-in' : orderType, byId);
+      // 5.12.125: a Combo's pick follows its Combo; a pick not sold on this order type takes the Combo out.
+      if (l.comboRole === 'pick' && l.comboId) return !isSoldAs(row, isQr ? 'dine-in' : orderType, byId) || optionHiddenOn(row, 'online', orderType);
+      return !channelVisible(row, channel, orderType, { comboSteps: combosReady }) || (!!parent && !channelVisible(parent, channel, orderType, { comboSteps: combosReady })) || !isSoldAs(row, isQr ? 'dine-in' : orderType, byId);
     };
     // Worked out from this render's basket, so the message never depends on when React runs the update.
-    const gone = [...new Set(cart.filter(hidden).map(l => l.name || l.itemId))];
+    // 5.12.125: a Combo goes whole (lib/online/comboCart.js dropHidden), never a pick on its own.
+    const gone = dropHidden(cart, hidden).gone;
     setCart(c => {
-      const kept = c.filter(l => !hidden(l));
+      const kept = dropHidden(c, hidden).kept;
       const next = repriceCartLines(kept, items, orderType, effectiveMenuId, { stampMenu: true });
       return next.length !== c.length || next.some((l, i) => l !== c[i]) ? next : c;
     });
     if (gone.length) setTimeout(() => alert(`Not available for ${orderType === 'delivery' ? 'delivery' : 'this order'}, taken out of your basket: ${gone.join(', ')}.`), 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderType]);
+
+  // 5.12.125: a menu with a Combo built from steps asks once whether the server values its picks
+  // (SQL 20261217a). Until it says yes such a Combo stays off this page, as in 5.12.123.
+  useEffect(() => {
+    if (combosReady || isQr || !menuHasStepCombos(items)) return undefined;
+    let alive = true;
+    combosReadyOn(supabase).then((yes) => { if (alive && yes) setCombosReady(true); });
+    return () => { alive = false; };
+  }, [items, combosReady, isQr]);
 
   const theme = useMemo(() => sheetThemeFrom(branding, location.name), [branding, location.name]);
 
@@ -763,7 +784,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const visibleChannel = isQr ? 'qr' : 'online';
   const itemsForCat = (catId) => (items || []).filter(i => {
     if (i.parent_id || i.archived || i.sold_alone === false) return false;
-    if (!channelVisible(i, visibleChannel, priceType)) return false;
+    if (!channelVisible(i, visibleChannel, priceType, { comboSteps: combosReady })) return false;
     if (!isSoldAs(i, priceType, items)) return false;   // 5.12.115 (lib/soldAs.js): not sold on this order type
     if (!itemInSection(i, sectionTrees.get(catId) || catId)) return false;
     return true;
@@ -771,7 +792,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const unsafeFor = (item, kids) => unsafeAllergenIds(item, activeAllergens, kids);
 
   // ── Cart math ────────────────────────────────────────────────────────────
-  const cartCount = cart.reduce((s, l) => s + (l.qty || 1), 0);
+  const cartCount = basketCount(cart);   // 5.12.125: a Combo counts once, never once per pick
   const cartTotal = cart.reduce((s, l) => {
     const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
     return s + unit * (l.qty || 1);
@@ -789,6 +810,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const vatGate = useMemo(() => ratesGate({ ratesState, expectsRates: venueExpectsRates(items), hasTaxConfig: taxCtxHasConfig(taxCtx) }), [ratesState, items, taxCtx]);
 
   const addToCart = (item, mods, qty, notes = '') => {
+    // 5.12.125: a Combo with steps never goes in as a plain line (the set price and no food for the
+    // kitchen): it goes in through addCombo, with its picks.
+    if (comboHasSteps(item)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here.`); return; }
     // The cart line's unit price. Checkout (online and QR) charges l.price as-is,
     // so this one call is what the customer pays.
     const price = priceFor(item);
@@ -797,7 +821,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     const optionsEach = (mods || []).reduce((s0, m) => s0 + (Number(m?.price) || 0) * Math.max(1, Number(m?.qty) || 1), 0);
     if (refusesNoPriceLine(item, priceType, effectiveMenuId, price + optionsEach)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
     // v5.11.81: a product this channel does not show is never added (lib/channelMenu.js).
-    if (!channelVisible(item, visibleChannel, priceType) || (item.parent_id && !channelVisible((items || []).find(r => r.id === item.parent_id), visibleChannel, priceType))) {
+    if (!channelVisible(item, visibleChannel, priceType, { comboSteps: combosReady }) || (item.parent_id && !channelVisible((items || []).find(r => r.id === item.parent_id), visibleChannel, priceType))) {
       alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here.`); return;
     }
     // 5.12.115 (lib/soldAs.js): nor one that is not sold on this order type (a size follows its product).
@@ -840,7 +864,20 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     }]);
     setOpenItem(null);
   };
-  const removeFromCart = (uid) => setCart(c => c.filter(l => l.uid !== uid));
+  // 5.12.125: Remove on any line of a Combo takes the whole Combo (lib/online/comboCart.js).
+  const removeFromCart = (uid) => setCart(c => removeBasketLine(c, uid));
+  // 5.12.125: a finished Combo goes in as its own line (the set price, never to the kitchen) and one
+  // line per pick (lib/online/comboCart.js comboCartLines); changing one swaps its lines in place.
+  const addCombo = (item, picks) => {
+    if (!combosReady || !channelVisible(item, visibleChannel, priceType, { comboSteps: true })) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here.`); return; }
+    if (!isSoldAs(item, priceType, items)) { alert(`Sorry, ${notSoldAsWords(item, priceType)}`); return; }
+    if (refusesNoPriceLine(item, priceType, effectiveMenuId, priceFor(item))) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
+    const editing = comboEdit && cart.some(l => l.comboId === comboEdit) ? comboEdit : null;
+    const lines = comboCartLines({ item, picks, rows: items, priceFor, comboId: editing || newComboId(), menuId: effectiveMenuId || null });
+    setCart(c => (editing ? replaceComboLines(c, editing, lines) : [...c, ...lines]));
+    setComboEdit(null);
+    setOpenItem(null);
+  };
   const updateQty = (uid, qty) => setCart(c => c.map(l => l.uid === uid ? { ...l, qty: Math.max(1, qty) } : l));
 
   const muted    = theme.isLight ? '#6b6b70' : '#a0a0a8';
@@ -1408,7 +1445,22 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         </div>
       )}
 
-      {openItem && (
+      {openItem && combosReady && comboHasSteps(openItem) && (
+        <OnlineComboSheet
+          key={comboEdit || openItem.id}
+          item={openItem} theme={theme} rows={items} priceFor={priceFor}
+          orderType={priceType} fulfilment={priceType}
+          eightySixIds={eightySixIds} stockLevels={stockLevels}
+          basket={comboEdit ? cart.filter(l => l.comboId !== comboEdit) : cart}
+          instGroupDefs={instGroupDefs} defaultImage={defaultImage}
+          avoidAllergens={activeAllergens} showCalories={showKcal}
+          initialPicks={comboEdit ? comboPicksInBasket(cart, comboEdit) : null}
+          addLabel={comboEdit ? 'Save changes' : 'Add to basket'}
+          onClose={() => { setOpenItem(null); setComboEdit(null); }}
+          onAdd={(picks) => addCombo(openItem, picks)}
+        />
+      )}
+      {openItem && !(combosReady && comboHasSteps(openItem)) && (
         <OnlineItemSheet
           defaultImage={defaultImage}
           item={openItem} theme={theme} allItems={items} priceFor={priceFor}
@@ -1432,6 +1484,13 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             : null}
           onClose={() => setShowCart(false)}
           onRemove={removeFromCart} onUpdateQty={updateQty}
+          onEditCombo={(comboId) => {
+            // 5.12.125: the Combo opens again with its picks, and Save swaps its lines in place.
+            const parent = cart.find(l => l.comboId === comboId && l.comboRole === 'parent');
+            const row = parent ? (items || []).find(r => r.id === parent.itemId) : null;
+            if (!row || !comboHasSteps(row)) { alert('This one cannot be changed any more. Remove it and add it again.'); return; }
+            setShowCart(false); setComboEdit(comboId); setOpenItem(row);
+          }}
           onCheckout={() => {
             if (browseOnly) return; // belt & braces — the cart button is disabled too
             setShowCart(false);
