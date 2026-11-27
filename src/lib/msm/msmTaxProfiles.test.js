@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { realProfiles, profileNamed, siteDefaultProfile, groupRunsOnProfiles, isProfileTax, profileChoices, profileChoiceOf, choiceToProfile, sitesMissingProfile, siteTaxCell, groupTaxCell, assembleProfilesByLoc } from './msmTaxProfiles.js';
+import { realProfiles, profileNamed, siteDefaultProfile, groupRunsOnProfiles, isProfileTax, profileChoices, profileChoiceOf, choiceToProfile, sitesMissingProfile, siteTaxCell, groupTaxCell, assembleProfilesByLoc, profileExample } from './msmTaxProfiles.js';
+import { readFileSync } from 'node:fs';
 
 // Mozz as it stood on 25 Nov 2026: three profiles at each of five sites, the same names, two rates.
 const SITES = ['sandy', 'daybreak', 'provo', 'milk', 'wood'];
@@ -97,4 +98,25 @@ test('a UK product on a rate, and a site with no real default profile, are left 
   assert.equal(siteTaxCell({ tax_rate_name: null, tax_rate_percent: null }, 'leeds', uk), null);
   assert.equal(groupTaxCell({ tax_rate_name: null, tax_rate_percent: null }, uk, ['leeds']), null);
   assert.equal(siteTaxCell({ tax_rate_name: null, tax_rate_percent: null }, 'not-read', by), null);
+});
+
+// 5.12.117. Peter, Mozz, 26 Nov 2026: the product sheet's Try it box read, in red, "Mozz - Sandy has
+// no tax rates set up. Add them in Settings, Tax." Sandy charges through its tax profiles and has
+// no old style rates because it needs none.
+test('Try it at a site on tax profiles names the profile that applies, never "no tax rates set up"', () => {
+  const by = mozz();
+  const pizza = { name: 'Cheese', tax_rate_name: null, tax_rate_percent: null };
+  assert.deepEqual(profileExample({ product: pizza, loc: 'sandy', profilesByLoc: by, siteName: 'Mozz - Sandy', typeWord: 'takeaway' }),
+    { ok: true, words: "Cheese, takeaway at Mozz - Sandy: charged on the site's own tax profile, Prepared food 8.45%." });
+  const shirt = { name: 'Tee', tax_rate_name: 'Retail', tax_rate_percent: null };
+  assert.equal(profileExample({ product: shirt, loc: 'wood', profilesByLoc: by, siteName: 'Woodbine', typeWord: 'eat in' }).words, 'Tee, eat in at Woodbine: charged on the tax profile, Retail 8.45%.');
+  by.provo.profiles = by.provo.profiles.filter((p) => p.name !== 'Retail');
+  const missing = profileExample({ product: shirt, loc: 'provo', profilesByLoc: by, siteName: 'Provo' });
+  assert.equal(missing.ok, false);
+  assert.match(missing.words, /Provo has no tax profile called "Retail"/);
+  // A UK product on a rate, and a site not read yet: the rate rule stands.
+  assert.equal(profileExample({ product: { name: 'Latte', tax_rate_name: 'VAT', tax_rate_percent: 20 }, loc: 'sandy', profilesByLoc: by }), null);
+  assert.equal(profileExample({ product: pizza, loc: 'nowhere', profilesByLoc: by }), null);
+  const sheet = readFileSync(new URL('../../backoffice/sections/msm/MsmProductSheet.jsx', import.meta.url), 'utf8');
+  assert.match(sheet, /const ex = exProfile \|\| exRates;/, 'the sheet asks the profile rule first');
 });

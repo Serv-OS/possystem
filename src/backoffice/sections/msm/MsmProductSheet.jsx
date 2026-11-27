@@ -43,7 +43,7 @@ import { SOLD_AS_TYPES, SOLD_AS_WORDS, notSoldAs, toggleSoldAs, withNotSoldAs, s
 import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords, sizeVatWords } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
-import { profileChoices, profileChoiceOf, choiceToProfile, sitesMissingProfile, groupRunsOnProfiles, isProfileTax } from '../../../lib/msm/msmTaxProfiles';
+import { profileChoices, profileChoiceOf, choiceToProfile, sitesMissingProfile, groupRunsOnProfiles, isProfileTax, profileExample } from '../../../lib/msm/msmTaxProfiles';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { marginFor, gpTone, gpWordsWithTarget } from '../../../lib/msm/msmMargin';
 import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue, pctText, noPriceAt } from '../../../../supabase/functions/_shared/msmModel.js';
@@ -392,7 +392,16 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     for (const [k, v] of Object.entries(sf.channels || {})) { const r = priceInput(v ?? ''); if (r.ok && r.value != null) ch[k] = r.value; }
     return examplePrice(example.type, { default_price: groupPrice, default_channels: groupChannels() || {} }, { price: pr.ok ? pr.value : null, channel_prices: ch });
   })();
-  const ex = exSite ? vatExample({ product: { name: form.menu_name || form.name || 'This product', tax_rate_name: form.tax_rate_name, tax_rate_percent: form.tax_rate_percent }, taxByType: tbt, kept: exPs?.kept?.tax_overrides || null, rates: ratesByLoc[exSite], orderType: example.type, price: exPrice, siteName: siteName.get(exSite) }) : null;
+  const exRates = exSite ? vatExample({ product: { name: form.menu_name || form.name || 'This product', tax_rate_name: form.tax_rate_name, tax_rate_percent: form.tax_rate_percent }, taxByType: tbt, kept: exPs?.kept?.tax_overrides || null, rates: ratesByLoc[exSite], orderType: example.type, price: exPrice, siteName: siteName.get(exSite) }) : null;
+  // 5.12.117: a site that charges through tax profiles (every US venue) has no old style rates, and
+  // the box said "has no tax rates set up" in red. There the line names the profile that applies.
+  // A product with its own tax for this order type still reads the rate rule.
+  const exKey = example.type === 'collection' || example.type === 'drive-thru' ? 'takeaway' : example.type;
+  const exProfile = exSite && !(tbt && tbt[exKey]) ? profileExample({
+    product: { name: form.menu_name || form.name || 'This product', tax_rate_name: form.tax_rate_name, tax_rate_percent: form.tax_rate_percent },
+    loc: exSite, profilesByLoc, siteName: siteName.get(exSite), typeWord: (EXAMPLE_TYPES.find(([k]) => k === example.type)?.[1] || '').toLowerCase(),
+  }) : null;
+  const ex = exProfile || exRates;
 
   return (
     <Sheet title={title} width={680} onClose={onClose}
