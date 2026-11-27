@@ -37,6 +37,9 @@ export const OWNED_ITEM_KEYS = Object.freeze({
   soldAlone: 'sold_alone', sold_alone: 'sold_alone', type: 'type',
   itemCode: 'item_code', item_code: 'item_code', parentId: 'parent_id', parent_id: 'parent_id',
   price: 'pricing',
+  // 5.12.124: a Combo's steps (menu_items.combo). Head office sets them in the group menu; a site
+  // that keeps its own steps (kept 'combo') edits them here.
+  combo: 'combo',
 });
 
 // The prices head office owns inside pricing (the Standard price and the order type prices publish
@@ -66,6 +69,7 @@ const WORDS = {
   sold_alone: 'sold on its own setting', type: 'type', item_code: 'item code', parent_id: 'variant link', pricing: 'prices',
   min: 'rules', max: 'rules', selection_type: 'kind of choice', options: 'options',
   sold_as: 'order types it is sold on',
+  combo: 'steps',
   shown_on: 'places head office hides it',
 };
 export const lockWord = (col) => tt(WORDS[col] || 'this setting', { mid: true });

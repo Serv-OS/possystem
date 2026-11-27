@@ -198,13 +198,14 @@ export function stepProductBlock(row, { comboId = null } = {}) {
 
 /**
  * Why steps cannot be set up on this product, in words, or null when they can (the Steps tab shows
- * the words instead of the editor). Stage 1: a Combo with steps is one site's own product.
- *   managed   true when the Multi site menu manages the product (head office owns it)
+ * the words instead of the editor).
  *   sizes     how many live sizes the product has
+ * 5.12.124: a product the Multi site menu manages is no longer refused here. Its steps are head
+ * office's (set in the group menu, the same editor): the site's Menu Manager shows them read only
+ * with the usual lock, or editable when the site keeps its own steps (lib/msm/msmLock.js, 'combo').
  */
-export function stepsEditBlock(item, { managed = false, sizes = 0 } = {}) {
+export function stepsEditBlock(item, { sizes = 0 } = {}) {
   if (!item || item.type !== COMBO_TYPE) return 'Set the type to Combo to give this product steps.';
-  if (managed) return 'Head office manages this product in the Multi site menu. A Combo with steps is set up as a site\'s own product for now.';
   const scope = item.scope || 'local';
   if (scope !== 'local' || item.masterId || item.master_id) return 'This product is shared with other sites. A Combo with steps works at one site for now: set Sharing to This site only first.';
   if (parentIdOf(item)) return 'A size cannot be a Combo.';

@@ -15,6 +15,8 @@ import { sameSoldAs, soldAsSummary, sameShownOn, shownOnSummary } from '../soldA
 import { extraMenusChangeWords, menuKeyNames, allExtraMenus } from '../../../supabase/functions/_shared/msmMenus.js';
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, as before).
 import { activeTaxWords } from '../taxWords.js';
+// 5.12.124: a Combo's steps in words (lib/combo.js).
+import { comboStepsOf, stepsSummary } from '../combo.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const TAX_WORDS = { 'dine-in': 'eat in', takeaway: 'takeaway', delivery: 'delivery', bar: 'bar tab' };
@@ -249,6 +251,13 @@ export function summarise(changes, central, opts = {}) {
         const sum = shownOnSummary({ visibility: a.visibility });
         out.push(`${pName(ch.entity_id)}: ${sum ? `now ${sum.charAt(0).toLowerCase()}${sum.slice(1)}` : 'no longer hidden by head office'} at every site${when}.`);
         rest = rest.filter((k) => k !== 'visibility');
+      }
+      // 5.12.124: a Combo's steps, every step named, and that each site asks them with its own items.
+      if (ch.target === 'product' && rest.includes('combo')) {
+        out.push(comboStepsOf(a.combo).length
+          ? `${pName(ch.entity_id)}: its steps are now ${stepsSummary(a.combo)} at every site that sells it${when}. A site that does not sell a product in a step leaves it out there.`
+          : `${pName(ch.entity_id)}: its steps come off at every site${when}. It sells as a plain product at its price.`);
+        rest = rest.filter((k) => k !== 'combo');
       }
       if (rest.length) {
         const words = [...new Set(rest.map(fieldWord))];

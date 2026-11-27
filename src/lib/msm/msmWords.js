@@ -17,6 +17,8 @@ import { extraMenusChangeWords, menuKeyNames } from '../../../supabase/functions
 // words the tests pin; every reader takes them through activeTaxText (tt), which leaves them exactly
 // as they are at a UK venue and says tax at a US one.
 import { activeTaxWords, activeTaxText as tt } from '../taxWords.js';
+// 5.12.124: a Combo's steps in words, the same summary the publish preview reads (lib/combo.js).
+import { comboStepsOf, stepsSummary } from '../combo.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 // A price that moves from or to "follows" in words (17 Oct verification: never "price the group
@@ -118,11 +120,12 @@ export const COL_WORDS = Object.freeze({
   min: 'choose at least', max: 'choose up to', selection_type: 'kind of choice', item_link: 'sub item link', sub_group: 'Then ask',
   // 17 Oct recheck: a site whose row has no Standard price keeps none (said as "No price at <site>").
   no_price: 'no price',
+  combo: 'steps',
 });
 /** A column in words, never the column itself ("its own setting" when the map has none). */
 export const colWord = (k) => tt(COL_WORDS[k] || 'its own setting', { mid: true });
 
-const KIND_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with variants', subitem: 'a sub item' };
+const KIND_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with variants', subitem: 'a sub item', combo: 'a Combo' };
 /**
  * A value a site keeps as its own, in words (17 Oct verification: never a VAT rate id, true or
  * false, a type code or a web address).
@@ -141,6 +144,7 @@ export function keptValueWords(col, v, opts = {}) {
   if (col === 'type') return KIND_WORDS[v] || 'its own kind of product';
   if (col === 'parent_id') return v ? (opts.names?.[v] ? `a variant of ${opts.names[v]}` : 'its own') : 'not a variant';
   if (col === 'cat') return v ? (opts.names?.[v] || 'its own category') : 'no category';
+  if (col === 'combo') return comboStepsOf(v).length ? `its own steps (${stepsSummary(v)})` : 'no steps';
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (v == null || v === '') return 'blank';
   if (Array.isArray(v)) return v.length ? `${v.length} set` : 'none';
@@ -163,6 +167,7 @@ const FIELD = {
   parent_id: 'under', route_like_id: 'prints like', icon: 'icon', color: 'colour', use_name_everywhere: 'name at every site',
   tax_by_type: 'VAT by order type', min: 'rule', max: 'rule', selection_type: 'kind of choice', group_id: 'option group',   // taxText: fieldWord
   price: 'price', product_id: 'sub item', sub_group_id: 'Then ask',
+  combo: 'steps',
 };
 export const fieldWord = (k) => tt(FIELD[k] || 'a setting', { mid: true });
 
@@ -194,7 +199,7 @@ export function changeWords(row, names = {}) {
   if (row.target === 'product') {
     const subject = a.name || pn(row.entity_id);
     if (row.op === 'create' && a.type === 'subitem' && a.sold_alone !== true) return { subject, words: 'New sub item, only used as an option' };
-    if (row.op === 'create') return { subject, words: `New ${a.type === 'subitem' ? 'sub item, also sold on its own' : 'product'}, group price ${money2(a.default_price)}${a.category_id ? `, in ${cn(a.category_id)}` : ''}${a.image ? ', with a photo' : ''}` };
+    if (row.op === 'create') return { subject, words: `New ${a.type === 'subitem' ? 'sub item, also sold on its own' : a.type === 'combo' ? 'Combo' : 'product'}, ${a.type === 'combo' ? 'set price' : 'group price'} ${money2(a.default_price)}${a.category_id ? `, in ${cn(a.category_id)}` : ''}${a.image ? ', with a photo' : ''}${comboStepsOf(a.combo).length ? `, steps: ${stepsSummary(a.combo)}` : ''}` };
     if (row.op === 'remove' || (a.archived === true && Object.keys(a).length === 1)) return { subject, words: 'Removed from every site' };
     if (a.archived === false && Object.keys(a).length === 1) return { subject, words: 'Brought back' };
     const parts = [];
@@ -220,7 +225,9 @@ export function changeWords(row, names = {}) {
         const tw = activeTaxWords();
         parts.push(keys.length ? keys.map((t) => `${TAX_TYPE_WORDS[t]} ${tw.tax} ${at[t] ? `to ${at[t].name || pctText(at[t].percent)}` : `back to the product's ${tw.tax}`}`).join(', ') : `${tw.Tax} by order type changed`);
       } else if (k === 'sold_alone') parts.push(a.sold_alone ? 'now also sold on its own' : 'now only used as an option');
-      else if (k === 'type') parts.push(a.type === 'subitem' ? 'now a sub item' : 'now a product');
+      else if (k === 'type') parts.push(a.type === 'subitem' ? 'now a sub item' : a.type === 'combo' ? 'now a Combo' : 'now a product');
+      // 5.12.124: a Combo's steps, as each site will ask them (every product named).
+      else if (k === 'combo') parts.push(comboStepsOf(a.combo).length ? `steps now ${stepsSummary(a.combo)}` : 'steps taken off');
       else if (k === 'modifier_groups') {
         const was = new Set(listOf(b.modifier_groups).map((x) => (typeof x === 'string' ? x : x?.groupId)));
         const now = new Set(listOf(a.modifier_groups).map((x) => (typeof x === 'string' ? x : x?.groupId)));

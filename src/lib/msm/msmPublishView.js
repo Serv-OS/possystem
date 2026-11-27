@@ -236,7 +236,7 @@ export function sitesToAdd(companySites, central) {
 const COL_WORDS = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
   cat: 'category', cats: 'extra categories', parent_id: 'variant of', tax_rate_id: 'VAT rate', allergens: 'allergens', image: 'photo',   // taxText: auditLines
-  assigned_modifier_groups: 'modifier groups', visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code',
+  assigned_modifier_groups: 'modifier groups', visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code', combo: 'steps',
   tags: 'tags', type: 'type', label: 'name', sort_order: 'order', tax_overrides: 'VAT by order type', tax_profile_id: 'tax profile',   // taxText: auditLines
 };
 const PRICE_WORDS = { base: '', dineIn: ' (eat in)', takeaway: ' (takeaway)', collection: ' (collection)', delivery: ' (delivery)', driveThru: ' (drive thru)' };

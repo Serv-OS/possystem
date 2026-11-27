@@ -52,6 +52,10 @@ import { ui, money } from './msmStyle';
 import { draftCount } from '../../../lib/msm/msmStatus';
 import { useConfirm } from './useConfirm';
 import MsmPhotoField from './MsmPhotoField';
+// 5.12.124: a Combo's steps, in the same editor as a site's Menu Manager (Combo products stage 2).
+import MsmComboSteps from './MsmComboSteps';
+import { comboColumnReady } from '../../../lib/msm/msmComboRows.js';
+import { COMBO_TYPE, comboStepsOf, comboColumnValue } from '../../../lib/combo.js';
 import MenuItemFactsPanel from '../stock/MenuItemFactsPanel';   // v5.11.93 (multi site stock Drop 2)
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
 import { activeTaxWords as tw, activeTaxText as tt } from '../../../lib/taxWords';
@@ -60,6 +64,7 @@ const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto
   : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)));
 
 const EXAMPLE_TYPES = [['dine-in', 'Eat in'], ['takeaway', 'Takeaway'], ['collection', 'Collection'], ['delivery', 'Delivery']];
+const COMBO_HINT = 'One product at a set price, built from real products in steps. Each pick goes to the kitchen as its own item. Sold on the POS only for now.';
 const gidOf = (a) => (typeof a === 'string' ? a : a?.groupId ?? a?.id ?? null);
 const chText = (obj) => Object.fromEntries(Object.entries(obj || {}).filter(([, v]) => v != null).map(([k, v]) => [k, price2(v)]));
 
@@ -104,7 +109,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     name: '', menu_name: '', receipt_name: '', kitchen_name: '', description: '', category_id: '', extra_category_ids: [], parent_product_id: '',
     default_price: '', tax_rate_name: firstRate?.name ?? null, tax_rate_percent: firstRate?.percent ?? null, tax_by_type: {},
     allergens: [], tags: [], visibility: { pos: true, kiosk: true, online: true, onlineDelivery: true }, modifier_groups: [], image: '', item_code: '', sold_alone: true, type: 'simple',
-    default_channels: {},
+    default_channels: {}, combo: null,
   }), [firstRate]);
   const fromProduct = (x) => ({
     name: x.name || '', menu_name: x.menu_name || '', receipt_name: x.receipt_name || '', kitchen_name: x.kitchen_name || '', description: x.description || '',
@@ -112,7 +117,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     tax_rate_name: x.tax_rate_name ?? null, tax_rate_percent: x.tax_rate_percent ?? null, tax_by_type: x.tax_by_type || {}, allergens: x.allergens || [], tags: x.tags || [],
     visibility: x.visibility || { pos: true, kiosk: true, online: true, onlineDelivery: true }, modifier_groups: x.modifier_groups || [],
     image: x.image || '', item_code: x.item_code || '', sold_alone: x.type === 'subitem' ? x.sold_alone === true : x.sold_alone !== false, type: x.type || 'simple',
-    default_channels: chText(x.default_channels),
+    default_channels: chText(x.default_channels), combo: x.combo ?? null,
   });
   // 5.12.120 (Peter, 27 Nov 2026: "how do I create variants ... variants are not just sizes"): a
   // new product opened from a product's Add a variant button starts as a variant of it, in its
@@ -154,6 +159,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   // Every site, always: a product on at one site is a normal product (Peter, UI issue 6).
   const visibleSites = sites;
   const isSub = form.type === 'subitem';
+  const isCombo = form.type === COMBO_TYPE;
   const optionOnly = isSub && !form.sold_alone;
   const siteName = useMemo(() => new Map(sites.map((s) => [s.id, s.name])), [sites]);
 
@@ -182,6 +188,9 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     const tbt = {};
     for (const k of ORDER_TYPE_TAX_KEYS) if (form.tax_by_type?.[k]) tbt[k] = form.tax_by_type[k];
     f.tax_by_type = Object.keys(tbt).length ? tbt : null;
+    // 5.12.124: a Combo's steps, tidied as they are saved everywhere; anything that is not a Combo
+    // has none (a product changed away from Combo takes its steps off at every site).
+    f.combo = f.type === COMBO_TYPE ? comboColumnValue(comboStepsOf(f.combo)) : null;
     return f;
   };
 
@@ -433,10 +442,19 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
       {/* min-width 0: a fieldset is as wide as its widest child by default, which pushed fields
           past the sheet's right edge (Peter, UI issue 5). */}
       <fieldset disabled={!editable} style={{ border: 'none', padding: 0, margin: 0, minWidth: 0 }}>
-        <Field label="What is this?" hint={isSub ? HELP.subItem : 'A product customers buy, like a Latte.'}>
-          <Segmented value={form.type === 'subitem' ? 'subitem' : 'product'} onChange={(v) => setForm((f) => withSoldVisibility({ ...f, type: v === 'subitem' ? 'subitem' : (f.type === 'subitem' ? 'simple' : f.type), sold_alone: v !== 'subitem' }))}
-            options={[{ value: 'product', label: 'A product' }, { value: 'subitem', label: 'A sub item (used inside option groups)' }]} />
+        <Field label="What is this?" hint={isSub ? HELP.subItem : isCombo ? COMBO_HINT : 'A product customers buy, like a Latte.'}>
+          {/* 5.12.124: a Combo (one product at a set price, built from the group menu's products in
+              steps). A variant is never a Combo, so it is not offered there. */}
+          <Segmented value={form.type === 'subitem' ? 'subitem' : isCombo ? 'combo' : 'product'}
+            onChange={(v) => setForm((f) => withSoldVisibility({ ...f, type: v === 'subitem' ? 'subitem' : v === 'combo' ? COMBO_TYPE : ((f.type === 'subitem' || f.type === COMBO_TYPE) ? 'simple' : f.type), sold_alone: v !== 'subitem' }))}
+            options={[{ value: 'product', label: 'A product' }, ...(isSizeForm ? [] : [{ value: 'combo', label: 'A Combo (built in steps)' }]), { value: 'subitem', label: 'A sub item (used inside option groups)' }]} />
         </Field>
+        {isCombo && !isSizeForm && (
+          <Field label="Steps" hint="What customers pick, step by step. Each step lists products of this group menu; each site gets its own copy of them.">
+            <MsmComboSteps id={p?.id || ids.product} form={form} price={groupPrice} products={eff?.products} categories={eff?.categories}
+              onChange={(combo) => setForm((f) => ({ ...f, combo }))} columnReady={comboColumnReady(eff?.products)} readOnly={!editable} />
+          </Field>
+        )}
         {isSub && (
           <Field label="Also sold on its own" hint={HELP.soldAlone}>
             <Switch on={!!form.sold_alone} disabled={!editable} onChange={(v) => setForm((f) => withSoldVisibility({ ...f, sold_alone: v }))} />
