@@ -700,6 +700,36 @@ export function orderBlocks(items) {
 }
 
 /**
+ * An order's lines in the order people read them: every Combo's picks straight under its own line.
+ * An order with no Combo comes back exactly in the order it was given.
+ */
+export function displayOrder(items) {
+  const list = listOf(items).filter(Boolean);
+  if (!list.some(isComboLine)) return list;
+  const out = [];
+  for (const b of orderBlocks(list)) { if (b.kind === 'combo') out.push(b.parent, ...b.picks); else out.push(b.line); }
+  return out;
+}
+
+/**
+ * How one line shows wherever people read an order (receipt, bill, review, history, the customer
+ * screen). Peter, 27 Nov 2026: the receipt shows the Combo and its price, with the picks under it.
+ *   pick        a product picked inside a Combo: it sits under the Combo's line, set in a little
+ *   parent      the Combo's own line (it carries the set price)
+ *   lead        what goes in front of a pick's name in plain text
+ *   amount      what the line comes to (its price x quantity, or the amount the screen passes in,
+ *               such as the line after its discount)
+ *   showAmount  false for a pick that adds nothing: the set price is on the Combo's line, so a pick
+ *               shows an amount only when it adds one (an extra, a price bump, or its own price in
+ *               a step that keeps prices). Never "0.00" under a Combo.
+ */
+export function lineShow(line, amount = null) {
+  const pick = isComboPick(line);
+  const amt = amount == null ? (Number(line?.price) || 0) * (Number(line?.qty) || 1) : (Number(amount) || 0);
+  return { pick, parent: isComboParent(line), lead: pick ? '  ' : '', amount: cents(amt), showAmount: !pick || Math.abs(amt) >= 0.005 };
+}
+
+/**
  * A list of line selections (uids) made whole: any Combo that is partly in it is taken in full, or
  * left out in full. Used by the screens that let staff pick lines (split by item, refund, discount).
  *   mode 'add'    a Combo with any line picked is picked whole
@@ -716,6 +746,22 @@ export function wholeCombos(items, uids, mode = 'add') {
     if (some && !every) group.forEach((u) => (mode === 'drop' ? picked.delete(u) : picked.add(u)));
   }
   return list.map((l) => l.uid).filter((u) => picked.has(u));
+}
+
+/**
+ * The pieces a bill is split into "by item": every line is one piece, and a Combo is ONE piece (its
+ * own line and its picks together, at what the whole Combo comes to). So a Combo can only ever land
+ * on one check: it is paid as one, never cut. Voided lines are left out, as the split always did.
+ * A Combo's piece carries the Combo's own line fields (its uid and name), price = the whole Combo,
+ * qty 1, and comboPicks = how many picks ride with it.
+ */
+export function splitUnits(items) {
+  const out = [];
+  for (const b of orderBlocks(listOf(items).filter((i) => i && !i.voided))) {
+    if (b.kind !== 'combo') out.push(b.line);
+    else out.push({ ...b.parent, price: b.total, qty: 1, comboPicks: b.picks.length });
+  }
+  return out;
 }
 
 /** True when these uids hold only whole Combos (no Combo is cut). The store refuses anything else. */

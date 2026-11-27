@@ -11,6 +11,8 @@ import { receiptTargetStatus } from '../../lib/printer';
 import { Sx, money } from './MShellStyles';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
 import { Icon } from '../../components/ServOSIcons';
+// 5.12.123 Combos: a Combo shows with its picks under it and is refunded whole (lib/combo.js).
+import { displayOrder, lineShow, comboUids, isComboParent, COMBO_WORDS } from '../../lib/combo.js';
 
 export default function MOrderDetail({ check, onBack }) {
   const { closedChecks = [], refundCheck, printCustomerReceipt, locationConfig, showToast } = useStore();
@@ -25,7 +27,7 @@ export default function MOrderDetail({ check, onBack }) {
   const [error, setError] = useState(null);
   const [emailTo, setEmailTo] = useState(typeof live?.customer === 'object' ? live.customer?.email || '' : '');
 
-  const items = useMemo(() => (live.items || []).filter(i => !i.voided), [live]);
+  const items = useMemo(() => displayOrder((live.items || []).filter(i => !i.voided)), [live]);
   const refundedAmount = (live.refunds || []).reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const remaining = (Number(live.total) || 0) - refundedAmount;
 
@@ -112,7 +114,17 @@ export default function MOrderDetail({ check, onBack }) {
   };
 
   // ── Refund flow ─────────────────────────────────────────────────────────
-  const setQty = (uid, qty) => setRefundQtys(prev => ({ ...prev, [uid]: qty }));
+  // 5.12.123: a Combo is refunded whole. Plus on any line of one takes its own line and every pick
+  // in full; minus lets them all go. (The store refuses a refund that cuts a Combo anyway.)
+  const setQty = (uid, qty) => setRefundQtys(prev => {
+    const group = comboUids(items, uid);
+    if (group.length > 1) {
+      const next = { ...prev };
+      group.forEach(u => { next[u] = qty > 0 ? (items.find(i => i.uid === u)?.qty || 1) : 0; });
+      return next;
+    }
+    return { ...prev, [uid]: qty };
+  });
   const totalToRefund = useMemo(() => {
     return items.reduce((s, it) => s + ((refundQtys[it.uid] || 0) * (it.price || 0)), 0);
   }, [items, refundQtys]);
@@ -218,6 +230,15 @@ export default function MOrderDetail({ check, onBack }) {
             {items.map(it => {
               const max = it.qty || 0;
               const q = refundQtys[it.uid] || 0;
+              const show = lineShow(it, it.price);
+              // A pick rides with its Combo: no stepper of its own, it follows the Combo's line.
+              if (show.pick) return (
+                <div key={it.uid} data-combo-pick="1" style={{ padding:'8px 14px', marginLeft:18, background:'var(--bg2)', borderRadius:10, border:`1px solid ${q > 0 ? 'var(--red-b)' : 'var(--bdr)'}`, marginBottom:6, display:'flex', alignItems:'baseline', gap:8 }}>
+                  <span style={{ flex:1, fontSize:12, fontWeight:600, color:'var(--t2)' }}>{it.name}</span>
+                  {show.showAmount && <span style={{ fontSize:12, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{money(it.price)}</span>}
+                  {q > 0 && <span style={{ fontSize:11, fontWeight:800, color:'var(--red)' }}>refund</span>}
+                </div>
+              );
               return (
                 <div key={it.uid} style={{ padding:'12px 14px', background:'var(--bg2)', borderRadius:12, border:'1px solid var(--bdr)', marginBottom:8 }}>
                   <div style={{ display:'flex', alignItems:'baseline', gap:8 }}>
@@ -226,6 +247,7 @@ export default function MOrderDetail({ check, onBack }) {
                       {money(it.price)} × {it.qty}
                     </span>
                   </div>
+                  {isComboParent(it) && <div data-testid="refund-combo-whole" style={{ fontSize:11, color:'var(--t3)', marginTop:3 }}>{COMBO_WORDS.refundWhole}</div>}
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:10 }}>
                     <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>Refund qty</span>
                     <div style={{ flex:1 }}/>
@@ -326,7 +348,7 @@ export default function MOrderDetail({ check, onBack }) {
         {/* Items */}
         <div style={{ padding:'4px 14px' }}>
           {items.map(it => (
-            <div key={it.uid} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)', marginBottom:6, display:'flex', gap:10, alignItems:'flex-start' }}>
+            <div key={it.uid} data-combo-pick={lineShow(it).pick ? '1' : undefined} style={{ padding: lineShow(it).pick ? '7px 12px' : '10px 12px', marginLeft: lineShow(it).pick ? 18 : 0, background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)', marginBottom:6, display:'flex', gap:10, alignItems:'flex-start' }}>
               <div style={{ fontSize:12, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:22, paddingTop:1 }}>
                 {it.qty}×
               </div>
@@ -340,7 +362,7 @@ export default function MOrderDetail({ check, onBack }) {
                 )}
               </div>
               <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
-                {money((it.price || 0) * (it.qty || 0))}
+                {lineShow(it).showAmount ? money((it.price || 0) * (it.qty || 0)) : ''}
               </div>
             </div>
           ))}

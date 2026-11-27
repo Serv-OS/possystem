@@ -3,12 +3,14 @@ import { ALLERGENS } from '../data/seed';
 import { money } from '../lib/currency';
 import { useStore } from '../store';
 import { Icon } from './ServOSIcons';
+// 5.12.123 Combos: a Combo's picks show under its own line, with an amount only where a pick adds one.
+import { displayOrder, lineShow } from '../lib/combo.js';
 
 export default function OrderReviewModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, onClose, onCheckout, onPrint }) {
   const [mode, setMode] = useState('compact');  // compact | detailed
   // v5.5.961: this device's profile can hide course management entirely
   const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
-  const nonVoided = items.filter(i => !i.voided);
+  const nonVoided = displayOrder(items.filter(i => !i.voided));
   const sentCount  = nonVoided.filter(i => i.status==='sent').length;
   const pendingCount = nonVoided.filter(i => i.status==='pending').length;
 
@@ -74,18 +76,19 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
               ? (disc.type==='percent' ? item.price*(1-disc.value/100) : Math.max(0,item.price-disc.value/item.qty))
               : item.price;
             const isLast = idx===nonVoided.length-1;
+            const show = lineShow(item, price*item.qty);
             return (
-              <div key={item.uid} style={{
+              <div key={item.uid} data-combo-pick={show.pick ? '1' : undefined} style={{
                 display:'flex', alignItems:'baseline', justifyContent:'space-between',
-                padding:'7px 18px', borderBottom:isLast?'none':'1px solid var(--bdr)',
+                padding: show.pick ? '5px 18px 5px 34px' : '7px 18px', borderBottom:isLast?'none':'1px solid var(--bdr)',
                 background:idx%2===0?'transparent':'rgba(255,255,255,.02)',
               }}>
                 <div style={{ display:'flex', alignItems:'baseline', gap:8, flex:1, minWidth:0 }}>
                   {item.qty>1&&<span style={{ fontSize:12, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)', flexShrink:0 }}>{item.qty}×</span>}
-                  <span style={{ fontSize:13, fontWeight:500, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.name}</span>
+                  <span style={{ fontSize: show.pick ? 12 : 13, fontWeight:500, color: show.pick ? 'var(--t2)' : 'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.name}</span>
                   {item.status==='sent'&&<span style={{ fontSize:9, color:'var(--grn)', fontWeight:700, flexShrink:0 }}>✓</span>}
                 </div>
-                <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:'var(--font-mono)', flexShrink:0, marginLeft:12 }}>{money((price*item.qty))}</span>
+                <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:'var(--font-mono)', flexShrink:0, marginLeft:12 }}>{show.showAmount?money((price*item.qty)):''}</span>
               </div>
             );
           })}
@@ -97,9 +100,10 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
               ? (disc.type==='percent' ? item.price*(1-disc.value/100) : Math.max(0,item.price-disc.value/item.qty))
               : item.price;
             const isLast = idx===nonVoided.length-1;
+            const show = lineShow(item, price*item.qty);
             return (
-              <div key={item.uid} style={{
-                padding:'10px 18px', borderBottom:isLast?'none':'1px solid var(--bdr)',
+              <div key={item.uid} data-combo-pick={show.pick ? '1' : undefined} style={{
+                padding: show.pick ? '8px 18px 8px 34px' : '10px 18px', borderBottom:isLast?'none':'1px solid var(--bdr)',
                 borderLeft:`3px solid ${item.status==='sent'?'var(--grn)':'var(--bg4)'}`,
               }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10 }}>
@@ -127,11 +131,11 @@ export default function OrderReviewModal({ items, subtotal, service, total, chec
                       {!hideCourses&&item.course>0&&<span style={{ fontSize:10, padding:'1px 6px', borderRadius:4, background:'var(--bg3)', color:'var(--t3)', fontWeight:700, border:'1px solid var(--bdr)' }}>Course {item.course}</span>}
                     </div>
                   </div>
-                  <div style={{ textAlign:'right', flexShrink:0 }}>
+                  {show.showAmount&&<div style={{ textAlign:'right', flexShrink:0 }}>
                     <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money((price*item.qty))}</div>
                     {disc&&<div style={{ fontSize:10, color:'var(--t4)', textDecoration:'line-through', fontFamily:'var(--font-mono)' }}>{money((item.price*item.qty))}</div>}
                     {item.qty>1&&!disc&&<div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{money(item.price)} ea</div>}
-                  </div>
+                  </div>}
                 </div>
               </div>
             );

@@ -17,6 +17,8 @@ import { cardReceiptLines } from './cardReceipt';  // v5.5.719: card-scheme bloc
 // entries (rate: null) as name + amount with no percent and no crash.
 import { taxTermFor, breakdownLabel } from './receiptTax';
 import { localeDateString, localeTimeString, zoneOr } from './venueDates';
+// 5.12.123 Combos: a Combo's picks go under its own line, with an amount only where a pick adds one.
+import { displayOrder, lineShow } from './combo.js';
 
 // 5.12.57 (US basics batch 8): a receipt's date and time in the venue's words ('Nov 03, 2026' and
 // '2:05 PM' at a US venue) and on the venue's clock, not the device's: the online checkout can be
@@ -93,7 +95,7 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
   // Date/time for merge data
   const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
   const { dateStr, timeStr } = receiptWhen(dt);
-  const items = (check.items || []).filter(i => !i.voided);
+  const items = displayOrder((check.items || []).filter(i => !i.voided));
 
   // Build full item breakdown for {{order_items}} merge tag
   const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
@@ -105,12 +107,13 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
   const itemLines = [];
   items.forEach(it => {
     const lineTotal = (it.price || 0) * (it.qty || 1);
+    const show = lineShow(it, lineTotal);
     // Triple-naming: emailed receipts use the line's explicit receipt name when set
-    itemLines.push(`${it.qty > 1 ? `${it.qty}x ` : ''}${it.receiptName || it.name}  ${money(lineTotal)}`);
-    if (it.qty > 1) itemLines.push(`  ${money(it.price)} each`);
+    itemLines.push(`${show.lead}${it.qty > 1 ? `${it.qty}x ` : ''}${it.receiptName || it.name}${show.showAmount ? `  ${money(lineTotal)}` : ''}`);
+    if (it.qty > 1 && show.showAmount) itemLines.push(`${show.lead}  ${money(it.price)} each`);
     const mods = (it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean);
-    if (mods.length) itemLines.push(`  + ${mods.join(' · ')}`);
-    if (it.notes) itemLines.push(`  Note: ${it.notes}`);
+    if (mods.length) itemLines.push(`${show.lead}  + ${mods.join(' · ')}`);
+    if (it.notes) itemLines.push(`${show.lead}  Note: ${it.notes}`);
   });
   itemLines.push('');
   itemLines.push(`Subtotal: ${money(subtotal)}`);
@@ -200,7 +203,7 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
   const { dateStr, timeStr } = receiptWhen(dt);
 
   // Items
-  const items = (check.items || []).filter(i => !i.voided);
+  const items = displayOrder((check.items || []).filter(i => !i.voided));
 
   // Totals
   const subtotal   = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
@@ -262,16 +265,17 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
       </div>
       ${items.map(it => {
         const lineTotal = (it.price || 0) * (it.qty || 1);
+        const show = lineShow(it, lineTotal);
         return `
-        <div style="margin-bottom:10px;">
+        <div style="margin-bottom:${show.pick ? 6 : 10}px;${show.pick ? 'padding-left:14px;' : ''}">
           <div style="${S.row}">
             <div style="flex:1;">
-              <div style="font-weight:600;">${it.qty > 1 ? `${it.qty} × ` : ''}${escapeHtml(it.receiptName || it.name || '')}</div>
-              ${it.qty > 1 ? `<div style="font-size:11px;${S.dim}margin-top:1px;">${money(it.price)} each</div>` : ''}
+              <div style="font-weight:${show.pick ? 500 : 600};">${it.qty > 1 ? `${it.qty} × ` : ''}${escapeHtml(it.receiptName || it.name || '')}</div>
+              ${it.qty > 1 && show.showAmount ? `<div style="font-size:11px;${S.dim}margin-top:1px;">${money(it.price)} each</div>` : ''}
               ${(it.mods || []).length ? `<div style="font-size:11px;${S.muted}margin-top:2px;">+ ${(it.mods || []).map(m => escapeHtml(m?.name || m?.label || m)).filter(Boolean).join(' · ')}</div>` : ''}
               ${it.notes ? `<div style="font-size:11px;${S.dim}margin-top:2px;font-style:italic;">${escapeHtml(it.notes)}</div>` : ''}
             </div>
-            <div style="${S.mono}font-weight:600;white-space:nowrap;">${money(lineTotal)}</div>
+            <div style="${S.mono}font-weight:600;white-space:nowrap;">${show.showAmount ? money(lineTotal) : ''}</div>
           </div>
         </div>`;
       }).join('')}
@@ -373,7 +377,7 @@ function buildReceiptText({ check, locationLabel, branding }) {
   const dt = check.closedAt ? new Date(typeof check.closedAt === 'number' ? check.closedAt : check.closedAt) : new Date();
   const { dateStr, timeStr } = receiptWhen(dt);
 
-  const items = (check.items || []).filter(i => !i.voided);
+  const items = displayOrder((check.items || []).filter(i => !i.voided));
   const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
   const service  = Number(check.service) || 0;
   const tip      = Number(check.tip) || 0;
@@ -405,12 +409,13 @@ function buildReceiptText({ check, locationLabel, branding }) {
 
   items.forEach(it => {
     const lineTotal = (it.price || 0) * (it.qty || 1);
+    const show = lineShow(it, lineTotal);
     const rName = it.receiptName || it.name;
-    const nameStr = it.qty > 1 ? `${it.qty} x ${rName}` : rName;
-    lines.push(pad(nameStr, money(lineTotal)));
-    if (it.qty > 1) lines.push(`     ${money(it.price)} each`);
-    if ((it.mods || []).length) lines.push(`  + ${(it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean).join(' · ')}`);
-    if (it.notes) lines.push(`  ${it.notes}`);
+    const nameStr = show.lead + (it.qty > 1 ? `${it.qty} x ${rName}` : rName);
+    lines.push(show.showAmount ? pad(nameStr, money(lineTotal)) : nameStr);
+    if (it.qty > 1 && show.showAmount) lines.push(`${show.lead}     ${money(it.price)} each`);
+    if ((it.mods || []).length) lines.push(`${show.lead}  + ${(it.mods || []).map(m => m?.name || m?.label || m).filter(Boolean).join(' · ')}`);
+    if (it.notes) lines.push(`${show.lead}  ${it.notes}`);
   });
 
   lines.push('');

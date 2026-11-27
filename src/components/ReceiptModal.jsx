@@ -10,6 +10,8 @@ import { Icon } from './ServOSIcons';
 // breakdownLabel prints name + amount with no percent, breakdownIsExclusive
 // treats them as added-on. Byte-identical strings for every rate-backed entry.
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';
+// 5.12.123 Combos: a Combo's picks show under its own line, with an amount only where a pick adds one.
+import { displayOrder, lineShow } from '../lib/combo.js';
 
 // ── Receipt display & print ───────────────────────────────────────────────────
 export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: billTaxBreakdown, checkDiscount, discounts = [], orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
@@ -21,7 +23,7 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
   const now = new Date();
   // 5.12.57: the date and time in the venue's words (11/3/2026, 2:05:09 PM at a US venue; UK as before)
   const nowText = localeString(now, undefined, location?.currency);
-  const nonVoided = items.filter(i => !i.voided);
+  const nonVoided = displayOrder(items.filter(i => !i.voided));
   const [printing, setPrinting] = useState(false);
 
   // Calculate tax breakdown for receipt — v5.7.34: through the unified seam
@@ -91,15 +93,17 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
         const price = disc
           ? (disc.type==='percent' ? item.price*(1-disc.value/100) : Math.max(0,item.price-disc.value/item.qty))
           : item.price;
+        const show = lineShow(item, price*item.qty);
+        const pad = show.pick ? 24 : 12;
         return `
-          <div class="row">
+          <div class="row"${show.pick ? ' style="padding-left:12px"' : ''}>
             <span>${item.qty > 1 ? item.qty+"× " : ""}${item.receiptName||item.name}</span>
-            <span>${money((price*item.qty))}</span>
+            <span>${show.showAmount ? money((price*item.qty)) : ''}</span>
           </div>
-          ${item.mods?.length ? `<div class="muted" style="padding-left:12px">${item.mods.map(m=>m.label).join(', ')}</div>` : ''}
-          ${item.notes ? `<div class="muted" style="padding-left:12px">${item.notes}</div>` : ''}
-          ${disc ? `<div class="muted" style="padding-left:12px">${disc.label} (−${money((item.price*item.qty - price*item.qty))})</div>` : ''}
-          ${item.allergens?.length ? `<div class="allergen">ALLERGENS: ${item.allergens.map(a=>a.toUpperCase()).join(', ')}</div>` : ''}
+          ${item.mods?.length ? `<div class="muted" style="padding-left:${pad}px">${item.mods.map(m=>m.label).join(', ')}</div>` : ''}
+          ${item.notes ? `<div class="muted" style="padding-left:${pad}px">${item.notes}</div>` : ''}
+          ${disc && show.showAmount ? `<div class="muted" style="padding-left:${pad}px">${disc.label} (−${money((item.price*item.qty - price*item.qty))})</div>` : ''}
+          ${item.allergens?.length ? `<div class="allergen"${show.pick ? ' style="padding-left:12px"' : ''}>ALLERGENS: ${item.allergens.map(a=>a.toUpperCase()).join(', ')}</div>` : ''}
         `;
       }).join('')}
       <div class="line"></div>
@@ -152,15 +156,17 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
             const price = disc
               ? (disc.type==='percent' ? item.price*(1-disc.value/100) : Math.max(0,item.price-disc.value/item.qty))
               : item.price;
+            // A pick inside a Combo sits under the Combo's line, set in, with an amount only when it adds one.
+            const show = lineShow(item, price*item.qty);
             return (
-              <div key={item.uid} style={{marginBottom:6}}>
-                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t1)'}}>
+              <div key={item.uid} data-combo-pick={show.pick ? '1' : undefined} style={{marginBottom:6,paddingLeft:show.pick?12:0}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:show.pick?'var(--t2)':'var(--t1)'}}>
                   <span>{item.qty>1?`${item.qty}× `:''}{item.receiptName||item.name}</span>
-                  <span>{money((price*item.qty))}</span>
+                  <span>{show.showAmount?money((price*item.qty)):''}</span>
                 </div>
                 {item.mods?.length>0&&<div style={{fontSize:10,color:'var(--t3)',paddingLeft:12}}>{item.mods.map(m=>m.label).join(', ')}</div>}
                 {item.notes&&<div style={{fontSize:10,color:'#f97316',paddingLeft:12,display:'flex',alignItems:'center',gap:4}}><Icon name="note" size={11} />{item.notes}</div>}
-                {disc&&<div style={{fontSize:10,color:'var(--grn)',paddingLeft:12,display:'flex',alignItems:'center',gap:4}}><Icon name="tag" size={11} />{disc.label} −{money((item.price*item.qty-price*item.qty))}</div>}
+                {disc&&show.showAmount&&<div style={{fontSize:10,color:'var(--grn)',paddingLeft:12,display:'flex',alignItems:'center',gap:4}}><Icon name="tag" size={11} />{disc.label} −{money((item.price*item.qty-price*item.qty))}</div>}
                 {item.allergens?.length>0&&<div style={{fontSize:10,color:'var(--red)',paddingLeft:12,fontWeight:600,display:'flex',alignItems:'center',gap:4}}><Icon name="warn" size={11} />{item.allergens.map(a=>a.toUpperCase()).join(' · ')}</div>}
               </div>
             );
