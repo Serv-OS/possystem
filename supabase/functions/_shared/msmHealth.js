@@ -28,8 +28,15 @@
 //     on the site's menu (no till would show it).
 //   17 OCT VERIFICATION, BLOCKING (central): a product brought back into a category that was taken
 //     off the group menu.
+//   COMBOS (5.12.124), BLOCKING at a site: a Combo step that MUST be answered with too few of its
+//     products on sale there (nobody could finish it): that site is held back, the others publish.
+//     BLOCKING (central): a must choose step with no product at all; a step listing the Combo
+//     itself, another Combo or a sub item that is only an option.
+//     WARNINGS: a step product that is turned off at a site; one removed from the group menu.
 
 import { CATEGORY_IMAGE_RE, normName, toPence, money2 } from './msmModel.js';
+// 5.12.124: a Combo's steps, read with the same rules the POS uses (_shared/combo.js is src/lib/combo.js).
+import { COMBO_TYPE, comboStepsOf, unmetSteps, stepProductBlock } from './combo.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const codeKey = (c) => (c == null ? null : String(c).trim().toUpperCase() || null);
@@ -115,6 +122,25 @@ export function checkSite(plan, opts = {}) {
         const offOpts = listOf(def.options).filter((o) => o && o.itemId && !active(byId.get(o.itemId)));
         const off = offOpts.map((o) => o.name);
         if (off.length) push(warnings, { code: 'option_inactive', words: `"${def.name}" offers ${off.slice(0, 3).join(', ')}${off.length > 3 ? ' and more' : ''}, whose sub item is turned off at ${siteName}. Turn the option off there too, or turn the sub item back on.`, productId, venueGroupId: def.id, venueOptionIds: offOpts.map((o) => o.id) });
+      }
+    }
+    // 5.12.124 Combos. A step that MUST be answered needs enough of its products really on sale at
+    // this site, or nobody could ever finish the Combo here. The site is held back, in words; the
+    // other sites still publish. A product that is listed but turned off here is said as well.
+    if (active(i) && i.type === COMBO_TYPE) {
+      const steps = comboStepsOf(i.combo);
+      const live = (id) => active(byId.get(id));
+      for (const u of unmetSteps(steps, live)) {
+        push(blocking, {
+          code: 'combo_step_unmet', productId,
+          words: u.need > 1
+            ? `"${u.step.name}" in ${label} needs ${u.need} different products on sale at ${siteName} and has ${u.have}, so nobody could finish it there. Turn more of its products on at ${siteName}, or turn ${label} off there.`
+            : `"${u.step.name}" in ${label} has no product on sale at ${siteName}, so nobody could finish it there. Turn one of its products on at ${siteName}, or turn ${label} off there.`,
+        });
+      }
+      for (const st of steps) {
+        const off = st.products.map((x) => byId.get(x.itemId)).filter((r) => r && !active(r)).map(nameOf);
+        if (off.length) push(warnings, { code: 'combo_pick_off', productId, words: `"${st.name}" in ${label} lists ${off.slice(0, 3).join(', ')}${off.length > 3 ? ' and more' : ''}, turned off at ${siteName}. It cannot be picked there until it is turned back on.` });
       }
     }
   }
@@ -214,6 +240,28 @@ export function checkCentral(central, touched) {
     const gone = [p.category_id, ...listOf(p.extra_category_ids)].map((cid) => catOf.get(cid)).filter((c) => c && c.archived);
     if (gone.length && !(t.op === 'update' && !t.fields.has('archived') && !t.fields.has('category_id') && !t.fields.has('extra_category_ids'))) {
       blocking.push({ code: 'category_removed', words: `"${p.name}" is in "${gone[0].label}", which was taken off the group menu. Move it to another category first.`, productId: pid });
+    }
+    // 5.12.124 Combos: a step must be able to be answered somewhere, and may only list real
+    // products (never the Combo itself, another Combo, or a sub item that is only an option).
+    if ((p.type || 'simple') === COMBO_TYPE) {
+      const byId = new Map(listOf(central?.products).map((x) => [x.id, x]));
+      const steps = comboStepsOf(p.combo);
+      for (const st of steps) {
+        for (const x of st.products) {
+          const row = byId.get(x.itemId);
+          if (!row || row.archived) continue;                     // left out everywhere, said at each site
+          const why = stepProductBlock(row, { comboId: p.id });
+          if (why) blocking.push({ code: 'combo_product_refused', words: `"${st.name}" in "${p.name}": ${why}`, productId: pid });
+        }
+      }
+      for (const u of unmetSteps(steps, (id) => { const row = byId.get(id); return !!row && !row.archived; })) {
+        blocking.push({
+          code: 'combo_step_empty', productId: pid,
+          words: u.need > 1
+            ? `"${u.step.name}" in "${p.name}" needs ${u.need} different products and has ${u.have} in the group menu. Add products to the step, or let customers skip it.`
+            : `"${u.step.name}" in "${p.name}" has no product in the group menu, and customers must choose. Add a product to the step, or let customers skip it.`,
+        });
+      }
     }
   }
   // Option groups (round 2): rules that cannot be met, and "Then ask" loops.

@@ -32,6 +32,8 @@ import { planSite, touchedFromChanges, groupOptionRows } from '../../../supabase
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
 import { MAIN_MENU, extraMenus, extraMenuAt, menuKeysValue } from '../../../supabase/functions/_shared/msmMenus.js';
 import { touchEverything, comboWithSteps } from '../../../supabase/functions/_shared/msmImport.js';
+// 5.12.124: a site's Combo comes in WITH its steps (the same rules as everywhere: src/lib/combo.js).
+import { comboStepsOf, comboColumnValue, comboProductIds, mapStepProducts, stepProductBlock, stepsSummary } from '../combo.js';
 import { importTaxByType, sizeKeptTax, mapRateDescriptor } from '../../../supabase/functions/_shared/msmTax.js';
 import {
   familyOf, normName, has, samePrice, sameValue, money2, KEPT_COLUMNS, GROUP_KEPT_COLUMNS, PUBLISHED_CHANNELS,
@@ -43,10 +45,6 @@ const gidOf = (a) => (typeof a === 'string' ? a : a && typeof a === 'object' ? (
 const nameOf = (row) => row?.menu_name || row?.name || 'A product';
 const optionOnly = (row) => row?.type === 'subitem' && row?.sold_alone !== true;
 
-/** "Build Your Own Package is a Combo with steps. It stays at this site for now: Combos come to the group menu in a later update." */
-export function comboStaysWords(row) {
-  return `${nameOf(row)} is a Combo with steps. It stays at this site for now: Combos come to the group menu in a later update.`;
-}
 
 const defaultUuid = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -72,7 +70,7 @@ function categoriesInMenu(raw, venueMenuId, alsoMenuIds = []) {
  * The site's own products (not managed by the group menu), each with what it looks like.
  *   central   the group menu (the draft applied)
  *   raw       readVenueRaw(...) of that site
- * Returns [{ id, name, row, sizes, archived, match: { productId, name, how } | null, groups: [names], held? }],
+ * Returns [{ id, name, row, sizes, archived, match: { productId, name, how } | null, groups: [names] }],
  * products on sale first, then by name. Sizes come with their product; option only sub items come
  * with the options that use them (never listed alone).
  */
@@ -90,9 +88,6 @@ export function ownProducts(central, locationId, raw) {
     const sizes = items.filter((i) => i.parent_id === row.id && !managed.has(i.id));
     out.push({
       id: row.id, name: nameOf(row), row, sizes, archived: row.archived === true,
-      // 5.12.123: a Combo built from steps is listed (it IS the site's own) but cannot come in yet:
-      // `held` is the one line of words the screen shows in place of the buttons.
-      ...(comboWithSteps(row) ? { held: comboStaysWords(row) } : {}),
       match: matchFor(central, locationId, row),
       groups: [...new Set(listOf(row.assigned_modifier_groups).map(gidOf).filter(Boolean).map((g) => groupName.get(g)).filter(Boolean))],
     });
@@ -140,10 +135,6 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   const fail = (w) => ({ ok: false, changes: [], words: [], problems: [w] });
   if (!row) return fail('That product is no longer at the site. Check the sites again.');
   if (listOf(central?.productSites).some((ps) => ps.location_id === loc && ps.venue_item_id === row.id)) return fail(`${nameOf(row)} is already in the group menu.`);
-  // 5.12.123 Combos: a Combo built from steps stays the site's own for now. The group menu cannot
-  // hold its steps yet, and bringing it in would manage a product it can only half see. This is the
-  // one door Bring in, Bring in all and joining a site all use.
-  if (comboWithSteps(row)) return fail(comboStaysWords(row));
   if (!listOf(central?.sites).some((s) => s.location_id === loc)) return fail('That site is not in the group menu yet. Add the site first.');
   const link = opts.linkTo ? listOf(central?.products).find((p) => p.id === opts.linkTo && !p.archived) : null;
   if (opts.linkTo && !link) return fail('The product to link to is not in the group menu any more.');
@@ -159,52 +150,123 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   const { productFields, addProductSite, mapGroup } = bringMachinery({ C, changes, loc, raw, items, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
 
   // ── Products (the product and its sizes) ──────────────────────────────────
-  let mainId;
-  const sizes = items.filter((i) => i.parent_id === row.id && !productOfItem.has(i.id));
-  if (link) {
-    mainId = link.id;
-    addProductSite(mainId, row, link);
-    const centralSizes = listOf(C.products).filter((p) => p.parent_product_id === link.id && !p.archived);
-    const taken = new Set();
-    for (const s of sizes) {
-      const hit = centralSizes.find((p) => !taken.has(p.id) && normName(p.menu_name || p.name) === normName(nameOf(s))
-        && !listOf(C.productSites).some((ps) => ps.product_id === p.id && ps.location_id === loc));
-      if (hit) { taken.add(hit.id); addProductSite(hit.id, s, hit); continue; }
-      const sid = idGen();
-      const f = productFields(s, link.id);
-      changes.push({ target: 'product', entity_id: sid, location_id: null, op: 'create', after: f });
-      C.products.push({ id: sid, ...f });
-      addProductSite(sid, s, f);
-      words.push(`${nameOf(s)} comes in as a new variant of ${link.name}, on at ${siteName} only.`);
+  // One top level row of the site, with its sizes, as a product of the group menu: linked to `lk`
+  // (a group menu product) or new. The product pressed comes first; a Combo's step products come
+  // after it (5.12.124), each exactly as if it had been brought in by itself.
+  const brought = [];                    // [{ row, sizes, link }]
+  let comboNotHere = [];                 // a Combo's step products that are switched off or gone here
+  // One of the site's variants as a variant of group menu product `lk`: the group's variant of that
+  // name that is not at this site yet, else a new one on at this site only. (siteRows.ps holds every
+  // product this call has put at the site, so nothing is ever taken twice.)
+  const bringSize = (lk, s2) => {
+    const hit = listOf(C.products).find((p) => p.parent_product_id === lk.id && !p.archived && !siteRows.ps.has(p.id)
+      && normName(p.menu_name || p.name) === normName(nameOf(s2))
+      && !listOf(C.productSites).some((ps) => ps.product_id === p.id && ps.location_id === loc));
+    if (hit) { addProductSite(hit.id, s2, hit); return; }
+    const sid = idGen();
+    const f = productFields(s2, lk.id);
+    changes.push({ target: 'product', entity_id: sid, location_id: null, op: 'create', after: f });
+    C.products.push({ id: sid, ...f });
+    addProductSite(sid, s2, f);
+    words.push(`${nameOf(s2)} comes in as a new variant of ${lk.name}, on at ${siteName} only.`);
+  };
+  const bringOne = (r, lk, first) => {
+    let id;
+    const sz = items.filter((i) => i.parent_id === r.id && !productOfItem.has(i.id));
+    const say = (w) => (first ? words.unshift(w) : words.push(w));
+    if (lk) {
+      id = lk.id;
+      addProductSite(id, r, lk);
+      for (const s2 of sz) bringSize(lk, s2);
+      say(`${nameOf(r)} at ${siteName} becomes ${siteName}'s copy of ${lk.menu_name || lk.name}.`);
+    } else {
+      id = idGen();
+      const f = productFields(r, null);
+      changes.push({ target: 'product', entity_id: id, location_id: null, op: 'create', after: f });
+      C.products.push({ id, ...f });
+      addProductSite(id, r, f);
+      for (const s2 of sz) {
+        const sid = idGen();
+        const sf = productFields(s2, id);
+        changes.push({ target: 'product', entity_id: sid, location_id: null, op: 'create', after: sf });
+        C.products.push({ id: sid, ...sf });
+        addProductSite(sid, s2, sf);
+      }
+      say(`${nameOf(r)} comes into the group menu as a product on at ${siteName} only${sz.length ? `, with its ${sz.length} variant${sz.length === 1 ? '' : 's'}` : ''}.`);
     }
-    words.unshift(`${nameOf(row)} at ${siteName} becomes ${siteName}'s copy of ${link.menu_name || link.name}.`);
-  } else {
-    mainId = idGen();
-    const f = productFields(row, null);
-    changes.push({ target: 'product', entity_id: mainId, location_id: null, op: 'create', after: f });
-    C.products.push({ id: mainId, ...f });
-    addProductSite(mainId, row, f);
-    for (const s of sizes) {
-      const sid = idGen();
-      const sf = productFields(s, mainId);
-      changes.push({ target: 'product', entity_id: sid, location_id: null, op: 'create', after: sf });
-      C.products.push({ id: sid, ...sf });
-      addProductSite(sid, s, sf);
+    brought.push({ row: r, sizes: sz, link: lk });
+    return id;
+  };
+  const mainId = bringOne(row, link, true);
+
+  // ── A Combo's steps come with it (5.12.124, stage 2 of Combo products) ─────
+  // Peter, 27 Nov 2026: "make sure its also in the multi site menu manager properly". The site's
+  // steps list the site's own items. In the group menu each becomes a product of the group menu:
+  // the one that item already is at this site, or, for a product the group menu does not manage
+  // yet, that product brought in with the Combo (linked to the group product that looks like it,
+  // else new, exactly as Bring in all does). A step product that cannot come in stops the Combo,
+  // in words, and nothing is added to the draft. A product that is no longer at the site is left
+  // out of the step (the settle below then keeps the site's own list, so nothing changes there).
+  if (comboWithSteps(row)) {
+    const stepNameOf = new Map();
+    for (const st of comboStepsOf(row.combo)) for (const x of st.products) if (!stepNameOf.has(x.itemId)) stepNameOf.set(x.itemId, st.name);
+    const notHere = [];                    // step products that cannot be picked at the site today
+    for (const iid of comboProductIds(row.combo)) {
+      const it = items.find((i) => i.id === iid);
+      if (!it) { notHere.push(null); continue; }               // gone from the site: the POS never offers it
+      const stop = (why) => fail(`${nameOf(row)} cannot come in yet. Its step "${stepNameOf.get(iid)}" lists ${nameOf(it)}: ${why} Take it out of the step at ${siteName} first. Nothing was added to the draft.`);
+      // What no step may hold (another Combo, an option only sub item, a pizza builder product): the
+      // POS never offers it and the group menu would refuse the step, so it is said here, in words.
+      const bad = stepProductBlock(it, { comboId: row.id });
+      if (bad) return stop(bad);
+      if (it.archived === true) notHere.push(nameOf(it));      // switched off here: listed, never offered
+      if (productOfItem.has(iid)) continue;                    // the group menu has it here already
+      if (it.archived === true) continue;                      // switched off and the site's own: it stays out
+      const top = it.parent_id ? items.find((i) => i.id === it.parent_id) : it;
+      if (!top) return stop('it is a variant of a product that is no longer at the site.');
+      if (String(top.id).startsWith('demo-')) return stop('it is a demo product.');
+      const why = top === it ? null : stepProductBlock(top, { comboId: row.id });
+      if (why) return stop(why);
+      // A variant the site added to a product the group menu already has here: it comes in as a
+      // variant of that product (the step lists the variant, so the product alone is not enough).
+      if (productOfItem.has(top.id)) {
+        const parent = listOf(C.products).find((p) => p.id === productOfItem.get(top.id) && !p.archived);
+        if (!parent) return stop('its product is no longer in the group menu.');
+        bringSize(parent, it);
+        brought.push({ row: it, sizes: [], link: parent });
+        continue;
+      }
+      const m = matchFor(C, loc, top);
+      const lk = m && !siteRows.ps.has(m.productId) ? (listOf(C.products).find((p) => p.id === m.productId && !p.archived) || null) : null;
+      bringOne(top, lk, false);
     }
-    words.unshift(`${nameOf(row)} comes into the group menu as a product on at ${siteName} only${sizes.length ? `, with its ${sizes.length} variant${sizes.length === 1 ? '' : 's'}` : ''}.`);
+    // A NEW Combo takes the site's steps, with every product swapped for the group menu's. A linked
+    // one keeps the group menu's steps (the site's own are kept by the settle below when they differ).
+    if (!link) {
+      const pc = changes.find((c) => c.target === 'product' && c.entity_id === mainId);
+      const steps = comboColumnValue(mapStepProducts(comboStepsOf(row.combo), (iid) => productOfItem.get(iid) || null).steps);
+      if (pc && steps) {
+        pc.after.combo = steps;
+        const cp = C.products.find((p) => p.id === mainId);
+        if (cp) cp.combo = steps;
+        words.push(`Its steps come with it: ${stepsSummary(steps)}.`);
+      }
+    }
+    comboNotHere = notHere;
   }
 
   // ── Option groups (Then ask first) ────────────────────────────────────────
   const problems = [];
 
   const usedGroups = new Set();
-  for (const r of [row, ...sizes]) for (const a of listOf(r.assigned_modifier_groups)) { const g = gidOf(a); if (g) usedGroups.add(g); }
+  for (const bt of brought) for (const r of [bt.row, ...bt.sizes]) for (const a of listOf(r.assigned_modifier_groups)) { const g = gidOf(a); if (g) usedGroups.add(g); }
   const mapped = new Map();
   for (const vgid of usedGroups) { const g = mapGroup(vgid); if (g) mapped.set(vgid, g); }
   // A NEW product takes the site's groups, mapped (a linked product keeps the group menu's; the
   // site's own list is kept by the settle below).
-  if (!link) {
-    for (const r of [row, ...sizes]) {
+  for (const bt of brought) {
+    if (bt.link) continue;
+    for (const r of [bt.row, ...bt.sizes]) {
       const pid = productOfItem.get(r.id);
       const pc = changes.find((c) => c.target === 'product' && c.entity_id === pid);
       if (!pc) continue;
@@ -231,8 +293,17 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
     if (c.after.price != null) keptCols.add('price');
   }
   if (noPrice) words.push(`"${nameOf(row)}" has no price at ${siteName}, and keeps none there until someone sets one in the group menu.`);
+  // 5.12.124: a new Combo whose steps the site keeps. The usual reason is a step that lists a
+  // product switched off (or gone) there: the group menu leaves it out there, the site's own list
+  // still names it, and bringing in never writes at the site. Said, so nobody wonders why later.
+  if (!link && has(siteRows.ps.get(mainId)?.after?.kept, 'combo')) {
+    const named = [...new Set(comboNotHere.filter(Boolean))];
+    const why = named.length ? ` (${named.slice(0, 3).join(', ')}${named.length > 3 ? ' and more' : ''} ${named.length === 1 ? 'is' : 'are'} switched off there)`
+      : comboNotHere.length ? ' (a step lists a product that is no longer there)' : '';
+    words.push(`${siteName} keeps its own steps for ${nameOf(row)}${why}. Changes to the steps in the group menu reach ${siteName} once you tell it to use the group's.`);
+  }
   if (keptCols.size && link) {
-    const w = { price: 'its own price', cat: 'its own category', name: 'its own name', menu_name: 'its own name', image: 'its own photo', tax_rate_id: 'its own VAT', tax_overrides: 'its own VAT by order type', assigned_modifier_groups: 'its own option groups', description: 'its own description', allergens: 'its own allergens' };
+    const w = { price: 'its own price', cat: 'its own category', name: 'its own name', menu_name: 'its own name', image: 'its own photo', tax_rate_id: 'its own VAT', tax_overrides: 'its own VAT by order type', assigned_modifier_groups: 'its own option groups', combo: 'its own steps', description: 'its own description', allergens: 'its own allergens' };
     const list = [...new Set([...keptCols].map((k) => w[k] || 'some settings of its own'))];
     const said = list.length === 1 ? list[0] : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
     words.push(`${siteName} keeps ${said}, so nothing changes there until someone changes it in the group menu.`);
@@ -246,7 +317,10 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
 // product before its site rows and the options that offer it, an option before its site rows.
 function orderForGuard(changes) {
   const RANK = { category: -1, modifier_group: 0, product: 1, product_site: 2, modifier_group_site: 3, modifier_option: 4, modifier_option_site: 5 };
-  return changes.map((c, i) => ({ c, i })).sort((a, b) => (RANK[a.c.target] - RANK[b.c.target]) || (a.i - b.i)).map((x) => x.c);
+  // 5.12.124: a Combo with steps goes after the other products, so the products its steps name are
+  // in the draft before it (the guard checks each one is in the group menu or new in this draft).
+  const rank = (c) => RANK[c.target] + (c.target === 'product' && c.after && c.after.combo ? 0.5 : 0);
+  return changes.map((c, i) => ({ c, i })).sort((a, b) => (rank(a.c) - rank(b.c)) || (a.i - b.i)).map((x) => x.c);
 }
 
 // "Looks like Which syrup in the group menu": the same shared family, else the same normalised
@@ -640,7 +714,7 @@ export async function planJoinSiteAsync(live, opts = {}, { onProgress = () => {}
 export function joinableProducts(live, locationId, raw, venueMenuId) {
   if (!locationId || !raw || !venueMenuId) return [];
   const C = applyChanges(live, [{ target: 'menu_site', entity_id: live?.menu?.id || null, location_id: locationId, op: 'create', after: { venue_menu_id: venueMenuId } }]).central;
-  return ownProducts(C, locationId, raw).filter((o) => !o.archived && !o.held && o.match && o.match.how === 'family');
+  return ownProducts(C, locationId, raw).filter((o) => !o.archived && o.match && o.match.how === 'family');
 }
 
 function* joinSteps(live, opts) {

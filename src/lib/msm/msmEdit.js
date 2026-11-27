@@ -38,6 +38,8 @@ import {
   MAIN_MENU, MAIN_MENU_WORDS, MAX_EXTRA_MENUS, allExtraMenus, extraMenus, extraMenusValue, extraMenuNameProblem, newExtraMenu, matchSiteMenus, menuKeysOf, menuKeysValue,
   toggleMenuKey, menuKeysWords, rootCategory, extraMenuAt,
 } from '../../../supabase/functions/_shared/msmMenus.js';
+// 5.12.124: a Combo's steps in the group menu (the same rules as a site's: src/lib/combo.js).
+import { COMBO_TYPE, comboStepsOf, comboColumnValue, unmetSteps, stepProductBlock } from '../combo.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const findProduct = (c, id) => listOf(c?.products).find((p) => p.id === id) || null;
@@ -288,7 +290,38 @@ export function productProblems(fields, ctx = {}) {
   const needsTax = listOf(ctx.eff?.products).some((p) => !blank(p.tax_rate_percent));
   if (needsTax && blank(f.tax_rate_percent) && !String(f.tax_rate_name ?? '').trim()) out.push('Pick the VAT rate.');
   if (f.parent_product_id && f.parent_product_id === f.id) out.push('A product cannot be a variant of itself.');
+  out.push(...comboProblems(f, ctx));
   return out;
+}
+
+/**
+ * 5.12.124: plain words for what is wrong with a Combo's steps in the group menu ([] when nothing,
+ * and for any product that is not a Combo with steps). The same rules the health check applies at
+ * publish (msmHealth checkCentral), said here so the sheet can say them before anything is staged.
+ */
+export function comboProblems(fields, ctx = {}) {
+  const f = fields || {};
+  if ((f.type || 'simple') !== COMBO_TYPE) return [];
+  const steps = comboStepsOf(f.combo);
+  if (!steps.length) return [];
+  const out = [];
+  if (f.parent_product_id) out.push('A variant cannot be a Combo with steps.');
+  const byId = new Map(listOf(ctx.eff?.products).map((x) => [x.id, x]));
+  if (f.id && listOf(ctx.eff?.products).some((x) => x && !x.archived && x.parent_product_id === f.id)) out.push('A Combo with steps cannot have variants. Take its variants off first.');
+  for (const st of steps) {
+    for (const x of st.products) {
+      const row = byId.get(x.itemId);
+      if (!row || row.archived) continue;                       // gone: left out at every site, said in the steps list
+      const why = stepProductBlock(row, { comboId: f.id });
+      if (why) out.push(`"${st.name}": ${why}`);
+    }
+  }
+  for (const u of unmetSteps(steps, (id) => { const row = byId.get(id); return !!row && !row.archived; })) {
+    out.push(u.need > 1
+      ? `"${u.step.name}" needs ${u.need} different products and has ${u.have}. Add products to the step, or let customers skip it.`
+      : `"${u.step.name}" has no product, and customers must choose. Add a product to the step, or let customers skip it.`);
+  }
+  return [...new Set(out)];
 }
 
 /**
@@ -360,6 +393,10 @@ export function newProductChanges(ctx, { id, fields, sites }) {
   };
   const tbt = f.tax_by_type && typeof f.tax_by_type === 'object' && Object.keys(f.tax_by_type).length ? clone(f.tax_by_type) : null;
   if (tbt) after.tax_by_type = tbt;
+  // 5.12.124: a new Combo is staged with its steps. The key is only there for a Combo that has
+  // steps, so staging any other new product is exactly what it was before SQL 20261216a.
+  const steps = after.type === COMBO_TYPE ? comboColumnValue(comboStepsOf(f.combo)) : null;
+  if (steps) after.combo = steps;
   // 5.12.119: where head office hides it AS AN OPTION (visibility.notShownOn) goes with it.
   if (optionOnly) { after.category_id = f.category_id || null; after.visibility = withNotShownOn({ pos: false, kiosk: false, online: false, onlineDelivery: false }, notShownOn(f)); }
   const product = { id, family_base: null };

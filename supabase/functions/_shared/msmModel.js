@@ -89,6 +89,9 @@ export const STAGE_FIELDS = Object.freeze({
     'kitchen_name', 'description', 'default_price', 'default_channels', 'tax_rate_name', 'tax_rate_percent',
     'allergens', 'tags', 'image', 'modifier_groups', 'visibility', 'sold_alone', 'item_code',
     'site_only_location_id', 'archived', 'sort_order', 'family_base', 'tax_by_type',
+    // 5.12.124 (SQL 20261216a): a Combo's steps (_shared/combo.js). The same shape a site's
+    // menu_items.combo has, with each step product being one of THIS GROUP MENU's products.
+    'combo',
   ],
   product_site: ['venue_item_id', 'active', 'price', 'channel_prices', 'kept'],
   modifier_group: ['name', 'min', 'max', 'selection_type', 'sort_order', 'archived', 'family_base'],
@@ -158,6 +161,8 @@ export const PRODUCT_COLUMN = Object.freeze({
   tax_rate_percent: 'tax_rate_id', allergens: 'allergens', tags: 'tags', image: 'image',
   modifier_groups: 'assigned_modifier_groups', visibility: 'visibility', sold_alone: 'sold_alone',
   item_code: 'item_code', archived: 'archived', site_only_location_id: null, sort_order: null, family_base: null,
+  // 5.12.124: a Combo's steps, written with every step product swapped for the site's own item.
+  combo: 'combo',
 });
 
 export const PRODUCT_SITE_COLUMN = Object.freeze({
@@ -187,6 +192,9 @@ export const KEPT_COLUMNS = Object.freeze([
   'cat', 'cats', 'image', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'tax_rate_id',
   'allergens', 'tags', 'visibility', 'sold_alone', 'item_code', 'assigned_modifier_groups', 'type', 'parent_id',
   'tax_overrides', 'no_price',
+  // 5.12.124: a site may keep its own steps on a Combo (Bring in keeps them when they are not
+  // what the group menu would write). Publish then never writes the steps there.
+  'combo',
 ]);
 /** Does this site keep "no price" for the product? (msm_product_sites.kept.no_price) */
 export const keepsNoPrice = (ps) => !!ps && !!ps.kept && typeof ps.kept === 'object' && ps.kept[NO_PRICE] === true;
@@ -212,6 +220,9 @@ export const VENUE_INSERT = Object.freeze({
     'id', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'type', 'cat', 'cats', 'parent_id',
     'sort_order', 'pricing', 'allergens', 'assigned_modifier_groups', 'visibility', 'sold_alone', 'archived',
     'tax_rate_id', 'image', 'scope', 'org_id', 'tags', 'item_code', 'tax_overrides',
+    // 5.12.124: only ever sent on a NEW Combo with steps (a row with none carries no such key, so
+    // a publish of anything else is exactly what it was before SQL 20261216a).
+    'combo',
   ],
   groups: ['id', 'name', 'min', 'max', 'min_select', 'max_select', 'selection_type', 'options', 'sort_order'],
 });
@@ -224,7 +235,7 @@ export const VENUE_UPDATE = Object.freeze({
   items: [
     'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'type', 'cat', 'cats', 'parent_id',
     'allergens', 'assigned_modifier_groups', 'visibility', 'sold_alone', 'archived', 'tax_rate_id', 'image', 'tags', 'item_code',
-    'tax_profile_id',
+    'tax_profile_id', 'combo',
   ],
   // A group is never written whole: these columns, then its options one by one (OPTION_PATCH_KEYS).
   groups: ['name', 'min', 'max', 'min_select', 'max_select', 'selection_type'],
