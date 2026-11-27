@@ -749,6 +749,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       const sp = productById.get(l.itemId);
       return { stepName: l.stepName, name: sp ? (sp.menu_name || sp.name || 'A product') : null, removed: !!sp && !!sp.archived };
     }));
+    // Every step could be skipped and none has a product here: the Combo keeps its steps (each one
+    // empty), never becoming a plain product sold at the set price with nothing picked. The health
+    // check holds the site back in words (msmHealth combo_nothing_here). Review of 27 Nov 2026.
+    if (!here.length) return comboColumnValue(steps.map((s) => ({ ...s, products: [] })));
     return comboColumnValue(here);
   };
   // Said once the steps are really written here (a warning: the publish goes through).
@@ -791,7 +795,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       case 'sold_alone': return !!p.sold_alone;
       case 'item_code': return p.item_code ?? null;
       case 'assigned_modifier_groups': return mapGroups(p);
-      case 'combo': return mapCombo(p);          // null = no steps here (a value, never "unknown")
+      // null = no steps here. A product that is not a Combo leaves the site's value alone: a former
+      // Combo keeps its steps parked at the site, as Menu Manager does (review of 27 Nov 2026: the
+      // first import otherwise planned to clear them and the database refused the kept key).
+      case 'combo': return (p.type || 'simple') === COMBO_TYPE ? mapCombo(p) : undefined;
       case 'archived': return !siteActive(p, ps);
       case 'tax_rate_id': { const r = mapTax(p); return r.ok ? r.id : undefined; }
       default: return undefined;
@@ -931,9 +938,14 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   // 5.12.124: a Combo's steps name other products. When one of those is touched here (made, turned
   // on or off at this site, removed), the Combo's steps at this site are worked out again, so the
   // product joins or leaves the step here. Nothing is written when the answer is the same.
+  // Review of 27 Nov 2026: also when the Combo is in this publish for another reason (its price, its
+  // name), or the product would join its step only after a later publish; never a removed Combo,
+  // and never one whose row the site deleted by hand (unless this publish touches it anyway).
   for (const p of listOf(C.products)) {
-    if (!p || (p.type || 'simple') !== COMBO_TYPE || !psBy.has(p.id) || work.has(p.id)) continue;
-    if (comboProductIds(p.combo).some((id) => work.has(id))) add(p.id).prodFields.add('combo');
+    if (!p || p.archived || (p.type || 'simple') !== COMBO_TYPE || !psBy.has(p.id)) continue;
+    if (!comboProductIds(p.combo).some((id) => work.has(id))) continue;
+    if (!work.has(p.id) && !vItemById.has(psBy.get(p.id).venue_item_id)) continue;
+    add(p.id).prodFields.add('combo');
   }
 
   // Parents before sizes, so a new parent's id is planned before its sizes point at it.
@@ -1142,6 +1154,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         setCol('items', vrow, 'tax_profile_id', null, { ...meta, profileCleared: true });
         continue;
       }
+      // Steps are compared as the POS reads them: a site value it reads as the same steps (an empty
+      // list saved by hand reads as none) is never written, and so never kept by the first import,
+      // whose database function knows no kept `combo` (found while pinning the review, 27 Nov 2026).
+      if (col === 'combo' && sameValue(comboColumnValue(comboStepsOf(vrow.combo)), v)) continue;
       const wrote = setCol('items', vrow, col, v, meta);
       if (wrote && col === 'combo') sayComboLeft(p, meta);
     }

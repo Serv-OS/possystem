@@ -158,9 +158,9 @@ through the 20261018 trigger (they failed against 20261017c alone, as Ops is now
 `src/lib/msm/msmRunOnOps.test.js` pins 20261017c to the file Ops ran: any later change goes in a new
 migration.
 
-## 27 Nov 2026 Combo steps in the group menu (425 of 425 with every module; edge.mjs 34 of 34)
+## 27 Nov 2026 Combo steps in the group menu (426 of 426 with every module; edge.mjs 34 of 34)
 
-54 more checks, all in `combo.mjs` (named COMBO), run from `run.mjs` after `menus.mjs`.
+55 more checks, all in `combo.mjs` (named COMBO), run from `run.mjs` after `menus.mjs`.
 `20261216a_OPS_multi_site_menu_combo_steps.sql` (5.12.124) is made from the LIVE text of
 `msm_changes_guard`, `msm_start_version` and `msm_apply_site` (read read only from Ops on 27 Nov 2026,
 kept outside the repo in `~/.claude/servos-release/combo_stage2/live`, `COMBO_LIVE_DIR` overrides),
@@ -175,6 +175,6 @@ keeping its own steps, and keeps a new product a Combo's step names; a new Combo
 with that site's own items, a product a site does not sell is left out there (a warning, the site
 still publishes), a steps change writes only the steps, a product turned on at a site joins the step
 there, steps taken off come off; the write path refuses another site's item; the roll back refuses
-while steps are anywhere, then puts all three functions back byte for byte and drops the column,
+while steps are anywhere (a draft where a site keeps its own steps too), then puts all three functions back byte for byte and drops the column,
 twice. At the end the rig is put back as `menus.mjs` left it, so the roll backs after it check what
 they always did.

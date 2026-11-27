@@ -39,7 +39,7 @@ import {
   toggleMenuKey, menuKeysWords, rootCategory, extraMenuAt,
 } from '../../../supabase/functions/_shared/msmMenus.js';
 // 5.12.124: a Combo's steps in the group menu (the same rules as a site's: src/lib/combo.js).
-import { COMBO_TYPE, comboStepsOf, comboColumnValue, unmetSteps, stepProductBlock } from '../combo.js';
+import { COMBO_TYPE, comboStepsOf, comboColumnValue, comboProductIds, unmetSteps, stepProductBlock } from '../combo.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const findProduct = (c, id) => listOf(c?.products).find((p) => p.id === id) || null;
@@ -291,7 +291,26 @@ export function productProblems(fields, ctx = {}) {
   if (needsTax && blank(f.tax_rate_percent) && !String(f.tax_rate_name ?? '').trim()) out.push('Pick the VAT rate.');
   if (f.parent_product_id && f.parent_product_id === f.id) out.push('A product cannot be a variant of itself.');
   out.push(...comboProblems(f, ctx));
+  out.push(...stepUseProblems(f, ctx));
   return out;
+}
+
+/**
+ * 5.12.124 (review of 27 Nov 2026): a product that a Combo's step names cannot become something no
+ * step may hold (a sub item that is only an option, another Combo, a pizza builder product): the
+ * Combo would be left with nothing to pick at every site. Said before anything is staged.
+ */
+export function stepUseProblems(fields, ctx = {}) {
+  const f = fields || {};
+  if (!f.id) return [];
+  const users = listOf(ctx.eff?.products).filter((x) => x && !x.archived && x.id !== f.id
+    && (x.type || 'simple') === COMBO_TYPE && comboProductIds(x.combo).includes(f.id));
+  if (!users.length) return [];
+  if (!stepProductBlock(f, {})) return [];
+  const what = f.type === COMBO_TYPE ? 'another Combo' : f.type === 'pizza' ? 'a pizza builder product' : 'a sub item that is only an option';
+  const names = users.map((u) => u.menu_name || u.name || 'a Combo');
+  const name = String(f.menu_name || f.name || 'This product').trim();
+  return [`${name} is in a step of ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`}, and a step cannot hold ${what}. Take ${name} out of ${users.length === 1 ? 'that step' : 'those steps'} first.`];
 }
 
 /**

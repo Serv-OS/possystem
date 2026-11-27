@@ -33,7 +33,7 @@ import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
 import { MAIN_MENU, extraMenus, extraMenuAt, menuKeysValue } from '../../../supabase/functions/_shared/msmMenus.js';
 import { touchEverything, comboWithSteps } from '../../../supabase/functions/_shared/msmImport.js';
 // 5.12.124: a site's Combo comes in WITH its steps (the same rules as everywhere: src/lib/combo.js).
-import { comboStepsOf, comboColumnValue, comboProductIds, mapStepProducts, stepProductBlock, stepsSummary } from '../combo.js';
+import { comboStepsOf, comboColumnValue, comboProductIds, mapStepProducts, stepProductBlock, stepsSummary, unmetSteps } from '../combo.js';
 import { comboColumnReady } from './msmComboRows.js';
 import { importTaxByType, sizeKeptTax, mapRateDescriptor } from '../../../supabase/functions/_shared/msmTax.js';
 import {
@@ -210,45 +210,67 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   // out of the step (the settle below then keeps the site's own list, so nothing changes there).
   if (comboWithSteps(row)) {
     // The group menu can hold steps once SQL 20261216a has run (its products then carry the column).
-    // Before that the database would refuse the draft with a code: it is said here, in words.
-    if (!comboColumnReady(C.products)) return fail(`${nameOf(row)} is a Combo with steps. The group menu can hold its steps once one database update has run (SQL 20261216a). Ask ServOS to run it. Nothing was added to the draft.`);
+    // Before that the database would refuse the draft with a code: it is said here, in words. (A
+    // group menu with no products yet cannot tell either way, and is let through.)
+    if (listOf(C.products).length && !comboColumnReady(C.products)) return fail(`${nameOf(row)} is a Combo with steps. The group menu can hold its steps once one database update has run (SQL 20261216a). Ask ServOS to run it. Nothing was added to the draft.`);
+    const steps0 = comboStepsOf(row.combo);
     const stepNameOf = new Map();
-    for (const st of comboStepsOf(row.combo)) for (const x of st.products) if (!stepNameOf.has(x.itemId)) stepNameOf.set(x.itemId, st.name);
+    for (const st of steps0) for (const x of st.products) if (!stepNameOf.has(x.itemId)) stepNameOf.set(x.itemId, st.name);
     const notHere = [];                    // step products that cannot be picked at the site today
+    // Only products on the menus the group menu writes into at this site come in (review of 27 Nov
+    // 2026: a step product from the site's Catering menu came in and then blocked the publish).
+    const siteHere = listOf(C.sites).find((x) => x.location_id === loc);
+    const { inMenu, known } = categoriesInMenu(raw, siteHere?.venue_menu_id || null, extraMenusHere(C, loc, raw).map((x) => x.venueMenuId));
+    const onThisMenu = (r) => { const cats = [r.cat, ...listOf(r.cats)].filter((c) => c && known.has(c)); return !cats.length || cats.some((c) => inMenu.has(c)); };
     for (const iid of comboProductIds(row.combo)) {
       const it = items.find((i) => i.id === iid);
       if (!it) { notHere.push(null); continue; }               // gone from the site: the POS never offers it
-      const stop = (why) => fail(`${nameOf(row)} cannot come in yet. Its step "${stepNameOf.get(iid)}" lists ${nameOf(it)}: ${why} Take it out of the step at ${siteName} first. Nothing was added to the draft.`);
+      const stop = (why) => fail(`${nameOf(row)} cannot come in yet. Its step "${stepNameOf.get(iid)}" lists ${nameOf(it)}: ${why} Nothing was added to the draft.`);
       // What no step may hold (another Combo, an option only sub item, a pizza builder product): the
       // POS never offers it and the group menu would refuse the step, so it is said here, in words.
       const bad = stepProductBlock(it, { comboId: row.id });
-      if (bad) return stop(bad);
+      if (bad) return stop(`${bad} Take it out of the step at ${siteName} first.`);
       if (it.archived === true) notHere.push(nameOf(it));      // switched off here: listed, never offered
       if (productOfItem.has(iid)) continue;                    // the group menu has it here already
       if (it.archived === true) continue;                      // switched off and the site's own: it stays out
+      // A linked Combo keeps the group menu's steps (the site keeps its own, below): nothing more
+      // needs to come in for it (review: products were brought in that nothing would use).
+      if (link) continue;
       const top = it.parent_id ? items.find((i) => i.id === it.parent_id) : it;
-      if (!top) return stop('it is a variant of a product that is no longer at the site.');
+      if (!top) return stop(`it is a variant of a product that is no longer at the site. Take it out of the step at ${siteName} first.`);
       if (String(top.id).startsWith('demo-')) return stop('it is a demo product.');
       const why = top === it ? null : stepProductBlock(top, { comboId: row.id });
-      if (why) return stop(why);
+      if (why) return stop(`${why} Take it out of the step at ${siteName} first.`);
+      if (!onThisMenu(top)) return stop(`it is on another of ${siteName}'s menus, not the one the group menu manages there. Take it out of the step, or move it onto that menu at ${siteName}, first.`);
       // A variant the site added to a product the group menu already has here: it comes in as a
       // variant of that product (the step lists the variant, so the product alone is not enough).
       if (productOfItem.has(top.id)) {
         const parent = listOf(C.products).find((p) => p.id === productOfItem.get(top.id) && !p.archived);
-        if (!parent) return stop('its product is no longer in the group menu.');
+        if (!parent) return stop(`its product is no longer in the group menu. Take it out of the step at ${siteName} first.`);
         bringSize(parent, it);
         brought.push({ row: it, sizes: [], link: parent });
         continue;
       }
       const m = matchFor(C, loc, top);
       const lk = m && !siteRows.ps.has(m.productId) ? (listOf(C.products).find((p) => p.id === m.productId && !p.archived) || null) : null;
+      // The group product it looks like must be one a step may hold (review: a family match can be a
+      // sub item that is only an option in the group menu).
+      if (lk && stepProductBlock(lk, {})) return stop(`it is the group menu's ${lk.menu_name || lk.name}, which no step may hold there (${stepProductBlock(lk, {})}) Change that in the group menu first.`);
       bringOne(top, lk, false);
     }
     // A NEW Combo takes the site's steps, with every product swapped for the group menu's. A linked
     // one keeps the group menu's steps (the site's own are kept by the settle below when they differ).
     if (!link) {
+      const mapped = mapStepProducts(steps0, (iid) => productOfItem.get(iid) || null).steps;
+      // A step customers must answer that would have too few products in the group menu (its
+      // products are switched off at the site, or gone) would block every publish of the draft: it
+      // stops here, in words (review of 27 Nov 2026).
+      for (const u of unmetSteps(mapped)) {
+        const off = [...new Set(notHere.filter(Boolean))];
+        return fail(`${nameOf(row)} cannot come in yet. Its step "${u.step.name}" must be answered, ${u.need > 1 ? `needs ${u.need} different products` : 'needs a product'}, and ${u.have ? `only ${u.have} can` : 'none can'} come into the group menu${off.length ? ` (${off.slice(0, 3).join(', ')} ${off.length === 1 ? 'is' : 'are'} switched off at ${siteName})` : ''}. Turn ${u.need > 1 ? 'them' : 'one'} on at ${siteName}, or let customers skip that step, first. Nothing was added to the draft.`);
+      }
       const pc = changes.find((c) => c.target === 'product' && c.entity_id === mainId);
-      const steps = comboColumnValue(mapStepProducts(comboStepsOf(row.combo), (iid) => productOfItem.get(iid) || null).steps);
+      const steps = comboColumnValue(mapped);
       if (pc && steps) {
         pc.after.combo = steps;
         const cp = C.products.find((p) => p.id === mainId);
@@ -285,10 +307,16 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   // ── The settle: every value that differs becomes the site's own, until nothing is written ──
   const vItem = new Map(items.map((i) => [i.id, i]));
   const last = settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHere, items });
-  if (last.lines.length) {
-    for (const l of last.lines.slice(0, 3)) problems.push(`${l.table === 'groups' ? 'An option group' : nameOf(vItem.get(l.id) || row)} at ${siteName} would change (${String(l.column).replace(/[()._]/g, ' ').trim()}), so nothing was added to the draft. Tell ServOS if this stays.`);
+  const { follow, rest } = stepFollowUps(last.lines, affected.products);
+  if (rest.length) {
+    for (const l of rest.slice(0, 3)) problems.push(`${l.table === 'groups' ? 'An option group' : nameOf(vItem.get(l.id) || row)} at ${siteName} would change (${String(l.column).replace(/[()._]/g, ' ').trim()}), so nothing was added to the draft. Tell ServOS if this stays.`);
     return { ok: false, changes: [], words: [], problems };
   }
+  // A problem that would block the publish at the site (a copy on another of its menus, say) stops
+  // it here, in its own words (review of 27 Nov 2026: Bring in said ok and the publish then failed).
+  const blocks = blockingFor(last.problems, affected.products);
+  if (blocks.length) return { ok: false, changes: [], words: [], problems: blocks.slice(0, 3).map((pr) => `${pr.words} Nothing was added to the draft.`) };
+  words.push(...followUpWords(follow, C, affected.products, siteName));
   // What the site keeps, in words.
   const keptCols = new Set();
   let noPrice = false;
@@ -315,6 +343,37 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
     words.push(`Nothing changes at ${siteName}: the tills keep selling it exactly as they do now.`);
   }
   return { ok: true, changes: orderForGuard(changes), words, problems: [], productId: mainId };
+}
+
+// ── A Combo the group menu already has here offers what was brought in (review of 27 Nov 2026) ──
+// Bringing a product in can make a Combo of the group menu, already at this site, offer it in its
+// steps: the group's own rule, published as any change is (the preview names it). Those lines are
+// not "something at the site would change behind your back", so they never stop Bring in; they are
+// said in words instead. Every other line still does.
+function stepFollowUps(lines, broughtIds) {
+  const follow = [], rest = [];
+  for (const l of listOf(lines)) {
+    if (l.table === 'items' && l.column === 'combo' && l.productId && !broughtIds.has(l.productId)) follow.push(l); else rest.push(l);
+  }
+  return { follow, rest };
+}
+// The group menu products a set of Bring in changes puts at this site.
+function broughtIn(changes, loc) {
+  return new Set(listOf(changes).filter((c) => c && c.target === 'product_site' && c.op === 'create' && c.location_id === loc).map((c) => c.entity_id));
+}
+function followUpWords(follow, C, broughtIds, siteName) {
+  const nameOfP = (id) => { const p = listOf(C?.products).find((x) => x && x.id === id); return p ? (p.menu_name || p.name || 'A Combo') : 'A Combo'; };
+  const out = [];
+  for (const l of listOf(follow)) {
+    const combo = listOf(C?.products).find((x) => x && x.id === l.productId);
+    const joined = comboProductIds(combo?.combo).filter((id) => broughtIds.has(id)).map(nameOfP);
+    out.push(`${nameOfP(l.productId)} at ${siteName} will offer ${joined.length ? joined.join(', ') : 'it'} in its steps once this is published.`);
+  }
+  return [...new Set(out)];
+}
+// The problems of the settled plan that would block the publish for a product brought in.
+function blockingFor(problems, broughtIds) {
+  return listOf(problems).filter((pr) => pr && pr.level === 'block' && pr.productId && broughtIds.has(pr.productId));
 }
 
 // In the order the database guard checks references: a group before the products that use it, a
@@ -751,7 +810,8 @@ function* joinSteps(live, opts) {
   if (!linked.length) return { ...fail(`${siteName} sells none of the group menu's products as its own copy. Use Add a site with a new menu instead.`), own };
   // The whole set, planned as the server will: it must write nothing at the site.
   const plan = planSite({ central: C, touched: touchedFromChanges(changes), locationId: loc, orgId: opts.orgId || null, venue: raw });
-  if (plan.lines.length) return { ...fail(`Joining would change ${plan.lines.length} thing${plan.lines.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in a draft. Ask ServOS to look at it.`), own };
+  const joinRest = stepFollowUps(plan.lines, broughtIn(changes, loc)).rest;
+  if (joinRest.length) return { ...fail(`Joining would change ${joinRest.length} thing${joinRest.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in a draft. Ask ServOS to look at it.`), own };
   const here = new Set(listOf(C.productSites).filter((ps) => ps.location_id === loc).map((ps) => ps.product_id));
   const notSold = listOf(C.products).filter((p) => !p.archived && !p.parent_product_id && !optionOnly(p) && !here.has(p.id)).length;
   const words = [
@@ -1023,7 +1083,9 @@ export function bringInAllChanges(central, locationId, raw, opts = {}) {
   }
   // The whole set, planned as the server will: it must write nothing at the site.
   const plan = planSite({ central: C, touched: touchedFromChanges(changes), locationId: loc, orgId: opts.orgId || null, venue: raw });
-  if (plan.lines.length) return { ...fail(`Bringing everything in would change ${plan.lines.length} thing${plan.lines.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in the draft. Bring them in one at a time to see which.`), problems };
+  const allSplit = stepFollowUps(plan.lines, broughtIn(changes, loc));
+  if (allSplit.rest.length) return { ...fail(`Bringing everything in would change ${allSplit.rest.length} thing${allSplit.rest.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in the draft. Bring them in one at a time to see which.`), problems };
+  words.push(...followUpWords(allSplit.follow, C, broughtIn(changes, loc), siteName));
   words.push(`Nothing changes at ${siteName} when you publish: what it does differently stays its own.`);
   return { ok: true, changes, words, problems, counts };
 }

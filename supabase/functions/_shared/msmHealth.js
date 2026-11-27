@@ -36,7 +36,8 @@
 
 import { CATEGORY_IMAGE_RE, normName, toPence, money2 } from './msmModel.js';
 // 5.12.124: a Combo's steps, read with the same rules the POS uses (_shared/combo.js is src/lib/combo.js).
-import { COMBO_TYPE, comboStepsOf, unmetSteps, stepProductBlock } from './combo.js';
+import { COMBO_TYPE, comboStepsOf, comboProductIds, unmetSteps, stepProductBlock } from './combo.js';
+import { notShownOn } from './soldAs.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const codeKey = (c) => (c == null ? null : String(c).trim().toUpperCase() || null);
@@ -129,13 +130,28 @@ export function checkSite(plan, opts = {}) {
     // other sites still publish. A product that is listed but turned off here is said as well.
     if (active(i) && i.type === COMBO_TYPE) {
       const steps = comboStepsOf(i.combo);
-      const live = (id) => active(byId.get(id));
-      for (const u of unmetSteps(steps, live)) {
+      // What the POS can really offer in a step (review of 27 Nov 2026): on sale here, not hidden
+      // on the POS by head office, and with a size on sale when it has sizes.
+      const live = (id) => {
+        const r = byId.get(id);
+        if (!active(r) || notShownOn(r).includes('pos')) return false;
+        const sizes = items.filter((x) => x && x.parent_id === id && x.type !== 'spacer');
+        return !sizes.length || sizes.some(active);
+      };
+      const unmet = unmetSteps(steps, live);
+      for (const u of unmet) {
         push(blocking, {
           code: 'combo_step_unmet', productId,
           words: u.need > 1
             ? `"${u.step.name}" in ${label} needs ${u.need} different products on sale at ${siteName} and has ${u.have}, so nobody could finish it there. Turn more of its products on at ${siteName}, or turn ${label} off there.`
             : `"${u.step.name}" in ${label} has no product on sale at ${siteName}, so nobody could finish it there. Turn one of its products on at ${siteName}, or turn ${label} off there.`,
+        });
+      }
+      // Every step could be skipped, and none has a product on sale here: nothing could be picked.
+      if (!unmet.length && steps.length && !steps.some((st) => st.products.some((x) => live(x.itemId)))) {
+        push(blocking, {
+          code: 'combo_nothing_here', productId,
+          words: `${label} has steps, but none of their products is on sale at ${siteName}, so nothing could be picked there. Turn some of its products on at ${siteName}, or turn ${label} off there.`,
         });
       }
       for (const st of steps) {
@@ -241,27 +257,38 @@ export function checkCentral(central, touched) {
     if (gone.length && !(t.op === 'update' && !t.fields.has('archived') && !t.fields.has('category_id') && !t.fields.has('extra_category_ids'))) {
       blocking.push({ code: 'category_removed', words: `"${p.name}" is in "${gone[0].label}", which was taken off the group menu. Move it to another category first.`, productId: pid });
     }
-    // 5.12.124 Combos: a step must be able to be answered somewhere, and may only list real
-    // products (never the Combo itself, another Combo, or a sub item that is only an option).
-    if ((p.type || 'simple') === COMBO_TYPE) {
-      const byId = new Map(listOf(central?.products).map((x) => [x.id, x]));
-      const steps = comboStepsOf(p.combo);
-      for (const st of steps) {
-        for (const x of st.products) {
-          const row = byId.get(x.itemId);
-          if (!row || row.archived) continue;                     // left out everywhere, said at each site
-          const why = stepProductBlock(row, { comboId: p.id });
-          if (why) blocking.push({ code: 'combo_product_refused', words: `"${st.name}" in "${p.name}": ${why}`, productId: pid });
-        }
+  }
+  // 5.12.124 Combos: a step must be able to be answered somewhere, and may only list real products
+  // (never the Combo itself, another Combo, or a sub item that is only an option). Checked for every
+  // Combo this draft touches AND every Combo whose step names a product this draft touches (review
+  // of 27 Nov 2026: a step product made an option only sub item, or a Combo, published cleanly and
+  // left the Combo unsellable at every site).
+  const touchedIds = new Set([...(touched?.products?.keys?.() || [])]);
+  const byId = new Map(listOf(central?.products).map((x) => [x.id, x]));
+  for (const p of listOf(central?.products)) {
+    if (!p || p.archived || (p.type || 'simple') !== COMBO_TYPE) continue;
+    const steps = comboStepsOf(p.combo);
+    if (!steps.length) continue;
+    const t = touched?.products?.get?.(p.id);
+    if (t && t.op === 'remove') continue;
+    if (!t && !comboProductIds(steps).some((id) => touchedIds.has(id))) continue;
+    for (const st of steps) {
+      for (const x of st.products) {
+        const row = byId.get(x.itemId);
+        if (!row || row.archived) continue;                     // left out everywhere, said at each site
+        const why = stepProductBlock(row, { comboId: p.id });
+        if (why) blocking.push({ code: 'combo_product_refused', words: `"${st.name}" in "${p.name}" lists ${row.menu_name || row.name}: ${why}`, productId: p.id });
       }
-      for (const u of unmetSteps(steps, (id) => { const row = byId.get(id); return !!row && !row.archived; })) {
-        blocking.push({
-          code: 'combo_step_empty', productId: pid,
-          words: u.need > 1
-            ? `"${u.step.name}" in "${p.name}" needs ${u.need} different products and has ${u.have} in the group menu. Add products to the step, or let customers skip it.`
-            : `"${u.step.name}" in "${p.name}" has no product in the group menu, and customers must choose. Add a product to the step, or let customers skip it.`,
-        });
-      }
+    }
+    // A product no step may hold counts as not there.
+    const usable = (id) => { const row = byId.get(id); return !!row && !row.archived && !stepProductBlock(row, { comboId: p.id }); };
+    for (const u of unmetSteps(steps, usable)) {
+      blocking.push({
+        code: 'combo_step_empty', productId: p.id,
+        words: u.need > 1
+          ? `"${u.step.name}" in "${p.name}" needs ${u.need} different products and has ${u.have} in the group menu. Add products to the step, or let customers skip it.`
+          : `"${u.step.name}" in "${p.name}" has no product in the group menu, and customers must choose. Add a product to the step, or let customers skip it.`,
+      });
     }
   }
   // Option groups (round 2): rules that cannot be met, and "Then ask" loops.

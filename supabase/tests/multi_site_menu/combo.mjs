@@ -41,7 +41,7 @@ const READ = {
   msm_apply_site: '87be2da005dea0d49a4d068660ac8b8c',
 };
 const AFTER = {
-  msm_changes_guard: '1227d666540e48107c8e74aab91d3494',
+  msm_changes_guard: 'c71ea4a7fb8e221617b42ef0725aa8f2',
   msm_start_version: '2abda0780f63ce0ae2080ee49a0021f8',
   msm_apply_site: 'cded0bbdf09a050156cb9674ab0e815b',
 };
@@ -243,6 +243,12 @@ export async function run(h) {
   runSite(V, LA2);
   finishOthers(V);
   expect('the steps come off at each site with the group menu\'s', u1.out?.ok && comboAt(LA1) === null && comboAt(LA2) === null);
+  // A draft in which a site keeps its own steps also holds the roll back (review of 27 Nov 2026).
+  const SR = mkSet('Combo: a site keeps its own, waiting');
+  stage({ set: SR, target: 'product_site', entity: TEA, loc: LA1, op: 'update', after: { kept: { combo: steps([vid(TEA, LA1)], []) } } });
+  r = runFile('20261216a_OPS_multi_site_menu_combo_steps_ROLLBACK.sql');
+  expect('the roll back refuses while a draft keeps a site\'s own steps, in words', r.code !== 0 && /still carries Combo steps/.test(r.err) && hasCol('msm_products'), r.err);
+  q(`delete from msm_change_sets where id = '${SR}'`, as(U.E));
   r = runFile('20261216a_OPS_multi_site_menu_combo_steps_ROLLBACK.sql');
   const holding = () => one(`select string_agg(s.title || ' (' || s.status || ')', ', ') from msm_changes x join msm_change_sets s on s.id = x.change_set_id where x.after ? 'combo' and jsonb_typeof(x.after -> 'combo') <> 'null'`);
   expect('the roll back runs', r.code === 0, `sets with steps: ${holding()} | ${r.err}`);

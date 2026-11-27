@@ -121,7 +121,9 @@ test('the changes list, the summary, kept values, drift and undo say steps in pl
     ['Coffee deal: its steps come off at every site. It sells as a plain product at its price.']);
   // Drift, undo and the publish preview name the column in words.
   const diff = read('../../../supabase/functions/_shared/msmDiff.js');
-  assert.match(diff, /const DRIFT_WORDS = \{ combo: 'steps',/);
+  assert.match(diff, /const DRIFT_WORDS = \{ combo: 'list of steps',/);
+  // A changed list of steps is never said as "[object Object]" (review of 27 Nov 2026).
+  assert.match(diff, /\? `\$\{n\[l\.productId\] \|\| l\.id\}: its steps at the venue are not the group's`/);
   assert.match(diff, /const UNDO_WORDS = \{ combo: 'steps',/);
   assert.match(read('./msmPublishView.js'), /combo: 'steps',/);
 });

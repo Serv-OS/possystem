@@ -332,11 +332,14 @@ test('odd states never crash the planner', () => {
   c5[0].after.combo = self;
   const p5 = plan(central, c5, A, v[A]).plan;
   assert.deepEqual(stepIds(p5.writes.items.insert.find((i) => i.name === 'Breakfast Deal'), 'st-drink'), ['m-latte', 'm-tea', 'm-mocha']);
-  // 6. The type is changed away from Combo: the steps are not written as steps.
+  // 6. The type is changed away from Combo: only the type is written. The site's steps stay parked on
+  // the row, as Menu Manager keeps them (the POS reads steps only on a Combo), and a product that is
+  // not a Combo never has its steps planned at all (review of 27 Nov 2026: the first import planned
+  // to clear parked steps and the database refused the kept key).
   const first = publish(central, v, changes);
   const typed = { target: 'product', entity_id: COMBO, location_id: null, op: 'update', after: { type: 'simple', combo: dealSteps(P) }, before: { type: 'combo' } };
   const p6 = planSite({ central: applyChanges(first.central, [typed]).central, touched: touchedFromChanges([typed]), locationId: A, orgId: ORG, venue: first.v[A] });
-  assert.deepEqual(p6.lines.map((l) => [l.column, l.after]), [['type', 'simple'], ['combo', null]]);
+  assert.deepEqual(p6.lines.map((l) => [l.column, l.after]), [['type', 'simple']]);
 });
 
 test('a publish of anything else never names the steps (so it runs on a database without SQL 20261216a)', () => {

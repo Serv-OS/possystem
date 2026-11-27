@@ -35,7 +35,7 @@
 --   Anything else stops the file before anything is changed. Then the lines named below are
 --   swapped, each must be there exactly once, and the function is made again with every other
 --   line untouched (so the company wipe lines live already has stay as they are).
---     msm_changes_guard  read e36061b4ce3b7974741e5e39b8dca496   after 1227d666540e48107c8e74aab91d3494
+--     msm_changes_guard  read e36061b4ce3b7974741e5e39b8dca496   after c71ea4a7fb8e221617b42ef0725aa8f2
 --     msm_start_version  read 188ea598a5d54f40932f5eae8583aeb0   after 2abda0780f63ce0ae2080ee49a0021f8
 --     msm_apply_site     read 87be2da005dea0d49a4d068660ac8b8c   after cded0bbdf09a050156cb9674ab0e815b
 --   Generated from the live text by ~/.claude/servos-release/combo_stage2/gen_20261216a.py, and
@@ -45,9 +45,13 @@
 -- ORDER FOR PETER
 --   1. 20261215a_OPS_menu_item_combo_steps.sql (stage 1), if not run already.
 --   2. This file, on Ops (SQL editor). Read the check row at the bottom (expected values above it).
---   3. Then launch 5.12.124.
---   4. Then deploy the edge function msm-publish.
+--   3. Then deploy the edge function msm-publish (from release 5.12.124).
+--   4. Then launch 5.12.124.
 --   Running this before the release is safe: the app that is live now never sends the new field.
+--   Deploying msm-publish before the launch is safe too: it writes steps only for a group product
+--   that has them, and none can until 5.12.124's screens stage them. The other way round, for the
+--   minutes between launch and deploy, the old msm-publish would publish a new group Combo to the
+--   sites WITHOUT its steps (found by the independent review of 27 Nov 2026).
 --   Afterwards, 20261216a_CHECK_read_only.sql reads the same check again, any time.
 --
 -- UNDO: 20261216a_OPS_multi_site_menu_combo_steps_ROLLBACK.sql.
@@ -87,7 +91,7 @@ begin
   select string_agg(p.proname || ' (body md5 ' || md5(p.prosrc) || ')', ', ' order by p.proname) into v_bad
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and (false
-       or (p.proname = 'msm_changes_guard' and md5(p.prosrc) not in ('e36061b4ce3b7974741e5e39b8dca496', '1227d666540e48107c8e74aab91d3494'))
+       or (p.proname = 'msm_changes_guard' and md5(p.prosrc) not in ('e36061b4ce3b7974741e5e39b8dca496', 'c71ea4a7fb8e221617b42ef0725aa8f2'))
        or (p.proname = 'msm_start_version' and md5(p.prosrc) not in ('188ea598a5d54f40932f5eae8583aeb0', '2abda0780f63ce0ae2080ee49a0021f8'))
        or (p.proname = 'msm_apply_site' and md5(p.prosrc) not in ('87be2da005dea0d49a4d068660ac8b8c', 'cded0bbdf09a050156cb9674ab0e815b'))
        );
@@ -133,7 +137,7 @@ declare
 
     'msm_changes_guard',
     '    if new.after ? ''site_only_location_id'' and new.after ->> ''site_only_location_id'' is not null' || chr(10) || '',
-    '    -- 20261216a: a Combo''s steps (Combo products stage 2). An object holding a list of steps (the' || chr(10) || '    -- check menu_items.combo has), and every product a step names is this group menu''s own, or' || chr(10) || '    -- new in this set, and never the Combo itself.' || chr(10) || '    if new.after ? ''combo'' and jsonb_typeof(new.after -> ''combo'') <> ''null'' then' || chr(10) || '      if jsonb_typeof(new.after -> ''combo'') <> ''object'' or coalesce(jsonb_typeof(new.after #> ''{combo,steps}''), '''') <> ''array'' then' || chr(10) || '        raise exception ''A Combo''''s steps must be a list of steps.'' using errcode = ''22023'';' || chr(10) || '      end if;' || chr(10) || '      for v_vid in select coalesce(e ->> ''itemId'', '''')' || chr(10) || '                     from jsonb_array_elements(new.after #> ''{combo,steps}'') s,' || chr(10) || '                          jsonb_array_elements(case when jsonb_typeof(s -> ''products'') = ''array'' then s -> ''products'' else ''[]''::jsonb end) e loop' || chr(10) || '        if v_vid !~ ''^[0-9a-fA-F-]{36}$'' or v_vid = new.entity_id::text then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '        if not public.msm__ref_ok(v_set.menu_id, v_set.id, ''product'', v_vid::uuid) then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '      end loop;' || chr(10) || '    end if;' || chr(10) || '    if new.after ? ''site_only_location_id'' and new.after ->> ''site_only_location_id'' is not null' || chr(10) || '',
+    '    -- 20261216a: a Combo''s steps (Combo products stage 2). An object holding a list of steps (the' || chr(10) || '    -- check menu_items.combo has), and every product a step names is this group menu''s own, or' || chr(10) || '    -- new in this set, and never the Combo itself.' || chr(10) || '    if new.after ? ''combo'' and jsonb_typeof(new.after -> ''combo'') <> ''null'' then' || chr(10) || '      if jsonb_typeof(new.after -> ''combo'') <> ''object'' or coalesce(jsonb_typeof(new.after #> ''{combo,steps}''), '''') <> ''array'' then' || chr(10) || '        raise exception ''A Combo''''s steps must be a list of steps.'' using errcode = ''22023'';' || chr(10) || '      end if;' || chr(10) || '      for v_vid in select coalesce(e ->> ''itemId'', '''')' || chr(10) || '                     from jsonb_array_elements(new.after #> ''{combo,steps}'') s,' || chr(10) || '                          jsonb_array_elements(case when jsonb_typeof(s -> ''products'') = ''array'' then s -> ''products'' else ''[]''::jsonb end) e loop' || chr(10) || '        if v_vid !~ ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'' or v_vid = new.entity_id::text then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '        if not public.msm__ref_ok(v_set.menu_id, v_set.id, ''product'', v_vid::uuid) then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '      end loop;' || chr(10) || '    end if;' || chr(10) || '    if new.after ? ''site_only_location_id'' and new.after ->> ''site_only_location_id'' is not null' || chr(10) || '',
 
     'msm_start_version',
     '               modifier_groups, visibility, sold_alone, item_code, site_only_location_id, archived, sort_order, family_base, tax_by_type)',
@@ -230,7 +234,7 @@ notify pgrst, 'reload schema';
 select
   (select count(*) = 1 from information_schema.columns where table_schema = 'public' and table_name = 'msm_products' and column_name = 'combo' and data_type = 'jsonb') as column_ok,
   (select count(*) = 1 from pg_constraint where conrelid = 'public.msm_products'::regclass and conname = 'msm_products_combo_shape_check' and convalidated) as check_ok,
-  (select md5(p.prosrc) = '1227d666540e48107c8e74aab91d3494' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_changes_guard') as guard_md5_ok,
+  (select md5(p.prosrc) = 'c71ea4a7fb8e221617b42ef0725aa8f2' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_changes_guard') as guard_md5_ok,
   (select md5(p.prosrc) = '2abda0780f63ce0ae2080ee49a0021f8' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_start_version') as start_md5_ok,
   (select md5(p.prosrc) = 'cded0bbdf09a050156cb9674ab0e815b' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_apply_site') as apply_md5_ok,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace

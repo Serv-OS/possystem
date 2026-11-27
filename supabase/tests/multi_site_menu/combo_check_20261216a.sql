@@ -10,7 +10,7 @@
 select
   (select count(*) = 1 from information_schema.columns where table_schema = 'public' and table_name = 'msm_products' and column_name = 'combo' and data_type = 'jsonb') as column_ok,
   (select count(*) = 1 from pg_constraint where conrelid = 'public.msm_products'::regclass and conname = 'msm_products_combo_shape_check' and convalidated) as check_ok,
-  (select md5(p.prosrc) = '1227d666540e48107c8e74aab91d3494' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_changes_guard') as guard_md5_ok,
+  (select md5(p.prosrc) = 'c71ea4a7fb8e221617b42ef0725aa8f2' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_changes_guard') as guard_md5_ok,
   (select md5(p.prosrc) = '2abda0780f63ce0ae2080ee49a0021f8' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_start_version') as start_md5_ok,
   (select md5(p.prosrc) = 'cded0bbdf09a050156cb9674ab0e815b' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'msm_apply_site') as apply_md5_ok,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace

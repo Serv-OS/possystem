@@ -22,7 +22,7 @@ const plain = (sql) => sql.replace(/' \|\| chr\(10\) \|\| '/g, '\n').replace(/''
 const P = plain(MIG);
 
 const READ = { msm_changes_guard: 'e36061b4ce3b7974741e5e39b8dca496', msm_start_version: '188ea598a5d54f40932f5eae8583aeb0', msm_apply_site: '87be2da005dea0d49a4d068660ac8b8c' };
-const AFTER = { msm_changes_guard: '1227d666540e48107c8e74aab91d3494', msm_start_version: '2abda0780f63ce0ae2080ee49a0021f8', msm_apply_site: 'cded0bbdf09a050156cb9674ab0e815b' };
+const AFTER = { msm_changes_guard: 'c71ea4a7fb8e221617b42ef0725aa8f2', msm_start_version: '2abda0780f63ce0ae2080ee49a0021f8', msm_apply_site: 'cded0bbdf09a050156cb9674ab0e815b' };
 
 test('the model: a Combo\'s steps are a field of a group product, a column a site may keep, and a venue column publish writes', () => {
   assert.ok(STAGE_FIELDS.product.includes('combo'));
@@ -54,7 +54,7 @@ test('20261216a adds `combo` (and only that) to each list the database checks, a
   // The checks: every product a step names is the group menu's own (or new in the draft), never the
   // Combo itself; publish refuses a step outside the menu, and a site item that is not that site's.
   assert.match(P, /raise exception 'A step of this Combo names a product that is not in this group menu\.' using errcode = '42501';/);
-  assert.match(P, /v_vid !~ '\^\[0-9a-fA-F-\]\{36\}\$' or v_vid = new\.entity_id::text then/);
+
   assert.match(P, /public\.msm__ref_ok\(v_set\.menu_id, v_set\.id, 'product', v_vid::uuid\)/);
   assert.match(P, /raise exception 'Other changes in this set use this new product \(its sizes, an option, or a step of a Combo\)\. Remove those first\.'/);
   assert.match(P, /where not exists \(select 1 from public\.msm_products x where x\.id::text = e ->> 'itemId' and x\.menu_id = v\.menu_id\)\)\)\)/);
@@ -79,12 +79,16 @@ test('20261216a refuses unless the functions are the bodies read on live (or its
   // One transaction from the SQL editor: no begin or commit of its own; the API reloads its schema.
   assert.ok(!/^\s*(begin|commit);/m.test(MIG));
   assert.match(MIG, /notify pgrst, 'reload schema';/);
-  assert.match(MIG, /ORDER FOR PETER\n-- {3}1\. 20261215a_OPS_menu_item_combo_steps\.sql \(stage 1\), if not run already\.\n-- {3}2\. This file, on Ops \(SQL editor\)\.[^\n]*\n-- {3}3\. Then launch 5\.12\.124\.\n-- {3}4\. Then deploy the edge function msm-publish\./);
+  // The function goes out before the screens that stage steps (review of 27 Nov 2026).
+  assert.match(MIG, /ORDER FOR PETER\n-- {3}1\. 20261215a_OPS_menu_item_combo_steps\.sql \(stage 1\), if not run already\.\n-- {3}2\. This file, on Ops \(SQL editor\)\.[^\n]*\n-- {3}3\. Then deploy the edge function msm-publish \(from release 5\.12\.124\)\.\n-- {3}4\. Then launch 5\.12\.124\./);
+  // Ids are checked as the lowercase uuids the app makes (an uppercase id would refuse every publish later).
+  assert.ok(P.includes("if v_vid !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' or v_vid = new.entity_id::text then"));
 });
 
 test('the roll back refuses while steps are anywhere, then puts the live bodies back and drops the column', () => {
   for (const words of ['still holds Combo steps', 'still carries Combo steps', 'still keeps its own Combo steps', 'still running carries Combo steps']) assert.ok(RB.includes(words), words);
-  assert.match(RB, /where s\.status in \('draft', 'scheduled', 'running'\)/);   // a published set's history never blocks it
+  assert.match(RB, /where s\.status in \('draft', 'scheduled', 'running'\) and jsonb_typeof\(x\.after\) = 'object'/);   // a published set's history never blocks it
+  assert.match(RB, /or \(jsonb_typeof\(x\.after -> 'kept'\) = 'object' and x\.after -> 'kept' \? 'combo'\)/);   // nor a draft where a site keeps its own steps
   assert.match(RB, /i := array_length\(v_pairs, 1\) - 2;\n\s+while i >= 1 loop/);   // backwards through the same list
   assert.match(RB, /alter table public\.msm_products drop column if exists combo;/);
   for (const [fn, md5] of Object.entries(READ)) assert.ok(RB.includes(`md5(p.prosrc) = '${md5}'`), `${fn} back as live has it`);

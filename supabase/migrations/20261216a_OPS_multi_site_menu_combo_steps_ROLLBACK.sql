@@ -32,10 +32,12 @@ begin
       raise exception 'A group product still holds Combo steps. Take its steps off in the Multi site menu and publish first. Nothing was changed.';
     end if;
   end if;
-  -- Only sets still to run count (a set already published keeps its history, as every set does).
+  -- Only sets still to run count (a set already published keeps its history, as every set does):
+  -- a product's steps, or a site keeping its own steps.
   if exists (select 1 from public.msm_changes x join public.msm_change_sets s on s.id = x.change_set_id
-              where s.status in ('draft', 'scheduled', 'running')
-                and jsonb_typeof(x.after) = 'object' and x.after ? 'combo' and jsonb_typeof(x.after -> 'combo') <> 'null') then
+              where s.status in ('draft', 'scheduled', 'running') and jsonb_typeof(x.after) = 'object'
+                and ((x.after ? 'combo' and jsonb_typeof(x.after -> 'combo') <> 'null')
+                  or (jsonb_typeof(x.after -> 'kept') = 'object' and x.after -> 'kept' ? 'combo'))) then
     raise exception 'A draft or a scheduled set still carries Combo steps. Remove those changes first. Nothing was changed.';
   end if;
   if exists (select 1 from public.msm_product_sites s where jsonb_typeof(s.kept) = 'object' and s.kept ? 'combo') then
@@ -55,7 +57,7 @@ begin
   select string_agg(p.proname || ' (body md5 ' || md5(p.prosrc) || ')', ', ' order by p.proname) into v_bad
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and (false
-       or (p.proname = 'msm_changes_guard' and md5(p.prosrc) not in ('1227d666540e48107c8e74aab91d3494', 'e36061b4ce3b7974741e5e39b8dca496'))
+       or (p.proname = 'msm_changes_guard' and md5(p.prosrc) not in ('c71ea4a7fb8e221617b42ef0725aa8f2', 'e36061b4ce3b7974741e5e39b8dca496'))
        or (p.proname = 'msm_start_version' and md5(p.prosrc) not in ('2abda0780f63ce0ae2080ee49a0021f8', '188ea598a5d54f40932f5eae8583aeb0'))
        or (p.proname = 'msm_apply_site' and md5(p.prosrc) not in ('cded0bbdf09a050156cb9674ab0e815b', '87be2da005dea0d49a4d068660ac8b8c'))
        );
@@ -85,7 +87,7 @@ declare
 
     'msm_changes_guard',
     '    if new.after ? ''site_only_location_id'' and new.after ->> ''site_only_location_id'' is not null' || chr(10) || '',
-    '    -- 20261216a: a Combo''s steps (Combo products stage 2). An object holding a list of steps (the' || chr(10) || '    -- check menu_items.combo has), and every product a step names is this group menu''s own, or' || chr(10) || '    -- new in this set, and never the Combo itself.' || chr(10) || '    if new.after ? ''combo'' and jsonb_typeof(new.after -> ''combo'') <> ''null'' then' || chr(10) || '      if jsonb_typeof(new.after -> ''combo'') <> ''object'' or coalesce(jsonb_typeof(new.after #> ''{combo,steps}''), '''') <> ''array'' then' || chr(10) || '        raise exception ''A Combo''''s steps must be a list of steps.'' using errcode = ''22023'';' || chr(10) || '      end if;' || chr(10) || '      for v_vid in select coalesce(e ->> ''itemId'', '''')' || chr(10) || '                     from jsonb_array_elements(new.after #> ''{combo,steps}'') s,' || chr(10) || '                          jsonb_array_elements(case when jsonb_typeof(s -> ''products'') = ''array'' then s -> ''products'' else ''[]''::jsonb end) e loop' || chr(10) || '        if v_vid !~ ''^[0-9a-fA-F-]{36}$'' or v_vid = new.entity_id::text then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '        if not public.msm__ref_ok(v_set.menu_id, v_set.id, ''product'', v_vid::uuid) then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '      end loop;' || chr(10) || '    end if;' || chr(10) || '    if new.after ? ''site_only_location_id'' and new.after ->> ''site_only_location_id'' is not null' || chr(10) || '',
+    '    -- 20261216a: a Combo''s steps (Combo products stage 2). An object holding a list of steps (the' || chr(10) || '    -- check menu_items.combo has), and every product a step names is this group menu''s own, or' || chr(10) || '    -- new in this set, and never the Combo itself.' || chr(10) || '    if new.after ? ''combo'' and jsonb_typeof(new.after -> ''combo'') <> ''null'' then' || chr(10) || '      if jsonb_typeof(new.after -> ''combo'') <> ''object'' or coalesce(jsonb_typeof(new.after #> ''{combo,steps}''), '''') <> ''array'' then' || chr(10) || '        raise exception ''A Combo''''s steps must be a list of steps.'' using errcode = ''22023'';' || chr(10) || '      end if;' || chr(10) || '      for v_vid in select coalesce(e ->> ''itemId'', '''')' || chr(10) || '                     from jsonb_array_elements(new.after #> ''{combo,steps}'') s,' || chr(10) || '                          jsonb_array_elements(case when jsonb_typeof(s -> ''products'') = ''array'' then s -> ''products'' else ''[]''::jsonb end) e loop' || chr(10) || '        if v_vid !~ ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'' or v_vid = new.entity_id::text then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '        if not public.msm__ref_ok(v_set.menu_id, v_set.id, ''product'', v_vid::uuid) then' || chr(10) || '          raise exception ''A step of this Combo names a product that is not in this group menu.'' using errcode = ''42501'';' || chr(10) || '        end if;' || chr(10) || '      end loop;' || chr(10) || '    end if;' || chr(10) || '    if new.after ? ''site_only_location_id'' and new.after ->> ''site_only_location_id'' is not null' || chr(10) || '',
 
     'msm_start_version',
     '               modifier_groups, visibility, sold_alone, item_code, site_only_location_id, archived, sort_order, family_base, tax_by_type)',

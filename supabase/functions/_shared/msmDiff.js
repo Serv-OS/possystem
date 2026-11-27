@@ -233,7 +233,7 @@ const fmt = (v) => (v == null ? 'nothing' : typeof v === 'number' ? v.toFixed(2)
 
 // "Changed at the venue since it was last published" in words: never true or false, never an id
 // (17 Oct verification: "Flapjack was set to true at the venue ... Publishing sets false").
-const DRIFT_WORDS = { combo: 'steps', cat: 'category', cats: 'extra categories', tax_rate_id: 'VAT rate', parent_id: 'variant of', image: 'photo', allergens: 'allergens', tags: 'dietary tags', assigned_modifier_groups: 'option groups', sold_alone: 'sold on its own', type: 'kind of product', name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', item_code: 'item code', visibility: 'where it shows' };
+const DRIFT_WORDS = { combo: 'list of steps', cat: 'category', cats: 'extra categories', tax_rate_id: 'VAT rate', parent_id: 'variant of', image: 'photo', allergens: 'allergens', tags: 'dietary tags', assigned_modifier_groups: 'option groups', sold_alone: 'sold on its own', type: 'kind of product', name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', item_code: 'item code', visibility: 'where it shows' };
 function driftPlanWords(who, l, a) {
   if (l.column === 'archived') return `${who} was turned ${l.before ? 'off' : 'on'} at the venue after it was last published. Publishing turns it ${a.after ? 'off' : 'back on'}.`;
   if (l.column.startsWith('pricing.')) return `${who} was set to ${fmt(l.before)} at the venue after it was last published. Publishing sets ${fmt(a.after)}.`;
@@ -254,7 +254,9 @@ export function siteDrift(central, locationId, raw, names = {}) {
   const n = { ...namesOf(central), ...names };
   const out = plan.lines.filter((l) => l.table === 'items' && l.column !== '(new)').map((l) => ({
     productId: l.productId, venueItemId: l.id, column: l.column, venue: l.before, group: l.after,
-    words: `${n[l.productId] || l.id}: ${l.column.replace('pricing.', '').replace(/_/g, ' ')} is ${fmt(l.before)} at the venue, the group says ${fmt(l.after)}`,
+    words: l.column === 'combo'
+      ? `${n[l.productId] || l.id}: its steps at the venue are not the group's`
+      : `${n[l.productId] || l.id}: ${l.column.replace('pricing.', '').replace(/_/g, ' ')} is ${fmt(l.before)} at the venue, the group says ${fmt(l.after)}`,
   }));
   // Option groups (round 2): a group rule or an option changed at the site.
   for (const l of plan.lines.filter((x) => x.table === 'groups' && x.column !== '(new)')) {
