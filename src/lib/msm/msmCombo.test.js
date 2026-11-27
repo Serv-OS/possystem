@@ -1,15 +1,16 @@
-// msmCombo.test.js: the Multi site menu and a site's own Combo with steps (5.12.123, stage 1).
+// msmCombo.test.js: the Multi site menu and a SITE'S OWN Combo with steps (5.12.124, stage 2).
 //
-// The brief: "the Multi site menu must not crash on, bring in, rewrite or delete a site's own
-// Combo (Bring in and Sync from sites skip with one line of words; publish leaves alone)".
-//
-// A Combo built from steps lives in menu_items.combo, which the group menu has no model for yet
-// (that is stage 2). So until then such a Combo is the SITE'S OWN and stays exactly as it is:
-//   first import      left out of the group menu, and the review says so in one line
-//   Bring in          refused at the one door, in words (the list shows the words, not the buttons)
-//   Bring in all      left out, said once in "Left out", everything else still comes in
-//   joining a site    never linked
-//   publish           plans no write to it, and never names the combo column for any product
+// Stage 1 (5.12.123) left a Combo built from steps at its site: the group menu could not hold its
+// steps. Stage 2 can (msm_products.combo, the same shape, each product a product of the group menu).
+// Peter, 27 Nov 2026: "make sure its also in the multi site menu manager properly". So now:
+//   first import      still leaves it at its site, and says to bring it in from Sites afterwards
+//                     (its steps name the site's own items, which only become the group menu's
+//                     products through that import)
+//   Bring in          brings it WITH its steps: each step product becomes the group menu product it
+//                     already is there, or comes in with the Combo (a product the group menu does
+//                     not manage yet). One that cannot come in stops it, in words. Writes nothing.
+//   Bring in all      the same, every product once
+//   publish           a Combo the group menu does not manage is never touched
 // A Combo with NO steps is an ordinary product and comes in exactly as before.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,145 +20,210 @@ import { planSite, touchedFromChanges } from '../../../supabase/functions/_share
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
 import { A, B, ORG, idGen } from './msmFixture.js';
 import { groupVenues, groupSites, S } from './msmGroupFixture.js';
-import { ownProducts, bringInChanges, bringInAllChanges, joinableProducts, comboStaysWords } from './msmBringIn.js';
+import { ownProducts, bringInChanges, bringInAllChanges, joinableProducts } from './msmBringIn.js';
 import { combosKeptWords } from './msmImportReview.js';
-import { comboHasSteps } from '../combo.js';
+import { comboHasSteps, comboStepsOf } from '../combo.js';
 
-const STEPS = { v: 1, steps: [{ id: 'st-1', name: 'Pick 5 pizzas', selectionType: 'quantity', min: 5, max: 5, pricing: 'set', products: [{ itemId: 'm-x', bump: 0 }] }] };
-const WORDS = 'Build Your Own Package is a Combo with steps. It stays at this site for now: Combos come to the group menu in a later update.';
+const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 
-function setup({ comboAtImport = false } = {}) {
+// Site B's own Combo: a coffee (both group menu products), and an optional treat that keeps its
+// price (the site's own Brownie, not in the group menu yet, and the group's Cookie).
+const stepsAt = (treat = ['own-brownie', 'l-cookie-b']) => ({ v: 1, steps: [
+  { id: 'st-coffee', name: 'Pick a coffee', selectionType: 'single', min: 1, max: 1, pricing: 'set', products: [{ itemId: S('m-latte', B), bump: 0 }, { itemId: S('m-mocha', B), bump: 0.5 }] },
+  { id: 'st-treat', name: 'Add a treat?', selectionType: 'multiple', min: 0, max: 2, pricing: 'own', products: treat.map((itemId) => ({ itemId, bump: 0 })) },
+] });
+
+function setup({ comboAtImport = false, sqlRun = true } = {}) {
   const v = groupVenues();
-  if (comboAtImport) addCombos(v[B]);
+  if (comboAtImport) addOwn(v[B]);
   const sites = groupSites(v);
   const proposal = proposeImport(sites, { idGen: idGen() });
   const built = buildCentral(proposal, sites, {}, { idGen: idGen('g') });
   const central = built.central;
+  // Rows read from the database carry the steps column once SQL 20261216a has run.
+  if (sqlRun) central.products = central.products.map((p) => ({ ...p, combo: p.combo ?? null }));
   central.menu = { id: '99999999-0000-4000-8000-000000000001', name: 'Group menu', description: '', use_name_everywhere: false, refreshed_at: '2026-10-17' };
   return { v, central, proposal };
 }
-// Site B gets two products of its own, made from a real row of the fixture so every column is there:
-// a Combo built from steps, and a Combo with no steps (the kind that exists today).
-function addCombos(raw) {
+// Products of Site B's own, made from a real row of the fixture so every column is there.
+function addOwn(raw, extra = []) {
   const base = raw.items.find((i) => i.id === S('m-mocha', B));
-  const own = (id, name, extra) => ({ ...base, id, name, menu_name: name, receipt_name: name, kitchen_name: name.toUpperCase(), master_id: null, scope: 'local', type: 'combo', assigned_modifier_groups: [], pricing: { base: 149 }, ...extra });
-  raw.items.push(own('own-byo', 'Build Your Own Package', { combo: STEPS }));
-  raw.items.push(own('own-plain', 'Plain Meal Deal', { combo: null, pricing: { base: 9 } }));
+  const own = (id, name, more) => ({ ...base, id, name, menu_name: name, receipt_name: name, kitchen_name: name.toUpperCase(), master_id: null, scope: 'local', assigned_modifier_groups: [], ...more });
+  raw.items.push(own('own-brownie', 'Brownie', { type: 'simple', pricing: { base: 2.5 } }));
+  raw.items.push(own('own-byo', 'Coffee and a treat', { type: 'combo', pricing: { base: 4.5 }, combo: stepsAt() }));
+  raw.items.push(own('own-plain', 'Plain Meal Deal', { type: 'combo', combo: null, pricing: { base: 9 } }));
+  for (const [id, name, more] of extra) raw.items.push(own(id, name, more));
   return raw;
 }
-const writesAt = (central, changes, loc, venue, everything = true) => {
-  const after = applyChanges(central, changes).central;
-  const touched = touchedFromChanges(everything ? touchEverything(after) : changes);
-  return planSite({ central: after, touched, locationId: loc, orgId: ORG, venue }).lines;
-};
+const productNamed = (central, name) => central.products.find((p) => !p.parent_product_id && (p.menu_name || p.name) === name && !p.archived);
+const planAt = (central, changes, loc, venue) => planSite({ central, touched: touchedFromChanges(changes), locationId: loc, orgId: ORG, venue });
 
 test('the server side reading of "a Combo with steps" is the app\'s own', () => {
   const rows = [
-    { type: 'combo', combo: STEPS }, { type: 'combo', combo: STEPS.steps }, { type: 'combo', combo: { v: 1, steps: [] } },
+    { type: 'combo', combo: stepsAt() }, { type: 'combo', combo: stepsAt().steps }, { type: 'combo', combo: { v: 1, steps: [] } },
     { type: 'combo', combo: null }, { type: 'combo' }, { type: 'combo', combo: 'x' }, { type: 'combo', combo: { steps: 'x' } },
     { type: 'combo', combo: { steps: [null, 3, 'a'] } }, { type: 'combo', combo: { steps: [[]] } },
-    { type: 'simple', combo: STEPS }, { type: 'modifiable', combo: STEPS }, null, undefined, {},
+    { type: 'simple', combo: stepsAt() }, { type: 'modifiable', combo: stepsAt() }, null, undefined, {},
   ];
   for (const r of rows) assert.equal(comboWithSteps(r), comboHasSteps(r), JSON.stringify(r));
   assert.equal(comboWithSteps(rows[0]), true);
   assert.equal(comboWithSteps(rows[3]), false);
 });
 
-test('the first import leaves a Combo with steps at its site, and says so in one line', () => {
+test('the first import leaves a Combo with steps at its site, and says to bring it in from Sites afterwards', () => {
   const { central, proposal } = setup({ comboAtImport: true });
-  // Not a product of the group menu, not linked to any site row.
-  assert.ok(!central.products.some((p) => p.name === 'Build Your Own Package'));
+  assert.ok(!central.products.some((p) => p.name === 'Coffee and a treat'));
   assert.ok(!central.productSites.some((ps) => ps.venue_item_id === 'own-byo'));
-  assert.deepEqual(proposal.review.combosKept, [{ location_id: B, id: 'own-byo', name: 'Build Your Own Package' }]);
-  assert.equal(combosKeptWords(proposal.review), '1 Combo with steps stays at its site for now, not in the group menu (Build Your Own Package).');
-  // The Combo with no steps comes in as any product only at one site does.
-  assert.ok(central.products.some((p) => p.name === 'Plain Meal Deal'));
+  assert.deepEqual(proposal.review.combosKept, [{ location_id: B, id: 'own-byo', name: 'Coffee and a treat' }]);
+  assert.equal(combosKeptWords(proposal.review), '1 Combo with steps stays at its site for now (Coffee and a treat). Once this import is published, bring it in from Sites: its steps come with it.');
+  // Its step product and the Combo with no steps come in as any product only at one site does.
+  assert.ok(central.products.some((p) => p.name === 'Brownie'));
   assert.ok(central.productSites.some((ps) => ps.venue_item_id === 'own-plain' && ps.location_id === B));
-  // The headline counts are about what came in; they still read as a sentence.
   assert.match(reviewWords(proposal.review), /products? already shared between sites/);
-  // Several, and none.
-  assert.equal(combosKeptWords({ combosKept: [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }] }), '4 Combos with steps stay at their sites for now, not in the group menu (A, B, C and more).');
+  assert.equal(combosKeptWords({ combosKept: [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }] }), '4 Combos with steps stay at their sites for now (A, B, C and more). Once this import is published, bring them in from Sites: their steps come with them.');
   assert.equal(combosKeptWords({}), '');
   assert.equal(combosKeptWords(null), '');
-  // An import with no such Combo has no such key: every other review is what it was.
   assert.equal('combosKept' in setup().proposal.review, false);
 });
 
-test('Bring in refuses a Combo with steps in words; the list shows the words in place of the buttons', () => {
+test('Bring in brings a Combo WITH its steps, and the product its steps need that the group menu did not have', () => {
   const { v, central } = setup();
-  const raw = addCombos(v[B]);
-  const own = ownProducts(central, B, raw);
-  const byo = own.find((o) => o.id === 'own-byo');
-  assert.ok(byo, 'it is listed: it IS the site\'s own product');
-  assert.equal(byo.held, WORDS);
-  assert.equal(comboStaysWords(byo.row), WORDS);
-  assert.equal('held' in own.find((o) => o.id === 'own-plain'), false);
-  // The door itself, whoever calls it (as new, or linked).
+  const raw = addOwn(v[B]);
+  // Listed as the site's own, with the buttons (nothing held any more).
+  const listed = ownProducts(central, B, raw).find((o) => o.id === 'own-byo');
+  assert.ok(listed);
+  assert.equal('held' in listed, false);
   const r = bringInChanges(central, B, raw, 'own-byo', { idGen: idGen('b'), siteName: 'Site B' });
-  assert.deepEqual(r, { ok: false, changes: [], words: [], problems: [WORDS] });
-  const anyProduct = central.products.find((p) => !p.archived && !p.parent_product_id);
-  assert.deepEqual(bringInChanges(central, B, raw, 'own-byo', { linkTo: anyProduct.id, siteName: 'Site B' }).problems, [WORDS]);
-  // Never offered as a product a join would link.
-  assert.ok(!joinableProducts(central, B, raw, raw.menus[0].id).some((o) => o.id === 'own-byo'));
-  // The Combo with no steps comes in as before, and writes nothing at the site.
-  const plain = bringInChanges(central, B, raw, 'own-plain', { idGen: idGen('p'), siteName: 'Site B' });
-  assert.ok(plain.ok, plain.problems.join(' | '));
-  assert.equal(plain.changes.find((c) => c.target === 'product' && c.op === 'create').after.name, 'Plain Meal Deal');
-  assert.deepEqual(writesAt(central, plain.changes, B, raw), []);
+  assert.ok(r.ok, r.problems.join(' | '));
+  // The Combo and the Brownie are new in the group menu; Latte, Mocha and Cookie are the group's own.
+  const creates = r.changes.filter((c) => c.target === 'product' && c.op === 'create');
+  assert.deepEqual(creates.map((c) => c.after.name), ['Brownie', 'Coffee and a treat']);
+  // The database guard reads them in order: the Brownie before the Combo that names it.
+  assert.ok(r.changes.indexOf(creates[0]) < r.changes.indexOf(creates[1]));
+  const after = applyChanges(central, r.changes).central;
+  const combo = after.products.find((p) => p.name === 'Coffee and a treat');
+  const id = (n) => productNamed(after, n).id;
+  assert.deepEqual(comboStepsOf(combo.combo).map((s) => [s.name, s.pricing, s.products.map((x) => [x.itemId, x.bump])]), [
+    ['Pick a coffee', 'set', [[id('Latte'), 0], [id('Mocha'), 0.5]]],
+    ['Add a treat?', 'own', [[id('Brownie'), 0], [id('Cookie'), 0]]],
+  ]);
+  assert.equal(combo.type, 'combo');
+  // On at Site B only, as its own Combo there, and NOTHING is written at Site B by publishing it.
+  assert.deepEqual(after.productSites.filter((ps) => ps.product_id === combo.id).map((ps) => [ps.location_id, ps.venue_item_id]), [[B, 'own-byo']]);
+  const plan = planAt(after, r.changes, B, raw);
+  assert.deepEqual(plan.lines, [], JSON.stringify(plan.lines));
+  assert.deepEqual(plan.problems.filter((p) => p.level === 'block'), []);
+  // Said in words.
+  assert.equal(r.words[0], 'Coffee and a treat comes into the group menu as a product on at Site B only.');
+  assert.ok(r.words.includes('Brownie comes into the group menu as a product on at Site B only.'), r.words.join(' | '));
+  assert.ok(r.words.includes('Its steps come with it: Pick a coffee (2 products), Add a treat? (2 products).'), r.words.join(' | '));
+  assert.ok(r.words.includes('Nothing changes at Site B: the tills keep selling it exactly as they do now.'));
 });
 
-test('Bring in all leaves the Combo out, says it once, and brings everything else', () => {
+test('a step that lists a product switched off at the site: the group menu leaves it out, the site keeps its own steps', () => {
   const { v, central } = setup();
-  const raw = addCombos(v[B]);
+  // "Old special" is the site's own and switched off there.
+  const raw = addOwn(v[B], [['own-byo2', 'Coffee and a special', { type: 'combo', pricing: { base: 6 }, combo: stepsAt(['l-old-b', 'own-brownie']) }]]);
+  const r = bringInChanges(central, B, raw, 'own-byo2', { idGen: idGen('s'), siteName: 'Site B' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  const after = applyChanges(central, r.changes).central;
+  const combo = after.products.find((p) => p.name === 'Coffee and a special');
+  // Not brought in (it is switched off and the site's own); the step keeps what is left.
+  assert.ok(!after.products.some((p) => p.name === 'Old special'));
+  assert.deepEqual(comboStepsOf(combo.combo)[1].products.map((x) => x.itemId), [productNamed(after, 'Brownie').id]);
+  // The site keeps its own steps (they still name it), so publishing writes nothing there.
+  const ps = after.productSites.find((x) => x.product_id === combo.id && x.location_id === B);
+  assert.deepEqual(ps.kept.combo, raw.items.find((i) => i.id === 'own-byo2').combo);
+  assert.deepEqual(planAt(after, r.changes, B, raw).lines, []);
+  assert.ok(r.words.includes('Site B keeps its own steps for Coffee and a special (Old special is switched off there). Changes to the steps in the group menu reach Site B once you tell it to use the group\'s.'), r.words.join(' | '));
+});
+
+test('a variant the site added to a group menu product comes in as that product\'s variant', () => {
+  const { v, central } = setup();
+  const latteB = v[B].items.find((i) => i.id === S('m-latte', B));
+  const raw = addOwn(v[B], [
+    ['own-latte-xl', 'Extra large', { type: 'simple', parent_id: S('m-latte', B), cat: latteB.cat, pricing: { base: 4.1 } }],
+    ['own-byo3', 'Big coffee deal', { type: 'combo', pricing: { base: 5 }, combo: { v: 1, steps: [{ id: 'st', name: 'Coffee', selectionType: 'single', min: 1, max: 1, pricing: 'set', products: [{ itemId: 'own-latte-xl', bump: 0 }] }] } }],
+  ]);
+  const r = bringInChanges(central, B, raw, 'own-byo3', { idGen: idGen('x'), siteName: 'Site B' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  const after = applyChanges(central, r.changes).central;
+  const xl = after.products.find((p) => p.name === 'Extra large');
+  assert.equal(xl.parent_product_id, productNamed(after, 'Latte').id);
+  assert.deepEqual(after.productSites.filter((ps) => ps.product_id === xl.id).map((ps) => [ps.location_id, ps.venue_item_id]), [[B, 'own-latte-xl']]);
+  assert.deepEqual(comboStepsOf(after.products.find((p) => p.name === 'Big coffee deal').combo)[0].products.map((x) => x.itemId), [xl.id]);
+  assert.ok(r.words.includes('Extra large comes in as a new variant of Latte, on at Site B only.'), r.words.join(' | '));
+  assert.deepEqual(planAt(after, r.changes, B, raw).lines, []);
+});
+
+test('before SQL 20261216a the group menu cannot hold steps: Bring in says so in words, and the rest still comes in', () => {
+  const { v, central } = setup({ sqlRun: false });
+  const raw = addOwn(v[B]);
+  const r = bringInChanges(central, B, raw, 'own-byo', { idGen: idGen('n'), siteName: 'Site B' });
+  assert.deepEqual(r, { ok: false, changes: [], words: [], problems: ['Coffee and a treat is a Combo with steps. The group menu can hold its steps once one database update has run (SQL 20261216a). Ask ServOS to run it. Nothing was added to the draft.'] });
+  // A Combo with no steps, and every other product, comes in as before.
+  assert.ok(bringInChanges(central, B, raw, 'own-plain', { idGen: idGen('m'), siteName: 'Site B' }).ok);
+  const all = bringInAllChanges(central, B, raw, { idGen: idGen('k'), siteName: 'Site B', orgId: ORG });
+  assert.ok(all.ok, all.problems.join(' | '));
+  assert.ok(all.problems.some((w) => /SQL 20261216a/.test(w)));
+  assert.ok(!applyChanges(central, all.changes).central.products.some((p) => p.name === 'Coffee and a treat'));
+});
+
+test('a step product that cannot come in stops the Combo, in words, and nothing is added', () => {
+  const { v, central } = setup();
+  // Oat milk is a sub item that is only an option at Site B.
+  const raw = addOwn(v[B], [['own-bad', 'Coffee with milk', { type: 'combo', pricing: { base: 4 }, combo: { v: 1, steps: [{ id: 'st', name: 'Milk', selectionType: 'single', min: 1, max: 1, pricing: 'set', products: [{ itemId: S('m-oat', B), bump: 0 }] }] } }]]);
+  const r = bringInChanges(central, B, raw, 'own-bad', { idGen: idGen('z'), siteName: 'Site B' });
+  assert.deepEqual(r, { ok: false, changes: [], words: [], problems: ['Coffee with milk cannot come in yet. Its step "Milk" lists Oat milk: That is an option only, not a product. Turn on Sold alone to use it in a Combo. Take it out of the step at Site B first. Nothing was added to the draft.'] });
+  // A Combo inside a Combo, the same.
+  const raw2 = addOwn(groupVenues()[B], [['own-nest', 'Two deals', { type: 'combo', pricing: { base: 9 }, combo: { v: 1, steps: [{ id: 'st', name: 'Deal', selectionType: 'single', min: 1, max: 1, pricing: 'set', products: [{ itemId: 'own-byo', bump: 0 }] }] } }]]);
+  assert.match(bringInChanges(central, B, raw2, 'own-nest', { siteName: 'Site B' }).problems[0], /^Two deals cannot come in yet\. Its step "Deal" lists Coffee and a treat: A Combo cannot go inside another Combo\./);
+});
+
+test('Bring in all brings the Combo and every product its steps need, each once', () => {
+  const { v, central } = setup();
+  const raw = addOwn(v[B]);
   const r = bringInAllChanges(central, B, raw, { idGen: idGen('a'), siteName: 'Site B', orgId: ORG });
   assert.ok(r.ok, r.problems.join(' | '));
-  assert.deepEqual(r.problems.filter((p) => /Combo with steps/.test(p)), [WORDS]);
-  assert.ok(r.words.some((w) => /Plain Meal Deal comes into the group menu/.test(w)), r.words.join(' | '));
-  assert.ok(!r.words.some((w) => /Build Your Own Package/.test(w)));
+  assert.deepEqual(r.problems, []);
   const after = applyChanges(central, r.changes).central;
-  assert.ok(!after.productSites.some((ps) => ps.venue_item_id === 'own-byo'));
-  assert.ok(after.productSites.some((ps) => ps.venue_item_id === 'own-plain'));
-  // It is still listed as the site's own afterwards, still held.
-  assert.deepEqual(ownProducts(after, B, raw).filter((o) => !o.archived).map((o) => [o.id, !!o.held]), [['own-byo', true]]);
-  assert.deepEqual(writesAt(central, r.changes, B, raw, false), []);
+  for (const n of ['Brownie', 'Coffee and a treat', 'Plain Meal Deal']) {
+    assert.equal(after.products.filter((p) => p.name === n).length, 1, `${n} once`);
+  }
+  const combo = after.products.find((p) => p.name === 'Coffee and a treat');
+  assert.deepEqual(comboStepsOf(combo.combo)[1].products.map((x) => x.itemId), [productNamed(after, 'Brownie').id, productNamed(after, 'Cookie').id]);
+  assert.deepEqual(ownProducts(after, B, raw).filter((o) => !o.archived), []);
+  // The whole set writes nothing at the site.
+  assert.deepEqual(planAt(after, r.changes, B, raw).lines, []);
 });
 
-test('publish leaves a site\'s own Combo alone: no write to it, with everything in the group menu touched', () => {
+test('publish leaves a site\'s own Combo alone until it is brought in', () => {
   const { v, central } = setup();
-  const raw = addCombos(v[B]);
+  const raw = addOwn(v[B]);
   const before = JSON.stringify(raw.items.find((i) => i.id === 'own-byo'));
   for (const loc of [A, B]) {
     const plan = planSite({ central, touched: touchedFromChanges(touchEverything(central)), locationId: loc, orgId: ORG, venue: loc === B ? raw : v[A] });
-    // Nothing to write for it: not in the writes, the lines, the written ids or the inserted ids.
     for (const part of ['writes', 'lines', 'writtenItemIds', 'insertedItemIds', 'managedItemIds', 'problems']) {
       assert.ok(!(JSON.stringify(plan[part]) || '').includes('own-byo'), `plan.${part} never names the site's own Combo (${loc})`);
     }
+    // No other product of the group menu has steps, so no write names the steps at all.
     assert.ok(!(JSON.stringify(plan.writes) || '').includes('"combo"'), 'no write names a combo column');
-    assert.ok(!(JSON.stringify(plan.lines) || '').includes('"combo"'), 'no line names a combo column');
-    // The site as it would be after the publish still holds the row, steps and all, unchanged.
-    if (loc === B) {
-      const after = JSON.stringify(plan.applied);
-      assert.ok(after.includes(JSON.stringify(STEPS)), 'the steps are still on the site row after the plan');
-    }
   }
   assert.equal(JSON.stringify(raw.items.find((i) => i.id === 'own-byo')), before, 'planning never changes the site row it read');
 });
 
-test('the planner and the writer never name the combo column, so a publish cannot blank a Combo\'s steps', () => {
-  const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
-  // The planner builds an update from the group menu's own fields (its product model has no combo),
-  // and the SQL writer updates named columns only (msm_changes / the publish function).
-  for (const f of ['../../../supabase/functions/_shared/msmPlan.js', '../../../supabase/functions/_shared/msmDiff.js', '../../../supabase/functions/_shared/msmModel.js']) {
-    assert.ok(!/\bcombo\b/.test(read(f).replace(/type === 'combo'|'combo'\s*[,\]]|combo product|Combo/g, '')), `${f} does not write a combo column`);
-  }
-  // The two doors are wired where this file says they are.
+test('a site joining the group can link its own copy of a group Combo; the screens show every Combo with its buttons', () => {
+  const { v, central } = setup();
+  const raw = addOwn(v[B]);
+  // The group's own Combo is offered to a joining site like any of the group's products.
+  assert.ok(Array.isArray(joinableProducts(central, B, raw, raw.menus[0].id)));
+  // The stage 1 words and the held list are gone.
   const bring = read('./msmBringIn.js');
-  assert.match(bring, /if \(comboWithSteps\(row\)\) return fail\(comboStaysWords\(row\)\);/);
-  assert.match(bring, /\.\.\.\(comboWithSteps\(row\) \? \{ held: comboStaysWords\(row\) \} : \{\}\),/);
-  assert.match(bring, /filter\(\(o\) => !o\.archived && !o\.held && o\.match && o\.match\.how === 'family'\)/);
-  const imp = read('../../../supabase/functions/_shared/msmImport.js');
-  assert.match(imp, /if \(comboWithSteps\(row\)\) \{\n\s+if \(row\.archived !== true\) combosKept\.push\(/);
+  assert.ok(!/comboStaysWords|held:/.test(bring));
+  assert.match(bring, /filter\(\(o\) => !o\.archived && o\.match && o\.match\.how === 'family'\)/);
   const sites = read('../../backoffice/sections/msm/MsmSites.jsx');
-  assert.equal((sites.match(/\{editable && !o\.held && \(/g) || []).length, 2, 'both own product lists hide the buttons on a held Combo');
+  assert.ok(!/o\.held/.test(sites), 'both own product lists show the buttons for a Combo too');
   assert.match(read('../../backoffice/sections/msm/MsmImport.jsx'), /combosKeptWords\(r\)/);
+  // The first import is the one place that still leaves it at its site.
+  assert.match(read('../../../supabase/functions/_shared/msmImport.js'), /if \(comboWithSteps\(row\)\) \{\n\s+if \(row\.archived !== true\) combosKept\.push\(/);
 });

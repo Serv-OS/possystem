@@ -278,16 +278,19 @@ export function switchedOffWords(review) {
 /**
  * 5.12.123: "1 Combo with steps stays at its site for now, not in the group menu (Build Your Own
  * Package)." The first import leaves a Combo built from steps where it is (msmImport.js
- * comboWithSteps): the group menu cannot hold its steps yet. '' when there are none.
+ * comboWithSteps): its steps name the site's own items, which only become the group menu's products
+ * through this import. Bring in brings it, steps and all, afterwards (5.12.124). '' when there are none.
  */
 export function combosKeptWords(review) {
   const list = Array.isArray(review?.combosKept) ? review.combosKept : [];
   if (!list.length) return '';
   const names = [...new Set(list.map((c) => c?.name).filter(Boolean))];
   const like = names.length ? ` (${names.slice(0, 3).join(', ')}${names.length > 3 ? ' and more' : ''})` : '';
+  // 5.12.124: Bring in (Sites) now brings a Combo WITH its steps, once the products its steps name
+  // are in the group menu. The first import builds those products, so a Combo waits for it.
   return list.length === 1
-    ? `1 Combo with steps stays at its site for now, not in the group menu${like}.`
-    : `${list.length} Combos with steps stay at their sites for now, not in the group menu${like}.`;
+    ? `1 Combo with steps stays at its site for now${like}. Once this import is published, bring it in from Sites: its steps come with it.`
+    : `${list.length} Combos with steps stay at their sites for now${like}. Once this import is published, bring them in from Sites: their steps come with them.`;
 }
 
 // Every product under one of `ids` in `products` (its sizes, and theirs), closed.

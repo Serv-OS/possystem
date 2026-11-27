@@ -37,13 +37,18 @@ test('the staging allowlist in the database is msmModel.STAGE_FIELDS, target by 
     assert.ok(m, `no list for ${target}`);
     // 5.12.116: the files as Ops ran them hold the lists of then. 20261214a adds the two fields
     // for several menus to the live guard (pinned by src/lib/msm/msmSeveralMenus.test.js).
-    assert.deepEqual(arr(m[1]), fields.filter((f) => !['extra_menus', 'menu_keys'].includes(f)), target);
+    // 5.12.124: and 20261216a adds a Combo's steps, `combo` (pinned by src/lib/msm/msmComboSql.test.js).
+    assert.deepEqual(arr(m[1]), fields.filter((f) => !['extra_menus', 'menu_keys', 'combo'].includes(f)), target);
   }
 });
 
 test('kept columns, channels, order type VAT keys, group and option kept keys, choice kinds: the same lists on both sides', () => {
   const guard = newest('msm_changes_guard');
-  assert.deepEqual(arr(between(guard, 'v_kept     constant text[] := array[', ']')), [...KEPT_COLUMNS]);
+  // 5.12.124: `combo` (a site keeping its own steps) is added to the live guard by 20261216a
+  // (src/lib/msm/msmComboSql.test.js). The first import never keeps steps: it leaves a Combo with
+  // steps at its site (msmImport.js comboWithSteps), so its own kept list stays as it was.
+  const KEPT_THEN = KEPT_COLUMNS.filter((k) => k !== 'combo');
+  assert.deepEqual(arr(between(guard, 'v_kept     constant text[] := array[', ']')), KEPT_THEN);
   assert.deepEqual(arr(between(guard, 'v_channels constant text[] := array[', ']')), [...CHANNELS]);
   assert.deepEqual(arr(between(guard, 'v_tax_keys constant text[] := array[', ']')), [...ORDER_TYPE_TAX_KEYS]);
   assert.deepEqual(arr(between(guard, 'v_group_kept  constant text[] := array[', ']')), [...GROUP_KEPT_COLUMNS]);
@@ -52,8 +57,8 @@ test('kept columns, channels, order type VAT keys, group and option kept keys, c
   // live functions by 20261213a (pinned by src/lib/optionGroupOnceEach.test.js).
   assert.deepEqual(arr(between(guard, 'v_selection   constant text[] := array[', ']')), SELECTION_TYPES.filter((k) => k !== 'multiple_once'));
   const imp = newest('msm_import_commit');
-  assert.deepEqual(arr(between(imp, "where k <> all (array['cat'", ']')).length + 1, KEPT_COLUMNS.length, 'the import checks the same kept list');
-  assert.deepEqual(['cat', ...arr(between(imp, "where k <> all (array['cat'", ']'))], [...KEPT_COLUMNS]);
+  assert.deepEqual(arr(between(imp, "where k <> all (array['cat'", ']')).length + 1, KEPT_THEN.length, 'the import checks the same kept list');
+  assert.deepEqual(['cat', ...arr(between(imp, "where k <> all (array['cat'", ']'))], KEPT_THEN);
   assert.deepEqual(arr(between(imp, "where k <> all (array['name', 'min'", ']')).length + 2, GROUP_KEPT_COLUMNS.length);
   assert.deepEqual(arr(between(newest('msm__import_options'), 'where k <> all (array[', ']')), [...OPTION_KEPT_KEYS]);
 });
@@ -105,11 +110,11 @@ test('the venue columns publish may write are msmModel.VENUE_INSERT / VENUE_UPDA
   const list = (name) => arr(between(apply, `${name} constant text[] := array[`, ']'));
   assert.deepEqual(list('v_ins_menus '), VENUE_INSERT.menus);
   assert.deepEqual(list('v_ins_cats  '), VENUE_INSERT.categories);
-  assert.deepEqual(list('v_ins_items '), VENUE_INSERT.items);
+  assert.deepEqual(list('v_ins_items '), VENUE_INSERT.items.filter((k) => k !== 'combo'));   // combo: 20261216a
   assert.deepEqual(list('v_ins_groups'), VENUE_INSERT.groups);
   assert.deepEqual(list('v_upd_menus '), VENUE_UPDATE.menus.filter((k) => k !== 'is_default'));   // is_default: 20261214a
   assert.deepEqual(list('v_upd_cats  '), VENUE_UPDATE.categories);
-  assert.deepEqual(list('v_upd_items '), VENUE_UPDATE.items);
+  assert.deepEqual(list('v_upd_items '), VENUE_UPDATE.items.filter((k) => k !== 'combo'));   // combo: 20261216a
   assert.deepEqual(list('v_pricing   '), [...PRICING_KEYS]);
   for (const owned of ['centre_id', 'tax_overrides', 'option_group_order', 'lock_pricing', 'locked_fields', 'master_id']) {
     assert.ok(!VENUE_UPDATE.items.includes(owned), `${owned} is venue owned (tax_overrides is only ever a four key patch)`);

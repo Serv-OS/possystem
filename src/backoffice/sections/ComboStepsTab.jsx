@@ -54,7 +54,16 @@ function NumBox({ value, min = 1, max = 98, onCommit, label, width = 58 }) {
   );
 }
 
-export default function ComboStepsTab({ item, menuItems = [], categories = [], onUpdate, markBOChange, managed = false, columnReady = true, eightySixIds = [] }) {
+// 5.12.124 (stage 2, the Multi site menu):
+//   readOnly    the steps are head office's here (a product the group menu manages, and the site
+//               does not keep its own steps): everything shows, nothing can be changed or dragged.
+//               MenuManager wraps the tab in the usual lock (MsmLocked) that says why.
+//   keptSteps   the site keeps its own steps (msm_product_sites.kept.combo): editable, and said.
+//   posOnlyNote false hides the "POS only" note (the group menu says where a Combo sells itself).
+//   needsUpdateWords, priceWhere   the group menu's own words for the SQL it needs and its price.
+// The group menu uses this same tab through a small adapter (msm/MsmComboSteps.jsx): its products
+// are shaped like the store's menu rows, so the rules and the words are the same in both places.
+export default function ComboStepsTab({ item, menuItems = [], categories = [], onUpdate, markBOChange, columnReady = true, eightySixIds = [], readOnly = false, keptSteps = false, posOnlyNote = true, needsUpdateWords = COMBO_WORDS.needsUpdate, priceWhere = '(the price on Details)', noPriceWhere = 'on Details' }) {
   const steps = comboSteps(item);
   const [open, setOpen] = useState(() => (steps.length === 1 ? steps[0].id : null));   // the step whose form is open
   const [nameDraft, setNameDraft] = useState({});       // step id -> the name being typed
@@ -78,16 +87,16 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
   }, [menuItems]);
   const catName = useMemo(() => new Map((categories || []).map(c => [c.id, c.label || c.name || ''])), [categories]);
 
-  const block = stepsEditBlock(item, { managed, sizes: (sizesOf.get(item.id) || []).length });
+  const block = stepsEditBlock(item, { sizes: (sizesOf.get(item.id) || []).length });
   const warnings = comboWarnings(item, {
-    rowsById, eightySix: eightySixIds, hiddenHere: (row) => optionHiddenOn(row, 'pos'), noPrice: hasNoSellPrice(item),
+    rowsById, eightySix: eightySixIds, hiddenHere: (row) => optionHiddenOn(row, 'pos'), noPrice: hasNoSellPrice(item), priceWhere: noPriceWhere,
     // A step that keeps prices sells the product at its own price: a product with sizes has one
     // when any of its sizes does.
     noPriceRow: (row) => { const kids = sizesOf.get(row.id) || []; return kids.length ? kids.every(k => hasNoSellPrice(k)) : hasNoSellPrice(row); },
   });
   const setPrice = resolveItemPrice(item);
 
-  const save = (next) => { onUpdate({ combo: comboColumnValue(next) }); markBOChange?.(); };
+  const save = (next) => { if (readOnly) return; onUpdate({ combo: comboColumnValue(next) }); markBOChange?.(); };
   // The editor is hidden (the product got sizes, was shared, or is managed) but its steps are
   // still there and the POS still asks them: the one thing that can still be done is take them off.
   const takeStepsOff = () => {
@@ -168,12 +177,14 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
       <div style={{ padding:'9px 12px', background:'var(--bg3)', borderRadius:10, fontSize:11.5, color:'var(--t3)', lineHeight:1.5 }}>
         A Combo is <strong style={{ color:'var(--t1)' }}>one product at a set price</strong>, built from real products in steps.
         Each pick goes to the kitchen as its own item, at its own station, with its own options. The Combo itself never prints in the kitchen.
-        <div style={{ marginTop:5 }}>Set price: <strong style={{ color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(setPrice)}</strong> <span style={{ color:'var(--t4)' }}>(the price on Details)</span></div>
+        <div style={{ marginTop:5 }}>Set price: <strong style={{ color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(setPrice)}</strong> <span style={{ color:'var(--t4)' }}>{priceWhere}</span></div>
       </div>
 
-      {!columnReady && note('stop', COMBO_WORDS.needsUpdate, 'col')}
+      {!columnReady && note('stop', needsUpdateWords, 'col')}
       {block && note('info', block, 'block')}
-      {block && columnReady && comboHasSteps(item) && (
+      {readOnly && columnReady && note('info', 'Head office sets these steps in the Multi site menu. Each product in them is this site\'s own item of that product, and each pick still goes to its own station here.', 'ro')}
+      {keptSteps && !readOnly && columnReady && note('info', 'This site keeps its own steps: they stay editable here, and the group menu leaves them as they are.', 'kept')}
+      {block && !readOnly && columnReady && comboHasSteps(item) && (
         <div data-testid="combo-steps-still-live">
           {note('stop', `This product still has ${steps.length === 1 ? '1 step' : `${steps.length} steps`}, and the POS still asks ${steps.length === 1 ? 'it' : 'them'}. Undo what is said above to edit ${steps.length === 1 ? 'it' : 'them'}, or take ${steps.length === 1 ? 'it' : 'them'} off.`, 'live')}
           <button className="btn btn-ghost" data-testid="combo-steps-take-off" style={{ height:38, padding:'0 14px', fontSize:12.5, fontWeight:700 }} onClick={takeStepsOff}>Take the steps off</button>
@@ -182,7 +193,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
 
       {!block && columnReady && (
         <>
-          {note('info', COMBO_WORDS.posOnly + ' It is left off the kiosk, online ordering, QR, catering, the phone POS and the delivery apps until they learn it.', 'pos')}
+          {posOnlyNote && note('info', COMBO_WORDS.posOnly + ' It is left off the kiosk, online ordering, QR, catering, the phone POS and the delivery apps until they learn it.', 'pos')}
           {steps.length > 0 && note((item.assignedModifierGroups || []).length ? 'note' : 'info', COMBO_WORDS.noOwnOptions + ((item.assignedModifierGroups || []).length ? ` This product still has ${(item.assignedModifierGroups || []).length} option group${(item.assignedModifierGroups || []).length === 1 ? '' : 's'} from before: they are not asked while it has steps.` : ''), 'opts')}
           {warnings.filter(w => !w.stepId).map((w, i) => note(w.level, w.words, `w${i}`))}
 
@@ -202,7 +213,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
             const mine = warnings.filter(w => w.stepId === s.id);
             const stops = mine.filter(w => w.level === 'stop').length;
             return (
-              <div key={s.id} data-testid="combo-step" draggable={!isOpen}
+              <div key={s.id} data-testid="combo-step" draggable={!isOpen && !readOnly}
                 onDragStart={e => { setDragStep(si); beginDrag(e, si); }} onDragOver={e => dragOver(e, si, overStep, setOverStep)}
                 onDrop={e => { e.preventDefault(); if (dragStep !== null) moveStep(dragStep, si); setDragStep(null); setOverStep(null); }}
                 onDragEnd={() => { setDragStep(null); setOverStep(null); }}
@@ -307,7 +318,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
                         const key = `${s.id}|${p.itemId}`;
                         const gone = !row || row.archived;
                         return (
-                          <div key={p.itemId} data-testid="combo-step-product" draggable
+                          <div key={p.itemId} data-testid="combo-step-product" draggable={!readOnly}
                             onDragStart={e => { e.stopPropagation(); setDragProd({ step: s.id, i: pi }); beginDrag(e, pi); }}
                             onDragOver={e => { e.stopPropagation(); dragOver(e, pi, overProd, setOverProd); }}
                             onDrop={e => { e.preventDefault(); e.stopPropagation(); if (dragProd && dragProd.step === s.id) moveProduct(s, dragProd.i, pi); setDragProd(null); setOverProd(null); }}
@@ -369,7 +380,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
             );
           })}
 
-          <button onClick={addStep} data-testid="combo-add-step" style={{ height:40, borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:800, border:'1.5px dashed var(--acc-b)', background:'var(--acc-d)', color:'var(--acc)' }}>+ Add a step</button>
+          {!readOnly && <button onClick={addStep} data-testid="combo-add-step" style={{ height:40, borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:800, border:'1.5px dashed var(--acc-b)', background:'var(--acc-d)', color:'var(--acc)' }}>+ Add a step</button>}
         </>
       )}
     </div>
