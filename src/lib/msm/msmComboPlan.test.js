@@ -354,3 +354,30 @@ test('a publish of anything else never names the steps (so it runs on a database
     }
   }
 });
+
+test('a new Combo and the new products its steps name, in ONE publish: each site names the rows that publish makes', () => {
+  const { v, central, P } = setup();
+  const SCONE = '5c0e5c0e-0000-4000-8000-0000000005c0';   // its first 12 characters differ from the Combo's (each gets its own venue id)
+  const scone = newProductChanges({ live: central, eff: central }, {
+    id: SCONE, fields: { name: 'Scone', type: 'simple', category_id: P('Latte').category_id, default_price: 2.2, ...tax(P) },
+    sites: [A, B].map((l) => ({ location_id: l, active: true, price: null })),
+  });
+  assert.ok(scone.changes, scone.words);
+  const steps = { v: 1, steps: [step('st-drink', 'Pick a drink', 'single', 1, 1, 'set', [P('Latte').id]), step('st-bake', 'Pick a bake', 'single', 0, 1, 'set', [SCONE])] };
+  const changes = [...scone.changes, ...newCombo(central, P, { steps })];
+  const { v: after, plans } = publish(central, v, changes);
+  for (const loc of [A, B]) {
+    const inserts = plans[loc].writes.items.insert;
+    const sconeRow = inserts.find((r) => r.name === 'Scone');
+    const comboRow = inserts.find((r) => r.name === 'Breakfast Deal');
+    assert.ok(sconeRow && comboRow, `${loc}: both are new there`);
+    // The Combo names the Scone row this same publish makes (whatever order the rows are written in).
+    assert.deepEqual(stepIds(comboRow, 'st-bake'), [sconeRow.id]);
+    assert.deepEqual(stepIds(itemOf(after[loc], comboRow.id), 'st-bake'), [sconeRow.id]);
+    assert.deepEqual(codes(plans[loc].problems).filter((c) => c.startsWith('combo')), []);
+  }
+  // Site C sells no Scone: the step that could be skipped is left out there, said once.
+  const atC = plans[C].writes.items.insert.find((r) => r.name === 'Breakfast Deal');
+  assert.deepEqual(comboSteps(atC).map((s) => s.id), ['st-drink']);
+  assert.deepEqual(codes(plans[C].problems).filter((c) => c.startsWith('combo')), ['combo_pick_left_out']);
+});
