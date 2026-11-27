@@ -117,6 +117,25 @@ export function siteTaxCell(product, loc, profilesByLoc) {
   return def ? { words: `${def.name} ${profileRateWords(def)}`, named: false, missing: false } : null;
 }
 
+/**
+ * The product sheet's "Try it" line at a site that charges through tax profiles (5.12.117).
+ * Peter, Mozz, 26 Nov 2026: the box read "Mozz - Sandy has no tax rates set up. Add them in
+ * Settings, Tax." in red. Sandy has four tax profiles and charges through them; it has no old
+ * style rates because it does not need any. The box only knew rates.
+ *   product    { name, tax_rate_name, tax_rate_percent } as the sheet holds it
+ *   typeWord   "takeaway", "eat in", ... (the order type picked in the box)
+ * Returns { ok, words }, or null when profiles do not decide this product there (the rate rule stands).
+ */
+export function profileExample({ product, loc, profilesByLoc, siteName = 'this site', typeWord = '' }) {
+  const cell = siteTaxCell(product, loc, profilesByLoc);
+  if (!cell) return null;
+  const who = product?.name || 'This product';
+  if (cell.missing) {
+    return { ok: false, words: `${siteName} has no tax profile called "${String(product.tax_rate_name).trim()}". Add it in that site's Tax settings, or that site cannot be published.` };
+  }
+  return { ok: true, words: `${who}${typeWord ? `, ${typeWord}` : ''} at ${siteName}: charged on ${cell.named ? 'the' : "the site's own"} tax profile, ${cell.words}.` };
+}
+
 /** The group column of the Tax view when tax profiles decide: { words, named } or null. */
 export function groupTaxCell(product, profilesByLoc, siteIds) {
   if (isProfileTax(product)) return { words: `${String(product.tax_rate_name).trim()} profile`, named: true };
