@@ -20,6 +20,7 @@ import {
   pickLineName, comboLinePlan, picksFromLines,
   comboUids, comboLinesOf, comboIsSent, comboLinesTotal, orderBlocks, wholeCombos, keepsCombosWhole,
   isComboParent, isComboPick, isComboLine, comboPosOnly, comboNotHereWords, COMBO_WORDS, cents,
+  voidGroup, comboDiscount, draftLineTest,
 } from './combo.js';
 import { ONCE_EACH } from './choiceKinds.js';
 import { isOptionOnlyItem } from './menuRules.js';
@@ -579,4 +580,51 @@ test('the words every screen uses', () => {
     assert.ok(!/[–—]/.test(w), w);                              // no dashes (Peter's rule)
     assert.ok(!/\btill\b/i.test(w), w);                                   // POS, never till
   }
+});
+
+// ── Void, discount and clear act on the whole Combo ─────────────────────────
+
+test('a void of any line of a Combo takes the whole Combo, named as the Combo', () => {
+  const o = ORDER();
+  const fromPick = voidGroup(o, o.find((l) => l.uid === 'u3'));
+  assert.equal(fromPick.lines.length, 10);
+  assert.equal(fromPick.name, 'Build Your Own Package');
+  assert.deepEqual([...fromPick.gone].sort(), comboUids(o, 'u0').sort());
+  assert.deepEqual(voidGroup(o, o.find((l) => l.uid === 'u0')).gone, fromPick.gone);
+  // An ordinary line is itself.
+  const plain = voidGroup(o, o[0]);
+  assert.deepEqual([plain.lines.length, plain.name, [...plain.gone]], [1, 'Water Case', ['x1']]);
+  // Lines of the Combo already voided are not voided again.
+  const some = o.map((l) => (l.uid === 'u2' ? { ...l, voided: true } : l));
+  assert.equal(voidGroup(some, some.find((l) => l.uid === 'u3')).lines.length, 9);
+  assert.deepEqual(voidGroup(o, null), { lines: [], gone: new Set(), name: '' });
+});
+
+test('a discount on any line of a Combo is a discount on the Combo', () => {
+  const o = ORDER();
+  const pct = comboDiscount(o, o.find((l) => l.uid === 'u3'), { id: 'd', type: 'percent', value: 20 });
+  assert.equal(pct.filter((l) => l.discount).length, 10);                 // every line of THAT Combo
+  assert.ok(pct.filter((l) => l.discount).every((l) => l.comboId === 'cmb-1'));
+  assert.equal(pct.find((l) => l.uid === 'x1').discount, undefined);       // nothing outside it
+  assert.equal(pct.find((l) => l.uid === 'vu0').discount, undefined);      // nor the other Combo
+  // An amount comes off once, on the Combo's own line.
+  const amt = comboDiscount(o, o.find((l) => l.uid === 'u3'), { id: 'd', type: 'amount', value: 10 });
+  assert.deepEqual(amt.filter((l) => l.discount).map((l) => l.uid), ['u0']);
+  // Changing a percent to an amount takes the percent off the picks.
+  const swapped = comboDiscount(pct, pct.find((l) => l.uid === 'u0'), { id: 'd2', type: 'amount', value: 5 });
+  assert.deepEqual(swapped.filter((l) => l.discount).map((l) => l.uid), ['u0']);
+  // Taking it off clears every line.
+  assert.equal(comboDiscount(pct, pct.find((l) => l.uid === 'u5'), null).filter((l) => l.discount).length, 0);
+});
+
+test('Clear takes the unsent draft, but never half of a Combo that has gone to the kitchen', () => {
+  const o = ORDER();
+  assert.equal(o.filter(draftLineTest(o)).length, o.length - 1);          // everything but the sent Margherita
+  // One pick of the first Combo is at the kitchen: none of that Combo is cleared.
+  const part = o.map((l) => (l.uid === 'u4' ? { ...l, status: 'sent' } : l));
+  const cleared = part.filter(draftLineTest(part));
+  assert.ok(cleared.every((l) => l.comboId !== 'cmb-1'));
+  assert.equal(cleared.filter((l) => l.comboId === 'cmb-2').length, 4);    // the other Combo, never sent, goes whole
+  assert.equal(cleared.some((l) => l.uid === 'x1'), true);
+  assert.equal(o.map((l) => ({ ...l, voided: true })).filter(draftLineTest(o)).length, 0);
 });

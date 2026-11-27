@@ -541,11 +541,25 @@ export function comboMissing(steps, picks, ctx = {}) {
     if (st.need > 0) return `${s.name}: ${stepNeedWords(s, picks).toLowerCase()}`;
     if (!st.done) return `${s.name}: too many picked`;
   }
+  const stepById = new Map(list.map((s) => [s.id, s]));
   for (const p of listOf(picks)) {
+    const step = p && stepById.get(p.stepId);
+    if (!step) continue;                                                    // not a pick of this Combo: it makes no line
+    const entry = step.products.find((e) => e.itemId === p.entryId);
+    const entryRow = rows.get(p.entryId);
+    // The menu moved under the screen: the product left the step, was archived or is hidden here.
+    if (!entry || !entryRow) return `${nameOf(entryRow)} cannot be picked in "${step.name}" any more`;
+    const st = entryState(entry, ctx, []);
+    if (st.state === 'gone' || st.state === 'hidden') return `${nameOf(entryRow)} cannot be picked any more`;
+    if (st.state === 'type') return st.words;
     const needs = pickNeeds(p, ctx);
-    const row = rows.get(p.itemId ?? p.entryId) || rows.get(p.entryId);
+    const row = rows.get(p.itemId ?? p.entryId) || entryRow;
     if (needs === 'size') return `${nameOf(row)}: choose a size`;
     if (needs === 'options') return `${nameOf(row)}: choose its options`;
+    if (row !== entryRow) {
+      if (row.archived) return `${pickLineName(row, rows)} cannot be picked any more`;
+      if (typeof ctx.soldAs === 'function' && ctx.soldAs(row) === false) return typeof ctx.notSoldWords === 'function' ? ctx.notSoldWords(row) : `${pickLineName(row, rows)} is not available for this order type`;
+    }
   }
   const off = setOf(ctx.eightySix);
   for (const [id, units] of unitsUsed(picks, ctx)) {
@@ -716,6 +730,43 @@ export function keepsCombosWhole(items, uids) {
   }
   for (const s of seen.values()) if (s.in > 0 && s.out > 0) return false;
   return true;
+}
+
+/**
+ * What one line void takes: the line, or the whole Combo it belongs to (its own line and every pick
+ * that is still live). Returns { lines, gone, name }: the lines to void, their uids as a Set, and
+ * what the toast and the void log call it (the Combo's name, never one pick's).
+ */
+export function voidGroup(items, item) {
+  if (!item) return { lines: [], gone: new Set(), name: '' };
+  if (!isComboLine(item)) return { lines: [item], gone: new Set([item.uid]), name: item.name };
+  const lines = comboLinesOf(items, item).filter((i) => !i.voided);
+  return { lines, gone: new Set(lines.map((i) => i.uid)), name: lines.find(isComboParent)?.name || item.comboName || item.name };
+}
+
+/**
+ * A discount put on any line of a Combo is a discount on the Combo: a percent comes off EVERY line
+ * of it (the set price and everything its picks add); an amount comes off the Combo's own line,
+ * once (the same amount on every line would take it off many times over). A pick is never
+ * discounted on its own. Returns the order's lines with the discount on. discount null takes it off.
+ */
+export function comboDiscount(items, target, discount) {
+  const group = new Set(comboLinesOf(items, target).map((i) => i.uid));
+  const every = !!discount && discount.type === 'percent';
+  return listOf(items).map((i) => {
+    if (!i || !group.has(i.uid)) return i;
+    return { ...i, discount: discount && (every || isComboParent(i)) ? discount : null };
+  });
+}
+
+/**
+ * The lines a "Clear" of the unsent draft takes: every pending line that is not voided, EXCEPT the
+ * unsent lines of a Combo that already has a line at the kitchen (a Combo is voided as one, never
+ * half cleared). Returns a predicate over a line.
+ */
+export function draftLineTest(items) {
+  const list = listOf(items);
+  return (i) => !!i && i.status === 'pending' && !i.voided && !(i.comboId && comboIsSent(list, i.comboId));
 }
 
 // ── 10. WORDS ────────────────────────────────────────────────────────────────

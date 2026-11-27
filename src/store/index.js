@@ -75,6 +75,10 @@ import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoR
 import { buildChannelCloseFields } from '../lib/channelMoney';
 import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLineUnitPrice } from '../lib/tillLine';
 import { isSoldAs, notSoldAsWords } from '../lib/soldAs.js';
+// 5.12.123: Combo products (a set price built from real products). The rules are lib/combo.js,
+// the lines are built in lib/comboLines.js; the actions below only move them as one.
+import { comboHasSteps, comboSteps, comboMissing, comboUids, comboIsSent, isComboLine, isComboParent, isComboPick, comboNotHereWords, picksFromLines, unitsUsed, keepsCombosWhole, voidGroup, comboDiscount, draftLineTest, COMBO_WORDS } from '../lib/combo.js';
+import { comboOrderLines, changedPickLine, repricedPickLine, comboPosContext } from '../lib/comboLines.js';
 import { logActivity } from '../lib/activity';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
@@ -773,6 +777,11 @@ const URL_SURFACE_PIN = (() => {
 // ─── ID helpers ──────────────────────────────────────────────────────────────
 let _itemUid = 1;
 const uid = () => `i${_itemUid++}`;
+// 5.12.123: a Combo's lines are found by their ids for as long as the order lives (another POS, a
+// reload), so they never come from the per page counter above.
+const comboRand = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+const newComboId = () => `cmb-${comboRand()}`;
+const comboLineUid = () => `cl-${comboRand()}`;
 // 16 Oct 2026 (bookings audit item 6): order ids are minted by lib/sessionOrderId.js
 // (device + time + random). The old per page counter gave every device ORD-1001 after a reload.
 let _tabNum   = 1;
@@ -3073,7 +3082,8 @@ export const useStore = create((set, get) => ({
     const destHasSession = !!to.session;
     const fromItems = from.session.items || [];
     const toItems   = to.session?.items || [];
-    const sentItems = fromItems.filter(i => i.status === 'sent' && !i.voided);
+    // 5.12.123: a line the kitchen never had (a Combo's own line, a gift card) is not on the notice.
+    const sentItems = fromItems.filter(i => i.status === 'sent' && !i.voided && !i.noKitchen);
 
     const mergedItems = destHasSession ? [...toItems, ...fromItems] : fromItems;
     const mergedSubtotal = mergedItems.reduce((s, i) => s + (i.price||0)*(i.qty||1), 0);
@@ -3202,6 +3212,14 @@ export const useStore = create((set, get) => ({
     const _soldAsType = activeTableId ? 'dine-in' : _currentOrderType;
     if (!opts.fromPreorder && !isSoldAs(item, _soldAsType, get().menuItems)) {
       get().showToast?.(notSoldAsWords({ ...item, name: opts.displayName || item.name, menuName: null }, _soldAsType), 'error');
+      return null;
+    }
+    // 5.12.123: a Combo with steps is never one plain line (it would be sold at the set price with
+    // nothing in it, and print in the kitchen as itself). The POS builds it through addCombo; every
+    // other way of adding a product (the phone POS, voice order, the assistant, a scan) is refused
+    // here in words. A Combo with no steps is the product it always was.
+    if (comboHasSteps(item)) {
+      get().showToast?.(comboNotHereWords(item), 'error');
       return null;
     }
     const newItem = {
@@ -3335,6 +3353,175 @@ export const useStore = create((set, get) => ({
     return newItem;
   },
 
+  // ── COMBO PRODUCTS (5.12.123, stage 1; the rules are lib/combo.js) ─────────
+  //
+  // Peter, 27 Nov 2026: "composite product ... Step 1 ... add the products for this step set rules
+  // around it ... keeps price or is part of set price", and "we need this to go to the KDS and
+  // kitchen correctly not as sub items but as normal order where the products just show without
+  // the master product".
+  //
+  // A finished Combo is ONE line with the set price that never reaches the kitchen (noKitchen) and
+  // ONE REAL line per pick (the product's own id, options, course, routing and stock), all sharing a
+  // comboId. They are added together, and every line action in this store treats them as one:
+  //   remove, void, seat, discount, refund   the whole Combo (removeCombo, voidGroup, comboDiscount)
+  //   quantity                               refused in words (every unit is its own pick)
+  //   order type switch                      a pick keeps its own rule (lib/comboLines.js repricedPickLine)
+  // The lines themselves are built in ONE place, lib/comboLines.js comboOrderLines.
+
+  // The order on the POS (the active table's session, else the walk in order) with its lines
+  // changed by fn, in ONE write. create: start the session or the order when there is none.
+  _withOrderItems: (fn, { create = false } = {}) => {
+    const { activeTableId, staff } = get();
+    const sum = (items) => items.filter(i => !i.voided).reduce((a, i) => a + i.price * i.qty, 0);
+    if (activeTableId) {
+      set(s => ({
+        tables: s.tables.map(t => {
+          if (t.id !== activeTableId) return t;
+          if (!t.session && !create) return t;
+          const session = t.session || { id:newSessionOrderId(), items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
+          const items = fn(session.items || []);
+          const subtotal = sum(items);
+          return { ...t, status: create && t.status==='available' ? 'open' : t.status, session:{ ...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now() } };
+        }),
+      }));
+    } else {
+      set(s => {
+        if (!s.walkInOrder && !create) return {};
+        const items = fn(s.walkInOrder?.items || []);
+        const subtotal = sum(items);
+        return { walkInOrder:{ ...(s.walkInOrder||{id:newSessionOrderId()}), items, subtotal, total:subtotal } };
+      });
+    }
+  },
+
+  // What the POS knows right now, for the Combo rules (86, daily counts, Sold as, hidden by head
+  // office, required options). The Combo screen and addCombo read the SAME context.
+  comboContext: (item, { giveBack = null } = {}) => {
+    const st = get();
+    return comboPosContext({
+      item, menuItems: st.menuItems || [], eightySixIds: st.eightySixIds || [], dailyCounts: st.dailyCounts || {},
+      orderType: st.activeTableId ? 'dine-in' : st.orderType,
+      modifierGroupDefs: st.modifierGroupDefs || [], instructionGroupDefs: st.instructionGroupDefs || [],
+      giveBack,
+    });
+  },
+
+  // Add one finished Combo: its own line and one line per pick, together or not at all.
+  //   item    the Combo product (a menu row of type 'combo' with steps)
+  //   picks   lib/combo.js picks ({ stepId, entryId, itemId, mods, notes, answers, configured })
+  //   opts    { comboId, at, seat, discount }: only when a Combo already on the order is changed
+  // Returns { ok: true, comboId, lines } or { ok: false, words } (the words are also shown).
+  addCombo: (item, picks, opts = {}) => {
+    const st = get();
+    const fail = (words) => { if (!opts.quiet) st.showToast?.(words, 'error'); return { ok: false, words }; };
+    const name = item?.menuName || item?.name || 'That product';
+    if (!comboHasSteps(item)) return fail(`${name} has no steps to pick from.`);
+    const orderType = st.orderType;
+    const menuId = st.activeMenuId;
+    const soldType = st.activeTableId ? 'dine-in' : orderType;
+    const menuItems = st.menuItems || [];
+    if ((st.eightySixIds || []).includes(item.id)) return fail(`${name} is 86'd`);
+    if (!isSoldAs(item, soldType, menuItems)) return fail(notSoldAsWords(item, soldType));
+    const priceOf = (row) => tillLineUnitPrice(row, orderType, menuId, null, 1);
+    const setPrice = priceOf(item);
+    // A Combo with no price set is never sold for 0.00 (menuPricing.hasNoSellPrice, as addItem).
+    if (refusesNoPriceLine(item, orderType, menuId, setPrice)) return fail(`${name} has no price set. Set one in Back Office before selling it.`);
+    const ctx = get().comboContext(item, { giveBack: opts.giveBack || null });
+    const own = ctx.remainingOf(item.id);
+    if (own != null && own < 1) return fail(`${name} is out of stock`);
+    // The last word on the rules: every step, every pick's size and required options, and the
+    // daily counts across all the picks together. Nothing is added when anything is missing.
+    const missing = comboMissing(comboSteps(item), picks, ctx);
+    if (missing) return fail(missing);
+    const comboId = opts.comboId || newComboId();
+    const built = comboOrderLines({
+      item, comboId, picks, setPrice, priceOf, uid: comboLineUid,
+      menuItems, menuCategories: st.menuCategories || [], taxRates: st.taxRates || [],
+    });
+    built.dropped.forEach(d => console.warn('[tax] product', d.itemId, 'names rate id', d.rateId, 'that this venue does not have: charged at the venue default instead'));
+    let lines = built.lines;
+    if (opts.seat != null) lines = lines.map(l => ({ ...l, seat: opts.seat }));
+    if (opts.discount) lines = comboDiscount(lines, lines[0], opts.discount);
+    // Daily counts: the Combo itself, every pick (a size also counts against its product) and
+    // every option that is linked to a product, exactly as addItem takes them.
+    lines.forEach(l => {
+      get().decrementDailyCount(l.itemId, 1);
+      (l.mods || []).forEach(m => { if (m.itemId) get().decrementDailyCount(m.itemId, m.qty || 1); });
+    });
+    const at = Number.isInteger(opts.at) ? opts.at : null;
+    get()._withOrderItems(items => (at != null && at <= items.length ? [...items.slice(0, at), ...lines, ...items.slice(at)] : [...items, ...lines]), { create: true });
+    return { ok: true, comboId, lines };
+  },
+
+  // Take a Combo off the order: every line of it. A Combo with a line at the kitchen is never
+  // removed (it is voided, with a manager, like any sent line).
+  removeCombo: (comboId) => {
+    const items = get().getPOSItems();
+    const lines = items.filter(i => i.comboId === comboId);
+    if (!lines.length) return false;
+    if (comboIsSent(items, comboId)) { get().showToast?.('This Combo has gone to the kitchen. Void it to take it off.', 'error'); return false; }
+    get()._restoreDailyCounts(lines);
+    get()._withOrderItems(list => list.filter(i => i.comboId !== comboId));
+    return true;
+  },
+
+  // Change ONE pick's own options (or its size) on a Combo that has not gone to the kitchen.
+  //   target   the row now sold: the product, or the size picked in the option flow
+  // The pick's price follows its own rule again (0.00 or its own price, its bump, its options).
+  configureComboPick: (itemUid, { target, mods = [], notes = '', answers = null } = {}) => {
+    const st = get();
+    const items = st.getPOSItems();
+    const line = items.find(i => i.uid === itemUid);
+    if (!isComboPick(line) || line.voided || !target) return false;
+    if (comboIsSent(items, line.comboId)) { st.showToast?.(COMBO_WORDS.sentChange, 'error'); return false; }
+    const menuItems = st.menuItems || [];
+    // Only the product the step lists, or one of its sizes.
+    const entryId = line.comboEntryId ?? line.itemId;
+    const targetParent = target.parentId ?? target.parent_id ?? null;
+    if (target.id !== entryId && targetParent !== entryId) return false;
+    const orderType = st.orderType;
+    const next = changedPickLine({
+      line, target, mods, notes, answers,
+      priceOf: (row) => tillLineUnitPrice(row, orderType, st.activeMenuId, null, 1),
+      menuItems, menuCategories: st.menuCategories || [], taxRates: st.taxRates || [],
+    });
+    if (!next) return false;
+    // Daily counts. `held` and `want` count a size against its product too (what the counts hold).
+    const rowsById = new Map(menuItems.filter(Boolean).map(r => [r.id, r]));
+    const unitsOf = (l, rows) => unitsUsed([{ itemId: l.itemId, mods: l.mods }], { rowsById: rows });
+    const held = unitsOf(line, rowsById);
+    const want = unitsOf(next, rowsById);
+    // The new units must be there, with this pick's own units counted as free (an option linked to
+    // a product with none left, a size that ran out). What the line already holds is never refused.
+    const ctx = st.comboContext(null, { giveBack: held });
+    const label = (id) => rowsById.get(id)?.menuName || rowsById.get(id)?.name || 'That';
+    for (const [id, units] of want) {
+      if (ctx.eightySix.has(id) && !held.has(id)) { st.showToast?.(`${label(id)} is 86'd`, 'error'); return false; }
+      const left = ctx.remainingOf(id);
+      if (left != null && units > left) { st.showToast?.(`Only ${Math.max(0, left)} × ${label(id)} left`, 'error'); return false; }
+    }
+    // They move only by what changed (giving a unit back and taking it again would say "sold out"
+    // twice). No rows here: decrementDailyCount passes a size on to its product itself.
+    const before = unitsOf(line, new Map());
+    const after = unitsOf(next, new Map());
+    for (const id of new Set([...before.keys(), ...after.keys()])) {
+      const delta = (after.get(id) || 0) - (before.get(id) || 0);
+      if (delta) get().decrementDailyCount(id, delta);
+    }
+    get()._withOrderItems(list => list.map(i => (i.uid === itemUid ? next : i)));
+    return true;
+  },
+
+  // "Another the same": the same Combo with the same picks and options, as a Combo of its own.
+  duplicateCombo: (comboId) => {
+    const st = get();
+    const lines = st.getPOSItems().filter(i => i.comboId === comboId && !i.voided);
+    const parent = lines.find(isComboParent);
+    const item = parent ? (st.menuItems || []).find(m => m.id === parent.itemId) : null;
+    if (!item) { st.showToast?.('That Combo is not on the menu any more.', 'error'); return { ok: false }; }
+    return get().addCombo(item, picksFromLines(lines, () => comboLineUid()));
+  },
+
   removeItem: (itemUid) => {
     const { activeTableId } = get();
     // v4.6.11: restore daily count for the removed item (only if it was never sent —
@@ -3343,6 +3530,8 @@ export const useStore = create((set, get) => ({
       ? (get().tables.find(t => t.id === activeTableId)?.session?.items || [])
       : (get().walkInOrder?.items || []);
     const removed = sourceItems.find(i => i.uid === itemUid);
+    // 5.12.123: any line of a Combo names the whole Combo (lib/combo.js): it is removed as one.
+    if (isComboLine(removed)) { get().removeCombo(removed.comboId); return; }
     if (removed && !removed.voided && removed.status !== 'sent') {
       get().decrementDailyCount(removed.itemId, -(removed.qty || 1));
       // v5.5.189: restore modifier sub-item counts too
@@ -3371,7 +3560,11 @@ export const useStore = create((set, get) => ({
   // line + its modifier sub-items, mirroring removeItem.
   clearDraftItems: (tableId) => {
     const table = get().tables.find(t => t.id === tableId);
-    const draft = (table?.session?.items || []).filter(i => i.status === 'pending' && !i.voided);
+    // 5.12.123: a Combo with any line at the kitchen is sent as a whole: its unsent lines stay
+    // (it is voided as one, never half cleared).
+    const all = table?.session?.items || [];
+    const isDraft = draftLineTest(all);
+    const draft = all.filter(isDraft);
     if (!draft.length) return;
     draft.forEach(removed => {
       get().decrementDailyCount(removed.itemId, -(removed.qty || 1));
@@ -3382,7 +3575,7 @@ export const useStore = create((set, get) => ({
     set(s => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId || !t.session) return t;
-        const items = t.session.items.filter(i => !(i.status === 'pending' && !i.voided));
+        const items = t.session.items.filter(i => !isDraft(i));
         const subtotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
         const hasSent = items.some(i => i.status === 'sent' && !i.voided);
         // If nothing fired remains, the table is just "seated" again (open), not occupied.
@@ -3404,6 +3597,8 @@ export const useStore = create((set, get) => ({
       ? (get().tables.find(t => t.id === activeTableId)?.session?.items || [])
       : (get().walkInOrder?.items || []);
     const target = sourceItems.find(i => i.uid === itemUid);
+    // 5.12.123: every unit of a Combo is its own pick, so a Combo has no quantity to change.
+    if (isComboLine(target)) { get().showToast?.(COMBO_WORDS.qty, 'info'); return; }
     let actualChange = 0;
     if (target && !target.voided) {
       const newQty = Math.max(1, target.qty + delta);
@@ -3465,6 +3660,7 @@ export const useStore = create((set, get) => ({
       : (get().walkInOrder?.items || []);
     const line = sourceItems.find(i => i.uid === itemUid);
     if (!line || line.voided || line.status === 'sent') return;
+    if (isComboLine(line)) return;   // 5.12.123: a Combo pick is changed through configureComboPick (its price has its own rule)
 
     // Base = current unit price minus whatever the current mods already add
     // (fresh pre-order lines have mods: [], so base is simply the line price).
@@ -3538,13 +3734,19 @@ export const useStore = create((set, get) => ({
     if (activeTableId) {
       set(s=>({ tables:s.tables.map(t=>{
         if(t.id!==activeTableId||!t.session)return t;
-        return {...t,session:{...t.session,items:t.session.items.map(i=>i.uid===itemUid?{...i,seat}:i)}};
+        // 5.12.123: a Combo sits at one seat. Moving any line of it moves every line (lib/combo.js
+        // comboUids), so a split by seat can never cut it.
+        const move = new Set(comboUids(t.session.items, itemUid));
+        return {...t,session:{...t.session,items:t.session.items.map(i=>move.has(i.uid)?{...i,seat}:i)}};
       })}) );
     }
   },
 
   updateItemCourse: (itemUid, course) => {
     const { activeTableId } = get();
+    // 5.12.123: the Combo's own line never reaches the kitchen, so it has no course. A pick keeps
+    // its own course and can be moved like any line (kitchen timing only: no money moves with it).
+    if (isComboParent(get().getPOSItems().find(i => i.uid === itemUid))) return;
     if (activeTableId) {
       set(s=>({ tables:s.tables.map(t=>{
         if(t.id!==activeTableId||!t.session)return t;
@@ -4398,6 +4600,11 @@ export const useStore = create((set, get) => ({
       // time). Repriced from its item it became the counter price on a table tap, and a size the
       // guest picked (itemId is the dish, priced 0 as a size parent) became 0.00 plus its options.
       if (it.fromPreorder) return it;
+      // 5.12.123: a Combo pick never takes its product's price here. Part of the set price it stays
+      // 0.00 (plus its bump and its options) on every order type; where its step keeps prices it
+      // takes the product's price for the new order type, as any line does (lib/comboLines.js).
+      // The Combo's own line is an ordinary line: the set price for the new order type.
+      if (isComboPick(it)) return repricedPickLine(it, menu.find(m => m && m.id === it.itemId), (row) => fn(row, t, s.activeMenuId));
       const src = menu.find(m => m && m.id === it.itemId);
       if (!src) return it;
       // Same menu the tile and addItem price with, so the reprice keeps the tier.
@@ -5384,7 +5591,7 @@ export const useStore = create((set, get) => ({
       const routingCtx = makeRoutingCtx('dine-in');
       let typeFallback = false;
       items.forEach(it => {
-        if (it.voided) return;
+        if (it.voided || it.noKitchen) return;   // 5.12.123: a Combo's own line is money, never a ticket
         const { centreIds, usedTypeFallback } = resolveCentresForItem(it, routingConfig, routingCtx);
         if (usedTypeFallback) typeFallback = true;
         centreIds.forEach(cid => {
@@ -7888,6 +8095,13 @@ export const useStore = create((set, get) => ({
     if (!mayTakeOrRefundMoney(chkFound)) {
       return { ok: false, amount: 0, cardStatus: 'none', legs: [], message: 'Paid through ezCater: refund it on ezCater' };
     }
+    // 5.12.123: a Combo is refunded whole (its price and everything picked in it), from whichever
+    // screen asks. The refund screens pick it whole already; this is the one door they all use.
+    if (!isFullRefund && !keepsCombosWhole((chkFound.items || []).filter(i => i && !i.voided), (refundItems || []).map(i => i?.uid))) {
+      const message = `${COMBO_WORDS.refundWhole} Nothing has been refunded.`;
+      get().showToast(message, 'error');
+      return { ok: false, amount: 0, cardStatus: 'none', legs: [], message };
+    }
 
     // ⚠️ A CASH PAYOUT MUST NOT ALSO REVERSE THE CARD (see the card reversal below).
     const cashPayout = tenderMethod === 'cash';
@@ -8462,9 +8676,11 @@ export const useStore = create((set, get) => ({
       // carry hrpay uids the queue row does not have): a line void here would show one total and
       // charge another. The channel is told from the Orders screen instead.
       if (order?._channelRef) { showToast('This is a channel order. Reject it from the Orders screen.', 'error'); return; }
-      get()._restoreDailyCounts([item]);
+      // 5.12.123: a line of a Combo voids the whole Combo, never a pick on its own (voidGroup).
+      const { lines, gone, name } = voidGroup(order.items, item);
+      get()._restoreDailyCounts(lines);
       const label = orderVoidLabel({ orderType: get().orderType, customer: get().customer, ref: order.ref });
-      const markVoided = (items) => (items || []).map(i => i.uid === itemUid ? { ...i, status: 'voided', voided: true } : i);
+      const markVoided = (items) => (items || []).map(i => gone.has(i.uid) ? { ...i, status: 'voided', voided: true } : i);
       set(s => {
         const items = markVoided(s.walkInOrder?.items);
         const subtotal = items.filter(i => !i.voided).reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -8474,34 +8690,37 @@ export const useStore = create((set, get) => ({
           orderQueue: order.ref ? s.orderQueue.map(o => o.ref === order.ref
             ? { ...o, items: markVoided(o.items), total: markVoided(o.items).filter(i => !i.voided).reduce((sum, i) => sum + i.price * i.qty, 0) }
             : o) : s.orderQueue,
-          voidLog: [voidLogEntry({ type: 'item', label, items: [item], reason, manager, ref: order.ref }), ...s.voidLog],
+          voidLog: [voidLogEntry({ type: 'item', label, items: lines, reason, manager, ref: order.ref }), ...s.voidLog],
         };
       });
-      get().voidKitchenLines({ label, lines: [item], reason, manager });
-      get()._logVoidActivity({ label, lines: [item], reason, manager, ref: order.ref });
-      showToast(`${item.name} voided. ${reason}`, 'warning');
+      get().voidKitchenLines({ label, lines, reason, manager });
+      get()._logVoidActivity({ label, lines, reason, manager, ref: order.ref });
+      showToast(`${name} voided. ${reason}`, 'warning');
       return;
     }
     const table = tables.find(t => t.id === tableId);
     const item  = table?.session?.items?.find(i => i.uid === itemUid);
     if (!item) return;
+    // 5.12.123: a line of a Combo voids the whole Combo (its own line and every pick still live).
+    const { lines, gone, name } = voidGroup(table.session.items, item);
+    if (!lines.length) return;
 
-    get()._restoreDailyCounts([item]);
+    get()._restoreDailyCounts(lines);
 
     // Mark item as voided (keep visible with strikethrough)
     set(s => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId || !t.session) return t;
-        const items = t.session.items.map(i => i.uid === itemUid ? { ...i, status:'voided', voided:true } : i);
+        const items = t.session.items.map(i => gone.has(i.uid) ? { ...i, status:'voided', voided:true } : i);
         const subtotal = items.filter(i=>!i.voided).reduce((s,i)=>s+i.price*i.qty,0);
         return { ...t, session:{ ...t.session, items, subtotal, total:subtotal*1.125 } };
       }),
-      voidLog: [voidLogEntry({ type: 'item', tableId, label: table.label, items: [item], reason, manager }), ...s.voidLog],
+      voidLog: [voidLogEntry({ type: 'item', tableId, label: table.label, items: lines, reason, manager }), ...s.voidLog],
     }));
     // 30 Sep 2026: the kitchen learns about it (it never did before).
-    get().voidKitchenLines({ label: table.label, lines: [item], reason, manager });
-    get()._logVoidActivity({ label: table.label, lines: [item], reason, manager, ref: null });
-    showToast(`${item.name} voided. ${reason}`, 'warning');
+    get().voidKitchenLines({ label: table.label, lines, reason, manager });
+    get()._logVoidActivity({ label: table.label, lines, reason, manager, ref: null });
+    showToast(`${name} voided. ${reason}`, 'warning');
   },
 
   // A void of the whole order. tableId null = the walk in order: same records as a table void
@@ -8684,27 +8903,31 @@ export const useStore = create((set, get) => ({
       ? (get().tables.find(t => t.id === tableId)?.session?.items || [])
       : (get().walkInOrder?.items || [])).find(i => i.uid === itemUid);
     if (target && isNoDiscountLine(target)) return;
+    // 5.12.123: a discount on any line of a Combo is a discount on the Combo (lib/combo.js comboDiscount).
+    const put = (items) => (isComboLine(target) ? comboDiscount(items, target, discount) : (items || []).map(i => i.uid===itemUid ? {...i, discount} : i));
     if (tableId) {
       set(s => ({ tables:s.tables.map(t => {
         if (t.id!==tableId||!t.session) return t;
-        const items = t.session.items.map(i => i.uid===itemUid ? {...i, discount} : i);
+        const items = put(t.session.items);
         const subtotal = items.filter(i=>!i.voided).reduce((s,i)=>s+(i.discount?i.price*(1-i.discount.value/100)*i.qty:i.price*i.qty),0);
         return {...t, session:{...t.session, items, subtotal, total:subtotal*1.125}};
       })}));
     } else {
-      set(s => ({ walkInOrder:{ ...s.walkInOrder, items:(s.walkInOrder?.items||[]).map(i=>i.uid===itemUid?{...i,discount}:i) } }));
+      set(s => ({ walkInOrder:{ ...s.walkInOrder, items:put(s.walkInOrder?.items) } }));
     }
   },
 
   removeItemDiscount: (tableId, itemUid) => {
+    // 5.12.123: off any line of a Combo is off the whole Combo.
+    const clear = (items) => { const off = new Set(comboUids(items, itemUid)); if (!off.size) off.add(itemUid); return (items || []).map(i => off.has(i.uid) ? { ...i, discount: null } : i); };
     if (tableId) {
       set(s => ({ tables:s.tables.map(t => {
         if(t.id!==tableId||!t.session) return t;
-        const items=t.session.items.map(i=>i.uid===itemUid?{...i,discount:null}:i);
+        const items=clear(t.session.items);
         return {...t,session:{...t.session,items}};
       })}));
     } else {
-      set(s=>({walkInOrder:{...s.walkInOrder,items:(s.walkInOrder?.items||[]).map(i=>i.uid===itemUid?{...i,discount:null}:i)}}));
+      set(s=>({walkInOrder:{...s.walkInOrder,items:clear(s.walkInOrder?.items)}}));
     }
   },
 
@@ -9056,6 +9279,9 @@ export const useStore = create((set, get) => ({
       const routingCtx = makeRoutingCtx(typeKey);
       let typeFallback = false;
       order.items.forEach(item => {
+        // 5.12.123: a line the kitchen never sees (a Combo's own line) is in no centre and, below,
+        // never falls to the fallback centre either. A POS order sent again from Orders comes here.
+        if (item?.noKitchen) return;
         const { centreIds, usedTypeFallback } = resolveCentresForItem(item, routingConfig, routingCtx);
         if (usedTypeFallback) typeFallback = true;
         centreIds.forEach(cid => {
@@ -9073,7 +9299,7 @@ export const useStore = create((set, get) => ({
       // gracefully). Identity check is safe — same object refs from order.items.
       // 30 Sep 2026: which centre that is lives in channelFallbackCentre, so the Back Office
       // Production centres screen can name it ("... send anything no center takes to KDS drinks").
-      const unrouted = order.items.filter(it => !Object.values(byCentre).some(arr => arr.includes(it)));
+      const unrouted = order.items.filter(it => !it?.noKitchen && !Object.values(byCentre).some(arr => arr.includes(it)));
       if (unrouted.length && routingConfig.centres?.length) {
         const fb = channelFallbackCentre(routingConfig);
         if (fb) byCentre[fb.id] = [...(byCentre[fb.id] || []), ...unrouted];

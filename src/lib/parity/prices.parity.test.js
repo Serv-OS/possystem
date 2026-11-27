@@ -14,6 +14,8 @@ import { resolveItemPrice, planCartLine, repriceCartLines } from '../menuPricing
 import { packageItemsFor } from '../bookings/packagePricing.js';
 import { choicePriceFor } from '../bookings/guestChoicePricing.js';
 import { readRepo, between } from './src.js';
+import { isComboPick } from '../combo.js';
+import { repricedPickLine } from '../comboLines.js';
 
 const ITEMS = ['latte', 'beer-half', 'beer-pint', 'baby-l', 'toastie', 'sarnie', 'shot', 'platter'];
 const MENUS = [null, 'lunch', 'bar'];
@@ -315,7 +317,8 @@ test('MPOS: tapping an open table keeps each line at the price it was added at, 
     let state = { ...init };
     const set = (fn) => { const p = typeof fn === 'function' ? fn(state) : fn; state = { ...state, ...p }; };
     const get = () => state;
-    state.setOrderType = new Function('set', 'get', `return (${soBody});`)(set, get);
+    // 5.12.123: the reprice asks the Combo rules which lines are picks (lib/combo.js, lib/comboLines.js).
+    state.setOrderType = new Function('set', 'get', 'isComboPick', 'repricedPickLine', `return (${soBody});`)(set, get, isComboPick, repricedPickLine);
     state.openTableInPOS = new Function('set', 'get', 'qrCloseDecision', `return (${otBody});`)(set, get, qrCloseDecision);
     state.getItemPrice = (item, ot, menuId = null) => resolveItemPrice(item, ot, menuId);
     return { get, set };
