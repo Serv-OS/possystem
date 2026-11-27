@@ -6,7 +6,13 @@
  * "Identical" = same name + same unit price + the same modifiers (order-independent) + same
  * notes + same variant. Any difference (a note, a modifier, a price) keeps lines separate.
  * Voided lines are dropped. First occurrence keeps its position + fields; quantities are summed.
+ *
+ * COMBOS (5.12.123): a Combo prints as its own line with its picks under it (lib/combo.js
+ * displayOrder). A Combo line or a pick only ever merges with an identical pick of the SAME Combo
+ * (two Pepperoni in one package print "2x Pepperoni" under it): it never merges with a line outside
+ * it, or with another Combo. An order with no Combo consolidates exactly as it always did.
  */
+import { displayOrder } from './combo.js';
 
 /** Stable signature of a line's customer-visible identity. */
 export function receiptLineSig(item) {
@@ -23,6 +29,7 @@ export function receiptLineSig(item) {
     m: mods,
     note: String(item.notes || '').trim(),
     v: item.variant || item.variantName || '',
+    ...(item.comboId ? { c: item.comboId, r: item.comboRole || '' } : {}),
   });
 }
 
@@ -30,7 +37,7 @@ export function receiptLineSig(item) {
 export function consolidateReceiptLines(items) {
   const out = [];
   const idx = new Map();
-  (items || []).filter((i) => !i.voided).forEach((item) => {
+  displayOrder((items || []).filter((i) => i && !i.voided)).forEach((item) => {
     const k = receiptLineSig(item);
     if (idx.has(k)) {
       const g = out[idx.get(k)];

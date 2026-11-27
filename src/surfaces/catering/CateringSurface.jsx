@@ -18,6 +18,7 @@ import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: a s
 import { resolveItemPrice, variantFromPrice, repriceCartLines, refusesNoPriceLine } from '../../lib/menuPricing';
 import { isOptionOnlyItem } from '../../lib/menuRules';
 import { cateringVisible } from '../../lib/cateringPricing';
+import { comboPosOnly } from '../../lib/combo.js';
 import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricing';
 // v5.11.81 (channel parity round 2): the kiosk's allergen rule (marked, never hidden), the venue's
 // menu translations (shown only, the order keeps the English) and a paged menu read.
@@ -272,6 +273,9 @@ export default function CateringSurface({ location }) {
   const limitFor = (id) => (cfg?.item_limits || {})[id] || {};
   const is86 = (id) => eightySix.includes(id) || limitFor(id).max === 0;   // max 0 = operator-hidden (86)
   const addToCart = (item, mods, qty, notes = '') => {
+    // 5.12.123 (lib/combo.js): a Combo with steps is rung up on the POS only for now. It is never
+    // listed here (cateringVisible); this is the same rule at the one door every add goes through.
+    if (comboPosOnly(item)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here yet. Please call us to order it.`); return; }
     const lim = limitFor(item.id);
     let q = qty;
     if (lim.min) q = Math.max(q, lim.min);                                  // bump up to the per-item minimum

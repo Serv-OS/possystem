@@ -23,6 +23,7 @@ import { resolveSoldAlone } from './menuRules.js';
 import { itemCodeForSave } from './itemCode.js';
 import { categoryImageField } from './categoryPhoto.js';
 import { normaliseMenuRow } from './rowMapping.js';
+import { comboColumnValue, comboStepsOf } from './combo.js';
 
 const has = (o, k) => !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);
 
@@ -84,6 +85,10 @@ export function menuItemRow(item) {
       ? { tax_profile_id: item.taxProfileId ?? item.tax_profile_id ?? null } : {}),
     ...(item.itemCode !== undefined || item.item_code !== undefined
       ? { item_code: itemCodeForSave(item.itemCode ?? item.item_code) } : {}),
+    // 5.12.123: a Combo's steps (lib/combo.js). CONDITIONAL like item_code: only when the row
+    // carries the field, so a row loaded before 20261215a added the column never names it, and a
+    // save of anything else leaves the steps alone. Always the clean shape, or null for no steps.
+    ...(item.combo !== undefined ? { combo: comboColumnValue(comboStepsOf(item.combo)) } : {}),
     image:        item.image || null,
     scope:           item.scope          || item.ownership_scope || 'local',
     org_id:          item.orgId          ?? item.org_id          ?? null,
@@ -125,6 +130,7 @@ export const ITEM_COLUMNS = {
   tax_overrides:               { keys: ['taxOverrides', 'tax_overrides'] },
   tax_profile_id:              { keys: ['taxProfileId', 'tax_profile_id'] },
   item_code:                   { keys: ['itemCode', 'item_code'] },
+  combo:                       { keys: ['combo'] },
   image:                       { keys: ['image'] },
   scope:                       { keys: ['scope', 'ownership_scope'] },
   org_id:                      { keys: ['orgId', 'org_id'] },

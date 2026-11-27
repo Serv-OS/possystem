@@ -29,6 +29,8 @@ import { isSplit, actionLock } from '../../lib/reportSplit.js';
 import { totalsByCurrency, totalsWords } from '../../lib/reportScope.js';
 import { Icon, hasIcon } from '../../components/ServOSIcons';
 import { localeDateString, localeTimeString, zoneOr } from '../../lib/venueDates';
+// 5.12.123 Combos: a Combo shows with its picks under it and is refunded whole (lib/combo.js).
+import { displayOrder, lineShow, comboUids, isComboParent, COMBO_WORDS } from '../../lib/combo.js';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 // timeZone: only passed when several sites are listed, so each row reads on its own site's
@@ -211,6 +213,20 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
   };
 
   const toggleRefundItem = (uid, maxQty) => {
+    // 5.12.123: a Combo is refunded whole. A tap on any line of one takes its own line and every
+    // pick (each in full), and a second tap lets them all go. The store refuses a refund that cuts
+    // a Combo (refundCheck: keepsCombosWhole), so this screen never builds one.
+    const lines = refundTarget?.items || [];
+    const group = comboUids(lines, uid);
+    if (group.length > 1) {
+      setRefundSelections(prev => {
+        const next = { ...prev };
+        const on = !group.some(u => prev[u] > 0);
+        group.forEach(u => { if (on) next[u] = lines.find(i => i.uid === u)?.qty || 1; else delete next[u]; });
+        return next;
+      });
+      return;
+    }
     setRefundSelections(prev => {
       const cur = prev[uid] || 0;
       if (cur >= maxQty) {
@@ -444,17 +460,21 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                 </tr>
                               </thead>
                               <tbody>
-                                {(c.items || []).map((item, idx) => (
-                                  <tr key={item.uid || item.id || idx}>
-                                    <td style={{ padding: '6px 8px', fontSize: 13 }}>
+                                {/* 5.12.123: a Combo reads as its own line, then its picks set in under it; a pick shows a price only when it adds one (never 0.00). */}
+                                {displayOrder(c.items || []).map((item, idx) => {
+                                  const show = lineShow(item);
+                                  return (
+                                  <tr key={item.uid || item.id || idx} data-combo-pick={show.pick ? '1' : undefined}>
+                                    <td style={{ padding: '6px 8px', paddingLeft: show.pick ? 22 : 8, fontSize: 13, color: show.pick ? 'var(--t2)' : undefined }}>
                                       {item.name}
                                       {modsText(item.mods) && <span style={{ color: 'var(--t4)', fontSize: 11, display: 'block' }}>{modsText(item.mods)}</span>}
                                     </td>
                                     <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'center' }}>{item.qty || 1}</td>
-                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(item.price)}</td>
-                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt((item.price || 0) * (item.qty || 1))}</td>
+                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{show.showAmount ? fmt(item.price) : ''}</td>
+                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{show.showAmount ? fmt((item.price || 0) * (item.qty || 1)) : ''}</td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
 
@@ -719,17 +739,20 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                 <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--t2)' }}>
                   Tap items to add to refund
                 </div>
-                {(refundTarget.items || []).map((item, idx) => {
+                {displayOrder(refundTarget.items || []).map((item, idx) => {
                   const uid = item.uid || item.id || `item-${idx}`;
                   const selectedQty = refundSelections[uid] || 0;
                   const maxQty = item.qty || 1;
+                  // A pick sits under its Combo and shows an amount only where it adds one.
+                  const show = lineShow(item, item.price);
                   return (
                     <div
                       key={uid}
+                      data-combo-pick={show.pick ? '1' : undefined}
                       onClick={() => toggleRefundItem(uid, maxQty)}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 12,
-                        padding: '10px 12px', borderRadius: 8, marginBottom: 4,
+                        padding: show.pick ? '7px 12px' : '10px 12px', borderRadius: 8, marginBottom: 4, marginLeft: show.pick ? 22 : 0,
                         background: selectedQty > 0 ? '#fef2f2' : 'var(--bg3, #f9fafb)',
                         border: `1px solid ${selectedQty > 0 ? '#fca5a5' : 'var(--bdr, #e5e7eb)'}`,
                         cursor: 'pointer',
@@ -745,9 +768,10 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 600 }}>{item.name}</div>
                         {modsText(item.mods) && <div style={{ fontSize: 11, color: 'var(--t4)' }}>{modsText(item.mods)}</div>}
+                        {isComboParent(item) && <div data-testid="refund-combo-whole" style={{ fontSize: 11, color: 'var(--t4)' }}>{COMBO_WORDS.refundWhole}</div>}
                       </div>
                       <div style={{ fontSize: 13, color: 'var(--t4)', flexShrink: 0 }}>x{maxQty}</div>
-                      <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)', flexShrink: 0 }}>{fmt(item.price)}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)', flexShrink: 0 }}>{show.showAmount ? fmt(item.price) : ''}</div>
                     </div>
                   );
                 })}

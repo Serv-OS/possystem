@@ -17,6 +17,11 @@
 //     line has, so a discounted line showed full price on both screens while the total was right.
 //   Now every screen shows the line the till charges.
 
+//   * A Combo (5.12.123): its picks follow its own line and carry `pick: true`, so the customer
+//     screen sets them in under the Combo and shows an amount only where a pick adds one. The
+//     amounts still add up to the order: nothing is moved between lines.
+import { displayOrder, lineShow } from './combo.js';
+
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 /** The quantity a customer screen shows (never below 1). */
@@ -37,14 +42,20 @@ export function lineChargedTotal(line) {
 
 /** Lines for the dedicated customer display (name, qty, line total, options listed, note). */
 export function displayLinesFor(items) {
-  return (items || []).filter((i) => i && !i.voided).map((i) => ({
-    uid: i.uid,
-    name: i.menuName || i.name || 'Item',
-    qty: displayQty(i),
-    lineTotal: Math.max(0, lineChargedTotal(i)),
-    mods: (i.mods || []).map((m) => ({ label: m.label, price: num(m.price) })),
-    notes: i.notes || '',
-  }));
+  return displayOrder((items || []).filter((i) => i && !i.voided)).map((i) => {
+    const lineTotal = Math.max(0, lineChargedTotal(i));
+    const show = lineShow(i, lineTotal);
+    return {
+      uid: i.uid,
+      name: i.menuName || i.name || 'Item',
+      qty: displayQty(i),
+      lineTotal,
+      mods: (i.mods || []).map((m) => ({ label: m.label, price: num(m.price) })),
+      notes: i.notes || '',
+      // Only on a Combo's pick, so every other line is the same object as before.
+      ...(show.pick ? { pick: true, ...(show.showAmount ? {} : { hideAmount: true }) } : {}),
+    };
+  });
 }
 
 /** Flat lines for a card reader's screen (description, unit amount in minor units, quantity). */

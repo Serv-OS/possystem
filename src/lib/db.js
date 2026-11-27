@@ -33,7 +33,7 @@ import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath
 import { isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
 import { menuItemRow } from './menuItemWrite';
 import { insertRowOnce, deleteRowChecked, updateScopeChecked } from './menuRowWrite';
-import { itemCodeRetry } from './menuWriters';
+import { itemInsertRetry } from './menuWriters';
 import { decideWholeSave } from './threeWayMerge';
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
@@ -43,6 +43,7 @@ import { mustChangeRow } from './rowWrites';
 import { patchPendingCheck } from '../sync/DataSafe';
 import { cleanDiscountKind, isMissingKindColumn } from './discountKinds.js';
 import { readManagedAt, gateFor } from './msm/msmManaged.js';
+import { comboHasSteps, COMBO_WORDS } from './combo.js';
 
 // 27 Sep 2026: the venue a Back Office menu, modifier group or discount write falls back to when
 // the caller passes none: the one THIS tab resolved (the same rule as store/index.js tabVenue).
@@ -267,7 +268,7 @@ export const insertMenuItem = async (item, locationId = null) => {
   const r = await insertRowOnce({
     client: supabase, table: 'menu_items',
     row: { ...menuItemRow(item), id: item.id, location_id: locationId },
-    retryWithout: itemCodeRetry,
+    retryWithout: itemInsertRetry,
   });
   if (r.outcome === 'created') scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
   reportSave('item', r.outcome === 'error' ? r.error : null);   // v5.5.951; an existing row is not a failure
@@ -1804,6 +1805,10 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
     if (fErr) return { ok: false, error: fErr };
     if (!freshRow) return { ok: false, error: 'this product is not in this venue\'s menu any more (deleted in another window?). Reload to see the latest' };
     if (freshRow.archived) return { ok: false, error: 'this product was archived (in another window?), so it was not shared. Reload to see the latest' };
+    // 5.12.123: a Combo with steps stays at one site for now. Its steps name THIS venue's products
+    // by id and are never copied (shareCopy NEVER_FIELDS), so a copy would arrive at the other
+    // venues as a Combo with nothing in it, sold at the set price.
+    if (comboHasSteps(freshRow)) return { ok: false, error: COMBO_WORDS.share };
     item = freshRow;
   }
 

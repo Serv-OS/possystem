@@ -10,7 +10,7 @@ const managerPinsFrom = (staffMembers) =>
     .filter(s => s.role === 'Manager' && s.active !== false)
     .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
 
-export default function VoidModal({ type, items, totalValue, onConfirm, onCancel }) {
+export default function VoidModal({ type, items, totalValue, onConfirm, onCancel, title = null }) {
   const { staffMembers, staff: currentUser } = useStore();
   const managerPins = managerPinsFrom(staffMembers);
   const managerLoggedIn = currentUser?.role === 'Manager';
@@ -56,7 +56,7 @@ export default function VoidModal({ type, items, totalValue, onConfirm, onCancel
         <div style={{ padding:'18px 22px 14px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div>
             <div style={{ fontSize:16, fontWeight:700, color:'var(--red)' }}>
-              {isCheck ? 'Void entire check' : 'Void item'}
+              {isCheck ? 'Void entire check' : (title || 'Void item')}
             </div>
             <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>
               {isCheck

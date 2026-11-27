@@ -130,7 +130,7 @@ export function stampLookupNeeded(programs: StampProgram[], items: any[]): boole
     const qi = idList(p?.qualifying_item_ids);
     if (!qc.length && !qi.length) continue;
     for (const it of items) {
-      if (!it || it.isComp || it.isGiftCard) continue;
+      if (!it || it.isComp || it.isGiftCard || it.noStamp) continue;
       if (qi.length && it.id && qi.includes(it.id)) continue;
       if (qc.length && it.cat && qc.includes(it.cat)) continue;
       return true;
@@ -142,6 +142,8 @@ export function stampLookupNeeded(programs: StampProgram[], items: any[]): boole
 /**
  * How many stamps one programme earns from an order's lines.
  * Comp and gift card lines never earn. qty defaults to 1.
+ * 5.12.123: nor does a product picked inside a Combo (item.noStamp, set by earnFromCheck.ts and by
+ * the till's src/lib/loyaltyEarnItems.js). The Combo's own line stamps as the product it is.
  * @param items  loyalty-earn body.items ({ id, cat, qty, isComp, isGiftCard, ... })
  * @param prog   the stamp_card_programs row
  * @param index  names from loadStampNameIndex, or null (id match only, today's behaviour)
@@ -172,7 +174,7 @@ export function countQualifyingStamps(items: any[], prog: StampProgram, index?: 
 
   let count = 0;
   for (const item of items) {
-    if (!item || item.isComp || item.isGiftCard) continue;
+    if (!item || item.isComp || item.isGiftCard || item.noStamp) continue;
     const qty = Number(item.qty) || 1;
     if (allQualify) { count += qty; continue; }
 

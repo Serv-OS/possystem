@@ -19,6 +19,7 @@ import { kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
 import { qrSessionShownInQrSection } from '../lib/qrTabStranded';
 import { NEXT_STEP_LABEL, qrCardNextStep } from '../lib/orderNextStep';
 import { money, currencySymbol } from '../lib/currency';
+import { displayOrder, lineShow } from '../lib/combo.js';   // 5.12.123: a Combo's picks show under it, never as 0.00 lines
 import { shortOrderRef } from '../lib/db';
 import { getActiveLocationSync } from '../lib/supabase';
 import { hubrisePushStatus } from '../lib/hubrise';
@@ -1288,17 +1289,21 @@ export default function OrdersHub() {
               </div>
             )}
             <div style={{ display:'flex', flexDirection:'column', gap:6, borderTop:'1px solid var(--bdr)', paddingTop:12 }}>
-              {(viewOrder.items || []).map((it, i) => (
-                <div key={i} style={{ display:'flex', justifyContent:'space-between', gap:10, fontSize:13 }}>
-                  <div style={{ color:'var(--t1)' }}>
+              {displayOrder(viewOrder.items || []).map((it, i) => {
+                const amount = ((it.price || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (it.qty || 1);
+                const show = lineShow(it, amount);
+                return (
+                <div key={i} data-combo-pick={show.pick ? '1' : undefined} style={{ display:'flex', justifyContent:'space-between', gap:10, fontSize:13, paddingLeft: show.pick ? 14 : 0 }}>
+                  <div style={{ color: show.pick ? 'var(--t2)' : 'var(--t1)' }}>
                     <span style={{ color:'var(--t3)' }}>{it.qty || 1}× </span>{it.name}
                     {/* v5.5.850: HubRise mods carry `label` not `name` — key on the decoded label so channel options always display */}
                     {(it.mods || []).length > 0 && <div style={{ fontSize:11, color:'var(--t3)', paddingLeft:14 }}>{it.mods.map(m => (typeof m === 'string' ? m : (m.label || m.name))).filter(Boolean).join(', ')}</div>}
                     {it.notes && <div style={{ fontSize:11, color:'var(--t3)', paddingLeft:14, fontStyle:'italic' }}>{it.notes}</div>}
                   </div>
-                  <div style={{ color:'var(--t2)', whiteSpace:'nowrap' }}>{money(((it.price || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (it.qty || 1))}</div>
+                  <div style={{ color:'var(--t2)', whiteSpace:'nowrap' }}>{show.showAmount ? money(amount) : ''}</div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--bdr)', marginTop:12, paddingTop:12, fontSize:15, fontWeight:800, color:'var(--t1)' }}>
               <span>Total</span><span>{money(viewOrder.total || 0)}</span>

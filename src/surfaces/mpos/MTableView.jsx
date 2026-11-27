@@ -10,6 +10,7 @@ import { useStore } from '../../store';
 import { computeCheckTotals } from '../../lib/payments/checkTotals';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
 import { Icon } from '../../components/ServOSIcons';
+import { displayOrder, lineShow } from '../../lib/combo.js';   // 5.12.123: a Combo's picks show under it, never as 0.00 lines
 
 export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onClose, onSendToKitchen }) {
   const { tables, sendToKitchen } = useStore();
@@ -99,14 +100,14 @@ export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onC
         {/* Pending items */}
         {pendingItems.length > 0 && (
           <Section title="To send" accent="var(--acc)" count={pendingItems.length}>
-            {pendingItems.map(it => <ItemLine key={it.uid} item={it} onClick={onOpenCart} />)}
+            {displayOrder(pendingItems).map(it => <ItemLine key={it.uid} item={it} onClick={onOpenCart} />)}
           </Section>
         )}
 
         {/* Sent items */}
         {sentItems.length > 0 && (
           <Section title="Already sent" accent="var(--t4)" count={sentItems.length}>
-            {sentItems.map(it => <ItemLine key={it.uid} item={it} onClick={onOpenCart} />)}
+            {displayOrder(sentItems).map(it => <ItemLine key={it.uid} item={it} onClick={onOpenCart} />)}
           </Section>
         )}
 
@@ -158,10 +159,11 @@ function ItemLine({ item, onClick }) {
   const sent = item.status === 'sent';
   const lineTotal = (item.price || 0) * (item.qty || 0);
   const modsList = (item.mods || []).map(m => m?.name || m?.label || m).filter(Boolean);
+  const show = lineShow(item, lineTotal);   // a pick sits under its Combo and shows an amount only when it adds one
   return (
-    <div onClick={onClick} style={{
-      padding:'10px 12px', background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)',
-      marginBottom:6, display:'flex', gap:10, alignItems:'flex-start', cursor:'pointer',
+    <div onClick={onClick} data-combo-pick={show.pick ? '1' : undefined} style={{
+      padding: show.pick ? '7px 12px' : '10px 12px', background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)',
+      marginBottom:6, marginLeft: show.pick ? 18 : 0, display:'flex', gap:10, alignItems:'flex-start', cursor:'pointer',
       opacity: sent ? .8 : 1,
     }}>
       <div style={{ fontSize:12, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:24, paddingTop:1 }}>
@@ -176,7 +178,7 @@ function ItemLine({ item, onClick }) {
           <div style={{ fontSize:11, color:'var(--acc)', lineHeight:1.4, marginTop:1, display:'flex', alignItems:'center', gap:4 }}><Icon name="note" size={12} /> {item.notes}</div>
         )}
       </div>
-      <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{money(lineTotal)}</div>
+      <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{show.showAmount ? money(lineTotal) : ''}</div>
     </div>
   );
 }

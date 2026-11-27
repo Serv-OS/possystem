@@ -6,6 +6,7 @@ import InlineItemFlow from '../components/InlineItemFlow';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
 import { isSoldAs, notSoldAsWords } from '../lib/soldAs';
 import { channelVisible } from '../lib/channelMenu';
+import { comboPosOnly, comboNotHereWords, displayOrder, lineShow } from '../lib/combo.js';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
@@ -291,6 +292,9 @@ export default function BarSurface() {
     // Tax: the size rule and this venue's rates, so a zero rated or reduced rate item, and the
     // Bar override set in Back Office, are booked on a tab as at the counter (tab lines carried
     // no tax references, so every line took the venue default). Category: a size's product's.
+    // 5.12.123 (lib/combo.js): a Combo with steps is rung up on the POS only for now. The bar screen
+    // never lists one (channelVisible); this is the same rule at the door every add goes through.
+    if (comboPosOnly(item)) { showToast(comboNotHereWords(item), 'error'); return; }
     const price = tillLineUnitPrice(item, 'bar-tab', barMenuId, opts.linePrice ?? null, opts.qty || 1);
     // v5.11.81: never a 0.00 line for a row with no price set (the till's rule, store.addItem).
     if (refusesNoPriceLine(item, 'bar-tab', barMenuId, price)) { showToast(`${item.name || 'This item'} has no price set. Set one in Back Office before selling it.`, 'error'); return; }
@@ -797,14 +801,15 @@ export default function BarSurface() {
                       </div>
                     </div>
                     <div style={{ padding:'8px 12px' }}>
-                      {round.items.map((item,i)=>(
-                        <div key={i} style={{ display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3 }}>
+                      {/* 5.12.123: a Combo sent to a tab from the POS shows with its picks under it, never as 0.00 lines */}
+                      {displayOrder(round.items).map((item,i)=>(
+                        <div key={i} data-combo-pick={lineShow(item).pick?'1':undefined} style={{ display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3,paddingLeft:lineShow(item).pick?12:0 }}>
                           <div>
                             <span style={{ color:'var(--t2)' }}>{item.qty}× {item.menuName||item.menu_name||item.name||'Item'}</span>
                             {item.mods?.length>0&&<span style={{ color:'var(--t3)',marginLeft:5 }}>({item.mods.map(m=>m.label).join(', ')})</span>}
                             {item.notes&&<span style={{ color:'#f97316',marginLeft:5,fontStyle:'italic' }}>· {item.notes}</span>}
                           </div>
-                          <span style={{ color:'var(--t3)',fontFamily:'DM Mono,monospace' }}>{money(((item.price||0)*(item.qty||1)))}</span>
+                          <span style={{ color:'var(--t3)',fontFamily:'DM Mono,monospace' }}>{lineShow(item).showAmount?money(((item.price||0)*(item.qty||1))):''}</span>
                         </div>
                       ))}
                       {round.note&&<div style={{ fontSize:11,color:'#f97316',marginTop:4,fontStyle:'italic',display:'flex',alignItems:'center',gap:4 }}><Icon name="note" size={12} />{round.note}</div>}

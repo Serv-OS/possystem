@@ -100,7 +100,12 @@ export const evaluateAutoDiscounts = (items, rules, channel = 'pos', ctx = null)
   // 29 Oct 2026 (v5.11.118): a gift card sold at the till (kind gift_card_sale, or a line stamped
   // noDiscount) never triggers a deal and never takes one (giftCardLine.isNoDiscountLine, inline
   // so this module stays import free).
-  const activeItems = items.filter(i => !i.voided && !(i.noDiscount === true || i.kind === 'gift_card_sale'));
+  // 27 Nov 2026 (5.12.123): a pick inside a Combo never triggers a deal and never takes one (inline
+  // too: lib/combo.js isComboPick). It is already part of a set price, at 0.00 or a small extra: as
+  // a "cheapest unit" it took the free slot of a buy one get one free from a paid pizza, and it
+  // counted towards "any 6, 15% off" without being bought. The Combo's own line is an ordinary
+  // product in its own category, so a deal that names that category still reaches it.
+  const activeItems = items.filter(i => !i.voided && !(i.noDiscount === true || i.kind === 'gift_card_sale') && !(i.comboRole === 'pick' && !!i.comboId));
   if (!activeItems.length) return [];
 
   // A physical unit participates in at most one auto-rule. Units of the same line

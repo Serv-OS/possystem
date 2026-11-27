@@ -13,6 +13,8 @@ import { money, currencySymbol, venueCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 import { stageGiftCard } from '../lib/giftCommit';
 import { Icon } from './ServOSIcons';
+// 5.12.123 Combos: split by item moves a Combo as ONE piece (lib/combo.js splitUnits), never a pick on its own.
+import { splitUnits } from '../lib/combo.js';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
 // Sends the portion amount to the paired Adyen terminal as a terminal job — same flow as
@@ -575,7 +577,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   const initItemSplit = (n) => {
     setNumItemPortions(n);
     setItemPortionList(Array.from({ length: n }, (_, i) => ({ id: `ip${i}`, label: `Check ${i+1}`, items: [], total: 0, paid: false, method: null })));
-    setUnassigned([...nonVoided]);
+    setUnassigned(splitUnits(nonVoided));
   };
 
   const moveItemToCheck = (item, fromPool, targetCheckIdx) => {
@@ -807,6 +809,7 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
                     <div key={item.uid} style={{ display:'flex', gap:6, marginBottom:6 }}>
                       <div style={{ flex:1, fontSize:12, color:'var(--t2)', padding:'6px 8px', background:'var(--bg3)', borderRadius:6 }}>
                         {item.qty>1?`${item.qty}× `:''}{item.name}
+                        {item.comboPicks>0&&<span data-testid="split-combo-unit" style={{ color:'var(--t4)', marginLeft:6, fontSize:10 }}>Combo, {item.comboPicks} pick{item.comboPicks===1?'':'s'}, moves as one</span>}
                         <span style={{ color:'var(--t3)', marginLeft:8, fontFamily:'DM Mono,monospace' }}>{money((item.price*item.qty))}</span>
                       </div>
                       {itemPortionList.map((check,ci) => (

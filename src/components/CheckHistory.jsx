@@ -19,6 +19,8 @@ import { ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
 // 5.12.57: the refund amount boxes show the venue's own symbol, never a typed pound.
 import { moneyMinor, currencySymbol } from '../lib/currency';
 import { Icon, hasIcon } from './ServOSIcons';
+// 5.12.123 Combos: a Combo shows with its picks under it, and is refunded whole (lib/combo.js).
+import { displayOrder, lineShow, isComboLine, isComboParent, comboUids, COMBO_WORDS } from '../lib/combo.js';
 
 const REFUND_REASONS = [
   'Wrong item served','Quality issue','Customer complaint',
@@ -87,8 +89,25 @@ function RefundModal({check, onConfirm, onCancel}){
     return map;
   },[check.refunds]);
 
+  // 5.12.123: a Combo is refunded whole. Ticking any line of one ticks its own line and every pick
+  // (each for all that is left of it), and unticking unticks them all. The store refuses a refund
+  // that cuts a Combo (refundCheck: keepsCombosWhole), so the screen never offers one.
   const toggleItem=uid=>{
-    setSelections(s=>({...s,[uid]:{...s[uid],selected:!s[uid].selected}}));
+    const group=comboUids(check.items,uid);
+    if(group.length>1){
+      setSelections(s=>{
+        const on=!s[uid]?.selected;
+        const next={...s};
+        group.forEach(u=>{
+          const line=check.items.find(i=>i.uid===u);
+          const left=(line?.qty||1)-(refundedQtys[u]||0);
+          next[u]={...next[u],selected:on&&left>0,qty:Math.max(1,left)};
+        });
+        return next;
+      });
+    }else{
+      setSelections(s=>({...s,[uid]:{...s[uid],selected:!s[uid].selected}}));
+    }
     if(isFullRefund)setFull(false);
   };
   const setQty=(uid,qty)=>setSelections(s=>({...s,[uid]:{...s[uid],qty}}));
@@ -240,13 +259,15 @@ function RefundModal({check, onConfirm, onCancel}){
                 <span style={{fontSize:14,fontWeight:800,color:isFullRefund?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>−{money(bd.maxRefund)}</span>
               </div>
               <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Or select items</div>
-              {check.items.map(item=>{
+              {displayOrder(check.items).map(item=>{
                 const alreadyRefunded=refundedQtys[item.uid]||0;
                 const remaining=item.qty-alreadyRefunded;
                 const sel=selections[item.uid];
                 const isOn=sel?.selected;
+                // A pick sits under its Combo and shows an amount only where it adds one.
+                const show=lineShow(item,item.price);
                 if(remaining<=0)return(
-                  <div key={item.uid} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',borderRadius:8,marginBottom:4,opacity:.4}}>
+                  <div key={item.uid} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',borderRadius:8,marginBottom:4,opacity:.4,marginLeft:show.pick?18:0}}>
                     <div style={{width:16,height:16,borderRadius:3,border:'2px solid var(--red-b)',background:'var(--red-d)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                       <div style={{width:8,height:2,background:'var(--red)',borderRadius:1}}/>
                     </div>
@@ -255,21 +276,22 @@ function RefundModal({check, onConfirm, onCancel}){
                   </div>
                 );
                 return(
-                  <div key={item.uid} style={{marginBottom:4}}>
-                    <div onClick={()=>toggleItem(item.uid)} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',borderRadius:8,cursor:'pointer',background:isOn?'var(--bg3)':'transparent',border:`1px solid ${isOn?'var(--bdr2)':'transparent'}`}}>
+                  <div key={item.uid} data-combo-pick={show.pick?'1':undefined} style={{marginBottom:4,marginLeft:show.pick?18:0}}>
+                    <div onClick={()=>toggleItem(item.uid)} style={{display:'flex',alignItems:'center',gap:10,padding:show.pick?'5px 10px':'8px 10px',borderRadius:8,cursor:'pointer',background:isOn?'var(--bg3)':'transparent',border:`1px solid ${isOn?'var(--bdr2)':'transparent'}`}}>
                       <div style={{width:16,height:16,borderRadius:3,border:`2px solid ${isOn?'var(--acc)':'var(--bdr2)'}`,background:isOn?'var(--acc)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                         {isOn&&<div style={{width:8,height:8,background:'#0e0f14',borderRadius:1}}/>}
                       </div>
                       <div style={{flex:1}}>
                         <div style={{fontSize:12,fontWeight:600,color:isOn?'var(--t1)':'var(--t2)'}}>{item.qty>1?`${item.qty}× `:''}{item.name}</div>
                         {item.mods?.length>0&&<div style={{fontSize:10,color:'var(--t3)'}}>{item.mods.map(m=>m.label).join(', ')}</div>}
+                        {isComboParent(item)&&<div data-testid="refund-combo-whole" style={{fontSize:10,color:'var(--t3)'}}>{COMBO_WORDS.refundWhole}</div>}
                       </div>
                       <div style={{textAlign:'right',flexShrink:0}}>
-                        <div style={{fontSize:12,fontWeight:700,color:isOn?'var(--acc)':'var(--t3)',fontFamily:'DM Mono,monospace'}}>{money(item.price)}</div>
+                        <div style={{fontSize:12,fontWeight:700,color:isOn?'var(--acc)':'var(--t3)',fontFamily:'DM Mono,monospace'}}>{show.showAmount?money(item.price):''}</div>
                         {alreadyRefunded>0&&<div style={{fontSize:10,color:'var(--red)'}}>{alreadyRefunded} refunded</div>}
                       </div>
                     </div>
-                    {isOn&&remaining>1&&(
+                    {isOn&&remaining>1&&!isComboLine(item)&&(
                       <div style={{display:'flex',alignItems:'center',gap:8,paddingLeft:36,paddingBottom:4}}>
                         <span style={{fontSize:11,color:'var(--t3)'}}>Qty:</span>
                         <div style={{display:'flex',alignItems:'center',gap:4,background:'var(--bg3)',border:'1px solid var(--bdr)',borderRadius:6,overflow:'hidden'}}>
@@ -1102,14 +1124,16 @@ export default function CheckHistory(){
 
               {/* Items */}
               <div style={{fontSize:11,fontWeight:700,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Items</div>
-              {selectedCheck.items.map((item,i)=>{
+              {displayOrder(selectedCheck.items).map((item,i)=>{
                 const refundedQty=selectedCheck.refunds.reduce((s,r)=>{
                   const ri=r.items.find(ri=>ri.uid===item.uid);
                   return s+(ri?.refundQty||0);
                 },0);
                 const fullyRefunded=refundedQty>=item.qty;
+                // 5.12.123 Combos: a pick sits under its Combo, with an amount only where it adds one.
+                const show=lineShow(item);
                 return(
-                  <div key={i} style={{display:'flex',justifyContent:'space-between',marginBottom:6,padding:'7px 0',borderBottom:'1px solid var(--bdr)',opacity:fullyRefunded?.5:1}}>
+                  <div key={i} data-combo-pick={show.pick?'1':undefined} style={{display:'flex',justifyContent:'space-between',marginBottom:6,padding:show.pick?'5px 0 5px 16px':'7px 0',borderBottom:'1px solid var(--bdr)',opacity:fullyRefunded?.5:1}}>
                     <div style={{flex:1}}>
                       <div style={{fontSize:13,fontWeight:500,color:fullyRefunded?'var(--t4)':'var(--t2)',textDecoration:fullyRefunded?'line-through':'none'}}>
                         {item.qty>1?`${item.qty}× `:''}{item.name}
@@ -1119,7 +1143,7 @@ export default function CheckHistory(){
                       {item.mods?.length>0&&<div style={{fontSize:11,color:'var(--t3)'}}>{item.mods.map(m=>m.label).join(', ')}</div>}
                       {item.notes&&<div style={{fontSize:11,color:'#f97316',fontStyle:'italic'}}>{item.notes}</div>}
                     </div>
-                    <span style={{fontSize:13,fontWeight:600,color:'var(--t2)',fontFamily:'DM Mono,monospace',flexShrink:0}}>{money((item.price*item.qty))}</span>
+                    <span style={{fontSize:13,fontWeight:600,color:'var(--t2)',fontFamily:'DM Mono,monospace',flexShrink:0}}>{show.showAmount?money((item.price*item.qty)):''}</span>
                   </div>
                 );
               })}

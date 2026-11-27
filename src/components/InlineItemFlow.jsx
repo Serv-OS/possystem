@@ -8,6 +8,8 @@ import { sizeOrMainOptions, modifierGroupRequired, instructionGroupMin } from '.
 import { Icon } from './ServOSIcons';
 import { isOnceEach } from '../lib/choiceKinds';
 import { groupsShownOn } from '../lib/soldAs';
+import { answersFromFlow, flowFromAnswers } from '../lib/optionAnswers';
+import { stockGivenBack } from '../lib/comboLines';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -40,8 +42,21 @@ function resolveOptItemId(opt, menuItems) {
 // 19 Oct 2026 (v5.11.78): `priceChannel` / `priceMenuId` let a surface with its own order type and
 // menu (a bar tab is priced as eat in on the bar's own menu) show the size price it will charge.
 // Absent, the till's store order type and active menu, as before.
-export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId }) {
-  const { modifierGroupDefs: allGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts, orderType: storeOrderType, activeMenuId: storeMenuId, menuItems: storeRows } = useStore();
+// 27 Nov 2026 (5.12.123, Combo picks): three more optional props, each absent = exactly as before.
+//   initialAnswers  the record a confirm handed back earlier (lib/optionAnswers.js): the flow opens
+//                   with those choices ticked, so changing a pick never loses what it already had
+//   basePriceOf     (row) => the unit price before options for the row being sold (the product, or
+//                   the size once one is picked): a pick inside a Combo is 0.00, its bump, or its
+//                   own price, never the menu price this flow would read
+//   sizePriceWords  (size row) => the words under each size button, in place of its menu price
+//   stockGiveBack   Map(id -> units) a line already on the order holds (Change): counted as free
+// Every confirm now also carries opts.answers (that record). Callers that do not read it are unchanged.
+export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId, initialAnswers = null, basePriceOf = null, sizePriceWords = null, stockGiveBack = null }) {
+  const { modifierGroupDefs: allGroupDefs, instructionGroupDefs, eightySixIds: storeEightySix, dailyCounts: storeCounts, orderType: storeOrderType, activeMenuId: storeMenuId, menuItems: storeRows } = useStore();
+  // 5.12.123: stockGiveBack (Map id -> units), Change on a line already on the order: the units the
+  // line holds count as free here, and what it holds is never refused for being 86'd (its own
+  // count may have 86'd it). Absent: the store's counts and 86 list, exactly as before.
+  const { eightySixIds, dailyCounts } = useMemo(() => stockGivenBack(storeEightySix, storeCounts, stockGiveBack), [storeEightySix, storeCounts, stockGiveBack]);
   // 5.12.119: the rows an OPTION is looked up in are the store's own, every one of them. The
   // `menuItems` prop is the POS's product list, which leaves out a sub item that is only an option
   // (rule 1), so an option's row was never found there: an 86'd option matched by name was not
@@ -93,13 +108,17 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
       .filter(Boolean);
 
   // ── State ─────────────────────────────────────────────────────────────────
-  const [step, setStep]               = useState(isVariant ? 'variant' : 'modifiers');
-  const [selectedVariant, setSelectedVariant] = useState(null);
-  const [selections, setSelections]   = useState({});    // modifierId → option/[options]
-  const [instSelections, setInstSel]  = useState({});    // instructionGroupId → string
+  // 5.12.123: with initialAnswers the flow starts from them (read once, when it opens). The size
+  // they name must still be one of this product's sizes, or the size is asked again.
+  const [seed] = useState(() => (initialAnswers ? flowFromAnswers(initialAnswers, modifierGroupDefs, instructionGroupDefs) : null));
+  const [seedSize] = useState(() => (seed?.variantId ? variantChildren.find(v => v.id === seed.variantId) || null : null));
+  const [step, setStep]               = useState(isVariant && !seedSize ? 'variant' : 'modifiers');
+  const [selectedVariant, setSelectedVariant] = useState(seedSize);
+  const [selections, setSelections]   = useState(seed?.selections || {});    // modifierId → option/[options]
+  const [instSelections, setInstSel]  = useState(seed?.instSelections || {});    // instructionGroupId → string
   const [requireErr, setRequireErr] = useState(false);
   const [qty, setQty]                 = useState(lockedQty || 1);
-  const [notes, setNotes]             = useState('');
+  const [notes, setNotes]             = useState(seed?.notes || '');
   const [animDir, setAnimDir]         = useState('in');  // 'in' | 'out'
   const prevStep = useRef(null);
 
@@ -115,8 +134,11 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
                    || buildModGroups(item).length > 0    || buildInstGroups(item).length > 0;
       if (!hasMods) {
         const displayName = `${item.menuName || item.menu_name || item.name} — ${variant.menuName || variant.menu_name || variant.name || variant.label}`;
+        // 5.12.123: no note box is shown on this path, so the note the flow opened with (a pick's
+        // note, on Change) is handed back as it is. A new line has none, as before.
         onConfirm(variant, [], null, {
-          notes: '', qty, linePrice: (variant.pricing?.base ?? variant.price ?? 0) * qty, displayName
+          notes: notes.trim(), qty, linePrice: (variant.pricing?.base ?? variant.price ?? 0) * qty, displayName,
+          answers: answersFromFlow({ variantId: variant.id, notes }),
         });
         return;
       }
@@ -226,11 +248,15 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
   // v5.7.27 edit mode: the LINE's unit price is the base (prepay pre-order
   // lines are 0.00 — food already paid), never the menu item's price, and a
   // variant pick doesn't reprice the base either.
+  // 5.12.123: basePriceOf (a Combo pick) follows the row being sold, so a size that keeps its own
+  // price shows that size's price.
   const basePrice = basePriceOverride != null
     ? basePriceOverride
-    : selectedVariant
-      ? (selectedVariant.pricing?.base ?? selectedVariant.price ?? 0)
-      : (item.pricing?.base ?? item.price ?? 0);
+    : basePriceOf
+      ? (Number(basePriceOf(selectedVariant || item)) || 0)
+      : selectedVariant
+        ? (selectedVariant.pricing?.base ?? selectedVariant.price ?? 0)
+        : (item.pricing?.base ?? item.price ?? 0);
   const total = (basePrice + extraCost) * qty;
 
   const handleAdd = () => {
@@ -297,7 +323,10 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
       : '';
     const displayName = `${item.menuName || item.menu_name || item.name}${variantPart}`;
     const targetItem = selectedVariant || item;
-    onConfirm(targetItem, mods, null, { notes: notes.trim(), qty, linePrice: total, displayName });
+    onConfirm(targetItem, mods, null, {
+      notes: notes.trim(), qty, linePrice: total, displayName,
+      answers: answersFromFlow({ variantId: selectedVariant?.id || null, selections, instSelections, notes }),
+    });
   };
 
   const toggleSingle = (gid, opt) =>
@@ -371,6 +400,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
             variantChildren={variantChildren}
             onPick={pickVariant}
             priceOf={(v) => resolveItemPrice(v, orderType, activeMenuId)}
+            priceWords={sizePriceWords}
           />
         )}
         {step === 'modifiers' && (
@@ -455,7 +485,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
 // own pricing and tiers, so the button reads the CHILD row through the same
 // rule store.addItem uses. It used to read pricing.base, so under the Bar tier
 // Half said £2.85 while the cart line was £1.23, and on takeaway £2.85 vs 3.01.
-function VariantStep({ item, variantChildren, onPick, priceOf = null }) {
+function VariantStep({ item, variantChildren, onPick, priceOf = null, priceWords = null }) {
   const label = item.variantLabel || 'Size';
   return (
     <div>
@@ -478,7 +508,7 @@ function VariantStep({ item, variantChildren, onPick, priceOf = null }) {
                 {v.menuName || v.name}
               </div>
               <div style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)', marginTop:'auto' }}>
-                {money(price)}
+                {priceWords ? priceWords(v) : money(price)}
               </div>
               {v.allergens?.length > 0 && (
                 <div style={{ fontSize:10, color:'var(--t4)', marginTop:4, display:'flex', alignItems:'center', gap:4 }}>
@@ -509,9 +539,16 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
   };
   const hasContent = modGroups.length > 0 || instGroups.length > 0;
   if (!hasContent) {
+    // 5.12.123: a product with no options still takes a note here (a Combo's pick opened with "Note").
     return (
-      <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t3)', fontSize:13 }}>
-        No options for this item — use the Add to order button below.
+      <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+        <div style={{ textAlign:'center', padding:'24px 0 0', color:'var(--t3)', fontSize:13 }}>
+          No options for this item — use the Add to order button below.
+        </div>
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>Note (optional)</div>
+          <input value={notes} onChange={e => onNotes(e.target.value)} placeholder="Allergy note, special request…" className="input" data-testid="flow-note-no-options" style={{ width:'100%', fontSize:13, boxSizing:'border-box' }}/>
+        </div>
       </div>
     );
   }

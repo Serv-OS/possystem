@@ -21,6 +21,7 @@ import { localeString } from '../../supabase/functions/_shared/venueDates.js';
 import { buildShiftReportDoc } from './shiftReport.js';
 import { breakdownLabel, breakdownIsExclusive } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
+import { lineShow } from './combo.js';
 import { cardReceiptLines } from './cardReceipt.js';
 import {
   buildCustomerReceiptDoc, buildMerchantTipSlipDoc, buildGiftCardSlipDoc, buildKitchenTicketDoc, buildFireCourseTicketDoc,
@@ -129,9 +130,11 @@ function buildReceiptHtml({ location, check, items, totals }) {
   const mny = (n) => money(Number(n) || 0, location?.currency);
   const rows = consolidateReceiptLines(items).map(item=>{
     const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
+    // 5.12.123 Combos: a pick sits under its Combo, set in, with an amount only when it adds one.
+    const show = lineShow(item);
     return `
-    <div class="row"><span>${item.qty>1?`${item.qty}\xD7 `:''}${item.receiptName||item.name}</span><span>${mny(item.price*item.qty)}</span></div>
-    ${modLines.map(m=>`<div style="padding-left:8px;font-size:10px">${typeof m==='string'?m:(m.label||'')}</div>`).join('')}
+    <div class="row"${show.pick?' style="padding-left:10px"':''}><span>${item.qty>1?`${item.qty}\xD7 `:''}${item.receiptName||item.name}</span><span>${show.showAmount?mny(item.price*item.qty):''}</span></div>
+    ${modLines.map(m=>`<div style="padding-left:${show.pick?18:8}px;font-size:10px">${typeof m==='string'?m:(m.label||'')}</div>`).join('')}
   `;}).join('');
   return `
     <div class="center bold big">${location?.name||'Restaurant'}</div>

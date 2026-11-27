@@ -33,7 +33,7 @@ import { proposeImport, buildCentral, importPayload, reviewWords } from '../../.
 import {
   initialChoices, tickAllNames, setNameChoice, nameChoiceOf, setOnlyOne, setOnlyOneMany, filterOnlyOne, setGroupName, setLeaveOut,
   toDecisions, reviewCounts, needsOf, footerWords, importSummaryWords, canMakeGroupMenu, nothingToMake, venueMenuChoices,
-  reviewView, sharedLine, nameLine, namesLine, onlyOneLine, clashLine, clashLeftOut, rowsComingIn, switchedOffWords, REVIEW_WORDS,
+  reviewView, sharedLine, nameLine, namesLine, onlyOneLine, clashLine, clashLeftOut, rowsComingIn, switchedOffWords, combosKeptWords, REVIEW_WORDS,
 } from '../../../lib/msm/msmImportReview';
 import { Btn, Pill, Segmented, Field, Notice } from './msmUi';
 import { ui, money } from './msmStyle';
@@ -280,6 +280,7 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
     onNext();
   };
   const offLine = switchedOffWords(r);
+  const comboLine = combosKeptWords(r);   // 5.12.123: Combos with steps are left at their site, said in one line
   const sharedRow = (l) => (
     <Line key={l.id} title={l.title} sub={l.sub} sizes={l.sizes} notes={l.notes} off={l.off}>
       <Btn small kind={l.off ? 'soft' : 'link'} onClick={() => setChoices(setLeaveOut(choices, l.id, !l.off))}>{l.off ? W.family.putBack : W.family.leaveOut}</Btn>
@@ -292,6 +293,7 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
       <div style={{ ...ui.card, marginBottom: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 700 }}>{reviewWords(r)}</div>
         {offLine && <div style={{ ...ui.sub, marginTop: 4 }}>{offLine}</div>}
+        {comboLine && <div data-testid="msm-import-combos-kept" style={{ ...ui.sub, marginTop: 4 }}>{comboLine}</div>}
         <div style={{ ...ui.sub, marginTop: 4 }}>{W.intro}</div>
       </div>
       <div style={{ marginBottom: 12 }}><Segmented value={bucket} onChange={pickBucket} options={tabs} /></div>

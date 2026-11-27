@@ -618,7 +618,7 @@ Deno.serve(async (req) => {
           program_id: prog.id,
           location_id,
           stamps: qualifyingCount,
-          trigger_item_name: (items as any[]).filter(i => !i.isComp && !i.isGiftCard).map(i => i.name).join(', ').slice(0, 200),
+          trigger_item_name: (items as any[]).filter(i => !i.isComp && !i.isGiftCard && !i.noStamp).map(i => i.name).join(', ').slice(0, 200),
           order_ref: String(closed_check_id),
           type: 'earn',
           idempotency_key: stampIdemKey,

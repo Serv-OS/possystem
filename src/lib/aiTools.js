@@ -11,6 +11,7 @@ import { localeDateString, localeTimeString, localeString, zoneOr } from './venu
 import { venueDayStart, venueHour, hourLabel } from './aiClock.js';
 import { fetchSops } from './ops/documents';
 import { searchSops, SOP_WORDS } from './ops/sopRules';
+import { comboPosOnly, comboNotHereWords } from './combo.js';
 
 // 5.12.57 (batch 8): the assistant reads times on the VENUE's clock and in its words ('2:05 PM' at a
 // US venue), never the till's own clock; with no zone yet it says it does not know rather than guess.
@@ -848,6 +849,9 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         const names = available.slice(0, 20).map(i => i.name).join(', ');
         return { result: { error: `No menu item found matching "${toolInput.item_name}". Available items include: ${names}` } };
       }
+      // 5.12.123 (lib/combo.js): a Combo with steps is rung up from the POS menu, where its steps
+      // are asked. The assistant never proposes adding one (store.addItem would refuse it anyway).
+      if (comboPosOnly(item)) return { result: { error: comboNotHereWords(item) } };
       const qty = toolInput.qty || 1;
       return {
         result: {

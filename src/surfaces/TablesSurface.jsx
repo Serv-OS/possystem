@@ -17,6 +17,7 @@ import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 import { Icon } from '../components/ServOSIcons';
 import { activeCountry } from '../lib/regionPack';   // 5.12.57: phone example follows the venue
 import { openChecksOf, floorStatus, checksToPick } from '../lib/tableChecks';   // 24 Nov 2026: more than one check on a table
+import { displayOrder, lineShow } from '../lib/combo.js';   // 5.12.123: a Combo's picks show under it, never as 0.00 lines
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)', label:'Available' },
@@ -1102,16 +1103,19 @@ export default function TablesSurface() {
                 <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>
                   Order · {selectedTable.session.items.reduce((s,i)=>s+i.qty,0)} items
                 </div>
-                {selectedTable.session.items.map(item=>(
-                  <div key={item.uid} style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4 }}>
-                    <div style={{ flex:1, color:'var(--t2)' }}>
+                {displayOrder(selectedTable.session.items).map(item=>{
+                  const show=lineShow(item);
+                  return (
+                  <div key={item.uid} data-combo-pick={show.pick?'1':undefined} style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4, paddingLeft:show.pick?12:0 }}>
+                    <div style={{ flex:1, color:show.pick?'var(--t3)':'var(--t2)' }}>
                       {item.qty>1&&<span style={{ color:'var(--t3)', marginRight:3 }}>{item.qty}×</span>}
                       {item.name}
                       {item.status==='sent'&&<span style={{ marginLeft:5, fontSize:9, color:'var(--grn)', fontWeight:700 }}>sent</span>}
                     </div>
-                    <span style={{ color:'var(--t3)', fontFamily:'DM Mono,monospace', flexShrink:0 }}>{money((item.price*item.qty))}</span>
+                    <span style={{ color:'var(--t3)', fontFamily:'DM Mono,monospace', flexShrink:0 }}>{show.showAmount?money((item.price*item.qty)):''}</span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 

@@ -31,7 +31,7 @@
 import { planSite, touchedFromChanges, groupOptionRows } from '../../../supabase/functions/_shared/msmPlan.js';
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
 import { MAIN_MENU, extraMenus, extraMenuAt, menuKeysValue } from '../../../supabase/functions/_shared/msmMenus.js';
-import { touchEverything } from '../../../supabase/functions/_shared/msmImport.js';
+import { touchEverything, comboWithSteps } from '../../../supabase/functions/_shared/msmImport.js';
 import { importTaxByType, sizeKeptTax, mapRateDescriptor } from '../../../supabase/functions/_shared/msmTax.js';
 import {
   familyOf, normName, has, samePrice, sameValue, money2, KEPT_COLUMNS, GROUP_KEPT_COLUMNS, PUBLISHED_CHANNELS,
@@ -42,6 +42,11 @@ const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinit
 const gidOf = (a) => (typeof a === 'string' ? a : a && typeof a === 'object' ? (a.groupId ?? a.id ?? null) : null);
 const nameOf = (row) => row?.menu_name || row?.name || 'A product';
 const optionOnly = (row) => row?.type === 'subitem' && row?.sold_alone !== true;
+
+/** "Build Your Own Package is a Combo with steps. It stays at this site for now: Combos come to the group menu in a later update." */
+export function comboStaysWords(row) {
+  return `${nameOf(row)} is a Combo with steps. It stays at this site for now: Combos come to the group menu in a later update.`;
+}
 
 const defaultUuid = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -67,7 +72,7 @@ function categoriesInMenu(raw, venueMenuId, alsoMenuIds = []) {
  * The site's own products (not managed by the group menu), each with what it looks like.
  *   central   the group menu (the draft applied)
  *   raw       readVenueRaw(...) of that site
- * Returns [{ id, name, row, sizes, archived, match: { productId, name, how } | null, groups: [names] }],
+ * Returns [{ id, name, row, sizes, archived, match: { productId, name, how } | null, groups: [names], held? }],
  * products on sale first, then by name. Sizes come with their product; option only sub items come
  * with the options that use them (never listed alone).
  */
@@ -85,6 +90,9 @@ export function ownProducts(central, locationId, raw) {
     const sizes = items.filter((i) => i.parent_id === row.id && !managed.has(i.id));
     out.push({
       id: row.id, name: nameOf(row), row, sizes, archived: row.archived === true,
+      // 5.12.123: a Combo built from steps is listed (it IS the site's own) but cannot come in yet:
+      // `held` is the one line of words the screen shows in place of the buttons.
+      ...(comboWithSteps(row) ? { held: comboStaysWords(row) } : {}),
       match: matchFor(central, locationId, row),
       groups: [...new Set(listOf(row.assigned_modifier_groups).map(gidOf).filter(Boolean).map((g) => groupName.get(g)).filter(Boolean))],
     });
@@ -132,6 +140,10 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   const fail = (w) => ({ ok: false, changes: [], words: [], problems: [w] });
   if (!row) return fail('That product is no longer at the site. Check the sites again.');
   if (listOf(central?.productSites).some((ps) => ps.location_id === loc && ps.venue_item_id === row.id)) return fail(`${nameOf(row)} is already in the group menu.`);
+  // 5.12.123 Combos: a Combo built from steps stays the site's own for now. The group menu cannot
+  // hold its steps yet, and bringing it in would manage a product it can only half see. This is the
+  // one door Bring in, Bring in all and joining a site all use.
+  if (comboWithSteps(row)) return fail(comboStaysWords(row));
   if (!listOf(central?.sites).some((s) => s.location_id === loc)) return fail('That site is not in the group menu yet. Add the site first.');
   const link = opts.linkTo ? listOf(central?.products).find((p) => p.id === opts.linkTo && !p.archived) : null;
   if (opts.linkTo && !link) return fail('The product to link to is not in the group menu any more.');
@@ -628,7 +640,7 @@ export async function planJoinSiteAsync(live, opts = {}, { onProgress = () => {}
 export function joinableProducts(live, locationId, raw, venueMenuId) {
   if (!locationId || !raw || !venueMenuId) return [];
   const C = applyChanges(live, [{ target: 'menu_site', entity_id: live?.menu?.id || null, location_id: locationId, op: 'create', after: { venue_menu_id: venueMenuId } }]).central;
-  return ownProducts(C, locationId, raw).filter((o) => !o.archived && o.match && o.match.how === 'family');
+  return ownProducts(C, locationId, raw).filter((o) => !o.archived && !o.held && o.match && o.match.how === 'family');
 }
 
 function* joinSteps(live, opts) {
@@ -925,7 +937,12 @@ export function bringInAllChanges(central, locationId, raw, opts = {}) {
     if (r.ok) { changes = [...changes, ...r.changes]; C = applyChanges(C, r.changes).central; counts.subItems = r.count; words.push(r.words[0]); }
     problems.push(...r.problems);
   }
-  if (!changes.length) return { ...fail(`Everything ${siteName} sells is in the group menu.`), problems: [`Everything ${siteName} sells is in the group menu.`, ...problems] };
+  // 5.12.123: what was left out (a Combo with steps stays at its site for now) is not "in the group
+  // menu": then it is everything ELSE, and the reason follows.
+  if (!changes.length) {
+    const all = `Everything ${problems.length ? 'else ' : ''}${siteName} sells is in the group menu.`;
+    return { ...fail(all), problems: [all, ...problems] };
+  }
   // The whole set, planned as the server will: it must write nothing at the site.
   const plan = planSite({ central: C, touched: touchedFromChanges(changes), locationId: loc, orgId: opts.orgId || null, venue: raw });
   if (plan.lines.length) return { ...fail(`Bringing everything in would change ${plan.lines.length} thing${plan.lines.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in the draft. Bring them in one at a time to see which.`), problems };

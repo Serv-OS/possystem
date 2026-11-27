@@ -22,6 +22,8 @@ import { tillTenders, splitTenders } from '../lib/accounting/tenders';
 import { money, currencySymbol, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen } from '../lib/customerDisplay';
 import { displayLinesFor } from '../lib/displayLines';
+// 5.12.123 Combos: on the bill a Combo's picks sit under its own line, with an amount only where a pick adds one.
+import { displayOrder, lineShow, isComboLine, linesForPromo } from '../lib/combo.js';
 import { isTrainingMode } from '../lib/trainingMode';
 import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';   // 16 Oct 2026: the amount used, surplus flagged
 import PaxTerminal from './PaxTerminal';
@@ -1308,7 +1310,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     try {
       // v5.11.81: with the basket's lines and delivery fee, so the offer's category rules, a free
       // item and free delivery are worked out (lib/promoBasis.js, _shared/promoMath.js).
-      const lines = promoBasketLines(items);
+      // 5.12.123: a Combo's pick is never THE product a free item code makes free (lib/combo.js linesForPromo).
+      const lines = promoBasketLines(linesForPromo(items));
       const { data, error } = await supabase.functions.invoke('promo-redeem', { body: {
         action: 'validate', code, location_id: getActiveLocationSync(),
         customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis, lines, delivery_fee: Number(deliveryFee) || 0 },
@@ -2037,8 +2040,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
 
   // Group by course for the bill display
   const COURSE_LABELS = { 0:'Immediate', 1:'Course 1', 2:'Course 2', 3:'Course 3' };
-  const courseGroups = nonVoided.reduce((acc, item) => {
-    const c = item.course ?? 1;
+  // 5.12.123: a Combo stays together on the bill. Its own line is course 0 (it never goes to the
+  // kitchen), so its picks are listed with it, straight under it, whatever course each cooks on.
+  const courseGroups = displayOrder(nonVoided).reduce((acc, item) => {
+    const c = isComboLine(item) ? 0 : (item.course ?? 1);
     if (!acc[c]) acc[c] = [];
     acc[c].push(item);
     return acc;
@@ -2179,8 +2184,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     ? (disc.type==='percent' ? item.price*(1-disc.value/100) : Math.max(0,item.price-disc.value/item.qty))
                     : item.price;
                   const isLast = idx === courseGroups[cNum].length - 1;
+                  const show = lineShow(item, price*item.qty);
                   return (
-                    <div key={item.uid} style={{ display:'flex', justifyContent:'space-between', gap:namesOnly?4:compact?8:12, padding:namesOnly?'3px 10px':compact?'7px 10px':'11px 14px', borderBottom:isLast?'none':'1px solid var(--bdr)', background:namesOnly?'transparent':idx%2===0?'var(--bg2)':'var(--bg1)' }}>
+                    <div key={item.uid} data-combo-pick={show.pick?'1':undefined} style={{ display:'flex', justifyContent:'space-between', gap:namesOnly?4:compact?8:12, padding:namesOnly?(show.pick?'3px 10px 3px 24px':'3px 10px'):compact?(show.pick?'5px 10px 5px 26px':'7px 10px'):(show.pick?'7px 14px 7px 32px':'11px 14px'), borderBottom:isLast?'none':'1px solid var(--bdr)', background:namesOnly?'transparent':idx%2===0?'var(--bg2)':'var(--bg1)' }}>
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontSize:namesOnly?11:compact?12:14, fontWeight:namesOnly?500:600, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                           {item.qty>1 && <span style={{ fontWeight:800, color:'var(--acc)', marginRight:5, fontFamily:'var(--font-mono)' }}>{item.qty}×</span>}
@@ -2193,17 +2199,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                           </div>
                         ))}
                         {!namesOnly && item.notes && <div style={{ fontSize:11, color:'var(--orn)', marginTop:2, display:'flex', alignItems:'center', gap:4 }}><Icon name="note" size={12} />{item.notes}</div>}
-                        {!namesOnly && disc && <div style={{ fontSize:11, color:'var(--grn)', marginTop:2, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}><Icon name="tag" size={12} />{disc.label}</div>}
+                        {!namesOnly && disc && show.showAmount && <div style={{ fontSize:11, color:'var(--grn)', marginTop:2, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}><Icon name="tag" size={12} />{disc.label}</div>}
                         {item.allergens?.length>0 && (
                           <div style={{ fontSize:10, color:'var(--red)', marginTop:2, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
                             <Icon name="warn" size={12} />{item.allergens.map(a=>ALLERGENS.find(x=>x.id===a)?.label).filter(Boolean).join(' · ')}
                           </div>
                         )}
                       </div>
-                      <div style={{ textAlign:'right', flexShrink:0 }}>
+                      {show.showAmount && <div style={{ textAlign:'right', flexShrink:0 }}>
                         <div style={{ fontSize:namesOnly?11:compact?12:14, fontWeight:namesOnly?500:700, color:namesOnly?'var(--t3)':'var(--t1)', fontFamily:'var(--font-mono)' }}>{money((price*item.qty))}</div>
                         {!namesOnly && disc && <div style={{ fontSize:11, color:'var(--t4)', textDecoration:'line-through', fontFamily:'var(--font-mono)' }}>{money((item.price*item.qty))}</div>}
-                      </div>
+                      </div>}
                     </div>
                   );
                     })}

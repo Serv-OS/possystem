@@ -331,7 +331,8 @@ test('promo code: an offer for some categories, a free item, free delivery and b
   // A page line keeps its options apart; the basket line folds them in, as the server values a line.
   assert.deepEqual(promoBasketLines([{ itemId: 'latte', cat: 'coffee', price: 3.2, qty: 1, mods: [{ price: 0.5 }] }], { modsInPrice: false })[0].price, 3.7);
   // Every channel sends its lines; the server's public order maths is the same, in pence (20261020a).
-  assert.match(readRepo('src/surfaces/CheckoutModal.jsx'), /const lines = promoBasketLines\(items\);/);
+  // 5.12.123: the POS sends the same lines, with a Combo's pick never named as THE free item (lib/combo.js linesForPromo; an order with no Combo is the very same lines).
+  assert.match(readRepo('src/surfaces/CheckoutModal.jsx'), /const lines = promoBasketLines\(linesForPromo\(items\)\);/);
   assert.match(readRepo('src/surfaces/KioskApp.jsx'), /promoLines=\{promoBasketLines\(cart\)\}/);
   assert.match(between(readRepo('src/surfaces/KioskApp.jsx'), 'const submitOrder = useCallback(', 'tableNumber, resetSession]);'), /basketLines: promoBasketLines\(cart\),/);
   assert.match(readRepo('src/surfaces/kiosk/useKioskCheckout.js'), /const promoLines = useMemo\(\(\) => promoBasketLines\(cart\), \[cart\]\);/);
