@@ -51,6 +51,7 @@ import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuOnePrice from './MenuOnePrice';
+import MenuNameBox from './MenuNameBox';
 import MenuItemFactsPanel from './stock/MenuItemFactsPanel';   // v5.11.93 (multi site stock Drop 2): 'From the recipe at this site'
 import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
@@ -932,6 +933,8 @@ function MenuTab() {
                 </div>
                 {isEditing && (
                   <div style={{ padding:8, marginBottom:4, background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:8, fontSize:11 }}>
+                    {/* 5.12.121: rename this menu (MenuNameBox.jsx, rules in lib/menuRename.js). */}
+                    <MenuNameBox menu={m} />
                     <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>Schedule</div>
                     <div style={{ display:'flex', gap:3, flexWrap:'wrap', marginBottom:8 }}>
                       {dayLabels.map((lab, i) => {
