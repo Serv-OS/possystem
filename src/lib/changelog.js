@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.122',
+    date: '27 Nov 2026',
+    items: [
+      'Multi site menu no longer crashes when a site has deleted the menu the group menu writes into (Peter, 27 Nov 2026, Mozz: "cause I deleted a menu getting an error in the multi site menu", App Error "Cannot access \'Me\' before initialization"). The screen opens again and says in words which site is held back and why. The other sites still publish.',
+      'Why it happened: since 5.12.116 the check for a site stopped early when its menu was gone, and on the way out it reached for the list of the group\'s other menus, which is only read further down. Now the early stop never touches it. A test pins the case.',
+      'Not changed: a site whose linked menu was deleted still cannot be published to until the group menu is pointed at a menu that exists there.',
+    ],
+  },
+  {
     v: '5.12.121',
     date: '27 Nov 2026',
     items: [

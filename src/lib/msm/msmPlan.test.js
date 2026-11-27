@@ -522,3 +522,27 @@ test('two profiles of one name at a site, or a site that keeps its own tax: noth
   const kept = plan(c2, [{ target: 'product', entity_id: P2('Cola').id, op: 'update', after: { tax_rate_name: 'Retail', tax_rate_percent: null } }], A, v2[A]);
   assert.ok(!kept.lines.some((l) => l.column === 'tax_profile_id'));
 });
+
+// 5.12.122 (Peter, 27 Nov 2026, Mozz: "cause I deleted a menu getting an error in the multi site
+// menu", App Error "Cannot access 'Me' before initialization"). A site's own menu that the group
+// menu writes into was deleted at the site. planSite stops early there, and its finish() reached
+// for the other menus helper, which is only set up further down: the whole screen went down.
+test('a site whose linked menu was deleted at the site: one blocking line in words, never a throw', () => {
+  const { v, central, P } = setup();
+  const gone = central.sites.find((s) => s.location_id === A).venue_menu_id;
+  assert.ok(gone, 'the fixture links site A to a menu');
+  const venue = { ...v[A], menus: [{ id: 'menu-pos-new', name: 'POS', is_active: true, is_default: true, location_id: A }] };
+  let p;
+  assert.doesNotThrow(() => { p = plan(central, [{ target: 'product', entity_id: P('Mocha').id, op: 'update', after: { description: 'Rich' } }], A, venue); });
+  assert.deepEqual(p.problems.map((x) => [x.code, x.level]), [['no_venue_menu', 'block']]);
+  assert.match(p.problems[0].words, /was deleted at the site/);
+  assert.deepEqual(p.menuIds, [], 'no menu of this site is managed while its link is broken');
+  assert.equal(p.empty, true, 'nothing is written at that site');
+  assert.equal(checkSite(p).ok, false, 'the site is held back, in words, and the other sites still publish');
+  // The same early stop with other menus in the group menu (5.12.116), the case that threw.
+  const withExtras = { ...central, menu: { ...central.menu, extra_menus: [{ id: 'x-cat', name: 'Catering', sites: {} }] } };
+  assert.doesNotThrow(() => plan(withExtras, [], A, venue));
+  // A site that still has its menu is untouched by any of this.
+  const fine = plan(central, [{ target: 'product', entity_id: P('Mocha').id, op: 'update', after: { description: 'Rich' } }], B, v[B]);
+  assert.ok(fine.menuIds.includes(central.sites.find((s) => s.location_id === B).venue_menu_id));
+});

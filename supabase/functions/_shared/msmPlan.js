@@ -299,6 +299,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   const writtenGroups = new Set();
   const newCategories = [];
   const adoptedCategories = [];             // 5.12.102: group categories mapped to the site's own (declared here: finish() can run early)
+  // 5.12.122: finish() can run early (a site with no menu, or whose linked menu was deleted at the
+  // site), before the other menus below are read. It must never reach for them then: it threw
+  // "Cannot access 'managedMenuIds' before initialization" and took the whole screen down.
+  let menusRead = false;
 
   const setCol = (table, row, column, value, meta = {}) => {
     if (sameValue(row[column], value)) return false;
@@ -417,6 +421,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const m of extrasAll) { const id = extraVenueId(m, false); if (id) out.add(id); }
     return out;
   };
+  menusRead = true;
   // The site's menus a group category belongs on, main first: [{ id, name, main }]. A menu the site
   // does not have yet is made when make is true.
   function wantedMenus(c, make) {
@@ -1435,7 +1440,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       locationId: loc, notAtSite: noSite, writes: W, applied, lines, problems, counts, newCategories, adoptedCategories,
       insertedItemIds: [...insertedItems], writtenItemIds: [...writtenItems], writtenGroupIds: [...writtenGroups], venueMenuId, empty,
       // 5.12.116: every menu at this site the group menu manages (its main one, its other menus here).
-      menuIds: noSite || !venueMenuId ? [] : [...managedMenuIds()],
+      menuIds: noSite || !venueMenuId || !menusRead ? [] : [...managedMenuIds()],
       managedItemIds: [...psBy.values()].map((x) => x.venue_item_id).filter(Boolean),
     };
   }
