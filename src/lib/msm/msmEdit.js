@@ -28,14 +28,14 @@
 //     nothing: its row comes out of the draft, and so do the option rows its turn on staged there,
 //     unless another product still on at that site needs them (droppedOptionRows).
 
-import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText, keptWithoutNoPrice, noPriceAt, CATEGORY_RULE_OLD_WORDS, plural } from '../../../supabase/functions/_shared/msmModel.js';
+import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, normName, pctText, keptWithoutNoPrice, noPriceAt, CATEGORY_RULE_OLD_WORDS, plural } from '../../../supabase/functions/_shared/msmModel.js';
 
 export { noPriceAt };
 import { optionRowsForNewSites } from './msmGroupEdit.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 import { SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, toggleShownOn } from '../soldAs.js';
 import {
-  MAIN_MENU, allExtraMenus, extraMenus, extraMenusValue, extraMenuNameProblem, newExtraMenu, matchSiteMenus, menuKeysOf, menuKeysValue,
+  MAIN_MENU, MAIN_MENU_WORDS, MAX_EXTRA_MENUS, allExtraMenus, extraMenus, extraMenusValue, extraMenuNameProblem, newExtraMenu, matchSiteMenus, menuKeysOf, menuKeysValue,
   toggleMenuKey, menuKeysWords, rootCategory, extraMenuAt,
 } from '../../../supabase/functions/_shared/msmMenus.js';
 
@@ -529,7 +529,62 @@ export function addMenuChanges(ctx, name, opts = {}) {
     changes.push({ target: 'category', entity_id: cid, location_id: null, op: 'update', after: { menu_keys: menuKeysValue(keys, menuAfter) }, before: { menu_keys: liveC ? liveC.menu_keys ?? null : null } });
     ticked.push(c.label);
   }
-  return { changes, id, matched: Object.keys(matched), ticked };
+  // The site's own categories on a matched menu that the group menu does not have yet.
+  const notInGroup = new Set(listOf(opts.onVenueMenus).filter((l) => l && matchedLoc.has(l.menu_id) && !venueToGroup.has(`${matchedLoc.get(l.menu_id)}|${l.category_id}`)).map((l) => `${l.menu_id}|${l.category_id}`)).size;
+  return { changes, id, matched: Object.keys(matched), ticked, notInGroup };
+}
+
+/**
+ * 5.12.118: the menus the SITES already have that the group menu does not manage yet, one row per
+ * name. Peter, 27 Nov 2026 (Sandy has its own Catering menu): "it needs to find the menus and be
+ * able to publish them to multiple sites". So nobody types a name: the Menus card lists what it
+ * found, and one button adds it (addMenuChanges with that name, which takes the sites' own menus
+ * of the name and makes one at the others on publish).
+ *   venueMenus  every menu at every site (a Map by id, or a list)
+ * Never the menu the group menu writes into, one another menu of the group took, one publish made,
+ * a switched off menu, or a name the group menu already has. Most sites first, then by name.
+ * Returns [{ name, sites: [locationId], ids: [venueMenuId], full }] (full = no room for another).
+ */
+export function foundSiteMenus(ctx, venueMenus) {
+  const menu = ctx?.eff?.menu;
+  if (!menu) return [];
+  const sites = listOf(ctx.eff?.sites);
+  const order = new Map(sites.map((x, i) => [x.location_id, i]));
+  const all = (venueMenus && typeof venueMenus.values === 'function' ? [...venueMenus.values()] : listOf(venueMenus)).filter((m) => m && m.id && order.has(m.location_id) && m.is_active !== false);
+  const byId = new Map(all.map((m) => [m.id, m]));
+  const taken = new Set([...sites.map((x) => x.venue_menu_id), ...allExtraMenus(menu).flatMap((m) => Object.values(m.sites).filter((v) => typeof v === 'string'))].filter(Boolean));
+  for (const m of extraMenus(menu)) for (const x of sites) { const at = extraMenuAt(m, x.location_id, byId); if (at.id) taken.add(at.id); }
+  const key = normName;                                                // the test matchSiteMenus makes
+  const names = new Set([key(MAIN_MENU_WORDS), ...extraMenus(menu).map((m) => key(m.name))]);
+  const full = extraMenus(menu).length >= MAX_EXTRA_MENUS;
+  const out = new Map();
+  for (const m of all.sort((a, b) => ((Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)) || String(a.id).localeCompare(String(b.id)))) {
+    const k = key(m.name);
+    if (!k || taken.has(m.id) || names.has(k)) continue;
+    // The same test adding it makes: a name it would refuse is not offered.
+    const bad = extraMenuNameProblem(menu, m.name);
+    if (bad && !full) continue;
+    if (!out.has(k)) out.set(k, { name: String(m.name).trim(), sites: [], ids: [], full });
+    const row = out.get(k);
+    if (row.sites.includes(m.location_id)) continue;                    // a site's second menu of the name
+    row.sites.push(m.location_id); row.ids.push(m.id);
+  }
+  const rows = [...out.values()];
+  // Sites in the group menu's order; the name is the first site's spelling of it.
+  for (const r of rows) {
+    const pairs = r.sites.map((loc, i) => [loc, r.ids[i]]).sort((a, b) => order.get(a[0]) - order.get(b[0]));
+    r.sites = pairs.map((x) => x[0]); r.ids = pairs.map((x) => x[1]);
+    r.name = String(byId.get(r.ids[0])?.name ?? r.name).trim();
+  }
+  return rows.sort((a, b) => (b.sites.length - a.sites.length) || a.name.localeCompare(b.name));
+}
+
+/** "Only at Mozz - Sandy", "At 2 of 5 sites: A, B", "At every site". */
+export function foundMenuWords(found, siteNames, total) {
+  const names = listOf(found?.sites).map((id) => (siteNames && typeof siteNames.get === 'function' ? siteNames.get(id) : null) || 'a site');
+  if (total > 1 && names.length >= total) return 'At every site';
+  if (names.length === 1) return `Only at ${names[0]}`;
+  return `At ${names.length} of ${total} sites: ${names.join(', ')}`;
 }
 
 /** Rename one of the group's other menus (the group menu's own name for it; a site's menu keeps its name). */

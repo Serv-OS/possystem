@@ -45,7 +45,7 @@ import { Btn, Pill, Notice, Count } from './msmUi';
 import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto, undoTarget, draftCount } from '../../../lib/msm/msmStatus';
 import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { productsWithNoCategory, repairNoCategoryChanges } from '../../../lib/msm/msmBringIn';
-import { categoryGuardWords, menusGuardWords } from '../../../lib/msm/msmEdit';
+import { categoryGuardWords, menusGuardWords, foundSiteMenus, menusReady } from '../../../lib/msm/msmEdit';
 import { assembleProfilesByLoc } from '../../../lib/msm/msmTaxProfiles';
 import MsmGroups from './MsmGroups';
 import { WORDS } from '../../../lib/msm/msmWords';
@@ -58,6 +58,7 @@ import MsmDetails from './MsmDetails';
 import MsmChangesPanel from './MsmChangesPanel';
 import MsmCsv from './MsmCsv';
 import { useSiteCosts } from './useSiteCosts';
+import { useSiteMenus, readSeenMenus, saveSeenMenus } from './useSiteMenus';
 import { EXTRA_TABS } from './msmTabs';
 import { recipeGapWords } from '../../../lib/stock/phase0Rules';
 import { fetchMsmRecipeGaps } from '../../../lib/stock/data';
@@ -223,6 +224,10 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const ix = useMemo(() => (eff ? indexCentral(eff) : null), [eff]);
   const staged = useMemo(() => stagedIndex(rows), [rows]);
   const ctx = useMemo(() => ({ live, eff }), [live, eff]);
+  // 5.12.118: every menu at every site, read again after a publish and on opening Menu details.
+  const venueMenus = useSiteMenus(phase === 'ready' ? client : null, live, `${reload}|${menu?.last_version_no || 0}|${tab === 'details' ? 'd' : ''}`);
+  const foundMenus = useMemo(() => (venueMenus && menusReady(live) ? foundSiteMenus(ctx, venueMenus) : []), [ctx, live, venueMenus]);
+  const [seenMenus, setSeenMenus] = useState(null);                       // null = read from this browser
   const costs = useSiteCosts({ demo, sites });
   // The latest draft rows and central state, for an Undo pressed after later edits.
   const rowsRef = useRef(rows);
@@ -383,8 +388,11 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const status = statusBar({ working, rows, when: runWords(working?.run_local), draft: waitingDraft, central: eff });
   // The one counting rule (msmStatus.draftCount), the same number and words on every screen.
   const counted = draftCount(rows, eff);
+  // 5.12.118: the sites' own menus not in the group menu yet, less the ones waved away here.
+  const seen = seenMenus || readSeenMenus(menu?.id);
+  const newFound = foundMenus.filter((f) => f.ids.some((id) => !seen.includes(id)));
   const shared = {
-    counted, tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
+    counted, venueMenus, tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
     refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, ratesByLoc, profilesByLoc, sales,
     openProduct: (id) => setSheet({ productId: id }), openGroup: (id) => { setGroupPick(id); setTab('groups'); },
   };
@@ -426,6 +434,14 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         <div style={{ marginBottom: 12, flexShrink: 0 }} data-testid="msm-no-category">
           <Notice tone="warn" actions={[{ label: fixingCats ? 'Working…' : `Put ${noCategory.length === 1 ? 'it' : 'them'} in ${noCategory.length === 1 ? 'its' : 'their'} category`, kind: 'primary', disabled: fixingCats || busy > 0, onClick: fixCategories }]}>
             <strong>{noCategory.length} product{noCategory.length === 1 ? ' has' : 's have'} no category</strong>: {noCategory.slice(0, 8).map((p) => p.menu_name || p.name).join(', ')}{noCategory.length > 8 ? ` and ${noCategory.length - 8} more` : ''}. Each one can be put in the category its own site already has it in. Nothing changes at any site.
+          </Notice>
+        </div>
+      )}
+      {tab === 'grid' && editable && newFound.length > 0 && (
+        <div style={{ marginBottom: 12, flexShrink: 0 }} data-testid="msm-found-menus">
+          <Notice tone="info" actions={[{ label: 'Show me', kind: 'primary', onClick: () => { setNote(null); setTab('details'); } }]}
+            onClose={() => { const next = [...seen, ...foundMenus.flatMap((f) => f.ids)]; saveSeenMenus(menu?.id, next); setSeenMenus(next); }}>
+            <strong>{newFound.length === 1 ? `${newFound[0].sites.length === 1 ? `${sites.find((x) => x.id === newFound[0].sites[0])?.name || 'A site'} has` : `${newFound[0].sites.length} sites have`} a ${newFound[0].name} menu` : `Your sites have ${newFound.length} menus`}</strong> that {newFound.length === 1 ? 'is' : 'are'} not in the group menu yet{newFound.length > 1 ? `: ${newFound.slice(0, 4).map((f) => f.name).join(', ')}${newFound.length > 4 ? ' and more' : ''}` : ''}. Add {newFound.length === 1 ? 'it' : 'them'} in Menu details to manage {newFound.length === 1 ? 'it' : 'them'} here and publish {newFound.length === 1 ? 'it' : 'them'} to every site.
           </Notice>
         </div>
       )}
