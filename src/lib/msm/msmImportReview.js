@@ -188,7 +188,7 @@ export function importSummaryWords(central, check) {
   const root = (id) => { let p = byId.get(id); for (let i = 0; p && p.parent_product_id && byId.has(p.parent_product_id) && i < 10; i++) p = byId.get(p.parent_product_id); return p?.id; };
   const keeps = new Set(listOf(central?.productSites).filter((s) => s.kept && Object.keys(s.kept).length).map((s) => root(s.product_id)).filter(Boolean));
   const head = sizes
-    ? `${plural(tops.length, 'product')} with ${plural(sizes, 'size')}, at ${plural(sites, 'site')}.`
+    ? `${plural(tops.length, 'product')} with ${plural(sizes, 'variant')}, at ${plural(sites, 'site')}.`
     : `${plural(tops.length, 'product')} at ${plural(sites, 'site')}.`;
   const kept = keeps.size ? ` ${keeps.size} of them keep${keeps.size === 1 ? 's' : ''} some details of ${keeps.size === 1 ? 'its' : 'their'} own at one or more sites.` : '';
   const proof = check?.ok ? 'Publishing now would change 0 things at 0 sites.' : `The check found ${check?.writes || 0} differences to settle before the group menu can be made.`;
@@ -230,7 +230,7 @@ export const REVIEW_WORDS = {
   worthALook: ' · Worth a look',
   family: {
     tab: 'Already shared',
-    header: 'Products already shared between your sites. They are linked for you, with their sizes. Leave one out only if you do not want it in the group menu: each site then keeps its own as it is today, outside the group menu.',
+    header: 'Products already shared between your sites. They are linked for you, with their variants. Leave one out only if you do not want it in the group menu: each site then keeps its own as it is today, outside the group menu.',
     optionsHeading: 'Used only inside other products (options)',
     empty: 'No products are shared between your sites yet.',
     leaveOut: 'Leave out',
@@ -238,7 +238,7 @@ export const REVIEW_WORDS = {
   },
   name: {
     tab: 'Set up separately',
-    header: 'Products with the same name at several sites that were set up separately, not shared. For each one pick Same product, Keep separate or Leave out. Sizes go with their product. Nothing changes at any site whatever you pick.',
+    header: 'Products with the same name at several sites that were set up separately, not shared. For each one pick Same product, Keep separate or Leave out. Variants go with their product. Nothing changes at any site whatever you pick.',
     allSame: 'All same product',
     allApart: 'All separate',
     same: 'Same product',
@@ -254,7 +254,7 @@ export const REVIEW_WORDS = {
   },
   onlyOne: {
     tab: 'One site only',
-    header: 'Products on sale at one site only. Bring in: it joins the group menu, switched on at that site only. Leave out: it stays that site\'s own product, exactly as today. Its sizes always go with it.',
+    header: 'Products on sale at one site only. Bring in: it joins the group menu, switched on at that site only. Leave out: it stays that site\'s own product, exactly as today. Its variants always go with it.',
     bringIn: 'Bring in',
     leaveOut: 'Leave out',
     empty: 'Nothing here.',
@@ -445,7 +445,7 @@ export function sizePriceNotes(f, siteName) {
     : `${andList(g.sites.map(siteName))} charge their own price for ${andList(g.names)}.`));
 }
 
-const FORM_WORDS = [['plain', 'sold on its own at'], ['sized', 'sold with sizes at'], ['option', 'an option inside other products at']];
+const FORM_WORDS = [['plain', 'sold on its own at'], ['sized', 'sold with variants at'], ['option', 'an option inside other products at']];
 // Where a shared product is on sale, in one form of words; and whether its forms differ by site.
 function whereShared(f, siteIds, siteName) {
   const onRows = f.sites.filter((s) => s.on);
@@ -466,7 +466,7 @@ function whereShared(f, siteIds, siteName) {
   return { words: w, mixed, optionsOnly, sizedSites: onRows.filter((s) => s.form === 'sized').map((s) => s.location_id) };
 }
 const priceShared = (f, money) => {
-  if (f.pricedBySize) return 'priced by size';
+  if (f.pricedBySize) return 'priced by variant';
   // Only the sites where it is on sale: a switched off copy's price is never charged there.
   const own = f.sites.filter((s) => s.on && s.own).length;
   return `group price ${money(f.groupPrice) || 'no price'}${own === 1 ? ' (1 site charges its own)' : own ? ` (${own} sites charge their own)` : ''}`;
@@ -490,13 +490,13 @@ export function sharedLine(view, productId, { siteName, money, siteIds = [], lef
   notes.push(...sizePriceNotes(f, siteName));
   if (leftOut) {
     notes.push(f.sizes.length
-      ? 'Left out with its sizes: each site keeps its own as it is today, outside the group menu.'
+      ? 'Left out with its variants: each site keeps its own as it is today, outside the group menu.'
       : 'Left out: each site keeps its own as it is today, outside the group menu.');
     const apart = listOf(joinApart);
     if (apart.length === 1) notes.push(`${possessive(apart[0])} own ${f.name} is under Set up separately: it still comes in as its own product unless you leave it out there too.`);
     else if (apart.length > 1) notes.push(`${andList(apart)} each have their own ${f.name} under Set up separately: each still comes in as its own product unless you leave it out there too.`);
   }
-  return { title: f.name, sub, sizes: f.sizes.length ? `Sizes: ${sizesWords(f, money)}` : '', notes, optionsOnly: where.optionsOnly };
+  return { title: f.name, sub, sizes: f.sizes.length ? `Variants: ${sizesWords(f, money)}` : '', notes, optionsOnly: where.optionsOnly };
 }
 
 // The sites a size is at, in words, against its product's sites.
@@ -548,7 +548,7 @@ function reachWords(proposal, productId, siteName, money) {
   const head = `A group price change reaches ${follow.length <= 3 ? andList(follow.map(siteName)) : `${follow.length} of the ${total} sites`}.`;
   const O = andList(own.map((o) => siteName(o.loc)));
   let tail;
-  if (own.every((o) => o.sized)) tail = own.length === 1 ? `${O} charges its own size prices and keeps them until you change them there.` : `${O} charge their own size prices and keep them until you change them there.`;
+  if (own.every((o) => o.sized)) tail = own.length === 1 ? `${O} charges its own variant prices and keeps them until you change them there.` : `${O} charge their own variant prices and keep them until you change them there.`;
   else if (own.length === 1) tail = `${O} charges its own ${money(own[0].price) || 'price'} and keeps it until you change it there.`;
   else tail = `${O} charge their own prices and keep them until you change them there.`;
   return `${head} ${tail}`;
@@ -582,7 +582,7 @@ export function nameLine(proposal, entry, { siteName, money, siteIds = [], share
     const n = f.sites.length;
     lead = `${name} was set up separately at ${n} sites, not shared.`;
     same = `Same product: one ${name} in the group menu.${reach ? ` ${reach}` : ''}`;
-    apart = `Keep separate: ${name} comes into the group menu as ${n} separate products, one for each site, each with its own price${f.sizes.length ? ' and sizes' : ''}.`;
+    apart = `Keep separate: ${name} comes into the group menu as ${n} separate products, one for each site, each with its own price${f.sizes.length ? ' and variants' : ''}.`;
     leave = `Leave out: ${name} stays out of the group menu. Each site keeps its own ${name}, exactly as today.`;
   }
   // Each site's own product as it is today (the apart form: its own category, price and sizes).
@@ -594,16 +594,16 @@ export function nameLine(proposal, entry, { siteName, money, siteIds = [], share
     if (!g) return `${siteName(loc)}`;
     const zs = sizesWords(g, money);
     const option = g.sites.some((s) => s.location_id === loc && s.form === 'option');
-    return `${siteName(loc)}: ${[g.category || 'No category', option ? 'option only' : null, zs ? `sizes ${zs}` : money(g.groupPrice) || 'no price'].filter(Boolean).join(' · ')}`;
+    return `${siteName(loc)}: ${[g.category || 'No category', option ? 'option only' : null, zs ? `variants ${zs}` : money(g.groupPrice) || 'no price'].filter(Boolean).join(' · ')}`;
   });
   if (entry.joined) {
     const shared = f.sites.map((s) => s.location_id).filter((l) => !joinSites.includes(l));
-    rows.unshift(`Shared at ${andList(shared.map(siteName))}: ${f.pricedBySize && f.sizes.length ? `sizes ${sizesWords(f, money)}` : `group price ${money(f.groupPrice) || 'no price'}`}`);
+    rows.unshift(`Shared at ${andList(shared.map(siteName))}: ${f.pricedBySize && f.sizes.length ? `variants ${sizesWords(f, money)}` : `group price ${money(f.groupPrice) || 'no price'}`}`);
   }
   const notes = [];
   if (f.sizes.length) {
     const n = f.sites.length;
-    notes.push(`With Same product, sizes with the same name become one size: ${f.sizes.map((z) => `${z.name} (${sizeSitesWords(n, z.sites.map((s) => s.location_id), siteName)})`).join(', ')}.`);
+    notes.push(`With Same product, variants with the same name become one variant: ${f.sizes.map((z) => `${z.name} (${sizeSitesWords(n, z.sites.map((s) => s.location_id), siteName)})`).join(', ')}.`);
   }
   const missing = listOf(siteIds).filter((l) => !f.sites.some((x) => x.location_id === l));
   if (missing.length) notes.push(`Not at ${andList(missing.map(siteName))}.`);
@@ -630,7 +630,7 @@ export function onlyOneLine(view, entry, { siteName, money, choice }) {
   const option = at ? at.form === 'option' : f.optionOnly;
   const used = option && at && at.usedBy.length ? `used in ${quoted(at.usedBy)}` : null;
   const where = entry.namesakes > 0 ? `${possessive(site)} own` : `only at ${site}`;
-  const price = f.pricedBySize && f.sizes.length ? 'priced by size' : money(f.groupPrice) || 'no price';
+  const price = f.pricedBySize && f.sizes.length ? 'priced by variant' : money(f.groupPrice) || 'no price';
   const sub = [f.category || 'No category', option ? 'option only' : null, used, where, price].filter(Boolean).join(' · ');
   const notes = [];
   if (entry.namesakes > 0) {
@@ -638,8 +638,8 @@ export function onlyOneLine(view, entry, { siteName, money, choice }) {
       ? `${entry.namesakes} shared products are also called ${f.name}. This one is not joined to any of them, because it could be any of them.`
       : `${entry.namesakes} shared products are also called ${f.name}. This one is not joined to either, because it could be either one.`);
   }
-  if (choice === 'leave') notes.push(`Left out${f.sizes.length ? ' with its sizes' : ''}: it stays ${possessive(site)} own, exactly as today.`);
-  return { title: f.name, sub, sizes: f.sizes.length ? `Sizes: ${sizesWords(f, money)}` : '', notes };
+  if (choice === 'leave') notes.push(`Left out${f.sizes.length ? ' with its variants' : ''}: it stays ${possessive(site)} own, exactly as today.`);
+  return { title: f.name, sub, sizes: f.sizes.length ? `Variants: ${sizesWords(f, money)}` : '', notes };
 }
 
 /**
@@ -650,12 +650,12 @@ export function onlyOneLine(view, entry, { siteName, money, choice }) {
 export function clashLine(c, { siteName, money, leftOut = false }) {
   const site = siteName(c.location_id);
   const whose = possessive(site);
-  const what = c.level === 'size' ? `${c.name} (a size of ${c.parentName})` : c.name;
+  const what = c.level === 'size' ? `${c.name} (a variant of ${c.parentName})` : c.name;
   const copies = listOf(c.copies);
   const out = !!leftOut && copies.some((x) => x.comesIn);
   const label = (x, i) => (c.kind === 'shared' ? (x.comesIn ? 'The shared one' : `${whose} own one`) : c.kind === 'copies' ? `Copy ${i + 1}` : `${i + 1}.`);
   const lines = copies.map((x, i) => `${label(x, i)}: ${money(x.price) || 'no price'} · ${x.category || 'no category'}${x.optionOnly ? ' · option only' : ''} · ${x.onMenu ? 'on the menu' : 'not on this menu'}${listOf(x.usedBy).length ? ` · used in ${quoted(x.usedBy)}` : ''}${x.comesIn ? (out ? ' · left out of the group menu' : ' · goes in the group menu') : ''}`);
-  const thing = c.level === 'size' ? 'sizes' : 'products';
+  const thing = c.level === 'size' ? 'variants' : 'products';
   const situation = c.kind === 'copies' ? `${site} sells ${copies.length} copies of the shared ${what}:`
     : c.kind === 'shared' ? `${site} sells the shared ${what} and also its own separate one:`
       : `${site} sells ${copies.length} ${thing} called ${what}, not shared:`;

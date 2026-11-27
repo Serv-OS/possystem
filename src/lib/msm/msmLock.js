@@ -63,7 +63,7 @@ const WORDS = {
   name: 'name', menu_name: 'name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
   cat: 'category', cats: 'extra categories', tax_rate_id: 'VAT', tax_overrides: 'VAT by order type', allergens: 'allergens',   // taxText: lockWord
   tags: 'dietary tags', image: 'photo', assigned_modifier_groups: 'option groups', visibility: 'channels it shows on',
-  sold_alone: 'sold on its own setting', type: 'type', item_code: 'item code', parent_id: 'size link', pricing: 'prices',
+  sold_alone: 'sold on its own setting', type: 'type', item_code: 'item code', parent_id: 'variant link', pricing: 'prices',
   min: 'rules', max: 'rules', selection_type: 'kind of choice', options: 'options',
   sold_as: 'order types it is sold on',
   shown_on: 'places head office hides it',

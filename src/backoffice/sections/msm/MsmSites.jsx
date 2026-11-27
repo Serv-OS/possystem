@@ -270,7 +270,7 @@ function BringIn({ site, own, raw, central, editable, stage, onClose }) {
           <div key={o.id} style={{ padding: '9px 0', borderBottom: '1px solid var(--bdr)' }}>
             <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
               <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}{o.sizes.length ? <span style={{ ...ui.sub, fontWeight: 500 }}> · {o.sizes.length} size{o.sizes.length === 1 ? '' : 's'}</span> : null}</div>
+                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}{o.sizes.length ? <span style={{ ...ui.sub, fontWeight: 500 }}> · {o.sizes.length} variant{o.sizes.length === 1 ? '' : 's'}</span> : null}</div>
                 <div style={ui.sub}>
                   {o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}
                   {o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}
@@ -484,7 +484,7 @@ function SyncSheet({ sites, check, checking, derived, central, editable, stage, 
               <div key={`p|${o.id}`} style={{ marginTop: 8 }}>
                 <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
                   <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}<span style={{ ...ui.sub, fontWeight: 500 }}> · product{o.sizes.length ? `, ${o.sizes.length} size${o.sizes.length === 1 ? '' : 's'}` : ''}</span></div>
+                    <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}<span style={{ ...ui.sub, fontWeight: 500 }}> · product{o.sizes.length ? `, ${o.sizes.length} variant${o.sizes.length === 1 ? '' : 's'}` : ''}</span></div>
                     <div style={ui.sub}>{o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}{o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}</div>
                   </div>
                   {editable && (

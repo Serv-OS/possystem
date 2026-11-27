@@ -298,11 +298,11 @@ test('Undo puts the cleared copy back: no order type VAT left, the copy recorded
   assert.deepEqual(p.writes.items.update, [{ id: 'm-cola', set: { tax_profile_id: PROFILE_A }, tax_overrides: { set: {}, remove: ['takeaway'] } }]);
 });
 
-test('17 Oct recheck: a size takes its product\'s four keys, as Menu Manager cascades them; its other keys and a key it keeps stay', () => {
+test('17 Oct recheck: a variant takes its product\'s four keys, as Menu Manager cascades them; its other keys and a key it keeps stay', () => {
   const { v, central, P } = setup();
   const ch = [{ target: 'product', entity_id: P('Latte').id, op: 'update', after: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } } }];
   const a = plan(central, ch, A, v[A]);
-  assert.deepEqual(a.writes.items.update.map((u) => u.id).sort(), ['m-latte', 'm-latte-l'], 'the product and its size');
+  assert.deepEqual(a.writes.items.update.map((u) => u.id).sort(), ['m-latte', 'm-latte-l'], 'the product and its variant');
   assert.deepEqual(a.writes.items.update.find((u) => u.id === 'm-latte-l').tax_overrides, { set: { takeaway: ZERO.A }, remove: [] });
   // The size's other keys stay as they are (only the four keys are ever written).
   v[A].items.find((i) => i.id === 'm-latte-l').tax_overrides = { counter: VAT.A };
@@ -313,7 +313,7 @@ test('17 Oct recheck: a size takes its product\'s four keys, as Menu Manager cas
   const c2 = JSON.parse(JSON.stringify(central));
   c2.productSites.find((r) => r.product_id === P('Large latte').id && r.location_id === A).kept = { tax_overrides: { takeaway: false } };
   const a3 = plan(c2, ch, A, v[A]);
-  assert.deepEqual(a3.writes.items.update.map((u) => u.id), ['m-latte'], 'the size kept its own: nothing written there');
+  assert.deepEqual(a3.writes.items.update.map((u) => u.id), ['m-latte'], 'the variant kept its own: nothing written there');
   // Undo: the product's key goes, and the size's goes with it, its other keys still as they were.
   const v4 = JSON.parse(JSON.stringify(v[A]));
   v4.items = a2.applied.items;
@@ -321,11 +321,11 @@ test('17 Oct recheck: a size takes its product\'s four keys, as Menu Manager cas
   c4.products.find((x) => x.id === P('Latte').id).tax_by_type = { takeaway: { name: 'Zero Rate', percent: 0 } };
   const undo = [{ target: 'product', entity_id: P('Latte').id, op: 'update', after: { tax_by_type: null }, before: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } } }];
   const u = plan(c4, undo, A, v4);
-  assert.deepEqual(u.applied.items.find((i) => i.id === 'm-latte-l').tax_overrides, { counter: VAT.A }, 'the size is back exactly');
+  assert.deepEqual(u.applied.items.find((i) => i.id === 'm-latte-l').tax_overrides, { counter: VAT.A }, 'the variant is back exactly');
   assert.deepEqual(u.applied.items.find((i) => i.id === 'm-latte').tax_overrides, v[A].items.find((i) => i.id === 'm-latte').tax_overrides || {});
 });
 
-test('17 Oct recheck: the import and drift treat a size whose keys equal its product\'s as following it', () => {
+test('17 Oct recheck: the import and drift treat a variant whose keys equal its product\'s as following it', () => {
   const v = groupVenues();
   // Both the product and its size already carry the zero rate for takeaway at A (as Menu Manager left them).
   v[A].items.find((i) => i.id === 'm-latte').tax_overrides = { takeaway: ZERO.A };
@@ -500,7 +500,7 @@ test('review: an option that is off at a site never adopts an entry there (centr
   assert.ok(G('Milk'));
 });
 
-test('review: takeaway VAT reaches a size that carries its own generated tax profile copy (Provo, Location 2)', () => {
+test('review: takeaway VAT reaches a variant that carries its own generated tax profile copy (Provo, Location 2)', () => {
   const { v, central, P } = setup();
   const va = clone(v[A]);
   va.items.find((i) => i.id === 'm-latte-l').tax_profile_id = PROFILE_A;
@@ -509,15 +509,15 @@ test('review: takeaway VAT reaches a size that carries its own generated tax pro
   const p = plan(central, ch, A, va);
   assert.equal(p.applied.items.find((i) => i.id === 'm-latte').tax_overrides.takeaway, ZERO.A);
   const size = p.applied.items.find((i) => i.id === 'm-latte-l');
-  assert.equal(size.tax_profile_id, null, 'the size line no longer hides the takeaway VAT');
-  assert.deepEqual(size.tax_overrides, { takeaway: ZERO.A }, 'the size takes its product\'s keys (17 Oct recheck)');
+  assert.equal(size.tax_profile_id, null, 'the variant line no longer hides the takeaway VAT');
+  assert.deepEqual(size.tax_overrides, { takeaway: ZERO.A }, 'the variant takes its product\'s keys (17 Oct recheck)');
   assert.ok(p.lines.some((l) => l.id === 'm-latte-l' && l.column === 'tax_profile_id' && l.profileCleared));
   // A real profile on the size blocks, in words.
   va.taxProfiles.push({ id: 'pf-real', location_id: A, name: 'Hot food', active: true, sort_order: 1, generated_from_rate_id: null });
   va.taxProfileLines.push({ id: 'pl-2', profile_id: 'pf-real', location_id: A, name: 'Hot', line_type: 'rate', rate: 20, mode: 'exclusive', compound: false, taxable: false, tax_basis: 'post_discount', order_types: ['dine-in'], active: true });
   va.items.find((i) => i.id === 'm-latte-l').tax_profile_id = 'pf-real';
   const p2 = plan(central, ch, A, va);
-  assert.ok(p2.problems.some((x) => x.code === 'real_tax_profile' && /size "Large latte"/.test(x.words)), JSON.stringify(p2.problems));
+  assert.ok(p2.problems.some((x) => x.code === 'real_tax_profile' && /variant "Large latte"/.test(x.words)), JSON.stringify(p2.problems));
 });
 
 test('review: Keep or Put back on one order type price writes only that key, never a separate drift on another', () => {

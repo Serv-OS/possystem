@@ -74,7 +74,7 @@ test('decisions build a group menu that passes the zero writes check, whatever i
   const latte = p.products.find((x) => x.name === 'Latte');
   const large = p.products.find((x) => x.name === 'Large latte');
   const noLatte = buildCentral(p, importSites(), toDecisions(p, setLeaveOut(ch, latte.id, true)), { idGen: idGen('g') });
-  assert.ok(noLatte.dropped.includes(latte.id) && noLatte.dropped.includes(large.id), 'Latte and its size are both left out');
+  assert.ok(noLatte.dropped.includes(latte.id) && noLatte.dropped.includes(large.id), 'Latte and its variant are both left out');
   assert.equal(noLatte.central.products.some((x) => x.name === 'Large latte'), false);
   assert.equal(noLatte.check.ok, true, JSON.stringify(noLatte.check.problems.slice(0, 3)));
   void nameOf;
@@ -85,7 +85,7 @@ test('counts for the headline and per site', () => {
   const ch = initialChoices(p);
   const n = reviewCounts(p, ch, [A, B, C]);
   assert.equal(n.family, p.review.family.length);
-  assert.equal(n.family, 5, 'products, never sizes');
+  assert.equal(n.family, 5, 'products, never variants');
   assert.equal(n.name, p.review.name.length);
   assert.equal(n.name, 1);
   assert.equal(n.nameSame, 0);
@@ -98,9 +98,9 @@ test('counts for the headline and per site', () => {
 });
 
 // 20 Oct review fix: products and their sizes are counted apart; what is kept is counted per product.
-test('summary words: products, sizes, sites, products keeping details and the proof (or what is left to settle)', () => {
+test('summary words: products, variants, sites, products keeping details and the proof (or what is left to settle)', () => {
   const central = { products: [{ id: 'a' }, { id: 'b' }, { id: 's', parent_product_id: 'a' }], sites: [{}, {}], productSites: [{ product_id: 's', kept: { cat: 'x' } }, { product_id: 'b', kept: {} }] };
-  assert.equal(importSummaryWords(central, { ok: true }), '2 products with 1 size, at 2 sites. 1 of them keeps some details of its own at one or more sites. Publishing now would change 0 things at 0 sites.');
+  assert.equal(importSummaryWords(central, { ok: true }), '2 products with 1 variant, at 2 sites. 1 of them keeps some details of its own at one or more sites. Publishing now would change 0 things at 0 sites.');
   assert.match(importSummaryWords(central, { ok: false, writes: 3 }), /found 3 differences/);
   assert.equal(importSummaryWords({ products: [{ id: 'a' }, { id: 'b' }], sites: [{}, {}], productSites: [] }, { ok: true }), '2 products at 2 sites. Publishing now would change 0 things at 0 sites.');
 });
@@ -124,7 +124,7 @@ test('the menus a site could be imported from: active ones, the default first, w
   assert.equal(list[0].products, before[0].products);
 });
 
-test('the menus a site could be imported from: the menu picked by default never moves when sizes are counted apart', () => {
+test('the menus a site could be imported from: the menu picked by default never moves when variants are counted apart', () => {
   // Two menus, neither the default: Big has fewer products but more rows in all once its sizes count.
   const item = (id, cat, parent = null) => ({ id, cat, cats: [], parent_id: parent, archived: false });
   const raw = {

@@ -51,7 +51,7 @@ export const hasSizes = (eff, p) => !!p && (p.type === 'variants' || listOf(eff?
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 
 // A variants parent's own price is never charged (Change prices leaves it out too).
-const VARIANTS_WORDS = 'This product is priced by its sizes. Change the price on each size.';
+const VARIANTS_WORDS = 'This product is priced by its variants. Change the price on each variant.';
 
 /** The price a site falls back to when it has no price of its own (In store or a channel). */
 export function followPrice(product, site, channel = null) {
@@ -287,7 +287,7 @@ export function productProblems(fields, ctx = {}) {
   const blank = (v) => v == null || v === '';
   const needsTax = listOf(ctx.eff?.products).some((p) => !blank(p.tax_rate_percent));
   if (needsTax && blank(f.tax_rate_percent) && !String(f.tax_rate_name ?? '').trim()) out.push('Pick the VAT rate.');
-  if (f.parent_product_id && f.parent_product_id === f.id) out.push('A product cannot be a size of itself.');
+  if (f.parent_product_id && f.parent_product_id === f.id) out.push('A product cannot be a variant of itself.');
   return out;
 }
 

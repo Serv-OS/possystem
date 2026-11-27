@@ -107,3 +107,34 @@ test('a site that joins or a product turned on at a site: a delivery price goes 
   assert.ok(without, 'the row is made');
   assert.ok(!('delivery' in without.pricing), 'no delivery key when the group menu has no delivery price');
 });
+
+// 5.12.120, the word. Peter, 27 Nov 2026: "its not a size though, variants are not just sizes".
+// The Multi site menu said "size" everywhere for what the rest of ServOS calls a variant.
+test('the Multi site menu says variant, never size, and a product has an Add a variant button', async () => {
+  const sheet = read('../../backoffice/sections/msm/MsmProductSheet.jsx');
+  assert.match(sheet, /label="Is this a variant of another product\?"/);
+  assert.match(sheet, /<option value="">Not a variant<\/option>/);
+  assert.match(sheet, /a size \(Large of Latte\), a flavour \(Vanilla of Milkshake\) or a type/, 'the hint says a size is one kind of variant');
+  assert.match(sheet, /data-testid="msm-add-variant"[^>]*onClick=\{\(\) => onAddVariant\(p\.id\)\}>Add a variant</);
+  assert.match(sheet, /parent_product_id: variantParent\.id, category_id: variantParent\.category_id \|\| ''/, 'it opens as a variant of that product, in its category');
+  const page = read('../../backoffice/sections/msm/MultiSiteMenu.jsx');
+  assert.match(page, /onAddVariant=\{\(id\) => setSheet\(\{ create: true, variantOf: id \}\)\}/);
+  // The words a person reads: the sheet, the grid, the draft, the publish preview, the CSV.
+  const { sizeVatWords } = await import('./msmWords.js');
+  assert.match(sizeVatWords({ size: true, product: 'Latte' }), /^This variant /);
+  const words = read('./msmWords.js');
+  assert.match(words, /parent_product_id: 'variant of'/);
+  assert.match(words, /'not a variant'/);
+  assert.match(words, /variants: 'a product with variants'/);
+  const plan = read('../../../supabase/functions/_shared/msmPlan.js');
+  assert.match(plan, /now a variant of \$\{names\[line\.after\] \|\| 'another product'\}/);
+  assert.match(plan, /n\('newSizes', 'new variant', 'new variants'\);/);
+  const { exportCsv } = await import('../../../supabase/functions/_shared/msmCsv.js');
+  assert.match(exportCsv({ products: [], categories: [], productSites: [] }, []).split('\n')[0], /Variant of/);
+  // No screen text in the Multi site menu still says size (code names like sizesOfThis are not text).
+  for (const f of ['MsmProductSheet.jsx', 'MsmGrid.jsx', 'MsmAddToProducts.jsx', 'MsmChangePrices.jsx', 'MsmSites.jsx', 'MsmCsv.jsx']) {
+    const text = read(`../../backoffice/sections/msm/${f}`).split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*|\{\/\*)/.test(l)).join('\n');
+    const strings = [...text.matchAll(/(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g)].map((m) => m[2].replace(/\$\{[^}]*(\}|$)/g, '')).filter((x) => /(?<![-.\w$])[Ss]izes?(?![\w=_:])/.test(x) && !/^(size|sizes|sized)$/.test(x) && !/a size \(Large of Latte\)/.test(x));
+    assert.deepEqual(strings, [], `${f} still says size`);
+  }
+});

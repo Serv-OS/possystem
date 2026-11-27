@@ -705,7 +705,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   const mapParent = (p) => {
     if (!p.parent_product_id) return null;
     const pps = psBy.get(p.parent_product_id);
-    if (!pps) { problem('size_parent_missing', 'block', `"${p.name}" is a size of a product that is not at this site.`, { productId: p.id }); return null; }
+    if (!pps) { problem('size_parent_missing', 'block', `"${p.name}" is a variant of a product that is not at this site.`, { productId: p.id }); return null; }
     return pps.venue_item_id;
   };
   const mapGroups = (p) => listOf(p.modifier_groups).map((g) => {
@@ -763,7 +763,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   // and the kiosk only while it has no VAT keys of its own (store addItem, kioskLineTaxRefs). Giving
   // it its product's order type keys would move its eat in VAT to the site's standard rate, so it is
   // blocked in words instead (no live size has no rate today; the product sheet refuses a new one).
-  const sizeNoRate = (p, meta) => problem('size_no_rate', 'block', `The size "${p.name}" has no VAT rate of its own at this site, so giving it its product's VAT by order type would charge its eat in VAT at the site's standard rate. Give the size its VAT in the multi site menu, then publish again. Nothing was changed.`, meta);
+  const sizeNoRate = (p, meta) => problem('size_no_rate', 'block', `The variant "${p.name}" has no VAT rate of its own at this site, so giving it its product's VAT by order type would charge its eat in VAT at the site's standard rate. Give the variant its VAT in the multi site menu, then publish again. Nothing was changed.`, meta);
   const parentRowOf = (p) => { const pps = psBy.get(p.parent_product_id); return pps ? vItemById.get(pps.venue_item_id) || null : null; };
 
   // VAT by order type for a NEW venue row: the four keys mapped; a new size takes its product's
@@ -833,7 +833,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       if (mirror === null) { problem('tax_profiles_unread', 'block', `Could not read this site's tax profiles, so VAT by order type for "${p.name}" was not checked. Try again.`, meta); return; }
       if (!mirror) {
         problem('real_tax_profile', 'block', isSize
-          ? `This site uses a tax profile on the size "${p.name}", so its VAT by order type would not change. Set its tax in Settings, Tax.`
+          ? `This site uses a tax profile on the variant "${p.name}", so its VAT by order type would not change. Set its tax in Settings, Tax.`
           : `This site uses a tax profile on "${p.name}". Set its tax in Settings, Tax.`, meta);
         return;
       }
@@ -1474,7 +1474,7 @@ export function countsWords(counts) {
   const n = (k, one, many) => { if (c[k]) parts.push(`${c[k]} ${c[k] === 1 ? one : many}`); };
   n('prices', 'price', 'prices');
   n('newProducts', 'new product', 'new products');
-  n('newSizes', 'new size', 'new sizes');
+  n('newSizes', 'new variant', 'new variants');
   n('subItems', 'sub item added', 'sub items added');
   n('turnedOn', 'turned on', 'turned on');
   n('turnedOff', 'turned off', 'turned off');
@@ -1492,7 +1492,7 @@ export function countsWords(counts) {
 // Plain words for the columns publish writes (17 Oct verification: never a raw column name, id,
 // web address or true/false in the preview a manager checks before publishing).
 const TEXT_WORDS = { name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', item_code: 'item code' };
-const TYPE_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with sizes', subitem: 'a sub item' };
+const TYPE_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with variants', subitem: 'a sub item' };
 const PRICE_LABEL = { dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' };
 const quoteText = (v) => {
   const t = v == null ? '' : String(v).trim();
@@ -1578,7 +1578,7 @@ export function lineWords(line, names = {}) {
   if (TEXT_WORDS[col]) return `${who}: ${TEXT_WORDS[col]} ${quoteText(line.before)} to ${quoteText(line.after)}`;
   if (col === 'cat') return line.after ? `${who}: moves to ${names[line.after] || 'another category'}` : `${who}: taken out of its category`;
   if (col === 'cats') return `${who}: extra categories change`;
-  if (col === 'parent_id') return line.after ? `${who}: now a size of ${names[line.after] || 'another product'}` : `${who}: no longer a size`;
+  if (col === 'parent_id') return line.after ? `${who}: now a variant of ${names[line.after] || 'another product'}` : `${who}: no longer a variant`;
   if (col === 'tax_rate_id') return line.after ? `${who}: VAT rate becomes ${names[line.after] || 'another rate'}` : `${who}: no VAT rate`;
   if (col === 'image') return `${who}: ${line.before == null || line.before === '' ? 'photo added' : line.after == null || line.after === '' ? 'photo removed' : 'photo changes'}`;
   if (col === 'type') return `${who}: now ${TYPE_WORDS[line.after] || 'another kind of product'}`;

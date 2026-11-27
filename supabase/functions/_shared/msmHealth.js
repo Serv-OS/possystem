@@ -95,7 +95,7 @@ export function checkSite(plan, opts = {}) {
     if (k && (codes.get(k) || 0) > 1) push(blocking, { code: 'item_code_clash', words: `Item code ${i.item_code} for ${label} is already used by another product at this site.`, productId });
     if (active(i) && i.parent_id) {
       const parent = byId.get(i.parent_id);
-      if (!active(parent)) push(blocking, { code: 'size_parent_inactive', words: `${label} is a size of a product that is not on sale at this site.`, productId });
+      if (!active(parent)) push(blocking, { code: 'size_parent_inactive', words: `${label} is a variant of a product that is not on sale at this site.`, productId });
     }
     if (active(i) && i.cat) {
       const n = normName(nameOf(i));

@@ -34,7 +34,7 @@ function pieAtC() {
   const v = groupVenues();
   const c = v[C];
   c.groups.push(
-    { id: 'mgd-piesize', location_id: C, name: 'Pie size', min: 1, max: 1, selection_type: 'single', sort_order: 5, options: [{ id: 'opt-small', name: 'Small', price: 0, subGroupId: 'mgd-sauce' }, { id: 'opt-big', name: 'Big', price: 1 }] },
+    { id: 'mgd-piesize', location_id: C, name: 'Pie variant', min: 1, max: 1, selection_type: 'single', sort_order: 5, options: [{ id: 'opt-small', name: 'Small', price: 0, subGroupId: 'mgd-sauce' }, { id: 'opt-big', name: 'Big', price: 1 }] },
     { id: 'mgd-sauce', location_id: C, name: 'Pie sauce', min: 1, max: 1, selection_type: 'single', sort_order: 6, options: [{ id: 'opt-gravy', name: 'Gravy', price: 0 }] },
     { id: 'mgd-pieext', location_id: C, name: 'Pie extras', min: 0, max: 3, selection_type: 'multiple', sort_order: 7, options: [{ id: 'opt-peas', name: 'Peas', price: 0.5 }] },
   );
@@ -291,14 +291,14 @@ test('recheck 4: the "Version N" label stays on one line in the publish history'
   assert.match(src, /data-testid="msm-version-label" style=\{\{ minWidth: VERSION_W, flexShrink: 0, whiteSpace: 'nowrap'/);
 });
 
-test('recheck 7: the product sheet says how sizes take their product\'s VAT by order type', () => {
+test('recheck 7: the product sheet says how variants take their product\'s VAT by order type', () => {
   assert.equal(sizeVatWords({ size: true, product: 'Latte', taxByType: { takeaway: { name: 'Zero Rate', percent: 0 } } }),
-    'This size follows Latte: Takeaway Zero Rate (0%). To change it, change it on Latte.');
-  assert.match(sizeVatWords({ size: true, product: 'Latte', taxByType: {} }), /^This size uses its VAT for every order type, as Latte does\./);
-  assert.equal(sizeVatWords({ size: false, sizes: 3 }), 'Its 3 sizes use these too.');
+    'This variant follows Latte: Takeaway Zero Rate (0%). To change it, change it on Latte.');
+  assert.match(sizeVatWords({ size: true, product: 'Latte', taxByType: {} }), /^This variant uses its VAT for every order type, as Latte does\./);
+  assert.equal(sizeVatWords({ size: false, sizes: 3 }), 'Its 3 variants use these too.');
   assert.equal(sizeVatWords({ size: false, sizes: 0 }), '');
   const sheet = fs.readFileSync(new URL('../../backoffice/sections/msm/MsmProductSheet.jsx', import.meta.url), 'utf8');
-  assert.doesNotMatch(sheet, /A size uses the VAT by order type of/);
+  assert.doesNotMatch(sheet, /A variant uses the VAT by order type of/);
   assert.match(sheet, /sizeVatWords\(\{ size: true/);
 });
 

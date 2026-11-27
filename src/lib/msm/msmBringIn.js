@@ -163,7 +163,7 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
       changes.push({ target: 'product', entity_id: sid, location_id: null, op: 'create', after: f });
       C.products.push({ id: sid, ...f });
       addProductSite(sid, s, f);
-      words.push(`${nameOf(s)} comes in as a new size of ${link.name}, on at ${siteName} only.`);
+      words.push(`${nameOf(s)} comes in as a new variant of ${link.name}, on at ${siteName} only.`);
     }
     words.unshift(`${nameOf(row)} at ${siteName} becomes ${siteName}'s copy of ${link.menu_name || link.name}.`);
   } else {
@@ -179,7 +179,7 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
       C.products.push({ id: sid, ...sf });
       addProductSite(sid, s, sf);
     }
-    words.unshift(`${nameOf(row)} comes into the group menu as a product on at ${siteName} only${sizes.length ? `, with its ${sizes.length} size${sizes.length === 1 ? '' : 's'}` : ''}.`);
+    words.unshift(`${nameOf(row)} comes into the group menu as a product on at ${siteName} only${sizes.length ? `, with its ${sizes.length} variant${sizes.length === 1 ? '' : 's'}` : ''}.`);
   }
 
   // ── Option groups (Then ask first) ────────────────────────────────────────
@@ -843,7 +843,7 @@ export function repairSubItemsChanges(central, locationId, raw, opts = {}) {
   const elsewhere = new Set();
   for (const u of list) {
     const pid = bringSubItem(u.itemId);
-    if (!pid) { problems.push(`${u.itemName} (${u.groupName}: ${u.optionName}) has sizes or is a size, so it stays ${siteName}'s own.`); continue; }
+    if (!pid) { problems.push(`${u.itemName} (${u.groupName}: ${u.optionName}) has variants or is a variant, so it stays ${siteName}'s own.`); continue; }
     const o = listOf(C.options).find((x) => x.id === u.optionId);
     changes.push({ target: 'modifier_option', entity_id: u.optionId, location_id: null, op: 'update', after: { product_id: pid }, before: { product_id: o?.product_id ?? null } });
     o.product_id = pid;

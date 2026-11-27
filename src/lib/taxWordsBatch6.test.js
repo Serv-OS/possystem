@@ -168,7 +168,7 @@ test('the report lines: UK words exactly as before, tax at a US venue', () => {
 
 test('the multi site menu words: UK words unchanged, no VAT at a US venue', () => {
   const uk = [colWord('tax_rate_id'), colWord('tax_overrides'), fieldWord('tax_by_type'), fieldWord('tax_rate_name'), lockWord('tax_rate_id'), keptValueWords('tax_rate_id', null), sizeVatWords({ product: 'Latte' })];
-  assert.deepEqual(uk, ['VAT rate', 'VAT by order type', 'VAT by order type', 'VAT', 'VAT', 'no VAT rate', 'This size uses its VAT for every order type, as Latte does. To set VAT by order type, set it on Latte: its sizes follow it.']);
+  assert.deepEqual(uk, ['VAT rate', 'VAT by order type', 'VAT by order type', 'VAT', 'VAT', 'no VAT rate', 'This variant uses its VAT for every order type, as Latte does. To set VAT by order type, set it on Latte: its variants follow it.']);
   onVenue('USD', () => {
     const us = [colWord('tax_rate_id'), colWord('tax_overrides'), fieldWord('tax_by_type'), lockWord('tax_rate_id'), keptValueWords('tax_rate_id', null), sizeVatWords({ product: 'Latte' }),
       vatExample({ product: { name: 'Latte' }, rates: [], siteName: 'Provo' }).words, vatExample({ product: { name: 'Latte' }, rates: null, siteName: 'Provo' }).words,
