@@ -255,5 +255,9 @@ export function eligibleOrderLines(value, lines, menuItems, categories) {
   const matcher = eligibleMatcher(value, categories);
   if (!matcher.configured || !Array.isArray(lines)) return [];
   const index = menuNameIndex(menuItems);
-  return lines.filter(l => l && !l.voided && matcher.matches(orderLineCandidates(l, index)));
+  // 5.12.123 Combos (lib/combo.js): a product picked inside a Combo is part of the Combo's set
+  // price, so its line is 0.00 (or only what it adds). A free item reward never lands on it: the
+  // cheapest matching line would be that 0.00 and the reward would be used up for nothing. The
+  // same product rung up on its own is eligible as always. Both marks, as the stamp rule reads it.
+  return lines.filter(l => l && !l.voided && !(l.comboId && l.comboRole === 'pick') && matcher.matches(orderLineCandidates(l, index)));
 }

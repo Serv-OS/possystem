@@ -31,7 +31,7 @@ import { venueToday, venueNow } from '../lib/bookings/venueClock.js';
 import { dayRefreshAction, REFRESH_RETRY_MS } from '../lib/bookings/bookingsCatchUp.js';
 import { bookingIdsToDepart } from '../lib/bookings/departOnClose.js';
 import { seatRefusal, undoCancelStatus } from '../lib/bookings/standRules.js';
-import { packageItemsFor } from '../lib/bookings/packagePricing.js';
+import { packageItemsFor, packageCombosLeftOut } from '../lib/bookings/packagePricing.js';
 import { resolveItemPrice } from '../lib/menuPricing.js';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu.js';
 import { wallTimeToInstantMs } from '../lib/cateringRules.js';
@@ -804,6 +804,9 @@ export function bookingsSlice(set, get) {
         // carrying "Seat N · Name" so the kitchen knows whose plate it is.
         const preorders = b.packageId ? await get().loadPreorders?.(b.id) : [];
         const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers, preorders || [], { prepayCaptured, at: { date: b.date, time: b.startTime } }) : [];
+        // 5.12.123: a Combo with steps named by the package (or a guest's pick) is left off; say so.
+        const combosLeft = b.packageId ? packageCombosLeftOut({ pkg, preorders: preorders || [], menuItems: get().menuItems || [] }) : [];
+        if (combosLeft.length) get().showToast?.(`${combosLeft.join(', ')} ${combosLeft.length === 1 ? 'is a Combo' : 'are Combos'} with choices, so ${combosLeft.length === 1 ? 'it was' : 'they were'} not added from the package. Ring ${combosLeft.length === 1 ? 'it' : 'them'} up from the menu on the POS.`, 'info');
         const bookingRef = {
           bookingId: b.id,
           packageId: b.packageId || null,

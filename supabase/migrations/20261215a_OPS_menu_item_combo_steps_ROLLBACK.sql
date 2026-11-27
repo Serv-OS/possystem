@@ -43,6 +43,11 @@ revoke all on public.menu_items_combo_keep_20261215 from public, anon, authentic
 do $$
 begin
   if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'menu_items' and column_name = 'combo') then
+    -- The keep table is the steps AS THEY ARE AT THIS ROLLBACK. Rows left by an earlier rollback
+    -- are cleared first (only here, while the column is still there to copy from), so putting the
+    -- steps back can never bring back steps somebody has since taken off. Run twice in a row, the
+    -- second run finds no column, skips this block and leaves what the first run kept.
+    execute 'delete from public.menu_items_combo_keep_20261215';
     execute $q$
       insert into public.menu_items_combo_keep_20261215 (id, location_id, name, combo)
       select m.id::text, m.location_id::text, coalesce(m.menu_name, m.name), m.combo

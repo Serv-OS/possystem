@@ -281,7 +281,10 @@ test('the item writer writes item_code only when the item carries it, and never 
     'a refused code would take the whole menu save down with it');
   assert.ok(/delete retry\.item_code/.test(writers));
   assert.match(writers, /retryWithout: itemCodeRetry,/, 'every item edit and creation retries without it');
-  assert.match(db, /retryWithout: itemCodeRetry,/, 'and so does the insert only helper');
+  // 5.12.123: a NEW row's retry also leaves out Combo steps the database cannot take (itemInsertRetry
+  // = the item code rule, then the Combo one). The item code rule itself is unchanged.
+  assert.match(db, /retryWithout: itemInsertRetry,/, 'and so does the insert only helper');
+  assert.match(writers, /export const itemInsertRetry = \(error, cols\) => itemCodeRetry\(error, cols\) \|\| comboColumnRetry\(error, cols\);/);
 });
 
 test('the Back Office field is hidden until the column exists, and writes once', () => {

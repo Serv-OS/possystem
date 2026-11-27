@@ -33,8 +33,9 @@ import InlineItemFlow from '../components/InlineItemFlow';
 // block in the order panel and moves as one.
 import ComboFlow from '../components/ComboFlow';
 import ComboOrderBlock from '../components/ComboOrderBlock';
-import { comboHasSteps, comboSteps, comboUnsellable, comboIsFixed, comboMissing, startingPicks, orderBlocks, comboLinesOf, comboLinesTotal, isComboLine, isComboPick, unitsUsed } from '../lib/combo';
+import { comboHasSteps, comboSteps, comboUnsellable, comboIsFixed, comboMissing, startingPicks, orderBlocks, comboLinesOf, comboLinesTotal, isComboLine, isComboPick, unitsUsed, selfPickAllergens } from '../lib/combo';
 import { pickFlowSetup, stepForLine, comboPosContext } from '../lib/comboLines';
+import { answersWithNote } from '../lib/optionAnswers';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
 import { isSoldAs, notSoldAsWords, linesNotSoldAs, switchBlockedWords, soldAsKey, SOLD_AS_WORDS } from '../lib/soldAs';
 import CheckoutModal from './CheckoutModal';
@@ -813,6 +814,9 @@ export default function POSSurface() {
     return true;
   };
 
+  // 5.12.123: the allergens a tap on this product brings onto the order before anything else is
+  // asked. A Combo with steps: its own, and those of every product its steps pick by themselves.
+  const allergensOnAdd = (item) => (comboHasSteps(item) ? selfPickAllergens(item, useStore.getState().comboContext(item)) : (item.allergens || []));
   const handleItemTap = (item) => {
     if (eightySixIds.includes(item.id)) { showToast(`${item.name} is 86'd`,'error'); return; }
     // 5.12.115 (Peter, 26 Nov 2026: "grey it out and say not available for X order type when
@@ -850,7 +854,9 @@ export default function POSSurface() {
         return;
       }
     }
-    if (allergens.some(a=>(item.allergens||[]).includes(a))) { setPendingItem(item); return; }
+    // 5.12.123: a Combo is warned on for its own allergens AND those of every product its steps
+    // pick by themselves (nobody taps those, so nothing else would warn). lib/combo.js selfPickAllergens.
+    if (allergens.some(a=>allergensOnAdd(item).includes(a))) { setPendingItem(item); return; }
     openFlow(item);
   };
   // 5.12.123 (Peter, 27 Nov 2026): a Combo with steps. It cannot be made right now: say why and
@@ -2077,8 +2083,9 @@ export default function POSSurface() {
             // 5.12.33 (Peter, 2 Nov 2026): it also closes an open options or sizes screen
             // (InlineItemFlow) and a pre order line being edited, so the category's products
             // show at once. The flow stayed open and hid the grid.
+            // 5.12.123: the same for a Combo being built and a pick being changed.
             return (
-              <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); setRightTab('menu'); setModalItem(null); setEditLine(null); }} className="cat-btn" style={{
+              <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); setRightTab('menu'); setModalItem(null); setEditLine(null); setComboItem(null); setEditPick(null); }} className="cat-btn" style={{
                 marginBottom:3, gap:10,
                 background:isActive?`${color}1f`:'transparent',
                 borderColor:isActive?`${color}66`:'transparent',
@@ -2191,7 +2198,8 @@ export default function POSSurface() {
           const held = line ? unitsUsed([{ itemId: line.itemId, mods: line.mods }], { rowsById: new Map(rawItems.map(r => [r.id, r])) }) : null;
           const ctx = line ? st.comboContext(comboRow || null, { giveBack: held }) : null;
           const setup = line && isComboPick(line) ? pickFlowSetup({
-            entryId: line.comboEntryId ?? line.itemId, itemId: line.itemId, answers: line.optionAnswers || null,
+            // The line's note is the truth (the Note button writes the line): the flow opens with it.
+            entryId: line.comboEntryId ?? line.itemId, itemId: line.itemId, answers: answersWithNote(line.optionAnswers, line.notes),
             step: stepForLine(line, comboRow), ctx, picks: [], menuItems: MENU_ITEMS,
             priceOf: (row) => getItemPrice(row, orderType, deviceMenuId), money,
           }) : null;
@@ -2213,6 +2221,7 @@ export default function POSSurface() {
                 basePriceOf={setup.baseOf}
                 sizePriceWords={setup.sizeWords}
                 initialAnswers={setup.answers}
+                stockGiveBack={held}
                 onConfirm={(target,mods,cfg,opts)=>{
                   const row = rawItems.find(r => r.id === target.id) || target;
                   const ok = configureComboPick(editPick.uid, { target: row, mods, notes: opts.notes, answers: opts.answers || null });
@@ -2497,7 +2506,7 @@ export default function POSSurface() {
       </div>
 
       {/* Modals */}
-      {pendingItem&&<AllergenModal item={pendingItem} activeAllergens={allergens} onConfirm={()=>{const i=pendingItem;clearPendingItem();openFlow(i);}} onCancel={clearPendingItem}/>}
+      {pendingItem&&<AllergenModal item={comboHasSteps(pendingItem) ? { ...pendingItem, allergens: allergensOnAdd(pendingItem) } : pendingItem} activeAllergens={allergens} onConfirm={()=>{const i=pendingItem;clearPendingItem();openFlow(i);}} onCancel={clearPendingItem}/>}
       {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{const line=addItem(item,mods,cfg,opts);setModalItem(null);if(line)showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
       {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} tipBasis={discountedSub} service={service} deliveryFee={deliveryFee} total={total} taxFor={(credits) => getPOSTotals({ creditDiscounts: credits })} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
       {linkMemberFor&&<LinkMemberModal customer={linkMemberFor} onLinked={applyMemberLink} onClose={()=>setLinkMemberFor(null)}/>}

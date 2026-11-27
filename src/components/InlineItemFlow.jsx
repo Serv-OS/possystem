@@ -9,6 +9,7 @@ import { Icon } from './ServOSIcons';
 import { isOnceEach } from '../lib/choiceKinds';
 import { groupsShownOn } from '../lib/soldAs';
 import { answersFromFlow, flowFromAnswers } from '../lib/optionAnswers';
+import { stockGivenBack } from '../lib/comboLines';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -48,9 +49,14 @@ function resolveOptItemId(opt, menuItems) {
 //                   the size once one is picked): a pick inside a Combo is 0.00, its bump, or its
 //                   own price, never the menu price this flow would read
 //   sizePriceWords  (size row) => the words under each size button, in place of its menu price
+//   stockGiveBack   Map(id -> units) a line already on the order holds (Change): counted as free
 // Every confirm now also carries opts.answers (that record). Callers that do not read it are unchanged.
-export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId, initialAnswers = null, basePriceOf = null, sizePriceWords = null }) {
-  const { modifierGroupDefs: allGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts, orderType: storeOrderType, activeMenuId: storeMenuId, menuItems: storeRows } = useStore();
+export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId, initialAnswers = null, basePriceOf = null, sizePriceWords = null, stockGiveBack = null }) {
+  const { modifierGroupDefs: allGroupDefs, instructionGroupDefs, eightySixIds: storeEightySix, dailyCounts: storeCounts, orderType: storeOrderType, activeMenuId: storeMenuId, menuItems: storeRows } = useStore();
+  // 5.12.123: stockGiveBack (Map id -> units), Change on a line already on the order: the units the
+  // line holds count as free here, and what it holds is never refused for being 86'd (its own
+  // count may have 86'd it). Absent: the store's counts and 86 list, exactly as before.
+  const { eightySixIds, dailyCounts } = useMemo(() => stockGivenBack(storeEightySix, storeCounts, stockGiveBack), [storeEightySix, storeCounts, stockGiveBack]);
   // 5.12.119: the rows an OPTION is looked up in are the store's own, every one of them. The
   // `menuItems` prop is the POS's product list, which leaves out a sub item that is only an option
   // (rule 1), so an option's row was never found there: an 86'd option matched by name was not
@@ -128,9 +134,11 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
                    || buildModGroups(item).length > 0    || buildInstGroups(item).length > 0;
       if (!hasMods) {
         const displayName = `${item.menuName || item.menu_name || item.name} — ${variant.menuName || variant.menu_name || variant.name || variant.label}`;
+        // 5.12.123: no note box is shown on this path, so the note the flow opened with (a pick's
+        // note, on Change) is handed back as it is. A new line has none, as before.
         onConfirm(variant, [], null, {
-          notes: '', qty, linePrice: (variant.pricing?.base ?? variant.price ?? 0) * qty, displayName,
-          answers: answersFromFlow({ variantId: variant.id }),
+          notes: notes.trim(), qty, linePrice: (variant.pricing?.base ?? variant.price ?? 0) * qty, displayName,
+          answers: answersFromFlow({ variantId: variant.id, notes }),
         });
         return;
       }
@@ -531,9 +539,16 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
   };
   const hasContent = modGroups.length > 0 || instGroups.length > 0;
   if (!hasContent) {
+    // 5.12.123: a product with no options still takes a note here (a Combo's pick opened with "Note").
     return (
-      <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t3)', fontSize:13 }}>
-        No options for this item — use the Add to order button below.
+      <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+        <div style={{ textAlign:'center', padding:'24px 0 0', color:'var(--t3)', fontSize:13 }}>
+          No options for this item — use the Add to order button below.
+        </div>
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>Note (optional)</div>
+          <input value={notes} onChange={e => onNotes(e.target.value)} placeholder="Allergy note, special request…" className="input" data-testid="flow-note-no-options" style={{ width:'100%', fontSize:13, boxSizing:'border-box' }}/>
+        </div>
       </div>
     );
   }

@@ -26,6 +26,11 @@
 // Pure module (no store, no DB) so the rules are unit-testable — the slice's
 // packageLinesToItems delegates here.
 
+// 5.12.123: a Combo with steps is never seated as one bare line (lib/combo.js, also pure).
+import { comboPosOnly } from '../combo.js';
+
+const listOf = (v) => (Array.isArray(v) ? v : []);
+
 // One line's unit price under the package's payment model.
 export function packageLinePrice(paymentModel, priceOverride, menuPrice) {
   if (paymentModel === 'prepay') {
@@ -44,6 +49,22 @@ export function packageLinePrice(paymentModel, priceOverride, menuPrice) {
 // (bookingsSlice.packageLinesToItems), so a seated line is what the counter would ring: a 12oz on
 // the Main menu's 34.00 tier seated at its 26.00 base before. Absent: the row's own price (the base
 // price, mapMenuItemRow), exactly as before.
+/**
+ * The names of the package lines and guest picks that packageItemsFor leaves off a seated order
+ * because they name a Combo with steps (5.12.123), once each, for the words the POS shows.
+ */
+export function packageCombosLeftOut({ pkg, preorders = [], menuItems = [] } = {}) {
+  const findMenu = (id) => (id ? listOf(menuItems).find((m) => m && m.id === id) : null);
+  const out = [];
+  for (const id of [...listOf(pkg?.lines).map((l) => l?.itemId), ...listOf(preorders).map((r) => r?.itemId)]) {
+    const row = findMenu(id);
+    if (!comboPosOnly(row)) continue;
+    const name = row.menuName || row.menu_name || row.name || 'A Combo';
+    if (!out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
 export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], now = Date.now(), prepayCaptured = true, priceOf = (row) => row?.price }) {
   if (!pkg) return [];
   // v5.7.23 - the prepay zero-pricing is EARNED by captured money, never by
@@ -54,8 +75,15 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
   // booking_payments credit it already loads.
   const declared = pkg.paymentModel || 'deposit';
   const model = declared === 'prepay' && !prepayCaptured ? 'deposit' : declared;
-  const lines = pkg.lines || [];
   const findMenu = (id) => (id ? menuItems.find((m) => m.id === id) : null);
+  // 5.12.123: a product that is a Combo with steps is rung up through its steps on the POS (its set
+  // price, then a line per pick for the kitchen). A package line or a guest's pick that names one
+  // (the steps were added after the package was set up) would seat it as ONE bare line: the set
+  // price, no picks, nothing for the kitchen. It is left off the seated order instead, and the POS
+  // says so (packageCombosLeftOut, below). Every other line is exactly as before.
+  const isStepsCombo = (id) => comboPosOnly(findMenu(id));
+  const lines = (pkg.lines || []).filter((l) => !isStepsCombo(l.itemId));
+  const guestPicks = listOf(preorders).filter((r) => !isStepsCombo(r?.itemId));
 
   // v5.7.28 — THE ACCOUNTING GAP fix. Prepay items seat at 0.00 and the
   // captured money applies as a tender capped at the bill, so a no-extras
@@ -140,7 +168,7 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
   // Options badge (lineNeedsOptions), and the kitchen ticket prints the mods.
   const norm = (s) => String(s || '').trim().toLowerCase();
   const cents = (n) => Math.round(n * 100) / 100;
-  const chosen = preorders.map((r, i) => {
+  const chosen = guestPicks.map((r, i) => {
     const mi = findMenu(r.itemId);
     const size = r.variantItemId ? findMenu(r.variantItemId) : null;
     const priced = size || mi;

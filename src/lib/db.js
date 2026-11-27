@@ -33,7 +33,7 @@ import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath
 import { isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
 import { menuItemRow } from './menuItemWrite';
 import { insertRowOnce, deleteRowChecked, updateScopeChecked } from './menuRowWrite';
-import { itemCodeRetry } from './menuWriters';
+import { itemInsertRetry } from './menuWriters';
 import { decideWholeSave } from './threeWayMerge';
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
@@ -268,7 +268,7 @@ export const insertMenuItem = async (item, locationId = null) => {
   const r = await insertRowOnce({
     client: supabase, table: 'menu_items',
     row: { ...menuItemRow(item), id: item.id, location_id: locationId },
-    retryWithout: itemCodeRetry,
+    retryWithout: itemInsertRetry,
   });
   if (r.outcome === 'created') scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
   reportSave('item', r.outcome === 'error' ? r.error : null);   // v5.5.951; an existing row is not a failure

@@ -5,11 +5,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { answersFromFlow, flowFromAnswers, optionKey } from './optionAnswers.js';
 
+// Each group carries its "up to" (max), as every saved group does: the option flow decides one
+// choice or several from it (InlineItemFlow: several when max is over 1, none or 99+ = unlimited).
 const GROUPS = [
-  { id: 'g-crust', name: 'Crust', selectionType: 'single', options: [{ id: 'o-thin', name: 'Thin', price: 0 }, { id: 'o-deep', name: 'Deep pan', price: 2 }] },
-  { id: 'g-extra', name: 'Extras', selectionType: 'multiple', options: [{ id: 'o-cheese', name: 'Extra cheese', price: 1.5, itemId: 'x-cheese' }, { id: 'o-ham', name: 'Ham', price: 2 }] },
-  { id: 'g-box', name: 'Dips', selectionType: 'quantity', options: [{ id: 'o-ranch', name: 'Ranch', price: 1 }, { name: 'Garlic', price: 1 }] },
-  { id: 'g-nested', name: 'Sauce base', selectionType: 'single', options: [{ id: 'o-bbq', name: 'BBQ' }] },
+  { id: 'g-crust', name: 'Crust', selectionType: 'single', min: 1, max: 1, options: [{ id: 'o-thin', name: 'Thin', price: 0 }, { id: 'o-deep', name: 'Deep pan', price: 2 }] },
+  { id: 'g-extra', name: 'Extras', selectionType: 'multiple', min: 0, max: 5, options: [{ id: 'o-cheese', name: 'Extra cheese', price: 1.5, itemId: 'x-cheese' }, { id: 'o-ham', name: 'Ham', price: 2 }] },
+  { id: 'g-box', name: 'Dips', selectionType: 'quantity', min: 0, max: 5, options: [{ id: 'o-ranch', name: 'Ranch', price: 1 }, { name: 'Garlic', price: 1 }] },
+  { id: 'g-nested', name: 'Sauce base', selectionType: 'single', min: 0, max: 1, options: [{ id: 'o-bbq', name: 'BBQ' }] },
 ];
 const INST = [{ id: 'ig-cook', name: 'Cooking', options: ['Rare', 'Medium', 'Well done'] }];
 const shaped = (g, id) => { const o = GROUPS.find((x) => x.id === g).options.find((x) => optionKey(x) === id); return { ...o, id: optionKey(o), label: o.name }; };
@@ -87,4 +89,32 @@ test('the option flow hands the record back and starts from one, and is unchange
   assert.match(flow, /useState\(seed\?\.instSelections \|\| \{\}\)/);
   // Both ways out of the flow carry the record.
   assert.equal((flow.match(/answers: answersFromFlow\(/g) || []).length, 2);
+});
+
+test('a group changed in the Back Office since the answer: the same choices in its new shape, never a crash', () => {
+  let n = 0;
+  const rec = answersFromFlow(STATE);
+  // One choice made "several" (up to 3): the crust comes back as a list of one.
+  const several = GROUPS.map((g) => (g.id === 'g-crust' ? { ...g, selectionType: 'multiple', max: 3 } : g));
+  const a = flowFromAnswers(rec, several, INST, () => `u${++n}`);
+  assert.ok(Array.isArray(a.selections['g-crust']));
+  assert.deepEqual(a.selections['g-crust'].map((o) => [o.id, o.label]), [['o-deep', 'Deep pan']]);
+  // Several made one choice: the first answer stays (nothing else could be shown ticked).
+  const single = GROUPS.map((g) => (g.id === 'g-extra' ? { ...g, selectionType: 'single', max: 1 } : g));
+  assert.deepEqual(flowFromAnswers(rec, single, INST).selections['g-extra'].id, 'o-cheese');
+  assert.ok(!Array.isArray(flowFromAnswers(rec, single, INST).selections['g-extra']));
+  // A quantity box made "several": each unit becomes one pick; made one choice: the first.
+  const boxSeveral = GROUPS.map((g) => (g.id === 'g-box' ? { ...g, selectionType: 'multiple', max: 9 } : g));
+  assert.deepEqual(flowFromAnswers(rec, boxSeveral, INST).selections['g-box'].map((o) => o.id), ['o-ranch', 'o-ranch', 'Garlic']);
+  // Several made a quantity box: the picks are counted.
+  const extraQty = GROUPS.map((g) => (g.id === 'g-extra' ? { ...g, selectionType: 'quantity', max: 9 } : g));
+  assert.deepEqual(flowFromAnswers(rec, extraQty, INST).selections['g-extra'], { 'o-cheese': 2, 'o-ham': 1 });
+  // A lower "up to" keeps the first ones only; "each only once" drops a repeat.
+  const fewer = GROUPS.map((g) => (g.id === 'g-extra' ? { ...g, max: 2 } : g));
+  assert.deepEqual(flowFromAnswers(rec, fewer, INST).selections['g-extra'].map((o) => o.id), ['o-cheese', 'o-cheese']);
+  const onceEach = GROUPS.map((g) => (g.id === 'g-extra' ? { ...g, selectionType: 'multiple_once' } : g));
+  assert.deepEqual(flowFromAnswers(rec, onceEach, INST).selections['g-extra'].map((o) => o.id), ['o-cheese', 'o-ham']);
+  // A group read from the database (snake case kind) is read the same way.
+  const snake = GROUPS.map((g) => (g.id === 'g-box' ? { ...g, selectionType: undefined, selection_type: 'quantity' } : g));
+  assert.deepEqual(flowFromAnswers(rec, snake, INST).selections['g-box'], { 'o-ranch': 2, Garlic: 1 });
 });

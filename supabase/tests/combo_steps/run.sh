@@ -3,7 +3,8 @@
 # (port 55438): the column arrives empty on every row, the check takes steps and refuses rubbish,
 # a function that reads the whole row and a Multi site menu style update of named columns keep
 # working and never touch the steps, a second run changes nothing, and the rollback keeps every
-# Combo's steps in a keep table so they can be put back.
+# Combo's steps in a keep table so they can be put back (and a later rollback never brings back
+# steps that were taken off in between).
 set -euo pipefail
 export LC_ALL="${LC_ALL:-C}"   # a shell with no locale makes the postmaster refuse to start
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -97,4 +98,15 @@ $P -f "$MIG/20261215a_OPS_menu_item_combo_steps.sql" >/dev/null
 check "select count(*) from menu_items where combo is not null" "0" "22 the column comes back empty"
 $P -c "update public.menu_items m set combo = k.combo from public.menu_items_combo_keep_20261215 k where m.id::text = k.id and m.combo is null" >/dev/null
 check "select combo->'steps'->0->>'name' from menu_items where id='m-combo'" "Pick 5 pizzas" "23 the kept steps are put back exactly"
+
+# A LATER rollback (the keep table was never dropped): it keeps the steps as they are THEN.
+# Steps somebody has taken off since must not come back when the steps are put back again.
+$P -c "update menu_items set combo=null where id='m-combo'" >/dev/null
+$P -c "update menu_items set combo='$STEPS' where id='m-other'" >/dev/null
+$P -f "$MIG/20261215a_OPS_menu_item_combo_steps_ROLLBACK.sql" >/dev/null 2>&1
+check "select string_agg(id, ',' order by id) from menu_items_combo_keep_20261215" "m-other" "24 a later rollback keeps the steps as they are then, and nothing older"
+$P -f "$MIG/20261215a_OPS_menu_item_combo_steps.sql" >/dev/null
+$P -c "update public.menu_items m set combo = k.combo from public.menu_items_combo_keep_20261215 k where m.id::text = k.id and m.combo is null" >/dev/null
+check "select count(*) from menu_items where id='m-combo' and combo is not null" "0" "25 steps taken off before that rollback do not come back"
+check "select combo->'steps'->0->>'name' from menu_items where id='m-other'" "Pick 5 pizzas" "26 the steps it did keep are put back"
 echo "ALL PASS"
