@@ -11,7 +11,8 @@ import fs from 'node:fs';
 const till = fs.readFileSync(new URL('../surfaces/POSSurface.jsx', import.meta.url), 'utf8');
 
 test('a category tap closes the options screen and shows the products', () => {
-  assert.match(till, /onClick=\{\(\) => \{ setCat\(c\.id\); setSearch\(''\); setRightTab\('menu'\); setModalItem\(null\); setEditLine\(null\); \}\}/);
+  // 5.12.123: and a Combo being built, and a Combo pick being changed.
+  assert.match(till, /onClick=\{\(\) => \{ setCat\(c\.id\); setSearch\(''\); setRightTab\('menu'\); setModalItem\(null\); setEditLine\(null\); setComboItem\(null\); setEditPick\(null\); \}\}/);
 });
 
 test('a sub category tap, and All, do the same', () => {

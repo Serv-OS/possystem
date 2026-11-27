@@ -116,7 +116,8 @@ test('part refund: points by the share of the goods refunded, stamps by the qual
   assert.match(fn, /netReversal \+= partTaken;/, 'a full refund after part refunds never takes the same points twice');
   assert.match(fn, /toClaw = remainingAfterParts\(\{ earned, alreadyTaken \}\);/);
   const store = readRepo('src/store/index.js');
-  assert.match(store, /\? partRefundLoyaltyBody\(\{ refundId, bd, chargedGoods: chargedGoodsOf\(chkBefore\), refundItems, menuItems: get\(\)\.menuItems \|\| \[\] \}\)/);
+  // 5.12.123: the check's own lines go with it, so what a refunded line IS never depends on how much of it the refund screen sent.
+  assert.match(store, /\? partRefundLoyaltyBody\(\{ refundId, bd, chargedGoods: chargedGoodsOf\(chkBefore\), refundItems, menuItems: get\(\)\.menuItems \|\| \[\], checkItems: chkBefore\.items \|\| \[\] \}\)/);
   assert.match(store, /staff_id: manager\?\.id \|\| null,\n\s+\.\.\.\(partLoyalty \|\| \{\}\),/);
 });
 

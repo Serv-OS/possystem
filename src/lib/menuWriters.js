@@ -43,6 +43,24 @@ export const itemCodeRetry = (error, cols) => {
   return { cols: retry, note: isDuplicateItemCodeError(error) ? 'item-code-duplicate' : 'item-code-missing-column' };
 };
 
+// 5.12.123: the Combo steps column is not there (20261215a rolled back while this tab still holds
+// rows that carry steps, or a copy of one is being saved): save the rest without it, as the item
+// code above. A database that never had the column is never sent the key at all (menuItemWrite).
+export const isMissingComboColumn = (error) => {
+  const msg = String(error?.message || error?.details || error || '');
+  return /combo/.test(msg) && (error?.code === 'PGRST204' || error?.code === '42703' || /column .*combo.* does not exist|could not find the 'combo' column/i.test(msg));
+};
+export const comboColumnRetry = (error, cols) => {
+  if (!cols || !('combo' in cols) || !isMissingComboColumn(error)) return null;
+  const retry = { ...cols };
+  delete retry.combo;
+  return { cols: retry, note: 'combo-missing-column' };
+};
+// A NEW row only (a copy of a product, a product made offline): it is saved without its steps
+// rather than not at all. An EDIT of the steps is never retried this way: it fails and says so,
+// because saving "the rest" of a steps edit would save nothing and call it saved.
+export const itemInsertRetry = (error, cols) => itemCodeRetry(error, cols) || comboColumnRetry(error, cols);
+
 // v5.8.65: the image column is missing (the migration rolled back while this tab holds photo
 // URLs): save the category without the photo instead of losing the edit.
 export const categoryImageRetry = (error, cols) => {
@@ -102,6 +120,7 @@ const TABLES = {
     colsOf: (r) => menuItemRow(r),
     freshCols: (db) => menuItemRow(mapMenuItemRow(db)),
     retryWithout: itemCodeRetry,
+    insertRetry: itemInsertRetry,      // 5.12.123: a NEW row is also saved without steps the database cannot take
     labelOf: (r) => r?.menuName || r?.menu_name || r?.name || 'This product',
   },
   categories: {
@@ -187,7 +206,7 @@ export function createMenuWriters(deps) {
         // 27 Sep 2026: every database call has a time limit (writeWithin, MENU_WAIT_MS). A hung
         // insert used to hold this row's queue, and for categories and menus the whole serial
         // chain, so every later save and every Push to POS waited on it for good.
-        const retry = job.retryWithout || t.retryWithout;
+        const retry = job.retryWithout || t.insertRetry || t.retryWithout;
         // 27 Sep 2026: the parent category is never dropped on the first try (it may be landing
         // a beat later, v5.5.952 below), nor while it is a category this window still means to
         // create (its own first save failed here).

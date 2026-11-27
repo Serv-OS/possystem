@@ -1011,7 +1011,12 @@ export function bringInAllChanges(central, locationId, raw, opts = {}) {
     if (r.ok) { changes = [...changes, ...r.changes]; C = applyChanges(C, r.changes).central; counts.subItems = r.count; words.push(r.words[0]); }
     problems.push(...r.problems);
   }
-  if (!changes.length) return { ...fail(`Everything ${siteName} sells is in the group menu.`), problems: [`Everything ${siteName} sells is in the group menu.`, ...problems] };
+  // 5.12.123: what was left out (a Combo with steps stays at its site for now) is not "in the group
+  // menu": then it is everything ELSE, and the reason follows.
+  if (!changes.length) {
+    const all = `Everything ${problems.length ? 'else ' : ''}${siteName} sells is in the group menu.`;
+    return { ...fail(all), problems: [all, ...problems] };
+  }
   // The whole set, planned as the server will: it must write nothing at the site.
   const plan = planSite({ central: C, touched: touchedFromChanges(changes), locationId: loc, orgId: opts.orgId || null, venue: raw });
   if (plan.lines.length) return { ...fail(`Bringing everything in would change ${plan.lines.length} thing${plan.lines.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in the draft. Bring them in one at a time to see which.`), problems };

@@ -23,7 +23,7 @@ import { money, currencySymbol, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen } from '../lib/customerDisplay';
 import { displayLinesFor } from '../lib/displayLines';
 // 5.12.123 Combos: on the bill a Combo's picks sit under its own line, with an amount only where a pick adds one.
-import { displayOrder, lineShow, isComboLine } from '../lib/combo.js';
+import { displayOrder, lineShow, isComboLine, linesForPromo } from '../lib/combo.js';
 import { isTrainingMode } from '../lib/trainingMode';
 import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';   // 16 Oct 2026: the amount used, surplus flagged
 import PaxTerminal from './PaxTerminal';
@@ -1310,7 +1310,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     try {
       // v5.11.81: with the basket's lines and delivery fee, so the offer's category rules, a free
       // item and free delivery are worked out (lib/promoBasis.js, _shared/promoMath.js).
-      const lines = promoBasketLines(items);
+      // 5.12.123: a Combo's pick is never THE product a free item code makes free (lib/combo.js linesForPromo).
+      const lines = promoBasketLines(linesForPromo(items));
       const { data, error } = await supabase.functions.invoke('promo-redeem', { body: {
         action: 'validate', code, location_id: getActiveLocationSync(),
         customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis, lines, delivery_fee: Number(deliveryFee) || 0 },

@@ -417,6 +417,9 @@ export default function PackageBuilder() {
                   )}
                   {(draft.lines || []).map((l, i) => {
                     const linked = l.itemId ? items.find(m => m.id === l.itemId) : null;
+                    // 5.12.123: a line that names a product which has since become a Combo with steps.
+                    // It is left off the order when the booking is seated (the POS asks its steps).
+                    const comboRow = !linked && l.itemId ? (menuItems || []).find(m => m.id === l.itemId && comboPosOnly(m)) : null;
                     return (
                       <div key={l.id || l._key || i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: i === (draft.lines.length - 1) ? 'none' : '1px solid var(--bdr)', flexWrap: 'wrap' }}>
                         <span style={{ width: 22, fontSize: 11, fontFamily: MONO, color: 'var(--t4)', flexShrink: 0 }}>{String(i + 1).padStart(2, '0')}</span>
@@ -460,6 +463,11 @@ export default function PackageBuilder() {
                         {l.isPreorderChoice && !l.itemId && (
                           <div role="status" style={{ flexBasis: '100%', marginLeft: 30, padding: '8px 10px', borderRadius: 9, background: 'var(--orn-d, rgba(249,115,22,.1))', border: '1px solid var(--orn-b, rgba(249,115,22,.35))', color: 'var(--orn)', fontSize: 15, lineHeight: 1.45 }}>
                             Guests cannot choose options for this dish. Link it to a menu item.
+                          </div>
+                        )}
+                        {comboRow && (
+                          <div role="status" data-testid="package-line-combo" style={{ flexBasis: '100%', marginLeft: 30, padding: '8px 10px', borderRadius: 9, background: 'var(--orn-d, rgba(249,115,22,.1))', border: '1px solid var(--orn-b, rgba(249,115,22,.35))', color: 'var(--orn)', fontSize: 15, lineHeight: 1.45 }}>
+                            {comboRow.menuName || comboRow.name} is now a Combo with choices, so it is left off the order when the booking is seated. Ring it up on the POS, or link this line to another item.
                           </div>
                         )}
                       </div>

@@ -21,7 +21,7 @@ import { compareMenuItems } from '../../lib/menuItemOrder.js';
 import { resolveItemPrice, hasNoSellPrice, variantFromPrice } from '../../lib/menuPricing';
 import { optionHiddenOn } from '../../lib/soldAs.js';
 import {
-  comboSteps, comboColumnValue, newStep, stepForm, stepWithForm, stepSentence, stepProductBlock,
+  comboSteps, comboHasSteps, comboColumnValue, newStep, stepForm, stepWithForm, stepSentence, stepProductBlock,
   stepsEditBlock, comboWarnings, STEP_KIND_WORDS, PRICING_WORDS, PRICING_SET, PRICING_OWN, UNLIMITED, COMBO_WORDS,
 } from '../../lib/combo.js';
 
@@ -81,14 +81,30 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
   const block = stepsEditBlock(item, { managed, sizes: (sizesOf.get(item.id) || []).length });
   const warnings = comboWarnings(item, {
     rowsById, eightySix: eightySixIds, hiddenHere: (row) => optionHiddenOn(row, 'pos'), noPrice: hasNoSellPrice(item),
+    // A step that keeps prices sells the product at its own price: a product with sizes has one
+    // when any of its sizes does.
+    noPriceRow: (row) => { const kids = sizesOf.get(row.id) || []; return kids.length ? kids.every(k => hasNoSellPrice(k)) : hasNoSellPrice(row); },
   });
   const setPrice = resolveItemPrice(item);
 
   const save = (next) => { onUpdate({ combo: comboColumnValue(next) }); markBOChange?.(); };
+  // The editor is hidden (the product got sizes, was shared, or is managed) but its steps are
+  // still there and the POS still asks them: the one thing that can still be done is take them off.
+  const takeStepsOff = () => {
+    if (!window.confirm(`Take the ${steps.length === 1 ? 'step' : `${steps.length} steps`} off ${nameOf(item)}? It then sells as a plain product at its price. The products in the steps stay on the menu.`)) return;
+    save([]);
+  };
   const setStep = (id, fn) => save(steps.map(s => (s.id === id ? fn(s) : s)));
   // One step is open at a time, and the find box starts empty in each (it only narrows the list).
   const openStep = (id) => { setOpen(id); setSearch(''); };
   const addStep = () => { const s = newStep(steps, newId()); save([...steps, s]); openStep(s.id); };
+  // A step that keeps prices has no price bumps (the product's own price is what it adds). Switching
+  // one over takes its bumps off for good, so it is asked first, with how many go.
+  const keepPricesOk = (s, to) => {
+    if (to !== PRICING_OWN) return true;
+    const n = s.products.filter(p => Number(p.bump) > 0).length;
+    return !n || window.confirm(`"${s.name}" has a price bump on ${n} product${n === 1 ? '' : 's'}. Keeping each product's own price takes ${n === 1 ? 'it' : 'them'} off. Go on?`);
+  };
   const removeStep = (s) => {
     if (!window.confirm(`Remove the step "${s.name}"? Its products stay on the menu.`)) return;
     save(steps.filter(x => x.id !== s.id));
@@ -157,11 +173,17 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
 
       {!columnReady && note('stop', COMBO_WORDS.needsUpdate, 'col')}
       {block && note('info', block, 'block')}
+      {block && columnReady && comboHasSteps(item) && (
+        <div data-testid="combo-steps-still-live">
+          {note('stop', `This product still has ${steps.length === 1 ? '1 step' : `${steps.length} steps`}, and the POS still asks ${steps.length === 1 ? 'it' : 'them'}. Undo what is said above to edit ${steps.length === 1 ? 'it' : 'them'}, or take ${steps.length === 1 ? 'it' : 'them'} off.`, 'live')}
+          <button className="btn btn-ghost" data-testid="combo-steps-take-off" style={{ height:38, padding:'0 14px', fontSize:12.5, fontWeight:700 }} onClick={takeStepsOff}>Take the steps off</button>
+        </div>
+      )}
 
       {!block && columnReady && (
         <>
           {note('info', COMBO_WORDS.posOnly + ' It is left off the kiosk, online ordering, QR, catering, the phone POS and the delivery apps until they learn it.', 'pos')}
-          {steps.length > 0 && note('info', COMBO_WORDS.noOwnOptions + ((item.assignedModifierGroups || []).length ? ` This product still has ${(item.assignedModifierGroups || []).length} option group${(item.assignedModifierGroups || []).length === 1 ? '' : 's'} from before: they are not asked while it has steps.` : ''), 'opts')}
+          {steps.length > 0 && note((item.assignedModifierGroups || []).length ? 'note' : 'info', COMBO_WORDS.noOwnOptions + ((item.assignedModifierGroups || []).length ? ` This product still has ${(item.assignedModifierGroups || []).length} option group${(item.assignedModifierGroups || []).length === 1 ? '' : 's'} from before: they are not asked while it has steps.` : ''), 'opts')}
           {warnings.filter(w => !w.stepId).map((w, i) => note(w.level, w.words, `w${i}`))}
 
           {steps.length === 0 && (
@@ -265,7 +287,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
                         {[[PRICING_SET, 'Nothing more. A product can carry a price bump.'], [PRICING_OWN, 'Its own menu price, on top of the set price.']].map(([id, hint]) => {
                           const on = s.pricing === id;
                           return (
-                            <button key={id} type="button" data-testid={`combo-pricing-${id}`} onClick={() => { if (!on) setStep(s.id, x => ({ ...x, pricing: id })); }}
+                            <button key={id} type="button" data-testid={`combo-pricing-${id}`} onClick={() => { if (!on && keepPricesOk(s, id)) setStep(s.id, x => ({ ...x, pricing: id })); }}
                               style={{ padding:'8px 9px 7px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`2px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--bg3)' }}>
                               <div style={{ fontSize:11.5, fontWeight:700, color: on ? 'var(--acc)' : 'var(--t2)' }}>{PRICING_WORDS[id]}</div>
                               <div style={{ fontSize:9.5, color:'var(--t4)', lineHeight:1.35, marginTop:2 }}>{hint}</div>

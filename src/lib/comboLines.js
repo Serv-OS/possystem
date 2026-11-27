@@ -36,10 +36,20 @@ export function lineCourse(item, menuItems, menuCategories) {
 }
 
 /**
+ * The row as the POS counter hands it to store.addItem: its name is the name on the button (the
+ * POS name), as POSSurface's MENU_ITEMS builds it. The kitchen and receipt names are worked out
+ * against THAT name (lib/itemDisplay.js kitchenOverride: a name that only repeats the line's own
+ * name is "not set"), so a pick prints exactly what the same product prints when it is rung up on
+ * its own, and "Another the same" prints what the first one did.
+ */
+export const asCounterRow = (row) => (row ? { ...row, name: row.menuName || row.menu_name || row.name } : row);
+
+/**
  * The fields every POS line takes from its menu row. `dropped` lists tax rate ids the product
  * names that this venue does not hold (the line is then charged at the venue default, and says so).
  */
-export function tillLineBase(item, { menuItems = [], menuCategories = [], taxRates = [] } = {}) {
+export function tillLineBase(row, { menuItems = [], menuCategories = [], taxRates = [] } = {}) {
+  const item = asCounterRow(row);
   const refs = tillLineTaxRefs(item, menuItems, taxRates);
   const course = lineCourse(item, menuItems, menuCategories);
   return {
@@ -204,7 +214,7 @@ export function pickBaseOf(line, item, ownPrice = 0) {
  * 86, daily counts and Sold as are the POS's own rules; a product head office hides on the POS
  * (its Shows on list) is left out, as an option linked to it would be.
  */
-export function comboPosContext({ item = null, menuItems = [], eightySixIds = [], dailyCounts = {}, orderType = null, modifierGroupDefs = [], instructionGroupDefs = [], giveBack = null } = {}) {
+export function comboPosContext({ item = null, menuItems = [], eightySixIds = [], dailyCounts = {}, orderType = null, modifierGroupDefs = [], instructionGroupDefs = [], giveBack = null, noPriceLine = null } = {}) {
   const rows = listOf(menuItems).filter(Boolean);
   const rowsById = new Map(rows.map((r) => [r.id, r]));
   const kids = new Map();
@@ -227,7 +237,9 @@ export function comboPosContext({ item = null, menuItems = [], eightySixIds = []
     comboId: item?.id ?? null,
     rowsById,
     sizesOf: (id) => kids.get(id) || [],
-    eightySix: new Set(listOf(eightySixIds)),
+    // What a line already holds is never refused for being 86'd: a count it ran down to 0 86'd it,
+    // or it was 86'd after the line took it (the same rule as store.configureComboPick).
+    eightySix: new Set(listOf(eightySixIds).filter((id) => !back.has(id))),
     remainingOf: (id) => {
       const c = dailyCounts ? dailyCounts[id] : null;
       if (!c || typeof c.remaining !== 'number') return null;
@@ -240,7 +252,29 @@ export function comboPosContext({ item = null, menuItems = [], eightySixIds = []
     hiddenHere: (row) => optionHiddenOn(row, 'pos'),
     requiresAnswers: (row) => factsOf(row).requiresAnswers,
     hasOptions: (row) => factsOf(row).hasOptions,
+    // (row, extras) => true when a line for that product at its own price plus those paid options
+    // would be sold for nothing although it has no price set (the POS's rule for every line). Only
+    // a step that keeps prices asks (lib/combo.js comboMissing).
+    ...(typeof noPriceLine === 'function' ? { noPriceLine } : {}),
   };
+}
+
+/**
+ * The 86 list and daily counts as Change on a line already on the order should read them: the
+ * units the line holds (giveBack, Map id -> units) count as free, and what it holds is never
+ * refused for being 86'd (its own count may have 86'd it). The store's rule for the same change
+ * (configureComboPick). No giveBack: the very same list and counts.
+ */
+export function stockGivenBack(eightySixIds, dailyCounts, giveBack) {
+  if (!(giveBack instanceof Map) || !giveBack.size) return { eightySixIds, dailyCounts };
+  const counts = dailyCounts && typeof dailyCounts === 'object' ? { ...dailyCounts } : dailyCounts;
+  if (counts) {
+    for (const [id, units] of giveBack) {
+      const c = counts[id];
+      if (c && typeof c.remaining === 'number') counts[id] = { ...c, remaining: c.remaining + (Number(units) || 0) };
+    }
+  }
+  return { eightySixIds: listOf(eightySixIds).filter((id) => !giveBack.has(id)), dailyCounts: counts };
 }
 
 // ── Opening a pick's own options ─────────────────────────────────────────────

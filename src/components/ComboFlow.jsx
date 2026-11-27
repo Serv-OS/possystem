@@ -53,7 +53,11 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
 
   // A step that fills itself (one product, an exact number) starts filled.
   const [picks, setPicks] = useState(() => initialPicks || startingPicks(steps, ctx, newPick));
-  const firstOpen = (list) => { const i = steps.findIndex(s => !stepStatus(s, list).done || picksOfStep(list, s.id).some(p => pickNeeds(p, ctx))); return i < 0 ? 'summary' : i; };
+  // The flow opens on the first step staff have something to do in: one that does not fill itself
+  // (a step that can be skipped is still SHOWN, never passed over), or one whose picks still need an
+  // answer. The same rule advanceFrom walks on with. Only a Combo that fills itself opens on the summary.
+  const stepOpen = (s, list) => !(fixedAnswer(s, ctx) && stepStatus(s, list).done && !picksOfStep(list, s.id).some(p => pickNeeds(p, ctx)));
+  const firstOpen = (list) => { const i = steps.findIndex(s => stepOpen(s, list)); return i < 0 ? 'summary' : i; };
   const [view, setView] = useState(() => firstOpen(initialPicks || startingPicks(steps, ctx, newPick)));
   const [configuring, setConfiguring] = useState(null);     // { key, fresh } while a pick's own options are open
   const [pendingAllergen, setPendingAllergen] = useState(null);
@@ -66,6 +70,9 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
     onCancel();
   };
 
+  // The name a product of a step goes by here: "Margherita — Large" for one size listed on its own
+  // (the line it makes is called that too), never just "Large".
+  const tileName = (row) => pickLineName(row, ctx.rowsById);
   const rowOfPick = (p) => ctx.rowsById.get(p.itemId ?? p.entryId) || ctx.rowsById.get(p.entryId) || null;
   const stepById = (id) => steps.find(s => s.id === id) || null;
   const priceOfPick = (p) => {
@@ -81,11 +88,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
 
   // After a step fills up, walk on to the next step that still has something to choose.
   const advanceFrom = (index, list) => {
-    for (let i = index + 1; i < steps.length; i++) {
-      const done = stepStatus(steps[i], list);
-      const needsAnswer = picksOfStep(list, steps[i].id).some(p => pickNeeds(p, ctx));
-      if (!(fixedAnswer(steps[i], ctx) && done.done && !needsAnswer)) { goTo(i); return; }
-    }
+    for (let i = index + 1; i < steps.length; i++) if (stepOpen(steps[i], list)) { goTo(i); return; }
     goTo('summary');
   };
   const settle = (step, list) => {
@@ -105,7 +108,9 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
     setSay(null); setLeaving(false); setDirty(true);
     setPicks(next);
     // A size to pick, or an option that must be answered: ask it now, in the product's own flow.
-    if (made && pickNeeds(made, ctx)) { setConfiguring({ key: made.key, fresh: true }); return; }
+    // What the step held before the tap is kept, so backing out of that flow puts it back (a one
+    // choice step swaps its pick on a tap, and must not end up empty).
+    if (made && pickNeeds(made, ctx)) { setConfiguring({ key: made.key, fresh: true, before: picks }); return; }
     settle(step, next);
   };
   const tap = (step, e) => {
@@ -113,7 +118,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
     // that always works, whatever has run out since, and needs no allergen warning.
     const already = picksOfStep(picks, step.id).some(p => p.entryId === e.entry.itemId) && !stepRule(step).repeat;
     if (e.state !== 'ok' && !already) {
-      const name = e.row?.menuName || e.row?.name || 'That';
+      const name = e.row ? tileName(e.row) : 'That';
       flash(e.state === 'type' ? (e.words || `${name} is not available for this order type.`) : `${name}: ${e.words || 'cannot be picked'}`);
       return;
     }
@@ -135,7 +140,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
     });
     const close = (cancelled) => {
       // A fresh pick that still needs its size or a required answer cannot stay half made.
-      if (cancelled && configuring.fresh && pickNeeds(cfgPick, ctx)) setPicks(picks.filter(p => p.key !== cfgPick.key));
+      if (cancelled && configuring.fresh && pickNeeds(cfgPick, ctx)) setPicks(configuring.before || picks.filter(p => p.key !== cfgPick.key));
       setConfiguring(null);
     };
     if (!setup) {
@@ -303,7 +308,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
                           padding:'12px 14px', paddingRight: sel && rule.repeat ? 64 : 14, borderRadius:14, cursor: dim ? 'not-allowed' : 'pointer', fontFamily:'inherit', textAlign:'left', transition:'all .1s',
                           border:`2px solid ${blocked && !sel ? 'var(--red-b)' : sel ? 'var(--acc)' : 'var(--bdr)'}`,
                           background: blocked && !sel ? 'var(--bg5)' : sel ? 'var(--acc-d)' : 'var(--bg2)', opacity: dim ? 0.45 : 1 }}>
-                        <span style={{ fontSize:14, fontWeight:700, lineHeight:1.25, wordBreak:'break-word', color: sel ? 'var(--acc)' : 'var(--t1)', textDecoration: e.state === 'out' && !sel ? 'line-through' : 'none' }}>{e.row.menuName || e.row.name}</span>
+                        <span style={{ fontSize:14, fontWeight:700, lineHeight:1.25, wordBreak:'break-word', color: sel ? 'var(--acc)' : 'var(--t1)', textDecoration: e.state === 'out' && !sel ? 'line-through' : 'none' }}>{tileName(e.row)}</span>
                         <span style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
                           {words && <span style={{ fontSize:12, fontWeight:700, fontFamily:'var(--font-mono)', color: sel ? 'var(--acc)' : 'var(--t3)' }}>{words}</span>}
                           {e.words && <span data-testid="combo-tile-words" style={{ fontSize:10, fontWeight:800, padding:'1px 6px', borderRadius:5, background: blocked ? 'var(--red-d)' : 'var(--wrn-d,#fff3cd)', color: blocked ? 'var(--red)' : 'var(--wrn,#856404)', border:`1px solid ${blocked ? 'var(--red-b)' : 'var(--wrn-b,#ffc107)'}` }}>{e.state === 'type' ? ctx.notSoldShort() : e.words}</span>}
@@ -312,7 +317,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
                       </button>
                       {sel && rule.repeat && (
                         <div style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', display:'flex', alignItems:'center', gap:5 }}>
-                          <button onClick={(ev) => { ev.stopPropagation(); untap(step, id); }} aria-label={`One less ${e.row.menuName || e.row.name}`}
+                          <button onClick={(ev) => { ev.stopPropagation(); untap(step, id); }} aria-label={`One less ${tileName(e.row)}`}
                             style={{ width:30, height:30, borderRadius:8, border:'1.5px solid var(--acc)', background:'var(--acc-d)', color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:17, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', lineHeight:1 }}>−</button>
                           <span data-testid="combo-tile-count" style={{ fontSize:15, fontWeight:900, color:'var(--acc)', minWidth:14, textAlign:'center', fontFamily:'var(--font-mono)' }}>{count}</span>
                         </div>
@@ -377,7 +382,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
       </div>
 
       {pendingAllergen && (
-        <AllergenModal item={{ ...pendingAllergen.e.row, name: pendingAllergen.e.row.menuName || pendingAllergen.e.row.name }} activeAllergens={activeAllergens}
+        <AllergenModal item={{ ...pendingAllergen.e.row, name: tileName(pendingAllergen.e.row) }} activeAllergens={activeAllergens}
           onConfirm={() => { const { step: s, e } = pendingAllergen; setPendingAllergen(null); doTap(s, e); }}
           onCancel={() => setPendingAllergen(null)} />
       )}

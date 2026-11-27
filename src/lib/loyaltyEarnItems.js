@@ -85,12 +85,17 @@ export function channelEarnCustomer(customer) {
  * @param {object} bd            refundMath.refundBreakdown for this refund
  * @param {number} chargedGoods  the goods money the check charged (refundMath: plan sum, else itemsBasis)
  */
-export function partRefundLoyaltyBody({ refundId, bd, chargedGoods, refundItems = [], menuItems = [] } = {}) {
+export function partRefundLoyaltyBody({ refundId, bd, chargedGoods, refundItems = [], menuItems = [], checkItems = null } = {}) {
   const goods = Number(chargedGoods);
   const back = Number(bd?.itemsAmount);
   const share = goods > 0 && Number.isFinite(back) ? Math.max(0, Math.min(1, back / goods)) : 0;
+  // 5.12.123: the refund screens do not all send the whole line (the phone POS sends uid, name,
+  // price and quantities only), so what a line IS comes from the check itself, by uid: its
+  // product, its category, and whether it is a pick inside a Combo (a pick earned no stamp, so a
+  // refund takes none back). What the screen sent still wins (the quantity refunded).
+  const own = new Map((Array.isArray(checkItems) ? checkItems : []).filter((i) => i && i.uid != null).map((i) => [i.uid, i]));
   const lines = (Array.isArray(refundItems) ? refundItems : [])
     .filter((i) => i && Number(i.refundQty) > 0)
-    .map((i) => ({ ...i, qty: Number(i.refundQty) }));
+    .map((i) => ({ ...(own.get(i.uid) || {}), ...i, qty: Number(i.refundQty) }));
   return { part: true, refund_id: String(refundId || ''), share: Math.round(share * 1e6) / 1e6, items: loyaltyEarnItems(lines, menuItems) };
 }

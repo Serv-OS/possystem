@@ -460,17 +460,21 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                 </tr>
                               </thead>
                               <tbody>
-                                {(c.items || []).map((item, idx) => (
-                                  <tr key={item.uid || item.id || idx}>
-                                    <td style={{ padding: '6px 8px', fontSize: 13 }}>
+                                {/* 5.12.123: a Combo reads as its own line, then its picks set in under it; a pick shows a price only when it adds one (never 0.00). */}
+                                {displayOrder(c.items || []).map((item, idx) => {
+                                  const show = lineShow(item);
+                                  return (
+                                  <tr key={item.uid || item.id || idx} data-combo-pick={show.pick ? '1' : undefined}>
+                                    <td style={{ padding: '6px 8px', paddingLeft: show.pick ? 22 : 8, fontSize: 13, color: show.pick ? 'var(--t2)' : undefined }}>
                                       {item.name}
                                       {modsText(item.mods) && <span style={{ color: 'var(--t4)', fontSize: 11, display: 'block' }}>{modsText(item.mods)}</span>}
                                     </td>
                                     <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'center' }}>{item.qty || 1}</td>
-                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(item.price)}</td>
-                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt((item.price || 0) * (item.qty || 1))}</td>
+                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{show.showAmount ? fmt(item.price) : ''}</td>
+                                    <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{show.showAmount ? fmt((item.price || 0) * (item.qty || 1)) : ''}</td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
 

@@ -20,7 +20,7 @@ import MOrderActions from './MOrderActions';
 import { Icon } from '../../components/ServOSIcons';
 // 5.12.123 Combos: a Combo rung up on the main POS can be opened here. Its lines say what they are,
 // a pick shows no 0.00, and the quantity buttons are left off (a Combo is rung up one at a time).
-import { lineShow, isComboLine } from '../../lib/combo.js';
+import { lineShow, isComboLine, displayOrder } from '../../lib/combo.js';
 
 // 19 Oct 2026 (v5.11.78, channel parity): the cart shows, prints and MTender charges ONE bill, the
 // till's own (store.getPOSTotals, payments/checkTotals.computeCheckTotals): item discounts of
@@ -410,8 +410,11 @@ function CourseGroupedItems({ items, onRemove, onInc, onDec, onActions }) {
   // v5.5.961: profile can hide course management — collapse to one flat group, no headers
   const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
   // Bucket by course
-  const byCourse = hideCourses ? { 0: items } : items.reduce((acc, it) => {
-    const c = it.course ?? 1;
+  // 5.12.123: a Combo stays together, its own line then its picks, in the first section (as the
+  // checkout bill keeps it): its picks are never spread over courses, and no course of included
+  // picks shows a 0.00 header of its own.
+  const byCourse = hideCourses ? { 0: displayOrder(items) } : displayOrder(items).reduce((acc, it) => {
+    const c = isComboLine(it) ? 0 : (it.course ?? 1);
     (acc[c] = acc[c] || []).push(it);
     return acc;
   }, {});

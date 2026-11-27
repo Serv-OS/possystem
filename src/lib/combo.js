@@ -228,6 +228,7 @@ export function comboWarnings(item, ctx = {}) {
   const out = [];
   const off = setOf(ctx.eightySix);
   if (ctx.noPrice) out.push({ stepId: null, level: 'stop', words: 'This Combo has no price. Set its price on Details: that is the set price.' });
+  if (!steps.some((s) => stepRule(s).min > 0)) out.push({ stepId: null, level: 'note', words: 'Every step can be skipped. On the POS at least one thing must be picked before the Combo can be added.' });
   for (const step of steps) {
     const rule = stepRule(step);
     if (!step.products.length) {
@@ -242,6 +243,8 @@ export function comboWarnings(item, ctx = {}) {
       if (block) { out.push({ stepId: step.id, level: 'note', words: `${nameOf(row)}: ${block}` }); continue; }
       if (row.archived) { out.push({ stepId: step.id, level: 'note', words: `${nameOf(row)} is archived, so it is not offered.` }); continue; }
       if (typeof ctx.hiddenHere === 'function' && ctx.hiddenHere(row)) { out.push({ stepId: step.id, level: 'note', words: `Head office hides ${nameOf(row)} on the POS, so it is not offered.` }); continue; }
+      // A step that keeps prices sells the product at its own price: one with no price cannot be picked.
+      if (step.pricing === PRICING_OWN && typeof ctx.noPriceRow === 'function' && ctx.noPriceRow(row)) { out.push({ stepId: step.id, level: 'note', words: `${nameOf(row)} has no price set, so it cannot be picked in a step that keeps prices. Set its price first.` }); continue; }
       usable += 1;
       if (off.has(row.id)) out.push({ stepId: step.id, level: 'note', words: `${nameOf(row)} is 86'd right now.` });
     }
@@ -339,7 +342,9 @@ export function entryState(entry, ctx = {}, picks = []) {
       const anySold = allSizes.some((s) => sold(s));
       return { row, state: anySold ? 'out' : 'type', words: anySold ? 'Sold out' : wordsNotSold(row), left: 0, sizes: [] };
     }
-    const left = Math.min(own, open.reduce((m, s) => Math.max(m, unitsLeft(s.id, ctx, used)), 0));
+    // How many more of this product can be picked: every open size together (Small 2 left and
+    // Large 3 left is 5 of the product), never more than the product's own count.
+    const left = Math.min(own, open.reduce((n, s) => n + Math.max(0, unitsLeft(s.id, ctx, used)), 0));
     return { row, state: 'ok', words: Number.isFinite(left) && left <= 3 ? `${left} left` : '', left, sizes: open };
   }
   const left = unitsLeft(row.id, ctx, used);
@@ -542,6 +547,18 @@ export function comboMissing(steps, picks, ctx = {}) {
     if (!st.done) return `${s.name}: too many picked`;
   }
   const stepById = new Map(list.map((s) => [s.id, s]));
+  // A Combo is its picks. With nothing picked (every step can be skipped, or a step was left empty
+  // in the Back Office) it would charge the set price and send the kitchen nothing.
+  if (!listOf(picks).some((p) => p && stepById.has(p.stepId))) return 'Nothing is picked yet. Pick at least one thing.';
+  // "Each product once" is a rule of the step, not only of the screen that draws it.
+  for (const s of list) {
+    if (stepRule(s).repeat) continue;
+    const seen = new Set();
+    for (const p of picksOfStep(picks, s.id)) {
+      if (seen.has(p.entryId)) return `${s.name}: ${nameOf(rows.get(p.entryId))} can only be picked once`;
+      seen.add(p.entryId);
+    }
+  }
   for (const p of listOf(picks)) {
     const step = p && stepById.get(p.stepId);
     if (!step) continue;                                                    // not a pick of this Combo: it makes no line
@@ -559,6 +576,12 @@ export function comboMissing(steps, picks, ctx = {}) {
     if (row !== entryRow) {
       if (row.archived) return `${pickLineName(row, rows)} cannot be picked any more`;
       if (typeof ctx.soldAs === 'function' && ctx.soldAs(row) === false) return typeof ctx.notSoldWords === 'function' ? ctx.notSoldWords(row) : `${pickLineName(row, rows)} is not available for this order type`;
+    }
+    // A pick that keeps its own price is a sale of that product: one with no price set is never
+    // sold for 0.00 (the POS's rule for every line). ctx.noPriceLine(row, extras) asks the POS.
+    if (step.pricing === PRICING_OWN && typeof ctx.noPriceLine === 'function') {
+      const extras = listOf(p.mods).reduce((n, m) => n + (Number(m?.price) || 0), 0);
+      if (ctx.noPriceLine(row, extras)) return `${pickLineName(row, rows)} has no price set. Set one in Back Office before selling it.`;
     }
   }
   const off = setOf(ctx.eightySix);
@@ -584,7 +607,30 @@ export function comboUnsellable(item, ctx = {}) {
     const room = r.repeat ? open.reduce((n, e) => n + e.left, 0) : open.length;
     if (room < r.min) return `${nameOf(item)} cannot be made right now: "${s.name}" needs ${r.min} and only ${room} can be picked.`;
   }
+  // Every step can be skipped, and there is nothing in any of them to pick: nothing to sell.
+  const steps = comboSteps(item);
+  if (steps.length && !steps.some((s) => stepEntries(s, { ...ctx, comboId: item.id }, []).some((e) => e.state === 'ok'))) {
+    return `${nameOf(item)} cannot be made right now: nothing can be picked.`;
+  }
   return null;
+}
+
+/**
+ * The allergens a Combo brings before anybody taps a product: its own, and those of every product
+ * its steps pick by themselves (a step that fills itself). The POS warns on these as it warns on
+ * any product with an allergen the guest named; a product staff tap in a step is warned on when it
+ * is tapped. Returns the allergen ids, once each.
+ */
+export function selfPickAllergens(item, ctx = {}) {
+  const out = [];
+  const add = (list) => { for (const a of listOf(list)) if (a && !out.includes(a)) out.push(a); };
+  add(item?.allergens);
+  const rows = rowsOf(ctx);
+  for (const s of comboSteps(item)) {
+    const fixed = fixedAnswer(s, { ...ctx, comboId: item?.id ?? null });
+    for (const id of listOf(fixed)) add(rows.get(id)?.allergens);
+  }
+  return out;
 }
 
 // ── 8. THE LINES A FINISHED COMBO BECOMES ────────────────────────────────────
@@ -792,17 +838,49 @@ export function voidGroup(items, item) {
 
 /**
  * A discount put on any line of a Combo is a discount on the Combo: a percent comes off EVERY line
- * of it (the set price and everything its picks add); an amount comes off the Combo's own line,
- * once (the same amount on every line would take it off many times over). A pick is never
- * discounted on its own. Returns the order's lines with the discount on. discount null takes it off.
+ * of it (the set price and everything its picks add). An amount comes off ONCE: the Combo's own
+ * line first, and what that line cannot take goes on its picks in order, each for no more than it
+ * adds. So "160.00 off" a Combo of 149.00 plus 24.50 of extras takes 160.00 off, which is what the
+ * discount screen offered (it shows the whole Combo), and never more than the Combo comes to. Each
+ * line holds its own share as an ordinary line discount, so every bill, receipt and report reads it
+ * as it reads any line. A pick is never discounted on its own. discount null takes it off.
  */
 export function comboDiscount(items, target, discount) {
-  const group = new Set(comboLinesOf(items, target).map((i) => i.uid));
+  const lines = comboLinesOf(items, target);
+  const group = new Set(lines.map((i) => i.uid));
   const every = !!discount && discount.type === 'percent';
+  const share = new Map();
+  if (discount && !every) {
+    const live = lines.filter((i) => i && !i.voided);
+    let left = Math.max(0, cents(Number(discount.value) || 0));
+    for (const l of [...live.filter(isComboParent), ...live.filter((i) => !isComboParent(i))]) {
+      const take = Math.min(left, Math.max(0, cents((Number(l.price) || 0) * (Number(l.qty) || 1))));
+      // The Combo's own line always holds the discount (its label shows on the Combo); a pick only
+      // when some of the amount really lands on it.
+      if (isComboParent(l) || take > 0) share.set(l.uid, take);
+      left = cents(left - take);
+    }
+    // No line of its own to take it (never, in an order the POS built): the first line holds it.
+    if (!live.some(isComboParent) && live.length && !share.size) share.set(live[0].uid, 0);
+  }
   return listOf(items).map((i) => {
     if (!i || !group.has(i.uid)) return i;
-    return { ...i, discount: discount && (every || isComboParent(i)) ? discount : null };
+    if (!discount) return { ...i, discount: null };
+    if (every) return { ...i, discount };
+    return { ...i, discount: share.has(i.uid) ? { ...discount, value: share.get(i.uid) } : null };
   });
+}
+
+/**
+ * The order's lines as a promo code's rules may read them (the POS checkout sends them with the
+ * code). A pick keeps its money and its category, so "20% off pizzas" still counts what it adds;
+ * but it is never THE product a "free item" code makes free: it is part of the Combo's set price,
+ * and the cheapest matching line would be its 0.00.
+ */
+export function linesForPromo(items) {
+  return listOf(items).map((l) => (isComboPick(l)
+    ? { ...l, itemId: null, item_id: null, id: null, item: null, variant: null, parentId: null, parent_id: null }
+    : l));
 }
 
 /**

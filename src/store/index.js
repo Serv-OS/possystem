@@ -79,6 +79,7 @@ import { isSoldAs, notSoldAsWords } from '../lib/soldAs.js';
 // the lines are built in lib/comboLines.js; the actions below only move them as one.
 import { comboHasSteps, comboSteps, comboMissing, comboUids, comboIsSent, isComboLine, isComboParent, isComboPick, comboNotHereWords, picksFromLines, unitsUsed, keepsCombosWhole, voidGroup, comboDiscount, draftLineTest, COMBO_WORDS } from '../lib/combo.js';
 import { comboOrderLines, changedPickLine, repricedPickLine, comboPosContext } from '../lib/comboLines.js';
+import { answersWithNote } from '../lib/optionAnswers.js';
 import { logActivity } from '../lib/activity';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
@@ -3403,6 +3404,9 @@ export const useStore = create((set, get) => ({
       orderType: st.activeTableId ? 'dine-in' : st.orderType,
       modifierGroupDefs: st.modifierGroupDefs || [], instructionGroupDefs: st.instructionGroupDefs || [],
       giveBack,
+      // A pick that keeps its own price is a sale of that product: never 0.00 for a product with no
+      // price set (menuPricing.refusesNoPriceLine, the rule addItem applies to every line).
+      noPriceLine: (row, extras = 0) => refusesNoPriceLine(row, st.orderType, st.activeMenuId, tillLineUnitPrice(row, st.orderType, st.activeMenuId, null, 1) + (Number(extras) || 0)),
     });
   },
 
@@ -3632,7 +3636,16 @@ export const useStore = create((set, get) => ({
 
   updateItemNote: (itemUid, note) => {
     const { activeTableId } = get();
-    const apply = items => items.map(i=>i.uid===itemUid?{...i,notes:note}:i);
+    // 5.12.123: a line that remembers its option answers (a Combo's pick) remembers the note too.
+    // The line's note is the truth, so the record follows it (lib/optionAnswers.js answersWithNote).
+    const withNote = (i) => {
+      const next = { ...i, notes: note };
+      if (!i.optionAnswers) return next;
+      const rec = answersWithNote(i.optionAnswers, note);
+      if (rec) next.optionAnswers = rec; else delete next.optionAnswers;
+      return next;
+    };
+    const apply = items => items.map(i=>i.uid===itemUid?withNote(i):i);
     if (activeTableId) {
       set(s=>({ tables:s.tables.map(t=>{
         if(t.id!==activeTableId||!t.session)return t;
@@ -8305,7 +8318,7 @@ export const useStore = create((set, get) => ({
     // goods money returned, stamps by the qualifying lines returned), never the reward used;
     // v5.11.78 took back nothing on a part refund (and before it, the whole check).
     const partLoyalty = nextStatus === 'partial_refund'
-      ? partRefundLoyaltyBody({ refundId, bd, chargedGoods: chargedGoodsOf(chkBefore), refundItems, menuItems: get().menuItems || [] })
+      ? partRefundLoyaltyBody({ refundId, bd, chargedGoods: chargedGoodsOf(chkBefore), refundItems, menuItems: get().menuItems || [], checkItems: chkBefore.items || [] })
       : null;
     const loyaltyToReverse = nextStatus === 'refunded' || (partLoyalty && (partLoyalty.share > 0 || partLoyalty.items.length > 0));
     if (loyaltyToReverse && (check?.customer?.phone || check?.customer_id || check?.loyalty || check?.loyaltyRedemption)) {
