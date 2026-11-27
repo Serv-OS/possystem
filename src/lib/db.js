@@ -43,6 +43,7 @@ import { mustChangeRow } from './rowWrites';
 import { patchPendingCheck } from '../sync/DataSafe';
 import { cleanDiscountKind, isMissingKindColumn } from './discountKinds.js';
 import { readManagedAt, gateFor } from './msm/msmManaged.js';
+import { comboHasSteps, COMBO_WORDS } from './combo.js';
 
 // 27 Sep 2026: the venue a Back Office menu, modifier group or discount write falls back to when
 // the caller passes none: the one THIS tab resolved (the same rule as store/index.js tabVenue).
@@ -1804,6 +1805,10 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
     if (fErr) return { ok: false, error: fErr };
     if (!freshRow) return { ok: false, error: 'this product is not in this venue\'s menu any more (deleted in another window?). Reload to see the latest' };
     if (freshRow.archived) return { ok: false, error: 'this product was archived (in another window?), so it was not shared. Reload to see the latest' };
+    // 5.12.123: a Combo with steps stays at one site for now. Its steps name THIS venue's products
+    // by id and are never copied (shareCopy NEVER_FIELDS), so a copy would arrive at the other
+    // venues as a Combo with nothing in it, sold at the set price.
+    if (comboHasSteps(freshRow)) return { ok: false, error: COMBO_WORDS.share };
     item = freshRow;
   }
 
