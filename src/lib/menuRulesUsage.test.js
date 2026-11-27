@@ -69,17 +69,18 @@ test('the till, bar and phone leave out a category that holds only option only s
   // 5.12.113: the rows the rule is handed must still HOLD the option only sub items. The till's
   // MENU_ITEMS has had them filtered out, and this test once pinned that very mistake, so the
   // category showed with "0 items" (Mozz Sandy, Pizza Options, 26 Nov 2026).
-  assert.match(till, /optionOnlyCategoryIds\(menuCategories, rawItems\)/);
+  // 5.12.116: and names the POS, so a category whose every product is hidden on the POS goes too.
+  assert.match(till, /optionOnlyCategoryIds\(menuCategories, rawItems, \{ hiddenOn: 'pos' \}\)/);
   assert.doesNotMatch(till, /optionOnlyCategoryIds\(menuCategories, MENU_ITEMS\)/);
   assert.match(till, /const rawItems = storeMenuItems \|\| SEED_MENU_ITEMS;/, 'rawItems is the store list, nothing taken out');
   assert.match(till, /const MENU_ITEMS = useMemo\(\(\) => rawItems\s+\.filter\(i => !isOptionOnlyItem\(i\)\)/, 'MENU_ITEMS has them taken out');
   assert.match(till, /!c\.parentId && !c\.isSpecial && !optionOnlyCats\.has\(c\.id\)/, 'root strip');
   assert.match(till, /c\.parentId === cat && !optionOnlyCats\.has\(c\.id\)/, 'sub category strip');
   const bar = read('surfaces/BarSurface.jsx');
-  assert.match(bar, /optionOnlyCategoryIds\(menuCategories, storeMenuItems \|\| MENU_ITEMS\)/);
+  assert.match(bar, /optionOnlyCategoryIds\(menuCategories, storeMenuItems \|\| MENU_ITEMS, \{ hiddenOn: 'pos' \}\)/);
   assert.match(bar, /!c\.isSpecial&&!optionOnlyCats\.has\(c\.id\)/);
   const phone = read('surfaces/mpos/MMenu.jsx');
-  assert.match(phone, /optionOnlyCategoryIds\(menuCategories, menuItems\)/);
+  assert.match(phone, /optionOnlyCategoryIds\(menuCategories, menuItems, \{ hiddenOn: 'pos' \}\)/);
   assert.match(phone, /c\.visible !== false && !optionOnlyCats\.has\(c\.id\)/);
   // The kiosk's own rule is still in place (both designs).
   const kiosk = read('lib/kioskMenu.js');

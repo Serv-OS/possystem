@@ -11,7 +11,8 @@
 import { money2, toPence, has, PUBLISHED_CHANNELS, pctText, newItemId, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 import { fieldWord, colWord, PRICE_TYPE_WORDS, CHOICE_WORDS } from './msmWords.js';
-import { sameSoldAs, soldAsSummary } from '../soldAs.js';
+import { sameSoldAs, soldAsSummary, sameShownOn, shownOnSummary } from '../soldAs.js';
+import { extraMenusChangeWords, menuKeyNames, allExtraMenus } from '../../../supabase/functions/_shared/msmMenus.js';
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, as before).
 import { activeTaxWords } from '../taxWords.js';
 
@@ -243,6 +244,12 @@ export function summarise(changes, central, opts = {}) {
         out.push(`${pName(ch.entity_id)}: now ${sum ? `${sum.charAt(0).toLowerCase()}${sum.slice(1)}` : 'sold on every order type'} at every site${when}.`);
         rest = rest.filter((k) => k !== 'visibility');
       }
+      // 5.12.116 "Shows on": where head office hides a product, in its own words.
+      if (ch.target === 'product' && 'visibility' in a && !sameShownOn({ visibility: a.visibility }, { visibility: b.visibility })) {
+        const sum = shownOnSummary({ visibility: a.visibility });
+        out.push(`${pName(ch.entity_id)}: ${sum ? `now ${sum.charAt(0).toLowerCase()}${sum.slice(1)}` : 'no longer hidden by head office'} at every site${when}.`);
+        rest = rest.filter((k) => k !== 'visibility');
+      }
       if (rest.length) {
         const words = [...new Set(rest.map(fieldWord))];
         const who = ch.target.startsWith('modifier_group') ? (group.get(ch.entity_id)?.name || 'An option group')
@@ -257,9 +264,16 @@ export function summarise(changes, central, opts = {}) {
       else if (a.archived === true) out.push(`${label} comes off the menu at every site (nothing is deleted).`);
       else if (a.archived === false) out.push(`${label} comes back on the menu.`);
       else if ('label' in a) out.push(`Category ${ch.before?.label && ch.before.label !== a.label ? `${ch.before.label} is` : 'is'} renamed to ${a.label} at every site.`);
+      // 5.12.116: which menus it is on. The names come from the group menu with the draft applied.
+      else if ('menu_keys' in a) out.push(`${label} is now on ${menuKeyNames(a.menu_keys, new Map(allExtraMenus(C.menu).map((m) => [m.id, m.name])))}. Its products follow it.`);
       else { const words = [...new Set(Object.keys(a).map(fieldWord))]; out.push(`Category ${label}: ${andList(words)} change${words.length === 1 && !/s$/.test(words[0]) ? 's' : ''} at every site.`); }
     }
-    if (ch.target === 'menu') out.push(`The menu's ${andList([...new Set(Object.keys(a).map(fieldWord))])} change${Object.keys(a).length === 1 ? 's' : ''}.`);
+    if (ch.target === 'menu') {
+      const rest = Object.keys(a).filter((k) => k !== 'extra_menus');
+      if (rest.length) out.push(`The menu's ${andList([...new Set(rest.map(fieldWord))])} change${rest.length === 1 ? 's' : ''}.`);
+      // 5.12.116: the group's other menus.
+      if ('extra_menus' in a) for (const w of extraMenusChangeWords(ch.before?.extra_menus, a.extra_menus)) out.push(`${w.charAt(0).toUpperCase()}${w.slice(1)}.`);
+    }
     if (ch.target === 'menu_site' && ch.op === 'create') out.push(`${siteName(ch.location_id)} is added to the group menu.`);
   }
   const where = (k) => (k === '*' ? (allSites > 1 ? 'every site' : 'the site') : siteName(k));

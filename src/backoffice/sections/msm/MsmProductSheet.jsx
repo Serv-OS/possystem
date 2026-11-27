@@ -26,6 +26,7 @@
 //
 // Save stages the changes (MultiSiteMenu.jsx stage). Nothing is live until the draft is published.
 
+import { hasExtraMenus, productMenuKeys, menuKeysWords } from '../../../../supabase/functions/_shared/msmMenus.js';
 import { useEffect, useMemo, useState } from 'react';
 import { ALLERGENS } from '../../../data/seed';
 import { DIET_TAGS, toggleDietTag } from '../../../lib/dietary';
@@ -38,7 +39,7 @@ import * as groupEdit from '../../../lib/msm/msmGroupEdit';
 import { groupTickSiteRows } from '../../../lib/msm/msmGroupView';
 import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
 import { isOptionOnlyItem } from '../../../lib/menuRules';
-import { SOLD_AS_TYPES, SOLD_AS_WORDS, notSoldAs, toggleSoldAs, withNotSoldAs, soldAsSummary, sameSoldAs } from '../../../lib/soldAs';
+import { SOLD_AS_TYPES, SOLD_AS_WORDS, notSoldAs, toggleSoldAs, withNotSoldAs, soldAsSummary, sameSoldAs, SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, toggleShownOn, withNotShownOn, shownOnSummary, sameShownOn, sameGroupRules, withGroupRules } from '../../../lib/soldAs';
 import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords, sizeVatWords } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
@@ -65,6 +66,17 @@ const chText = (obj) => Object.fromEntries(Object.entries(obj || {}).filter(([, 
 // A product made sold (a sub item switched to sold on its own, or to A product) that shows nowhere
 // gets the normal "shows everywhere", as a new product does: publish writes it whole at each site.
 const ALL_ON = { pos: true, kiosk: true, online: true, onlineDelivery: true };
+// 5.12.116: a NEW product takes its category's rules (Sold as, Shows on) when every product
+// already in that category has the same ones, so a new wine is dine in only, and a new product in
+// a category head office hides on Online is hidden there too. The boxes show it ticked as it will
+// be saved, and it can be changed before saving. A form that already has a rule of its own is left.
+function withCategoryRules(ix, f) {
+  if (!f || !f.category_id || notSoldAs({ visibility: f.visibility }).length || notShownOn({ visibility: f.visibility }).length) return f;
+  const mates = [...ix.products.values()].filter((x) => !x.archived && !x.parent_product_id && x.category_id === f.category_id && !isOptionOnlyItem(x));
+  if (!mates.length || !mates.every((x) => sameGroupRules(x, mates[0]))) return f;
+  if (!notSoldAs(mates[0]).length && !notShownOn(mates[0]).length) return f;
+  return { ...f, visibility: withGroupRules(f.visibility ?? null, mates[0]) };
+}
 function withSoldVisibility(f) {
   if (isOptionOnlyItem(f)) return f;
   const v = f.visibility && typeof f.visibility === 'object' ? f.visibility : null;
@@ -100,7 +112,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     image: x.image || '', item_code: x.item_code || '', sold_alone: x.type === 'subitem' ? x.sold_alone === true : x.sold_alone !== false, type: x.type || 'simple',
     default_channels: chText(x.default_channels),
   });
-  const [form, setForm] = useState(() => (p ? fromProduct(p) : blank));
+  const [form, setForm] = useState(() => (p ? fromProduct(p) : withCategoryRules(ix, blank)));
   // The per site table starts from what the grid shows (the sheet is opened afresh per product).
   const [siteForm, setSiteForm] = useState(() => {
     const out = {};
@@ -127,7 +139,9 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
 
   useEffect(() => { if (showGp) costs.load(sites.map((s) => s.id)); }, [showGp, costs, sites]);
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  // Picking the category of a NEW product brings that category's rules with it (withCategoryRules).
+  const set = (k, v) => setForm((f) => (create && k === 'category_id' ? withCategoryRules(ix, { ...f, [k]: v }) : { ...f, [k]: v }));
   const setSite = (loc, patch) => setSiteForm((m) => ({ ...m, [loc]: { ...m[loc], ...patch } }));
   const priceOk = priceInput(form.default_price);
   const groupPrice = priceOk.ok && priceOk.value != null ? priceOk.value : null;
@@ -517,6 +531,20 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
           </Field>
         )}
 
+        {/* 5.12.116: the group's menus this product is on. It follows its categories, so it is
+            shown here and changed by its category (or an "Also in" category). */}
+        {!optionOnly && !isSizeForm && hasExtraMenus(eff?.menu) && (() => {
+          const cats = new Map((eff?.categories || []).map((c) => [c.id, c]));
+          const keys = productMenuKeys({ category_id: form.category_id, extra_category_ids: form.extra_category_ids }, cats, eff?.menu);
+          return (
+            <div data-testid="msm-product-menus" style={{ ...ui.sub, marginBottom: 12 }}>
+              <strong style={{ color: 'var(--t2)' }}>On menus: </strong>
+              {keys.length ? menuKeysWords(keys, eff?.menu) : 'none yet (pick a category)'}.
+              {' '}A product is on the menus its categories are on. To put it on another menu, add a category of that menu under Also in.
+            </div>
+          );
+        })()}
+
         {subChanged && (
           <div style={{ marginBottom: 12 }}>
             <Notice tone="info" actions={openGroup ? [{ label: 'Change the option prices too', onClick: () => openGroup(usedAsOption[0].group?.id) }] : null}>
@@ -740,6 +768,34 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                 <Btn small kind="link" data-testid="msm-sold-as-category" style={{ marginTop: 6 }} disabled={saving} onClick={async () => {
                   const changes = differ.map((x) => productUpdate(ctx, x.id, { visibility: withNotSoldAs(x.visibility ?? null, no) ?? {} }).change).filter(Boolean);
                   await stage(changes, { done: `${changes.length} more product${changes.length === 1 ? '' : 's'} in ${catName} ${changes.length === 1 ? 'is' : 'are'} now ${no.length ? soldAsSummary({ visibility: form.visibility }).toLowerCase() : 'sold on every order type'}, in the draft.`, undo: true });
+                }}>Use this for all {mates.length} other product{mates.length === 1 ? '' : 's'} in {catName}</Btn>
+              )}
+            </Field>
+          );
+        })()}
+
+        {/* 5.12.116 "Shows on" (lib/soldAs.js; Peter, 26 Nov 2026: one menu for in store and online,
+            "I dont want certain categories to show at all ... the less menus the better"). Ticked =
+            it shows there. Unticked = head office hides it there at every site, and a site cannot
+            turn it back on. A site's own switches for the places left ticked stay the site's. */}
+        {!isSizeForm && !optionOnly && (() => {
+          const no = notShownOn({ visibility: form.visibility });
+          const mates = p ? [...ix.products.values()].filter((x) => !x.archived && !x.parent_product_id && x.id !== p.id && form.category_id && x.category_id === form.category_id && !isOptionOnlyItem(x)) : [];
+          const differ = mates.filter((x) => !sameShownOn(x, { visibility: form.visibility }));
+          const catName = ix.categories.get(form.category_id)?.label || 'this category';
+          return (
+            <Field label="Shows on" hint={no.length ? `${shownOnSummary({ visibility: form.visibility })} at every site. A site cannot turn it back on. Online also covers QR at the table and the catering page.` : 'Shows everywhere a site lets it. Untick a place to hide it there at every site, like a staff only product on Online.'}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} data-testid="msm-shown-on">
+                {SHOWN_ON_KEYS.map((k) => {
+                  const on = !no.includes(k);
+                  return <button key={k} type="button" aria-pressed={on} onClick={() => setForm((f) => ({ ...f, visibility: toggleShownOn(f.visibility, k, !on) }))}
+                    style={{ padding: '5px 10px', borderRadius: 20, border: `1px solid ${on ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: on ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: on ? 'var(--t1)' : 'var(--t4)', textDecoration: on ? 'none' : 'line-through', fontSize: 12, fontWeight: 650, cursor: 'pointer', fontFamily: 'inherit' }}>{on ? '✓ ' : ''}{SHOWN_ON_WORDS[k]}</button>;
+                })}
+              </div>
+              {editable && differ.length > 0 && (
+                <Btn small kind="link" data-testid="msm-shown-on-category" style={{ marginTop: 6 }} disabled={saving} onClick={async () => {
+                  const changes = differ.map((x) => productUpdate(ctx, x.id, { visibility: withNotShownOn(x.visibility ?? null, no) ?? {} }).change).filter(Boolean);
+                  await stage(changes, { done: `${changes.length} more product${changes.length === 1 ? '' : 's'} in ${catName} ${changes.length === 1 ? 'is' : 'are'} now ${no.length ? shownOnSummary({ visibility: form.visibility }).toLowerCase() : 'shown everywhere'}, in the draft.`, undo: true });
                 }}>Use this for all {mates.length} other product{mates.length === 1 ? '' : 's'} in {catName}</Btn>
               )}
             </Field>

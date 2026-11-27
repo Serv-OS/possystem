@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
+import { notShownOn } from '../../lib/soldAs.js';
 import { useStore } from '../../store';
 // 5.12.57: price boxes show the venue's own symbol, never a typed pound.
 import { money, currencySymbol } from '../../lib/currency';
@@ -462,7 +463,10 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
               <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
                 {[['pos','POS'],['kiosk','Kiosk'],['online','Online'],['onlineDelivery','Delivery']].map(([k,l])=>{
                   const on=(item.visibility||{pos:true,kiosk:true,online:true,onlineDelivery:true})[k]!==false;
-                  return <button key={k} onClick={()=>f('visibility',{...(item.visibility||{pos:true,kiosk:true,online:true,onlineDelivery:true}),[k]:!on})} style={{ padding:'3px 9px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',fontSize:11,fontWeight:on?700:400,border:`1px solid ${on?'var(--grn-b)':'var(--bdr)'}`,background:on?'var(--grn-d)':'var(--bg3)',color:on?'var(--grn)':'var(--t4)' }}>{on?'✓ ':''}{l}</button>;
+                  // 5.12.116: a place head office hid in the Multi site menu (visibility.notShownOn,
+                  // lib/soldAs.js) stays off here. The store would put it back anyway (msmLock).
+                  const byHeadOffice=notShownOn(item).includes(k);
+                  return <button key={k} disabled={byHeadOffice} title={byHeadOffice?`Head office hides this on ${l} in the Multi site menu`:undefined} onClick={()=>f('visibility',{...(item.visibility||{pos:true,kiosk:true,online:true,onlineDelivery:true}),[k]:!on})} style={{ padding:'3px 9px',borderRadius:9,cursor:byHeadOffice?'not-allowed':'pointer',opacity:byHeadOffice?.6:1,fontFamily:'inherit',fontSize:11,fontWeight:on?700:400,border:`1px solid ${on?'var(--grn-b)':'var(--bdr)'}`,background:on?'var(--grn-d)':'var(--bg3)',color:on?'var(--grn)':'var(--t4)' }}>{on?'✓ ':''}{l}{byHeadOffice?' (head office)':''}</button>;
                 })}
               </div>
             </div>

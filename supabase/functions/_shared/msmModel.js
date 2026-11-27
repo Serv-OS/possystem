@@ -65,7 +65,9 @@ export const TARGET_OPS = Object.freeze({
 // keeps no per site category differences. A NEW category takes every field. The database refuses
 // the rest (trigger msm_changes_guard_category: 20261018, loosened for the name by 20261211a);
 // the screens say it first (msmDiff.mergeStaged).
-export const CATEGORY_UPDATE_FIELDS = Object.freeze(['archived', 'route_like_id', 'label']);
+// 5.12.116: and which of the group's menus it is on (menu_keys, _shared/msmMenus.js). The database
+// takes it since 20261214a.
+export const CATEGORY_UPDATE_FIELDS = Object.freeze(['archived', 'route_like_id', 'label', 'menu_keys']);
 /** Words when a change to a category the group menu already has carries any other field ('' when fine). */
 export function categoryUpdateWords(change, op = change?.op) {
   if (!change || change.target !== 'category' || op === 'create') return '';
@@ -79,9 +81,9 @@ export const CATEGORY_RULE_OLD_WORDS = "A category's name, place and colour stay
 // The fields a change may carry in `after`, per target. Anything else is refused by the
 // database (trigger msm_changes_guard) and dropped here (stageableFields).
 export const STAGE_FIELDS = Object.freeze({
-  menu: ['name', 'description', 'use_name_everywhere'],
+  menu: ['name', 'description', 'use_name_everywhere', 'extra_menus'],
   menu_site: ['venue_menu_id'],
-  category: ['parent_id', 'label', 'icon', 'color', 'accounting_group', 'default_course', 'sort_order', 'image', 'archived', 'route_like_id'],
+  category: ['parent_id', 'label', 'icon', 'color', 'accounting_group', 'default_course', 'sort_order', 'image', 'archived', 'route_like_id', 'menu_keys'],
   product: [
     'category_id', 'extra_category_ids', 'parent_product_id', 'type', 'name', 'menu_name', 'receipt_name',
     'kitchen_name', 'description', 'default_price', 'default_channels', 'tax_rate_name', 'tax_rate_percent',
@@ -161,6 +163,7 @@ export const PRODUCT_SITE_COLUMN = Object.freeze({
 export const CATEGORY_COLUMN = Object.freeze({
   parent_id: 'parent_id', label: 'label', icon: 'icon', color: 'color', accounting_group: 'accounting_group',
   default_course: 'default_course', sort_order: 'sort_order', image: 'image', archived: 'menu_id', route_like_id: null,
+  menu_keys: 'menu_id',
 });
 
 // The venue values a site may KEEP as its own (msm_product_sites.kept, keyed by venue column).
@@ -209,7 +212,10 @@ export const VENUE_INSERT = Object.freeze({
   groups: ['id', 'name', 'min', 'max', 'min_select', 'max_select', 'selection_type', 'options', 'sort_order'],
 });
 export const VENUE_UPDATE = Object.freeze({
-  menus: ['name', 'description'],
+  // 5.12.116: is_default, only ever set to true, and only on the group menu's main menu at a site
+  // that has NO default menu, in the publish that first puts a category on one of the group's
+  // other menus there (msmPlan section 4b: a POS with no menu picked must stay on the main menu).
+  menus: ['name', 'description', 'is_default'],
   categories: ['menu_id', 'parent_id', 'label', 'icon', 'color', 'accounting_group', 'sort_order', 'default_course', 'image'],
   items: [
     'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'type', 'cat', 'cats', 'parent_id',
@@ -394,6 +400,8 @@ export function checkChange(change) {
       || (c.target === 'modifier_option_site' && c.op !== 'create' && has(after, 'venue_option_id'))) return { ok: false, words: 'A site\'s own id never changes.' };
   if (c.target === 'modifier_option' && c.op === 'create' && !after.group_id) return { ok: false, words: 'A new option needs its option group.' };
   if (c.target === 'modifier_option' && c.op !== 'create' && has(after, 'group_id')) return { ok: false, words: 'An option cannot move to another group. Remove it and add it there.' };
+  if (c.target === 'menu' && has(after, 'extra_menus') && !Array.isArray(after.extra_menus)) return { ok: false, words: 'The list of menus is not a list.' };
+  if (c.target === 'category' && has(after, 'menu_keys') && after.menu_keys !== null && !(Array.isArray(after.menu_keys) && after.menu_keys.length)) return { ok: false, words: 'A category is on at least one menu.' };
   if (c.target === 'modifier_group' && has(after, 'selection_type') && !SELECTION_TYPES.includes(after.selection_type)) return { ok: false, words: 'Pick one choice, several choices (each only once or not), or the same choice more than once.' };
   return { ok: true, words: '' };
 }

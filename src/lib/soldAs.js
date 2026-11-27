@@ -159,3 +159,88 @@ export function switchBlockedWords(lines, orderType) {
   const it = names.length === 1 ? 'it' : 'them';
   return `${list} ${verb} not available for ${key ? SOLD_AS_WORDS[key] : 'that order type'}. Take ${it} off the order first.`;
 }
+
+// ── "SHOWS ON": WHERE HEAD OFFICE HIDES A PRODUCT, AT EVERY SITE (5.12.116) ──
+//
+// Peter, 26 Nov 2026 (Mozz): "the menu built is for instore and online but unlike the POS I dont
+// want certain categories to show at all. The less menus the better." So ONE menu serves the POS,
+// the kiosk and online, and head office says where a product (or a whole category of them) is
+// hidden. No second menu for that.
+//
+// HOW: the "Visible on" switches every screen already reads (visibility.pos, kiosk, online,
+// onlineDelivery) stay the one thing that decides where a product shows. Head office's choice is a
+// second list beside them, visibility.notShownOn = ['online', ...]. A publish from the group menu
+// turns each named switch OFF at every site and keeps the list on the row, so:
+//   * every screen hides it with the rule it already has (nothing new to enforce);
+//   * the site cannot turn a switch head office hid back on (lib/msm/msmLock.js), and its other
+//     switches stay its own;
+//   * taking a name off the list turns that switch back on at every site.
+
+/** The switches, in the app's own names (lib/channelMenu.js), and plain words for each. */
+export const SHOWN_ON_KEYS = Object.freeze(['pos', 'kiosk', 'online', 'onlineDelivery']);
+export const SHOWN_ON_WORDS = Object.freeze({ pos: 'POS', kiosk: 'Kiosk', online: 'Online', onlineDelivery: 'Delivery' });
+
+/** Where head office hides this row: known switches only, each once, in the app's order. */
+export function notShownOn(item) {
+  const raw = visOf(item)?.notShownOn;
+  if (!Array.isArray(raw) || !raw.length) return [];
+  return SHOWN_ON_KEYS.filter((k) => raw.includes(k));
+}
+
+/** The visibility object with head office's list set (taken off when empty), every other key kept. */
+export function withNotShownOn(visibility, list) {
+  const base = (visibility && typeof visibility === 'object' && !Array.isArray(visibility)) ? { ...visibility } : {};
+  const clean = SHOWN_ON_KEYS.filter((k) => (Array.isArray(list) ? list : []).includes(k));
+  delete base.notShownOn;
+  if (clean.length) base.notShownOn = clean;
+  if (!Object.keys(base).length) return visibility == null ? visibility : {};
+  return base;
+}
+
+/** Tick or untick one place on head office's list. */
+export function toggleShownOn(visibility, key, shown) {
+  if (!SHOWN_ON_KEYS.includes(key)) return visibility;
+  const no = new Set(notShownOn({ visibility }));
+  if (shown) no.delete(key); else no.add(key);
+  return withNotShownOn(visibility, [...no]);
+}
+
+/** True when two rows are hidden by head office in the same places. */
+export const sameShownOn = (a, b) => notShownOn(a).join('|') === notShownOn(b).join('|');
+
+/** "Hidden on Online", "Hidden on Kiosk and Online", or '' when head office hides it nowhere. */
+export function shownOnSummary(item) {
+  const no = notShownOn(item).map((k) => SHOWN_ON_WORDS[k]);
+  if (!no.length) return '';
+  if (no.length === SHOWN_ON_KEYS.length) return 'Hidden everywhere';
+  return `Hidden on ${no.length === 1 ? no[0] : `${no.slice(0, -1).join(', ')} and ${no[no.length - 1]}`}`;
+}
+
+/**
+ * A site row's visibility after head office's list `want` is applied over it: each named switch
+ * off, each switch that WAS on the row's list and is no longer named back on, the list kept, every
+ * other key (the site's own switches, the Sold as list) as it was.
+ */
+export function applyNotShownOn(visibility, want) {
+  const base = (visibility && typeof visibility === 'object' && !Array.isArray(visibility)) ? { ...visibility } : {};
+  const now = SHOWN_ON_KEYS.filter((k) => (Array.isArray(want) ? want : []).includes(k));
+  for (const k of notShownOn({ visibility: base })) if (!now.includes(k)) base[k] = true;
+  for (const k of now) base[k] = false;
+  return withNotShownOn(base, now) ?? {};
+}
+
+/** Does a site row already hold head office's list, with each named switch off? */
+export function holdsNotShownOn(row, want) {
+  const now = SHOWN_ON_KEYS.filter((k) => (Array.isArray(want) ? want : []).includes(k));
+  if (notShownOn(row).join('|') !== now.join('|')) return false;
+  const v = visOf(row) || {};
+  return now.every((k) => v[k] === false);
+}
+
+/** Both of head office's lists (Sold as, Shows on) the same on two rows. */
+export const sameGroupRules = (a, b) => sameSoldAs(a, b) && sameShownOn(a, b);
+
+/** A visibility object carrying both of head office's lists from `from` (a product), its own keys kept. */
+export function withGroupRules(visibility, from) {
+  return withNotShownOn(withNotSoldAs(visibility, notSoldAs(from)), notShownOn(from));
+}

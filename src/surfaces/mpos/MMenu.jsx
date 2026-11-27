@@ -91,7 +91,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   //
   // 5.12.31 (lib/menuRules.js rule 9): a category holding only option only sub items is left out,
   // as on the till: nothing in it can be rung up.
-  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, menuItems), [menuCategories, menuItems]);
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, menuItems, { hiddenOn: 'pos' }), [menuCategories, menuItems]);
   const topLevelCategories = useMemo(() => {
     const allTop = menuCategories.filter(c => !c.parentId && c.visible !== false && !optionOnlyCats.has(c.id));
     if (!effectiveMenuId) return allTop;

@@ -92,6 +92,7 @@ export function countWords(c) {
   if (c?.groups) changed.push(plural(c.groups, 'option group', 'option groups'));
   if (c?.categories) changed.push(plural(c.categories, 'category', 'categories'));
   if (c?.menu) changed.push("the menu's name");
+  if (c?.menus) changed.push('the list of menus');     // 5.12.116: a menu added, renamed, matched or removed
   const head = c?.sites ? `${plural(c.sites, 'site', 'sites')} added` : '';
   const tail = changed.length ? `${andJoin(changed)} changed` : '';
   return head && tail ? `${head}, ${tail}` : head || tail;
@@ -130,9 +131,9 @@ function countIndex(central, rows = []) {
   return { products, options, top, subGroup, groupsOf };
 }
 
-function tally(P, G, K, S, menu) {
-  const out = { products: P.size, groups: G.size, categories: K.size, sites: S.size, menu: !!menu };
-  out.total = out.products + out.groups + out.categories + out.sites + (out.menu ? 1 : 0);
+function tally(P, G, K, S, menu, menus = false) {
+  const out = { products: P.size, groups: G.size, categories: K.size, sites: S.size, menu: !!menu, menus: !!menus };
+  out.total = out.products + out.groups + out.categories + out.sites + (out.menu ? 1 : 0) + (out.menus ? 1 : 0);
   out.words = countWords(out);
   return out;
 }
@@ -148,6 +149,7 @@ export function draftCount(rows, central = null) {
   const ix = countIndex(central, list);
   const P = new Set(), G = new Set(), K = new Set(), S = new Set();
   let menu = false;
+  let menus = false;
   // The products (never an option only sub item) this list puts on or changes at each site.
   const productAt = new Map();
   for (const r of list) {
@@ -169,7 +171,11 @@ export function draftCount(rows, central = null) {
     else if (r.target === 'modifier_group' || r.target === 'modifier_group_site') G.add(r.entity_id);
     else if (r.target === 'modifier_option') G.add(ix.options.get(r.entity_id)?.group_id || `option:${r.entity_id}`);
     else if (r.target === 'menu_site') S.add(r.location_id);
-    else if (r.target === 'menu') menu = true;
+    else if (r.target === 'menu') {
+      const keys = Object.keys(r.after || {});
+      if (keys.includes('extra_menus')) menus = true;
+      if (!keys.length || keys.some((k) => k !== 'extra_menus')) menu = true;
+    }
   }
   for (const r of list) {
     if (r.target !== 'modifier_option_site') continue;
@@ -177,7 +183,7 @@ export function draftCount(rows, central = null) {
     if (r.op === 'create' && g && brought(r.location_id, g)) continue;
     G.add(g || `option:${r.entity_id}`);
   }
-  return tally(P, G, K, S, menu);
+  return tally(P, G, K, S, menu, menus);
 }
 
 /**

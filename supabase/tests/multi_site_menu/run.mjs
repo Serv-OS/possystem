@@ -536,6 +536,9 @@ expect('switched on again: the paused set runs', one(`select count(*) from msm_c
 // ── ROUND 2: option groups, option prices per site, sub items, VAT per order type ──
 await import('./round2.mjs').then((m) => m.run({ q, one, json, lit, psql, expect, central, readRaw, mkSet, stage, runSite, menuId, ORG_A, ORG_B, LA1, LA2, LB1, U, as, ANON, SERVICE, sfx, VAT_A1, VAT_A2, VAT_B1, DB, CONN }));
 
+// ── SEVERAL MENUS in one group menu (5.12.116, 20261214a) ────────────────────
+await import('./menus.mjs').then((m) => m.run({ q, one, json, lit, psql, expect, central, readRaw, mkSet, stage, runSite, menuId, ORG_A, LA1, LA2, LB1, U, as, ANON, SERVICE, sfx, DB, CONN }));
+
 // ── roll back (20261018 first, then round 2, as Peter would) ─────────────────
 const menusBefore = one(`select count(*) from menu_items`);
 r = psql(['-d', DB, '-1', '-At', '-f', RB4]);

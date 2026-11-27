@@ -259,7 +259,7 @@ export default function BarSurface() {
     () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
     [menuCategories, deviceMenuId, _categoryLinks]); // null means show all
   // 5.12.31 (lib/menuRules.js rule 9): a category holding only option only sub items is not a tab, as on the till.
-  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, storeMenuItems || MENU_ITEMS), [menuCategories, storeMenuItems]);
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, storeMenuItems || MENU_ITEMS, { hiddenOn: 'pos' }), [menuCategories, storeMenuItems]);
 
   // v5.11.81 (channel parity round 2): Back Office "Visible on" POS off hides a product on the bar
   // tab screen as on the till (POSSurface isBlocked) and the handheld; the bar showed it.

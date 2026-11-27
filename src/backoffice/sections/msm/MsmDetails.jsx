@@ -21,6 +21,8 @@ import { shownPriceTypes } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP } from '../../../lib/msm/msmWords';
 import { ui } from './msmStyle';
 import { useConfirm } from './useConfirm';
+import { extraMenus, extraMenuAt, MAIN_MENU_WORDS, menuKeysOf } from '../../../../supabase/functions/_shared/msmMenus.js';
+import { menusReady, addMenuChanges, renameMenuChange, removeMenuChange, menuSiteChange, menuAtSiteWords } from '../../../lib/msm/msmEdit';
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
 import { activeTaxText as tt } from '../../../lib/taxWords';
 
@@ -102,6 +104,7 @@ export default function MsmDetails({ api, client, menu, live, eff, sites, stage,
           {menu?.last_version_no ? ` Version ${menu.last_version_no}.` : ''}
         </div>
       </div>
+      <Menus client={client} live={live} eff={eff} sites={sites} venueMenus={venueMenus} stage={stage} editable={editable} setNote={setNote} />
       <OrderTypes api={api} menu={menu} live={live} canEdit={canEdit} setNote={setNote} reload={reload} />
       {groupsNeedRefresh(live) && <RefreshGroups api={api} menu={menu} canEdit={canEdit} rows={rows} setNote={setNote} reload={reload} />}
       <div style={ui.card}>
@@ -135,6 +138,138 @@ export default function MsmDetails({ api, client, menu, live, eff, sites, stage,
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// 5.12.116: SEVERAL MENUS in one group menu (_shared/msmMenus.js). Peter, 26 Nov 2026: "I like the
+// different menus but need to be able to manage centrally in multi site", and "the less menus the
+// better ... literal differences like menus with different products can have different menus like
+// catering". The Main menu is the one every site already has. Another menu (Catering) is added
+// here; categories are ticked into it on the Products tab; publish uses each site's own menu of
+// that name, or makes one. Which menu a POS, kiosk, online or catering page uses stays each site's.
+function Menus({ client, live, eff, sites, venueMenus, stage, editable, setNote }) {
+  const ctx = useMemo(() => ({ live, eff }), [live, eff]);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [renaming, setRenaming] = useState(null);      // { id, value }
+  const [confirm, confirmDialog] = useConfirm();
+  const ready = menusReady(live);
+  const list = extraMenus(eff?.menu);
+  const cats = useMemo(() => new Map((eff?.categories || []).map((c) => [c.id, c])), [eff]);
+  const countOn = (key) => (eff?.categories || []).filter((c) => !c.archived && !c.parent_id && menuKeysOf(c, cats, eff?.menu).includes(key)).length;
+  const say = (r) => { if (r?.words) setNote?.({ tone: 'warn', text: r.words }); };
+
+  const add = async () => {
+    const all = venueMenus ? [...venueMenus.values()] : [];
+    const first = addMenuChanges(ctx, name, { venueMenus: all });
+    if (first.words) { say(first); return; }
+    setBusy(true);
+    // The site categories already on a matched menu, so they come in ticked and nothing is taken off.
+    let on = [];
+    const ids = Object.values(first.changes[0].after.extra_menus.find((x) => x.id === first.id)?.sites || {}).filter((v) => typeof v === 'string');
+    if (ids.length && client) {
+      const [home, links] = await Promise.all([
+        readAllRows(() => client.from('menu_categories').select('id,menu_id').in('menu_id', ids).order('id')),
+        readAllRows(() => client.from('menu_category_links').select('menu_id,category_id').in('menu_id', ids).order('menu_id').order('category_id')),
+      ]);
+      if (!home.rows || !links.rows) { setBusy(false); setNote?.({ tone: 'bad', text: 'Could not read what is on the sites\' own menus of that name. Nothing was changed. Try again.' }); return; }
+      on = [...home.rows.map((c) => ({ menu_id: c.menu_id, category_id: c.id })), ...links.rows];
+    }
+    const r = addMenuChanges(ctx, name, { venueMenus: all, onVenueMenus: on });
+    if (r.words) { setBusy(false); say(r); return; }
+    const nm = name.trim();
+    const matched = r.matched.map((loc) => sites.find((x) => x.id === loc)?.name).filter(Boolean);
+    const res = await stage(r.changes, { done: `${nm} is in the draft as a new menu.${matched.length ? ` It uses the ${nm} menu ${matched.join(', ')} already ${matched.length === 1 ? 'has' : 'have'}.` : ''}${r.ticked.length ? ` Already on it there, so ticked in: ${r.ticked.join(', ')}.` : ''} Now tick categories into it on the Products tab.` });
+    setBusy(false);
+    if (res?.ok) setName('');
+  };
+  const rename = async () => {
+    if (!renaming) return;
+    const r = renameMenuChange(ctx, renaming.id, renaming.value);
+    if (r.words) { say(r); return; }
+    setRenaming(null);
+    if (r.change) await stage([r.change], { done: `The menu is renamed to ${r.change.after.extra_menus.find((m) => m.id === renaming.id)?.name} in the draft. A site's own menu keeps the name it has.` });
+  };
+  const remove = async (m) => {
+    const r = removeMenuChange(ctx, m.id);
+    if (r.words) { say(r); return; }
+    const yes = await confirm({
+      title: `Remove the ${m.name} menu from the group menu?`,
+      words: `When you publish, the group menu's categories come off the ${m.name} menu at every site. Each site's own ${m.name} menu stays there, as the site's own. No product is deleted.`,
+      yes: 'Remove it', no: 'Keep it',
+    });
+    if (!yes) return;
+    await stage(r.changes, { done: `${m.name} is removed in the draft.` });
+  };
+  const setSite = async (m, loc, v) => {
+    const r = menuSiteChange(ctx, m.id, loc, v === '' ? null : v === 'off' ? false : v);
+    if (r.words) { say(r); return; }
+    if (r.change) await stage([r.change], { done: `${m.name} at ${sites.find((x) => x.id === loc)?.name || 'that site'}: in the draft.` });
+  };
+
+  return (
+    <div style={ui.card} data-testid="msm-menus">
+      {confirmDialog}
+      <div style={{ ...ui.h2, marginBottom: 4 }}>Menus</div>
+      <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>One list of products. Add another menu only when it sells different products, like Catering.</div>
+      <div style={{ ...ui.sub, marginBottom: 12 }}>To hide a category on Online or the Kiosk, do not make a menu: use Shows on, on that category's row on the Products tab.</div>
+      {!ready && <Notice tone="warn">More than one menu needs one database update that has not been run yet (SQL 20261214a). Ask ServOS to run it.</Notice>}
+      <div style={{ padding: '8px 0', borderTop: '1px solid var(--bdr)' }}>
+        <div style={{ ...ui.row }}>
+          <div style={{ flex: 1, fontSize: 13.5, fontWeight: 700 }}>{MAIN_MENU_WORDS}</div>
+          <Pill>{countOn('main')} categor{countOn('main') === 1 ? 'y' : 'ies'}</Pill>
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>The menu every site already has (named under Sites, below).</div>
+      </div>
+      {list.map((m) => (
+        <div key={m.id} style={{ padding: '10px 0', borderTop: '1px solid var(--bdr)' }} data-testid="msm-menu-row">
+          <div style={{ ...ui.row }}>
+            {renaming?.id === m.id ? (
+              <>
+                <input autoFocus aria-label={`New name for ${m.name}`} style={{ ...ui.input, flex: 1 }} maxLength={60} value={renaming.value} onChange={(e) => setRenaming({ id: m.id, value: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') setRenaming(null); }} />
+                <Btn small kind="primary" onClick={rename}>Save</Btn>
+                <Btn small kind="link" onClick={() => setRenaming(null)}>Cancel</Btn>
+              </>
+            ) : (
+              <>
+                <div style={{ flex: 1, fontSize: 13.5, fontWeight: 700 }}>{m.name}</div>
+                <Pill>{countOn(m.id)} categor{countOn(m.id) === 1 ? 'y' : 'ies'}</Pill>
+                {editable && <Btn small kind="link" onClick={() => setRenaming({ id: m.id, value: m.name })}>Rename</Btn>}
+                {editable && <Btn small kind="link" data-testid="msm-menu-remove" onClick={() => remove(m)}>Remove</Btn>}
+              </>
+            )}
+          </div>
+          {sites.map((s) => {
+            const at = extraMenuAt(m, s.id, venueMenus || new Map());
+            const mainId = (eff?.sites || []).find((x) => x.location_id === s.id)?.venue_menu_id;
+            const usedElsewhere = new Set(list.filter((x) => x.id !== m.id).map((x) => extraMenuAt(x, s.id, venueMenus || new Map()).id).filter(Boolean));
+            const own = venueMenus ? [...venueMenus.values()].filter((v) => v.location_id === s.id && v.is_active !== false && v.id !== mainId && !usedElsewhere.has(v.id) && !(at.how === 'made' && v.id === at.id)) : [];
+            const value = at.off ? 'off' : at.how === 'matched' ? at.id : '';
+            return (
+              <div key={s.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0 0 10px', fontSize: 12.5, color: 'var(--t2)', flexWrap: 'wrap' }}>
+                <strong style={{ minWidth: 120 }}>{s.name}</strong>
+                <span style={{ flex: 1, minWidth: 160 }}>{menuAtSiteWords(m, s.id, venueMenus || new Map())}</span>
+                {editable && (
+                  <select aria-label={`${m.name} at ${s.name}`} data-testid="msm-menu-site" style={{ ...ui.input, width: 'auto', minWidth: 170, height: 30, padding: '2px 8px', fontSize: 12.5 }} value={value} onChange={(e) => setSite(m, s.id, e.target.value)}>
+                    <option value="">{at.how === 'made' ? 'Use the one publish made' : 'Make one on publish'}</option>
+                    {own.map((v) => <option key={v.id} value={v.id}>Use its own: {v.name || 'Menu'}</option>)}
+                    <option value="off">Not at this site</option>
+                  </select>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {editable && ready && (
+        <div style={{ ...ui.row, marginTop: 12 }}>
+          <input aria-label="New menu name" data-testid="msm-menu-name" style={{ ...ui.input, flex: 1 }} placeholder="A new menu, like Catering" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && name.trim() && !busy) add(); }} />
+          <Btn kind="primary" data-testid="msm-menu-add" disabled={busy || !name.trim() || venueMenus === undefined} onClick={add}>{busy ? 'Adding…' : 'Add menu'}</Btn>
+        </div>
+      )}
+      <div style={{ ...ui.sub, marginTop: 10 }}>A product is on a menu through its category. Which menu a POS, a kiosk, the online page and catering use is picked at each site, in its Back Office.</div>
     </div>
   );
 }

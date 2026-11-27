@@ -35,7 +35,9 @@ test('the staging allowlist in the database is msmModel.STAGE_FIELDS, target by 
   for (const [target, fields] of Object.entries(STAGE_FIELDS)) {
     const m = new RegExp(`when '${target}' then array\\[([^\\]]+)\\]`).exec(guard);
     assert.ok(m, `no list for ${target}`);
-    assert.deepEqual(arr(m[1]), fields, target);
+    // 5.12.116: the files as Ops ran them hold the lists of then. 20261214a adds the two fields
+    // for several menus to the live guard (pinned by src/lib/msm/msmSeveralMenus.test.js).
+    assert.deepEqual(arr(m[1]), fields.filter((f) => !['extra_menus', 'menu_keys'].includes(f)), target);
   }
 });
 
@@ -105,7 +107,7 @@ test('the venue columns publish may write are msmModel.VENUE_INSERT / VENUE_UPDA
   assert.deepEqual(list('v_ins_cats  '), VENUE_INSERT.categories);
   assert.deepEqual(list('v_ins_items '), VENUE_INSERT.items);
   assert.deepEqual(list('v_ins_groups'), VENUE_INSERT.groups);
-  assert.deepEqual(list('v_upd_menus '), VENUE_UPDATE.menus);
+  assert.deepEqual(list('v_upd_menus '), VENUE_UPDATE.menus.filter((k) => k !== 'is_default'));   // is_default: 20261214a
   assert.deepEqual(list('v_upd_cats  '), VENUE_UPDATE.categories);
   assert.deepEqual(list('v_upd_items '), VENUE_UPDATE.items);
   assert.deepEqual(list('v_pricing   '), [...PRICING_KEYS]);

@@ -64,6 +64,7 @@ const WORDS = {
   sold_alone: 'sold on its own setting', type: 'type', item_code: 'item code', parent_id: 'size link', pricing: 'prices',
   min: 'rules', max: 'rules', selection_type: 'kind of choice', options: 'options',
   sold_as: 'order types it is sold on',
+  shown_on: 'places head office hides it',
 };
 export const lockWord = (col) => tt(WORDS[col] || 'this setting', { mid: true });
 
@@ -122,6 +123,14 @@ export function lockedItemPatch(patch, cur, kept = []) {
       if (next && typeof next === 'object' && !same(next.notSoldAs ?? null, was.notSoldAs ?? null)) {
         if (has(was, 'notSoldAs')) next.notSoldAs = was.notSoldAs; else delete next.notSoldAs;
         dropped.add('sold_as');
+      }
+      // 5.12.116 "Shows on": the switches head office hid stay off, and its list stays as it was.
+      if (next && typeof next === 'object') {
+        const hidden = Array.isArray(was.notShownOn) ? was.notShownOn : [];
+        let touched = !same(next.notShownOn ?? null, was.notShownOn ?? null);
+        if (has(was, 'notShownOn')) next.notShownOn = was.notShownOn; else delete next.notShownOn;
+        for (const k of hidden) if (next[k] !== false) { next[k] = false; touched = true; }
+        if (touched) dropped.add('shown_on');
       }
       if (!cur || !same(next, cur.visibility)) out[key] = next;
       continue;

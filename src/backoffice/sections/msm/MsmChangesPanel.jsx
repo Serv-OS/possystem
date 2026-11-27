@@ -4,6 +4,7 @@
 // by option group). Take one out of the draft, or throw the whole draft away. Publishing (now or at
 // a time) is the Review and publish tab, with the per site preview and the health check.
 
+import { groupMenus } from '../../../../supabase/functions/_shared/msmMenus.js';
 import { useMemo, useState } from 'react';
 import { groupChanges, unstageOrder, changeWords } from '../../../lib/msm/msmWords';
 import { Btn, Sheet, Notice } from './msmUi';
@@ -21,6 +22,7 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
     groups: new Map((eff?.groups || []).map((g) => [g.id, g.name])),
     options: new Map((eff?.options || []).map((o) => [o.id, o.name])),
     optionGroup: new Map((eff?.options || []).map((o) => [o.id, o.group_id])),
+    menus: new Map(groupMenus(eff?.menu).map((m) => [m.key, m.name])),
   }), [eff, sites]);
   const groups = useMemo(() => groupChanges(rows, names), [rows, names]);
   // The one counting rule (msmStatus.draftCount): the same words as the status bar.

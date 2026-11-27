@@ -715,7 +715,7 @@ export default function POSSurface() {
   // was handed MENU_ITEMS, which has ALREADY had the option only sub items taken out (rule 1,
   // above). So it saw a category with nothing in it at all, which it leaves alone, and never hid
   // one on this screen. It must be handed the store's own rows (rawItems), as the bar and phone are.
-  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, rawItems), [menuCategories, rawItems]);
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, rawItems, { hiddenOn: 'pos' }), [menuCategories, rawItems]);
 
   // Find subcategories of the active category
   const subCategories = useMemo(() =>
