@@ -705,13 +705,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   }, [orderType]);
 
   // 5.12.125: a menu with a Combo built from steps asks once whether the server values its picks
-  // (SQL 20261217a). Until it says yes such a Combo stays off this page, as in 5.12.123.
+  // (SQL 20261217a). Until it says yes such a Combo stays off this page, as in 5.12.123. 5.12.126:
+  // QR at the table asks too.
   useEffect(() => {
-    if (combosReady || isQr || !menuHasStepCombos(items)) return undefined;
+    if (combosReady || !menuHasStepCombos(items)) return undefined;
     let alive = true;
     combosReadyOn(supabase).then((yes) => { if (alive && yes) setCombosReady(true); });
     return () => { alive = false; };
-  }, [items, combosReady, isQr]);
+  }, [items, combosReady]);
 
   const theme = useMemo(() => sheetThemeFrom(branding, location.name), [branding, location.name]);
 

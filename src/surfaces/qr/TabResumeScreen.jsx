@@ -31,6 +31,7 @@ import { foldLineMods } from '../../lib/channelMoney';
 import { taxCtxHasConfig } from '../../lib/taxCompute';
 import VatGateNotice from '../online/VatGateNotice';
 import { Icon } from '../../components/ServOSIcons';
+import { linesWithoutPicks } from '../../lib/online/comboCart';   // 5.12.126: a Combo counts once
 
 // taxCtx / menuItems / taxRates: the venue's tax context (buildLocalTaxCtx), menu and rates the
 // page already loaded, for the tab's VAT. Without them the check books no VAT, as before.
@@ -229,8 +230,9 @@ export default function TabResumeScreen({
               {rounds.map((r, i) => (
                 <div key={r.ref || i} style={{ padding: '6px 0', borderTop: i === 0 ? `1px solid ${cardBdr}` : 'none', fontSize: 13, display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ flex: 1, minWidth: 0, color: muted }}>
-                    {(r.items || []).reduce((s, it) => s + (it.qty || 1), 0)} item{((r.items || []).length === 1) ? '' : 's'}
-                    {r.items?.[0] && <> · {r.items[0].name}{r.items.length > 1 ? ` +${r.items.length - 1} more` : ''}</>}
+                    {/* 5.12.126: a Combo counts once, never once per pick (lib/online/comboCart.js linesWithoutPicks). */}
+                    {linesWithoutPicks(r.items).reduce((s, it) => s + (it.qty || 1), 0)} item{(linesWithoutPicks(r.items).length === 1) ? '' : 's'}
+                    {linesWithoutPicks(r.items)[0] && <> · {linesWithoutPicks(r.items)[0].name}{linesWithoutPicks(r.items).length > 1 ? ` +${linesWithoutPicks(r.items).length - 1} more` : ''}</>}
                   </span>
                   <span style={{ fontWeight: 700 }}>{money(Number(r.total || 0))}</span>
                 </div>

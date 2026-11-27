@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.126',
+    date: '27 Nov 2026',
+    items: [
+      'Combos with steps now order on QR at the table, the phone POS and the bar screen too (Peter, 27 Nov 2026: "make it so it works across all ordering platforms").',
+      'QR at the table: the same Combo sheet and basket as the online page, in the venue\'s colours. The checkout sends the Combo as one Combo (its own line never reaches the kitchen) and picks never count for a deal. Tab rounds and paying a tab are valued by the same server check (SQL 20261217a). The tab screens count a Combo once.',
+      'Phone POS: tapping a Combo opens the same steps as the POS, full screen, and adds it with every POS rule (86, daily counts, Sold as, required options). A Combo counts once in the basket and on Send.',
+      'Bar screen: a Combo opens its steps in the product panel and goes on the round as one Combo, priced as a bar tab on the bar\'s menu. Remove takes the whole Combo; it has no quantity of its own. What the round being built already holds counts against the daily counts, so the last one is never offered twice.',
+      'Still left off: the kiosk and the delivery apps. Needs SQL 20261217a (from 5.12.125) for QR. No new SQL.',
+    ],
+  },
+  {
     v: '5.12.125',
     date: '27 Nov 2026',
     items: [

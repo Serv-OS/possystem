@@ -48,6 +48,10 @@ import MCoversPicker from './mpos/MCoversPicker';
 import MTableView from './mpos/MTableView';
 import MMenu from './mpos/MMenu';
 import MItemDetail from './mpos/MItemDetail';
+// 5.12.126 (Combos, stage 4): a Combo with steps on the phone POS, walked in the POS's own ComboFlow and
+// added by the store's own addCombo (every rule, every line, or none).
+import ComboFlow from '../components/ComboFlow';
+import { comboHasSteps, comboSteps, comboUnsellable, comboIsFixed, startingPicks, comboMissing, isComboPick } from '../lib/combo';
 import MVariantPicker from './mpos/MVariantPicker';
 import MCartSheet from './mpos/MCartSheet';
 import MSentConfirm from './mpos/MSentConfirm';
@@ -302,7 +306,27 @@ function MPOSRouter() {
   // data source — Supabase rows might use a different value, etc.). When a
   // variant parent is tapped we open the picker; otherwise straight to the
   // item-detail modifier flow.
+  // 5.12.126: a Combo with steps, as the POS opens it (POSSurface openCombo): it cannot be made right
+  // now, say why; every step fills itself, add it in one tap; else walk the steps on their own screen.
+  const openCombo = (item) => {
+    const st = useStore.getState();
+    const ctx = st.comboContext(item);
+    const cant = comboUnsellable(item, ctx);
+    if (cant) { st.showToast?.(cant, 'error'); return; }
+    const steps = comboSteps(item);
+    if (comboIsFixed(steps, ctx)) {
+      let n = 0;
+      const picks = startingPicks(steps, ctx, (stepId, entryId) => ({ key: `fx-${++n}`, stepId, entryId, itemId: ctx.sizesOf(entryId).length ? null : entryId, mods: [], notes: '', answers: null, configured: false }));
+      if (!comboMissing(steps, picks, ctx)) {
+        const r = st.addCombo(item, picks);
+        if (r.ok) st.showToast?.(`${item.menuName || item.name} added`, 'success');
+        return;
+      }
+    }
+    setFlow(f => ({ screen: 'combo', context: { ...(f.context||{}), item } }));
+  };
   const goItem = (item) => {
+    if (comboHasSteps(item)) { openCombo(item); return; }
     const items = useStore.getState().menuItems || [];
     const hasChildren = items.some(m => m.parentId === item.id);
     if (hasChildren) {
@@ -327,11 +351,11 @@ function MPOSRouter() {
     if (tableId) {
       const tbl = state.tables.find(t => t.id === tableId);
       const sent = (tbl?.session?.items || []).filter(i => i.status === 'sent' && !i.voided);
-      ticketCount = sent.reduce((s, i) => s + (i.qty || 0), 0);
+      ticketCount = sent.filter(i => !isComboPick(i)).reduce((s, i) => s + (i.qty || 0), 0);   // 5.12.126: a Combo counts once
       totalSent = sent.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
     } else if (state.walkInOrder) {
       const sent = (state.walkInOrder.items || []).filter(i => i.status === 'sent' && !i.voided);
-      ticketCount = sent.reduce((s, i) => s + (i.qty || 0), 0);
+      ticketCount = sent.filter(i => !isComboPick(i)).reduce((s, i) => s + (i.qty || 0), 0);
       totalSent = sent.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
     }
     setFlow({ screen: 'sentConfirm', context: { tableId, ticketCount, totalSent } });
@@ -769,6 +793,29 @@ function MPOSRouter() {
           else closeFlow();
         }}
       />
+    );
+  }
+
+  // 5.12.126: the steps of a Combo, full screen, in the POS's own ComboFlow.
+  if (flow.screen === 'combo' && flow.context?.item) {
+    const item = flow.context.item;
+    const rows = (useStore.getState().menuItems || []).map(r => ({ ...r, name: r.menuName || r.name }));
+    return (
+      <div style={Sx.shell} data-testid="mpos-combo">
+        <div style={{ flex:1, minHeight:0, display:'flex', flexDirection:'column', paddingBottom:'env(safe-area-inset-bottom)' }}>
+          <ComboFlow
+            key={`combo-${item.id}`}
+            item={item}
+            menuItems={rows}
+            onAdd={(picks) => {
+              const st = useStore.getState();
+              const r = st.addCombo(item, picks);
+              if (r.ok) { st.showToast?.(`${item.menuName || item.name} added`, 'success'); goBackToMenu(); }
+            }}
+            onCancel={goBackToMenu}
+          />
+        </div>
+      </div>
     );
   }
 

@@ -65,7 +65,7 @@ function NumBox({ value, min = 1, max = 98, onCommit, label, width = 58 }) {
 // are shaped like the store's menu rows, so the rules and the words are the same in both places.
 // 5.12.125 (stage 3): where a Combo with steps is sold. Online ordering and the catering link offer it
 // once their one database update has run (SQL 20261217a: until then they still leave it off).
-export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, online ordering and the catering link. It is left off QR, the kiosk, the phone POS and the delivery apps until they learn it.';
+export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, the phone POS, the bar screen, online ordering, QR at the table and the catering link. It is left off the kiosk and the delivery apps until they learn it.';
 
 export default function ComboStepsTab({ item, menuItems = [], categories = [], onUpdate, markBOChange, columnReady = true, eightySixIds = [], readOnly = false, keptSteps = false, posOnlyNote = true, needsUpdateWords = COMBO_WORDS.needsUpdate, priceWhere = '(the price on Details)', noPriceWhere = 'on Details' }) {
   const steps = comboSteps(item);
