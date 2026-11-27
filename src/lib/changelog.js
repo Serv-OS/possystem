@@ -1,5 +1,27 @@
 export const CHANGELOG = [
   {
+    v: '5.12.123',
+    date: '27 Nov 2026',
+    items: [
+      'Combo products can now be built from steps (Peter, 27 Nov 2026: "composite product, Step 1, name, pick a product, add the products for this step, set rules around it like you can anyway with modifiers ... keeps price or is part of set price"). A Combo is one product at a set price, made of real products the customer picks. This is stage 1: it is sold on the POS.',
+      'Back Office, Menu, a product of type Combo has a new Steps tab. Add a step, name it, and choose how customers pick: One choice, Several choices, or Same choice more than once (like 5 pizzas). Add the products for the step from your menu and put them in order. Say whether a pick is Part of the set price or Keeps its price. A product in a set price step can carry a price bump, like 2.50 more for the steak.',
+      'On the POS, tap the Combo and it walks the steps in the same panel as options. Each step shows how many are picked and what is still missing. Every pick is its own choice, so two pizzas in one package can be different, and one can have extra cheese. The summary shows the set price, what the picks add, and the total, then Add.',
+      'A product picked in a Combo is the real product. It asks its own sizes and its own options. An option that must be answered must still be answered, and an extra still charges on top of the set price. The Combo can never switch a pick\'s options off.',
+      'A Combo where every step has only one answer adds in one tap. Each pick can still be changed or given a note before it is sent.',
+      'The kitchen sees the picks as normal items, each at its own station with its own options. The Combo itself never prints in the kitchen and is never on the kitchen screen. Stock comes down for each product picked, as it does when that product is sold on its own.',
+      'The receipt shows the Combo with its set price and the picks under it. A pick shows an amount only when it adds one. No pick ever prints as 0.00. The on screen bill, the emailed receipt, the order review, History and the customer screen show it the same way.',
+      'A Combo moves as one. Void, a line discount, a refund, a seat move and split by item all act on the whole Combo. A pick is never voided, discounted, refunded or paid on its own. Quantity is one at a time, with Another the same to ring up one more. Remove takes the whole Combo off before it is sent. After it is sent, Void Combo takes it all.',
+      'A sold out pick is greyed and says why, daily counts are checked across every pick in the Combo, and a product not sold on this order type says so. Changing the order type moves the set price and any kept prices, never a pick that is part of the set price.',
+      'A Combo with steps is sold on the POS only for now, and the Steps tab says so. It is left off the kiosk, online ordering, QR at the table, the catering page, the phone POS, the bar screen, the delivery apps and the assistant until each has learned it. The menu boards and the printed menu still show it.',
+      'Multi site menu: a Combo with steps stays the site\'s own for now. First import, Bring in and Bring in all leave it where it is and say so in one line. Publishing never touches it.',
+      'Loyalty: a product picked inside a Combo earns no stamp of its own. The Combo earns as the product it is. What the Combo costs still counts for points.',
+      'A Combo with no steps works exactly as it did before. Nothing changes for any product until steps are added.',
+      'Needs one database update before launch: SQL 20261215a (one new empty column for the steps). Until it is run the Steps tab says the update is needed and nothing else changes.',
+      'After launch these functions need deploying: loyalty-earn and loyalty-refund (the stamp rule), the HubRise functions (the delivery catalogue leaves a Combo with steps out) and msm-publish.',
+      'Not done yet, by design: reports still show the set price against the Combo and each pick against its own product at what it added, so the totals are right but GP by product is not split across the picks. That comes with the reports stage.',
+    ],
+  },
+  {
     v: '5.12.122',
     date: '27 Nov 2026',
     items: [

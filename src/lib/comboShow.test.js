@@ -127,12 +127,20 @@ test('every screen and paper that lists an order goes through the same two rules
   }
   // The rest order the lines themselves.
   for (const f of ['../components/ReceiptModal.jsx', '../components/OrderReviewModal.jsx', '../components/CheckHistory.jsx',
-    '../surfaces/TablesSurface.jsx', '../surfaces/OrdersHub.jsx', './sendReceipt.js', './displayLines.js']) {
+    '../surfaces/TablesSurface.jsx', '../surfaces/OrdersHub.jsx', '../surfaces/CheckoutModal.jsx', '../surfaces/BarSurface.jsx',
+    '../surfaces/mpos/MTableView.jsx', '../surfaces/mpos/MOrderDetail.jsx', '../backoffice/sections/Transactions.jsx',
+    './sendReceipt.js', './displayLines.js']) {
     const src = read(f);
     assert.match(src, /displayOrder\(/, `${f} orders a Combo's picks under it`);
     assert.match(src, /lineShow\(/, `${f} asks whether a pick shows an amount`);
-    assert.match(src, /show\.showAmount/, `${f} never prints 0.00 under a Combo`);
+    assert.match(src, /showAmount/, `${f} never prints 0.00 under a Combo`);
   }
+  // The checkout bill keeps a Combo together: its picks are listed with its own line, not by course.
+  assert.match(read('../surfaces/CheckoutModal.jsx'), /const c = isComboLine\(item\) \? 0 : \(item\.course \?\? 1\);/);
+  // The phone POS cart says what each Combo line is and leaves the quantity buttons off.
+  const cart = read('../surfaces/mpos/MCartSheet.jsx');
+  assert.match(cart, /const show = lineShow\(item, lineTotal\);/);
+  assert.match(cart, /\{!sent && !inCombo && \(/);
   // The emailed receipt has three forms (merge tag text, HTML, plain text): all three.
   assert.equal((read('./sendReceipt.js').match(/const items = displayOrder\(\(check\.items \|\| \[\]\)\.filter\(i => !i\.voided\)\);/g) || []).length, 3);
   assert.equal((read('./sendReceipt.js').match(/const show = lineShow\(it, lineTotal\);/g) || []).length, 3);
