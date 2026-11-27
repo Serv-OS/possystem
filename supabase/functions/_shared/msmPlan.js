@@ -109,17 +109,26 @@ export function touchedFromChanges(changes) {
       if (extra.channelKeys === null || cur.channelKeys === null) cur.channelKeys = null;
       else { cur.channelKeys = cur.channelKeys || new Set(); for (const k of extra.channelKeys) cur.channelKeys.add(k); }
     }
+    // 5.12.120: the same for a product's group prices (default_channels), so a publish knows when
+    // the group's DELIVERY price itself was changed or taken away.
+    if (has(extra, 'defaultChannelKeys')) {
+      if (extra.defaultChannelKeys === null || cur.defaultChannelKeys === null) cur.defaultChannelKeys = null;
+      else { cur.defaultChannelKeys = cur.defaultChannelKeys || new Set(); for (const k of extra.defaultChannelKeys) cur.defaultChannelKeys.add(k); }
+    }
     map.set(key, cur);
   };
   // A product site's channel_prices change: only the keys whose value differs between the staged
   // before and after (Keep or Put back on Takeaway never rewrites a separate Eat in drift). With no
   // before, every key (the old rule).
-  const channelKeysOf = (c, after) => {
-    if (!has(after, 'channel_prices')) return undefined;
-    if (!c.before || typeof c.before !== 'object' || !has(c.before, 'channel_prices')) return null;
-    const b = c.before.channel_prices && typeof c.before.channel_prices === 'object' ? c.before.channel_prices : {};
-    const a = after.channel_prices && typeof after.channel_prices === 'object' ? after.channel_prices : {};
+  const channelKeysOf = (c, after, field = 'channel_prices') => {
+    if (!has(after, field)) return undefined;
+    if (!c.before || typeof c.before !== 'object' || !has(c.before, field)) return null;
+    const b = c.before[field] && typeof c.before[field] === 'object' ? c.before[field] : {};
+    const a = after[field] && typeof after[field] === 'object' ? after[field] : {};
     const keys = new Set([...Object.keys(b), ...Object.keys(a)]);
+    // A site's prices: as before. A product's group prices (5.12.120): a key that is not there and
+    // a key set to nothing are the same price, none.
+    if (field === 'default_channels') return [...keys].filter((k) => !samePrice(a[k] ?? null, b[k] ?? null));
     return [...keys].filter((k) => has(a, k) !== has(b, k) || !samePrice(a[k], b[k]));
   };
   const clearedOf = (c, after) => {
@@ -151,7 +160,10 @@ export function touchedFromChanges(changes) {
     if (c.target === 'menu') fields.forEach((f) => t.menu.add(f));
     else if (c.target === 'menu_site' && c.op === 'create') t.sitesCreated.add(c.location_id);
     else if (c.target === 'category') merge(t.categories, c.entity_id, c.op, fields);
-    else if (c.target === 'product') merge(t.products, c.entity_id, c.op, fields);
+    else if (c.target === 'product') {
+      const dk = c.op === 'update' ? channelKeysOf(c, after, 'default_channels') : undefined;
+      merge(t.products, c.entity_id, c.op, fields, dk === undefined ? {} : { defaultChannelKeys: dk });
+    }
     else if (c.target === 'product_site') {
       const ck = channelKeysOf(c, after);
       merge(t.productSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after), keptAdded: addedOf(c, after), ...(ck === undefined ? {} : { channelKeys: ck }) });
@@ -537,6 +549,14 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const def = p.default_channels && p.default_channels[k] != null ? p.default_channels[k] : null;
     return def == null ? null : Number(def);
   };
+  // 5.12.120 THE DELIVERY GUARD (msmModel PUBLISHED_CHANNELS). Delivery is written at a site only
+  // where the group menu holds a delivery price for this product there, or where this very change
+  // moved the group's or the site's delivery price (so taking one away does take it away). A
+  // delivery price the site set for itself, that the group menu never held, is left alone: an
+  // edit to Takeaway must never clear it. Every other order type is written as before.
+  const writesChannel = (p, ps, k, w) => k !== 'delivery' || channelPrice(p, ps, k) != null
+    || (w && w.defaultChannelKeys instanceof Set && w.defaultChannelKeys.has('delivery'))
+    || (w && w.channelKeys instanceof Set && w.channelKeys.has('delivery'));
   // 5.12.104 TAX PROFILES BY NAME (Peter, Mozz, 25 Nov 2026: the group menu's Tax view read "No
   // tax rate" in every box, and the product sheet offered only old style rates, while every site
   // charged through its "Prepared food" profile, 8.45% at three sites and 9.45% at two).
@@ -834,7 +854,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   // ── 3. Which products this site must look at ──────────────────────────────
   const work = new Map();   // productId -> { prodOp, prodFields:Set, siteOp, siteFields:Set, keptCleared:Set, keptAdded:Set }
   const add = (pid) => { if (!work.has(pid)) work.set(pid, { prodOp: null, prodFields: new Set(), siteOp: null, siteFields: new Set(), keptCleared: new Set(), keptAdded: new Set() }); return work.get(pid); };
-  for (const [pid, t] of T.products) { const w = add(pid); w.prodOp = t.op; t.fields.forEach((f) => w.prodFields.add(f)); }
+  for (const [pid, t] of T.products) {
+    const w = add(pid); w.prodOp = t.op; t.fields.forEach((f) => w.prodFields.add(f));
+    if (t.defaultChannelKeys instanceof Set) w.defaultChannelKeys = new Set(t.defaultChannelKeys);
+  }
   for (const [key, t] of T.productSites) {
     const [pid, l] = key.split('|');
     if (l !== loc) continue;
@@ -880,8 +903,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       }
       const tax = mapTax(p);
       const pricing = { base: basePrice(p, ps) };
-      // Delivery is a platform price (set at each site by the menu its platform uses): never written.
-      for (const k of PUBLISHED_CHANNELS) pricing[k] = channelPrice(p, ps, k);
+      // 5.12.120: a delivery price goes on a new row only when the group menu holds one.
+      for (const k of PUBLISHED_CHANNELS) { if (k === 'delivery' && channelPrice(p, ps, k) == null) continue; pricing[k] = channelPrice(p, ps, k); }
       const row = {
         id: ps.venue_item_id, name: p.name, menu_name: p.menu_name ?? p.name, receipt_name: p.receipt_name ?? p.name,
         kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: venueType(p),
@@ -947,7 +970,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (w.prodOp === 'remove') cols.add('archived');
     for (const f of w.prodFields) {
       if (f === 'default_price') { if (ps.price == null) pricingKeys.add('base'); continue; }
-      if (f === 'default_channels') { PUBLISHED_CHANNELS.forEach((k) => { if (!(ps.channel_prices && ps.channel_prices[k] != null)) pricingKeys.add(k); }); continue; }
+      if (f === 'default_channels') { PUBLISHED_CHANNELS.forEach((k) => { if (!(ps.channel_prices && ps.channel_prices[k] != null) && writesChannel(p, ps, k, w)) pricingKeys.add(k); }); continue; }
       if (f === 'tax_by_type') { ORDER_TYPE_TAX_KEYS.forEach((k) => taxKeys.add(k)); continue; }
       const col = PRODUCT_COLUMN[f];
       if (col && col !== 'pricing') cols.add(col);
@@ -959,7 +982,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       else if (f === 'price') pricingKeys.add('base');
       else if (f === 'channel_prices') {
         const moved = w.channelKeys;
-        PUBLISHED_CHANNELS.forEach((k) => { if (!moved || moved.has(k)) pricingKeys.add(k); });
+        PUBLISHED_CHANNELS.forEach((k) => { if ((!moved || moved.has(k)) && writesChannel(p, ps, k, w)) pricingKeys.add(k); });
       }
     }
     // An option only row made into a product sold here (the sheet's "Also sold on its own", What is
@@ -974,7 +997,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (promoting) {
       ['type', 'sold_alone', 'cat', 'cats', 'visibility', 'tax_rate_id', 'assigned_modifier_groups', 'archived'].forEach((c) => cols.add(c));
       pricingKeys.add('base');
-      PUBLISHED_CHANNELS.forEach((k) => pricingKeys.add(k));
+      PUBLISHED_CHANNELS.forEach((k) => { if (writesChannel(p, ps, k, w)) pricingKeys.add(k); });
       if (!p.parent_product_id) ORDER_TYPE_TAX_KEYS.forEach((k) => taxKeys.add(k));
     }
     for (const k of w.keptCleared) {

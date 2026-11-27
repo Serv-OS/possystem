@@ -80,7 +80,7 @@ export const PRICE_TYPE_HELP = Object.freeze({
   dineIn: 'Till eat in, QR and kiosk eat in. Blank uses the Standard price.',
   takeaway: 'Till and kiosk takeaway. Blank uses the Standard price.',
   collection: 'Till Collect, online collection and ezCater takeout. Blank uses the Standard price, not Takeaway. Its VAT follows Takeaway.',   // taxText: the screens read it through tt()
-  delivery: 'Online delivery and the HubRise catalogue. Blank uses the Standard price.',
+  delivery: 'Online delivery and the delivery platforms. Blank: a site keeps the delivery price it has, else it uses the Standard price.',
   driveThru: 'Drive thru. Blank uses the Takeaway price.',
 });
 

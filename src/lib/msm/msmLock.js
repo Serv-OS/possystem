@@ -40,7 +40,9 @@ export const OWNED_ITEM_KEYS = Object.freeze({
 });
 
 // The prices head office owns inside pricing (the Standard price and the order type prices publish
-// writes). Delivery is a platform price publish never writes (msmModel PUBLISHED_CHANNELS), and
+// writes). Delivery stays editable at the site (5.12.120): the group menu writes a delivery price
+// only where it holds one (msmPlan writesChannel), and a site that has its own keeps it. A site
+// that changes one the group set shows as drift, as any edit made around the lock does.
 // pricing.menus (timed menu prices) and anything else stay the site's (17 Oct verification).
 export const OWNED_PRICE_KEYS = Object.freeze(['base', 'dineIn', 'takeaway', 'collection', 'driveThru']);
 // The VAT by order type keys head office owns (msmModel ORDER_TYPE_TAX_KEYS). A site's counter,

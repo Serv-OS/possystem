@@ -12,7 +12,7 @@
 // ROUND 2 (17 Oct 2026; Peter: "set tax and price per order type ... a bit more idiot proof"):
 //   * What is this?  A product, or a sub item (used inside option groups), with "Also sold on its
 //     own" (Menu Manager's rule: becoming a sub item turns it off, becoming a product turns it on).
-//   * Prices by order type (Eat in, Takeaway, Collection, Drive thru; Delivery is a platform price
+//   * Prices by order type (Eat in, Takeaway, Collection, Delivery since 5.12.120, Drive thru; was: Delivery is a platform price
 //     set by the platform's own menu): one box per order type the company sells, group and per site;
 //     blank shows what it falls back to, from the till's own chain (lib/msm/msmOrderTypes.js).
 //   * VAT by order type (Eat in, Takeaway, Delivery, Bar tab when sold): "Same as the product's VAT"

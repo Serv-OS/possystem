@@ -100,12 +100,16 @@ export const STAGE_FIELDS = Object.freeze({
 // The channel price keys a venue's pricing jsonb carries (lib/menuPricing.js reads the same).
 export const CHANNELS = Object.freeze(['dineIn', 'takeaway', 'collection', 'delivery', 'driveThru']);
 
-// The order type prices the group menu sets and publish writes (Peter, 17 Oct 2026, UI issue 2):
-// Delivery is a PLATFORM price, set by the menu chosen for that platform at each site, exactly as
-// the normal menu builder does it, so publish never writes pricing.delivery (or a product's
-// visibility on an existing row): whatever the site has stays. Eat in, Takeaway, Collection and
-// Drive thru are order types at the till and stay.
-export const PUBLISHED_CHANNELS = Object.freeze(['dineIn', 'takeaway', 'collection', 'driveThru']);
+// The order type prices the group menu sets and publish writes.
+// 17 Oct 2026 (UI issue 2) left Delivery out: it was "a platform price, set by the menu chosen for
+// that platform at each site". 5.12.120 (Peter, 27 Nov 2026, Mozz: "I cant set a delivery price in
+// the multi site menu manager") puts it in: one delivery price for the group, or one per site, as
+// for every other order type. THE GUARD (msmPlan.js writesChannel): pricing.delivery is written
+// only where the group menu holds a delivery price for that product at that site, or where the
+// very change being published took one away. A delivery price a site set for itself, that the
+// group menu never held, is never touched. A menu's own delivery tier (pricing.menus) stays the
+// site's, as before.
+export const PUBLISHED_CHANNELS = Object.freeze(['dineIn', 'takeaway', 'collection', 'delivery', 'driveThru']);
 
 // VAT per order type (design 5.3): the ONLY menu_items.tax_overrides keys publish writes. The till,
 // kiosk and server read collection and drive thru through takeaway, and a bar tab through bar
