@@ -4,6 +4,7 @@ import { MENU_ITEMS, ALLERGENS } from '../data/seed';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
+import { isSoldAs, notSoldAsWords } from '../lib/soldAs';
 import { channelVisible } from '../lib/channelMenu';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
@@ -258,7 +259,7 @@ export default function BarSurface() {
     () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
     [menuCategories, deviceMenuId, _categoryLinks]); // null means show all
   // 5.12.31 (lib/menuRules.js rule 9): a category holding only option only sub items is not a tab, as on the till.
-  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, storeMenuItems || MENU_ITEMS), [menuCategories, storeMenuItems]);
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, storeMenuItems || MENU_ITEMS, { hiddenOn: 'pos' }), [menuCategories, storeMenuItems]);
 
   // v5.11.81 (channel parity round 2): Back Office "Visible on" POS off hides a product on the bar
   // tab screen as on the till (POSSurface isBlocked) and the handheld; the bar showed it.
@@ -351,6 +352,8 @@ export default function BarSurface() {
 
   const handleItemTap = (item) => {
     if (eightySixIds.includes(item.id)) { showToast(`${item.name} is 86'd`,'error'); return; }
+    // 5.12.115 (lib/soldAs.js): a bar tab is eaten in. A product not sold to dine in is not added.
+    if (!isSoldAs(item, 'bar-tab', storeMenuItems || MENU_ITEMS)) { showToast(notSoldAsWords(item, 'bar-tab'),'error'); return; }
     if (!activeTab) { showToast('Select or open a tab first','error'); return; }
     if (allergens.some(a=>(item.allergens||[]).includes(a))) { setPendingItem(item); return; }
     openItemFlow(item);

@@ -25,6 +25,7 @@ import { resolveItemPrice, repriceCartLines, refusesNoPriceLine } from '../../li
 // v5.11.81 (channel parity round 2): one rule per channel for the menu shown (lib/channelMenu.js),
 // the kiosk's allergen marking (lib/kioskAllergens.js) and the venue's menu translations (lib/menuText.js).
 import { channelVisible, storefrontMenuId, categoriesOnMenu, storefrontPriceType } from '../../lib/channelMenu';
+import { isSoldAs, notSoldAsWords } from '../../lib/soldAs';
 import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { allergenPaletteFromTheme } from '../../components/AllergenChips.js';
@@ -677,7 +678,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       const row = byId.get(l.itemId);
       if (!row) return false;
       const parent = row.parent_id ? byId.get(row.parent_id) : null;
-      return !channelVisible(row, channel, orderType) || (!!parent && !channelVisible(parent, channel, orderType));
+      // 5.12.115 (lib/soldAs.js): or it is not sold on this order type at all (wine, on a collection).
+      return !channelVisible(row, channel, orderType) || (!!parent && !channelVisible(parent, channel, orderType)) || !isSoldAs(row, isQr ? 'dine-in' : orderType, byId);
     };
     // Worked out from this render's basket, so the message never depends on when React runs the update.
     const gone = [...new Set(cart.filter(hidden).map(l => l.name || l.itemId))];
@@ -762,6 +764,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const itemsForCat = (catId) => (items || []).filter(i => {
     if (i.parent_id || i.archived || i.sold_alone === false) return false;
     if (!channelVisible(i, visibleChannel, priceType)) return false;
+    if (!isSoldAs(i, priceType, items)) return false;   // 5.12.115 (lib/soldAs.js): not sold on this order type
     if (!itemInSection(i, sectionTrees.get(catId) || catId)) return false;
     return true;
   }).sort(compareMenuItems);   // v5.11.111: position, then creation order, the one rule every screen uses
@@ -797,6 +800,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     if (!channelVisible(item, visibleChannel, priceType) || (item.parent_id && !channelVisible((items || []).find(r => r.id === item.parent_id), visibleChannel, priceType))) {
       alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here.`); return;
     }
+    // 5.12.115 (lib/soldAs.js): nor one that is not sold on this order type (a size follows its product).
+    if (!isSoldAs(item, priceType, items)) { alert(`Sorry, ${notSoldAsWords(item, priceType)}`); return; }
     // v5.5.128: snapshot category info on the cart line so production
     // routing on the operator side can bucket the item to the right
     // kitchen station regardless of whether the master device's local

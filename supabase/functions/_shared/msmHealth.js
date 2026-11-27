@@ -139,8 +139,10 @@ export function checkSite(plan, opts = {}) {
   // A product written on sale into a category that is not on the site's menu: no till shows it.
   if (plan.venueMenuId && Array.isArray(A.links)) {
     const cats = new Map(listOf(A.categories).map((c) => [c.id, c]));
-    const linked = new Set(listOf(A.links).filter((l) => l.menu_id === plan.venueMenuId).map((l) => l.category_id));
-    const onMenu = (cid, n = 0) => { const c = cats.get(cid); if (!c || n > 20) return false; return c.menu_id === plan.venueMenuId || linked.has(cid) || (c.parent_id ? onMenu(c.parent_id, n + 1) : false); };
+    // 5.12.116: on ANY menu the group menu manages at this site (its main one, and its other menus).
+    const mine = new Set(listOf(plan.menuIds).length ? plan.menuIds : [plan.venueMenuId]);
+    const linked = new Set(listOf(A.links).filter((l) => mine.has(l.menu_id)).map((l) => l.category_id));
+    const onMenu = (cid, n = 0) => { const c = cats.get(cid); if (!c || n > 20) return false; return mine.has(c.menu_id) || linked.has(cid) || (c.parent_id ? onMenu(c.parent_id, n + 1) : false); };
     for (const id of touched) {
       const i = byId.get(id);
       if (!active(i) || optionOnly(i) || i.parent_id) continue;

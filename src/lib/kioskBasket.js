@@ -11,6 +11,7 @@
  * picks this key only while the new design is on.
  */
 import { resolveItemPrice } from './menuPricing.js';
+import { isSoldAs } from './soldAs.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
@@ -70,7 +71,17 @@ export function repriceKioskCart(cart, items, orderType, menuId = null) {
     if (row && row.id != null) byId.set(row.id, row);
   }
   let changed = false;
-  const next = list.map(line => {
+  // 5.12.115 (lib/soldAs.js): a line that is not sold on the new order type cannot stay in the
+  // basket (wine, when eat in becomes take away). It is taken out here, the one place both kiosk
+  // designs come through when the order type changes.
+  const kept = list.filter(line => {
+    if (!line || !line.item) return true;
+    const row = line.variant?.id ? byId.get(line.variant.id) : byId.get(line.item.id);
+    const stays = !row || isSoldAs(row, orderType, byId);
+    if (!stays) changed = true;
+    return stays;
+  });
+  const next = kept.map(line => {
     if (!line || !line.item) return line;
     const src = line.variant?.id ? byId.get(line.variant.id) : byId.get(line.item.id);
     if (!src) return line;

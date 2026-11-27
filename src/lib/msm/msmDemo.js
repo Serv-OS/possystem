@@ -133,7 +133,7 @@ function importCommit({ p_payload: p }, db) {
   const menuId = 'dddddddd-1111-4000-8000-000000000001';
   const now = new Date().toISOString();
   const noSites = (x) => { const c = { ...x }; delete c.sites; return c; };
-  db.msm_menus = [{ id: menuId, org_id: p.org_id, name: p.menu.name, description: p.menu.description || '', use_name_everywhere: false, status: 'live', created_at: now, updated_at: now, last_version_no: 1, last_published_at: now, last_published_by: 'You (demo)' }];
+  db.msm_menus = [{ id: menuId, org_id: p.org_id, name: p.menu.name, description: p.menu.description || '', use_name_everywhere: false, extra_menus: [], status: 'live', created_at: now, updated_at: now, last_version_no: 1, last_published_at: now, last_published_by: 'You (demo)' }];
   db.msm_menu_sites = p.sites.map((s) => ({ menu_id: menuId, location_id: s.location_id, venue_menu_id: s.venue_menu_id, joined_at: now }));
   db.msm_categories = p.categories.map((c) => ({ ...noSites(c), menu_id: menuId, archived: false }));
   db.msm_category_sites = p.categories.flatMap((c) => c.sites.map((s) => ({ category_id: c.id, ...s })));

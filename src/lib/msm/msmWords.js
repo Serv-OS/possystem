@@ -9,8 +9,10 @@
 // things), so the screens agree and no raw code reaches a person who is not technical (Peter:
 // "these people using this will not be techy people"). msmWords.test.js pins it.
 
+import { sameSoldAs, soldAsSummary, sameShownOn, shownOnSummary } from '../soldAs.js';
 import { money2, toPence, pctText, CHANNELS } from '../../../supabase/functions/_shared/msmModel.js';
 import { CHANNEL_LABELS } from './msmGrid.js';
+import { extraMenusChangeWords, menuKeyNames } from '../../../supabase/functions/_shared/msmMenus.js';
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax. The constants below keep the UK
 // words the tests pin; every reader takes them through activeTaxText (tt), which leaves them exactly
 // as they are at a UK venue and says tax at a US one.
@@ -157,7 +159,7 @@ const FIELD = {
   category_id: 'category', extra_category_ids: 'extra categories', parent_product_id: 'size of', type: 'type',
   default_price: 'group price', default_channels: 'order type prices', tax_rate_name: 'VAT', tax_rate_percent: 'VAT',   // taxText: fieldWord
   allergens: 'allergens', tags: 'dietary tags', image: 'photo', modifier_groups: 'option groups', visibility: 'where it shows',
-  sold_alone: 'sold on its own', item_code: 'item code', archived: 'removed', sort_order: 'order', label: 'name',
+  sold_alone: 'sold on its own', item_code: 'item code', archived: 'removed', sort_order: 'order', label: 'name', menu_keys: 'menus', extra_menus: 'menus',
   parent_id: 'under', route_like_id: 'prints like', icon: 'icon', color: 'colour', use_name_everywhere: 'name at every site',
   tax_by_type: 'VAT by order type', min: 'rule', max: 'rule', selection_type: 'kind of choice', group_id: 'option group',   // taxText: fieldWord
   price: 'price', product_id: 'sub item', sub_group_id: 'Then ask',
@@ -200,6 +202,10 @@ export function changeWords(row, names = {}) {
       if (k === 'site_only_location_id') { parts.push('now sold at more than one site'); continue; }
       if (k === 'default_price') parts.push(`group price ${money2(b.default_price)} to ${money2(a.default_price)}`);
       else if (k === 'category_id') parts.push(`moved to ${cn(a.category_id)}`);
+      // 5.12.115 "Sold as" (lib/soldAs.js): the order types it is sold on live beside the switches.
+      // 5.12.116 "Shows on": where head office hides it.
+      else if (k === 'visibility' && sameSoldAs({ visibility: a.visibility }, { visibility: row.before?.visibility }) && !sameShownOn({ visibility: a.visibility }, { visibility: row.before?.visibility })) parts.push(shownOnSummary({ visibility: a.visibility }) ? shownOnSummary({ visibility: a.visibility }).replace(/^./, (c) => c.toLowerCase()) : 'shown everywhere again');
+      else if (k === 'visibility' && !sameSoldAs({ visibility: a.visibility }, { visibility: row.before?.visibility })) parts.push(soldAsSummary({ visibility: a.visibility }) ? soldAsSummary({ visibility: a.visibility }).replace(/^./, (c) => c.toLowerCase()) : 'sold on every order type');
       else if (k === 'name' || k === 'menu_name') { if (!parts.some((x) => x.startsWith('renamed'))) parts.push(`renamed to ${a[k]}`); }
       else if (k === 'default_channels') {
         // Only the order types the till charges, compared as money (a blank and a missing key are
@@ -251,9 +257,18 @@ export function changeWords(row, names = {}) {
     if (row.op === 'create') return { subject, words: `New category${a.parent_id ? ` under ${cn(a.parent_id)}` : ''}${a.route_like_id ? `, prints like ${cn(a.route_like_id)}` : ''}` };
     // 5.12.110: a rename says the new name (the only field of a category that can change here).
     if ('label' in a && row.op !== 'remove') return { subject: cn(row.entity_id), words: `renamed to ${a.label} at every site` };
+    // 5.12.116: which of the group's menus it is on.
+    if ('menu_keys' in a && row.op !== 'remove') {
+      const rest = Object.keys(a).filter((k) => k !== 'menu_keys');
+      return { subject: cn(row.entity_id), words: [`now on ${menuKeyNames(a.menu_keys, names.menus)}`, ...rest.map((k) => `${fieldWord(k)} changed`)].join(', ') };
+    }
     return { subject, words: Object.keys(a).map((k) => `${fieldWord(k)} changed`).join(', ') };
   }
-  if (row.target === 'menu') return { subject: 'Menu details', words: Object.keys(a).map((k) => `${fieldWord(k)} changed`).join(', ') };
+  if (row.target === 'menu') {
+    const parts = Object.keys(a).filter((k) => k !== 'extra_menus').map((k) => `${fieldWord(k)} changed`);
+    if ('extra_menus' in a) parts.push(...(extraMenusChangeWords(b.extra_menus, a.extra_menus).length ? extraMenusChangeWords(b.extra_menus, a.extra_menus) : ['menus changed']));
+    return { subject: 'extra_menus' in a && Object.keys(a).length === 1 ? 'Menus' : 'Menu details', words: parts.join(', ') };
+  }
   if (row.target === 'menu_site') return { subject: sn(row.location_id), words: 'Joins the group menu' };
   // Round 2: option groups and options.
   if (row.target === 'modifier_group') {

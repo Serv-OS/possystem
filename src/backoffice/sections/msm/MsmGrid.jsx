@@ -26,7 +26,9 @@ import {
   ROW_H, NO_CATEGORY, SHOW_FILTERS, CHANNEL_LABELS, priceLabel, buildGridRows, cellFor, cellStaged, categoryTree,
   visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable, showLabel, noPriceWords,
 } from '../../../lib/msm/msmGrid';
-import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes, categoryRenameChange } from '../../../lib/msm/msmEdit';
+import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes, categoryRenameChange, categoryMenuChange, categoryShownOn, categoryShownOnChanges } from '../../../lib/msm/msmEdit';
+import { SHOWN_ON_KEYS, SHOWN_ON_WORDS } from '../../../lib/soldAs';
+import { groupMenus, hasExtraMenus, menuKeysOf } from '../../../../supabase/functions/_shared/msmMenus.js';
 import { marginFor, vatMaps, gpTone, gpCellWords, gpHoverWords } from '../../../lib/msm/msmMargin';
 import { shownPriceTypes, shownTaxTypes, vatCell } from '../../../lib/msm/msmOrderTypes';
 import { siteTaxCell, groupTaxCell, groupRunsOnProfiles } from '../../../lib/msm/msmTaxProfiles';
@@ -53,6 +55,8 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
   const [categoryId, setCategoryId] = useState('');
   // 5.12.110: the category whose name is being typed on its own row ({ id, value }), or null.
   const [renaming, setRenaming] = useState(null);
+  // 5.12.116: the group's menus (Main, and say Online and Catering). '' = every menu.
+  const [menuKey, setMenuKey] = useState('');
   const [show, setShow] = useState('all');
   const [mode, setMode] = useState('prices');       // prices | vat | gp
   const [taxKey, setTaxKey] = useState('takeaway');
@@ -82,7 +86,10 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
 
   const { rows, products } = useMemo(() => buildGridRows(ix, {
     search, categoryId: categoryId || null, show, siteIds: cols.map((c) => c.id), staged, collapsed, channel,
-  }), [ix, search, categoryId, show, cols, staged, collapsed, channel]);
+    menuKey: menuKey || null, menu: ctx?.eff?.menu || null,
+  }), [ix, search, categoryId, show, cols, staged, collapsed, channel, menuKey, ctx]);
+  const menusList = useMemo(() => groupMenus(ctx?.eff?.menu), [ctx]);
+  const severalMenus = hasExtraMenus(ctx?.eff?.menu);
 
   useEffect(() => { if (mode === 'gp') costs.load(cols.map((c) => c.id)); }, [mode, cols, costs]);
 
@@ -132,6 +139,20 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     setRenaming(null);
     if (!r.change) return;
     run([], [r.change], `${was} is renamed to ${r.change.after.label} in the draft. It changes at every site when you publish.`);
+  };
+
+  // "Shows on" for a whole category: hide every product in it on the POS, the kiosk, online or
+  // delivery at every site, or show them again (Peter, 26 Nov 2026: "the less menus the better").
+  const tickShown = (categoryId_, key, shown) => {
+    const r = categoryShownOnChanges(ctx, categoryId_, key, shown);
+    if (!r.changes || !r.changes.length) { if (r.words && !r.changes) setNote?.({ tone: 'warn', text: r.words }); return; }
+    run([], r.changes, `${r.words} In the draft: it changes at every site when you publish.`, true);
+  };
+  // Tick a category on to, or off, one of the group's menus. Its products follow it.
+  const tickMenu = (categoryId_, key, on) => {
+    const r = categoryMenuChange(ctx, categoryId_, key, on);
+    if (!r.change) { if (r.words) setNote?.({ tone: 'warn', text: r.words }); return; }
+    run([], [r.change], `${r.words} In the draft: it changes at every site when you publish.`);
   };
 
   const colLoc = (col) => (col === 0 ? null : cols[col - 1]?.id || null);
@@ -350,6 +371,12 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
         <select aria-label="Show" title="Which products the grid lists" style={{ ...ui.input, width: 'auto', minWidth: 170 }} value={show} onChange={(e) => setShow(e.target.value)}>
           {SHOW_FILTERS.map((f) => <option key={f.id} value={f.id}>Show: {f.label}</option>)}
         </select>
+        {severalMenus && (
+          <select aria-label="Menu" data-testid="msm-menu-filter" title="Only the products on one menu" style={{ ...ui.input, width: 'auto', minWidth: 150 }} value={menuKey} onChange={(e) => setMenuKey(e.target.value)}>
+            <option value="">Menu: every menu</option>
+            {menusList.map((m) => <option key={m.key} value={m.key}>Menu: {m.name}</option>)}
+          </select>
+        )}
         <Segmented small value={mode} onChange={setMode} options={[
           { value: 'prices', label: 'Prices' },
           { value: 'vat', label: tt('VAT'), title: tt('The VAT each product is charged for an order type, at each site') },
@@ -475,6 +502,45 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                       </>
                     )}
                   </div>
+                  {/* 5.12.116: which of the group's menus this category is on. Top categories only:
+                      a sub category is on the menus its top category is on. */}
+                  {r.id !== NO_CATEGORY && (() => {
+                    const st = categoryShownOn(ctx?.eff, r.id);
+                    if (!st.count) return null;
+                    return (
+                      <div data-testid="msm-category-shown-on" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 11.5, color: 'var(--t4)', fontWeight: 650 }}>Shows on</span>
+                        {SHOWN_ON_KEYS.map((k) => {
+                          const s = st[k];
+                          return (
+                            <button key={k} type="button" aria-pressed={s === 'on'} disabled={!editable}
+                              title={s === 'on' ? `Hide everything in ${r.label} on ${SHOWN_ON_WORDS[k]}, at every site` : s === 'off' ? `Show everything in ${r.label} on ${SHOWN_ON_WORDS[k]} again` : `Some of ${r.label} is hidden on ${SHOWN_ON_WORDS[k]}. Tap to hide all of it there`}
+                              onClick={() => tickShown(r.id, k, s === 'off')}
+                              style={{ padding: '3px 10px', borderRadius: 20, border: `1px solid ${s === 'on' ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: s === 'on' ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: s === 'on' ? 'var(--t1)' : 'var(--t4)', textDecoration: s === 'off' ? 'line-through' : 'none', fontSize: 12, fontWeight: 650, cursor: editable ? 'pointer' : 'default', fontFamily: 'inherit' }}>
+                              {s === 'on' ? '✓ ' : s === 'mixed' ? 'some ' : ''}{SHOWN_ON_WORDS[k]}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                  {severalMenus && r.id !== NO_CATEGORY && r.depth === 0 && (() => {
+                    const cat = ix.categories.get(r.id);
+                    if (!cat || cat.archived) return null;
+                    const on = new Set(menuKeysOf(cat, ix.categories, ctx?.eff?.menu));
+                    return (
+                      <div data-testid="msm-category-menus" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 11.5, color: 'var(--t4)', fontWeight: 650 }}>On menus</span>
+                        {menusList.map((m) => (
+                          <button key={m.key} type="button" aria-pressed={on.has(m.key)} disabled={!editable} title={on.has(m.key) ? `Take ${r.label} off the ${m.name} menu` : `Put ${r.label} on the ${m.name} menu`}
+                            onClick={() => tickMenu(r.id, m.key, !on.has(m.key))}
+                            style={{ padding: '3px 10px', borderRadius: 20, border: `1px solid ${on.has(m.key) ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: on.has(m.key) ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: on.has(m.key) ? 'var(--t1)' : 'var(--t3)', fontSize: 12, fontWeight: 650, cursor: editable ? 'pointer' : 'default', fontFamily: 'inherit' }}>
+                            {on.has(m.key) ? '✓ ' : ''}{m.name}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             }
