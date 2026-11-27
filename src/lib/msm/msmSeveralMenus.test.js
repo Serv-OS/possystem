@@ -32,7 +32,7 @@ import { lockedItemPatch } from './msmLock.js';
 import { optionOnlyCategoryIds } from '../menuRules.js';
 import {
   addMenuChanges, renameMenuChange, removeMenuChange, menuSiteChange, categoryMenuChange, menusReady, menusGuardWords,
-  categoryShownOn, categoryShownOnChanges, categoryProducts,
+  categoryShownOn, categoryShownOnChanges, categoryProducts, foundSiteMenus, foundMenuWords,
 } from './msmEdit.js';
 import { changeWords } from './msmWords.js';
 import { summarise } from './msmSummary.js';
@@ -398,4 +398,62 @@ test('a category whose every product is hidden on the POS is left off the POS, a
   for (const f of ['../../surfaces/POSSurface.jsx', '../../surfaces/mpos/MMenu.jsx', '../../surfaces/BarSurface.jsx']) {
     assert.match(read(f), /optionOnlyCategoryIds\([^)]*\{ hiddenOn: 'pos' \}\)/, `${f} names the POS`);
   }
+});
+
+// 5.12.118. Peter, 27 Nov 2026 (Sandy has its own Catering menu, and the screen made him type its
+// name): "thats wrong logic people will be confused it needs to find the menus and be able to
+// publish them to multiple sites".
+test('the sites\' own menus are FOUND, never typed: one row per name, and one tap adds it for every site', () => {
+  const { v, central, cat, vCat, mainOf, ctx } = setup();
+  const own = [
+    { id: 'menu-a-cater', location_id: A, name: 'Catering', is_active: true, sort_order: 4 },
+    { id: 'menu-b-cater', location_id: B, name: ' catering ', is_active: true, sort_order: 2 },
+    { id: 'menu-a-brunch', location_id: A, name: 'Brunch', is_active: true, sort_order: 5 },
+    { id: 'menu-a-old', location_id: A, name: 'Old menu', is_active: false, sort_order: 6 },
+    { id: 'menu-a-main2', location_id: A, name: 'Main', is_active: true, sort_order: 7 },
+    { id: 'menu-x', location_id: 'another-site', name: 'Late', is_active: true },
+  ];
+  const venueMenus = new Map([...v[A].menus, ...v[B].menus, ...own].map((m) => [m.id, m]));
+  const found = foundSiteMenus(ctx(), venueMenus);
+  assert.deepEqual(found.map((f) => [f.name, f.sites, f.ids]), [
+    ['Catering', [A, B], ['menu-a-cater', 'menu-b-cater']],
+    ['Brunch', [A], ['menu-a-brunch']],
+  ], 'never the menu the group menu writes into, a switched off one, a second Main, nor another group\'s site');
+  assert.ok(!found.some((f) => f.ids.includes(mainOf(A)) || f.ids.includes(mainOf(B))));
+  const names = new Map([[A, 'Sandy'], [B, 'Provo']]);
+  assert.equal(foundMenuWords(found[0], names, 2), 'At every site');
+  assert.equal(foundMenuWords(found[1], names, 2), 'Only at Sandy');
+  assert.equal(foundMenuWords({ sites: [A, B] }, names, 5), 'At 2 of 5 sites: Sandy, Provo');
+  assert.deepEqual(foundSiteMenus(ctx(), [...venueMenus.values()]).map((f) => f.name), ['Catering', 'Brunch'], 'a list reads the same as a Map');
+
+  // One tap: the found name goes through the same add, so it takes exactly the menus it listed.
+  const r = addMenuChanges(ctx(), found[1].name, { idGen: () => CATER, venueMenus: [...venueMenus.values()], onVenueMenus: [{ menu_id: 'menu-a-brunch', category_id: vCat(A) }, { menu_id: 'menu-a-brunch', category_id: 'cat-only-at-a' }] });
+  assert.deepEqual(r.matched, found[1].sites);
+  assert.deepEqual(r.ticked, [cat.label]);
+  assert.equal(r.notInGroup, 1, 'a category on it that the group menu does not have is counted, to bring in');
+  // Once it is in the group menu it is no longer "found", and the other one still is.
+  assert.deepEqual(foundSiteMenus(ctx(r.changes), venueMenus).map((f) => f.name), ['Catering']);
+  // It then goes to the site that has none: publish makes one there, with the ticked category on it.
+  const planB = planSite({ central: applyChanges(central, r.changes).central, touched: touchedFromChanges(r.changes), locationId: B, orgId: ORG, venue: v[B] });
+  assert.equal(planB.writes.menus.insert.length, 1, JSON.stringify(planB.lines));
+  assert.equal(planB.writes.menus.insert[0].name, 'Brunch');
+  // A menu publish made for the group is the group's, never "found" again.
+  const made = { id: extraVenueMenuId(CATER, B), location_id: B, name: 'Brunch', is_active: true };
+  assert.deepEqual(foundSiteMenus(ctx(r.changes), new Map([...venueMenus, [made.id, made]])).map((f) => f.name), ['Catering']);
+  // No room for another: still listed, marked full, so the button can say why.
+  const many = Array.from({ length: MAX_EXTRA_MENUS }, (_, i) => ({ id: `0000000${i}-0000-4000-8000-000000000000`, name: `Menu ${i}` }));
+  assert.ok(foundSiteMenus(ctx([menuChange(central, many)]), venueMenus).every((f) => f.full));
+  assert.deepEqual(foundSiteMenus({ eff: null }, venueMenus), []);
+});
+
+test('the screens find the menus: the Menus card lists them and the Products tab says so', () => {
+  const details = read('../../backoffice/sections/msm/MsmDetails.jsx');
+  assert.match(details, /foundSiteMenus\(ctx, venueMenus\)/);
+  assert.match(details, /data-testid="msm-menu-found-add"[^>]*onClick=\{\(\) => add\(f\.name\)\}/, 'the button adds the found name; nobody types it');
+  assert.ok(!/client\.from\('menus'\)/.test(details), 'one read of the sites\' menus, by the screen (useSiteMenus)');
+  const page = read('../../backoffice/sections/msm/MultiSiteMenu.jsx');
+  assert.match(page, /useSiteMenus\(/);
+  assert.match(page, /data-testid="msm-found-menus"/);
+  // The hook is called before the first early return (rules of hooks: 5.12.91 crashed on this kind of slip).
+  assert.ok(page.indexOf('useSiteMenus(phase') < page.indexOf("if (phase === 'loading') return"));
 });

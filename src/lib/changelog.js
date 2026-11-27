@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.118',
+    date: '27 Nov 2026',
+    items: [
+      'Multi site menu: the menus your sites already have are now FOUND for you (Peter, 27 Nov 2026: "it needs to find the menus and be able to publish them to multiple sites"). Menu details, Menus now lists them under "Found at your sites", each with the sites that have it and one button, Add to the group menu. Nobody types a name.',
+      'Adding a found menu takes the menu those sites already have, ticks in the categories already on it, and publishing makes the same menu at every other site. A site can still be set to Not at this site.',
+      'The Products tab says when a site has a menu the group menu does not manage yet, with Show me. Dismiss keeps it quiet for the menus you have seen.',
+      'Under Sites, a menu the group menu now manages is no longer listed as "not changed here".',
+    ],
+  },
+  {
     v: '5.12.117',
     date: '26 Nov 2026',
     items: [
