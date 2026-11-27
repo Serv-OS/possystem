@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.121',
+    date: '27 Nov 2026',
+    items: [
+      'A menu can now be renamed (Peter, 27 Nov 2026: "how do i rename a menu?"). In the Back Office, Menu, press the pencil on a menu: the settings panel now starts with a Menu name box. Type the new name and press Enter or Rename.',
+      'A blank name is refused, and so is a name another menu at that site already has. The box says why and the name stays as it was.',
+      'Nothing else moves when a menu is renamed. The POS, kiosk, online page, catering and the Multi site menu all hold a menu by its id, so each keeps the menu it had.',
+    ],
+  },
+  {
     v: '5.12.120',
     date: '27 Nov 2026',
     items: [
