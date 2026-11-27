@@ -28,10 +28,16 @@
 //     nothing: its row comes out of the draft, and so do the option rows its turn on staged there,
 //     unless another product still on at that site needs them (droppedOptionRows).
 
-import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText, keptWithoutNoPrice, noPriceAt, CATEGORY_RULE_OLD_WORDS } from '../../../supabase/functions/_shared/msmModel.js';
+import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText, keptWithoutNoPrice, noPriceAt, CATEGORY_RULE_OLD_WORDS, plural } from '../../../supabase/functions/_shared/msmModel.js';
 
 export { noPriceAt };
 import { optionRowsForNewSites } from './msmGroupEdit.js';
+import { isOptionOnlyItem } from '../menuRules.js';
+import { SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, toggleShownOn } from '../soldAs.js';
+import {
+  MAIN_MENU, allExtraMenus, extraMenus, extraMenusValue, extraMenuNameProblem, newExtraMenu, matchSiteMenus, menuKeysOf, menuKeysValue,
+  toggleMenuKey, menuKeysWords, rootCategory, extraMenuAt,
+} from '../../../supabase/functions/_shared/msmMenus.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const findProduct = (c, id) => listOf(c?.products).find((p) => p.id === id) || null;
@@ -465,6 +471,206 @@ export function categoryRenameChange(ctx, categoryId, label) {
   if (twin) return { words: `There is already a category called ${twin.label} here. Pick another name.` };
   const liveC = findCategory(ctx.live, categoryId);
   return { change: { target: 'category', entity_id: categoryId, location_id: null, op: 'update', after: { label: name }, before: { label: liveC ? liveC.label ?? null : null } } };
+}
+
+// ── SEVERAL MENUS in one group menu (5.12.116, _shared/msmMenus.js) ─────────
+// Peter, 26 Nov 2026: "I like the different menus but need to be able to manage centrally in multi
+// site". The group menu's other menus are one list on the menu itself, so every edit of it is ONE
+// staged change (target menu, field extra_menus) with the whole list.
+
+const menusChange = (ctx, rows) => ({
+  target: 'menu', entity_id: ctx.eff?.menu?.id || ctx.live?.menu?.id || null, location_id: null, op: 'update',
+  after: { extra_menus: extraMenusValue(rows) }, before: { extra_menus: extraMenusValue(allExtraMenus(ctx.live?.menu)) },
+});
+const catMap = (central) => new Map(listOf(central?.categories).map((c) => [c.id, c]));
+
+/** Has this database had 20261214a? (the group menu row carries the new list) */
+export const menusReady = (central) => !!central?.menu && Array.isArray(central.menu.extra_menus);
+
+/**
+ * Add a menu to the group menu.
+ *   name        "Catering"
+ *   opts        { idGen, venueMenus: every site's own menus rows, onVenueMenus: [{ menu_id, category_id }]
+ *                 for the matched menus: the site categories on them (home or link) }
+ * A site that already has a menu of that name keeps it: the new menu is matched to it, and every
+ * group category that is on it at any such site is ticked in, so publishing takes nothing off it.
+ * Returns { changes: [..], id, matched: [locationIds], ticked: [labels] } or { words }.
+ */
+export function addMenuChanges(ctx, name, opts = {}) {
+  const menu = ctx.eff?.menu;
+  if (!menu) return { words: 'The group menu is not loaded yet. Try again.' };
+  const bad = extraMenuNameProblem(menu, name);
+  if (bad) return { words: bad };
+  const id = (opts.idGen || (() => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : null)))();
+  if (!id) return { words: 'Could not make an id for the menu. Try again.' };
+  const siteIds = new Set(listOf(ctx.eff?.sites).map((x) => x.location_id));
+  const taken = [...listOf(ctx.eff?.sites).map((x) => x.venue_menu_id), ...allExtraMenus(menu).flatMap((m) => Object.values(m.sites).filter((v) => typeof v === 'string'))];
+  const matched = matchSiteMenus(name, listOf(opts.venueMenus).filter((m) => m && siteIds.has(m.location_id)), taken);
+  const rows = [...allExtraMenus(menu), newExtraMenu(id, name, matched)];
+  const changes = [menusChange(ctx, rows)];
+  // The group categories already on a matched menu at a site come in ticked.
+  const venueToGroup = new Map(listOf(ctx.eff?.catSites).map((cs) => [`${cs.location_id}|${cs.venue_category_id}`, cs.category_id]));
+  const matchedLoc = new Map(Object.entries(matched).map(([loc, mid]) => [mid, loc]));
+  const cats = catMap(ctx.eff);
+  const menuAfter = { ...menu, extra_menus: extraMenusValue(rows) };
+  const tick = new Set();
+  for (const l of listOf(opts.onVenueMenus)) {
+    const loc = matchedLoc.get(l && l.menu_id);
+    if (!loc) continue;
+    const gid = venueToGroup.get(`${loc}|${l.category_id}`);
+    const root = gid ? rootCategory(cats.get(gid), cats) : null;
+    if (root && !root.archived) tick.add(root.id);
+  }
+  const ticked = [];
+  for (const cid of tick) {
+    const c = cats.get(cid);
+    const liveC = findCategory(ctx.live, cid);
+    const keys = [...menuKeysOf(c, cats, menuAfter), id];
+    changes.push({ target: 'category', entity_id: cid, location_id: null, op: 'update', after: { menu_keys: menuKeysValue(keys, menuAfter) }, before: { menu_keys: liveC ? liveC.menu_keys ?? null : null } });
+    ticked.push(c.label);
+  }
+  return { changes, id, matched: Object.keys(matched), ticked };
+}
+
+/** Rename one of the group's other menus (the group menu's own name for it; a site's menu keeps its name). */
+export function renameMenuChange(ctx, id, name) {
+  const menu = ctx.eff?.menu;
+  const rows = allExtraMenus(menu);
+  const row = rows.find((m) => m.id === id && !m.archived);
+  if (!row) return { words: 'That menu is not in the group menu.' };
+  const bad = extraMenuNameProblem(menu, name, id);
+  if (bad) return { words: bad };
+  const n = String(name).trim();
+  if (n === row.name) return { change: null };
+  return { change: menusChange(ctx, rows.map((m) => (m.id === id ? { ...m, name: n } : m))) };
+}
+
+/**
+ * Remove one of the group's other menus. Refused while a category is ONLY on it (it would be on no
+ * menu at all): move or remove those first. Publishing takes the group's categories off that menu
+ * at every site; the site's menu itself stays, as the site's own.
+ */
+export function removeMenuChange(ctx, id) {
+  const menu = ctx.eff?.menu;
+  const rows = allExtraMenus(menu);
+  const row = rows.find((m) => m.id === id && !m.archived);
+  if (!row) return { words: 'That menu is not in the group menu.' };
+  const cats = catMap(ctx.eff);
+  const only = listOf(ctx.eff?.categories).filter((c) => c && !c.archived && !c.parent_id && menuKeysOf(c, cats, menu).join('|') === id);
+  if (only.length) {
+    const names = only.slice(0, 4).map((c) => c.label).join(', ');
+    return { words: `${only.length === 1 ? 'A category is' : `${only.length} categories are`} only on ${row.name}: ${names}${only.length > 4 ? ' and more' : ''}. Tick ${only.length === 1 ? 'it' : 'them'} into another menu, or remove ${only.length === 1 ? 'it' : 'them'}, first.` };
+  }
+  // A menu never published (not in the live group menu) just leaves the list; one that was
+  // published stays in it as removed, so publish knows which site menus to take the categories off.
+  const wasLive = allExtraMenus(ctx.live?.menu).some((m) => m.id === id);
+  const next = wasLive ? rows.map((m) => (m.id === id ? { ...m, archived: true } : m)) : rows.filter((m) => m.id !== id);
+  const changes = [menusChange(ctx, next)];
+  const menuAfter = { ...menu, extra_menus: extraMenusValue(next) };
+  for (const c of listOf(ctx.eff?.categories)) {
+    if (!c || !Array.isArray(c.menu_keys) || !c.menu_keys.includes(id)) continue;
+    const liveC = findCategory(ctx.live, c.id);
+    changes.push({ target: 'category', entity_id: c.id, location_id: null, op: 'update', after: { menu_keys: menuKeysValue(c.menu_keys.filter((k) => k !== id), menuAfter) }, before: { menu_keys: liveC ? liveC.menu_keys ?? null : null } });
+  }
+  return { changes, name: row.name };
+}
+
+/**
+ * Which of a site's own menus one of the group's other menus is.
+ *   value   a venue menu id (use that menu), false (this site does not have the menu), or null
+ *           (publish makes one, or uses the one it made before)
+ */
+export function menuSiteChange(ctx, id, locationId, value) {
+  const rows = allExtraMenus(ctx.eff?.menu);
+  const row = rows.find((m) => m.id === id && !m.archived);
+  if (!row) return { words: 'That menu is not in the group menu.' };
+  if (!listOf(ctx.eff?.sites).some((x) => x.location_id === locationId)) return { words: 'That site is not in the group menu.' };
+  if (typeof value === 'string') {
+    if (listOf(ctx.eff?.sites).some((x) => x.venue_menu_id === value)) return { words: 'That is the menu the group menu already writes its main menu into. Pick another.' };
+    if (rows.some((m) => m.id !== id && !m.archived && m.sites[locationId] === value)) return { words: 'Another of the group\'s menus already uses that menu at this site.' };
+  }
+  const sites = { ...row.sites };
+  if (value === null || value === undefined) delete sites[locationId]; else sites[locationId] = value;
+  if (JSON.stringify(sites) === JSON.stringify(row.sites)) return { change: null };
+  return { change: menusChange(ctx, rows.map((m) => (m.id === id ? { ...m, sites } : m))) };
+}
+
+/**
+ * Tick a category on to, or off, one of the group's menus. Set on its TOP category (a sub category
+ * is on the menus its top category is on). Returns { change, words? } or { words }.
+ */
+export function categoryMenuChange(ctx, categoryId, key, on) {
+  const cats = catMap(ctx.eff);
+  const c = rootCategory(cats.get(categoryId), cats);
+  if (!c) return { words: 'That category is not in the group menu.' };
+  if (c.archived) return { words: 'That category has been taken off the group menu. Bring it back first.' };
+  const menu = ctx.eff?.menu;
+  if (key !== MAIN_MENU && !extraMenus(menu).some((m) => m.id === key)) return { words: 'That menu is not in the group menu.' };
+  const r = toggleMenuKey(c, cats, menu, key, on);
+  if (!r.ok) return { words: r.words };
+  const liveC = findCategory(ctx.live, c.id);
+  const was = c.menu_keys ?? null;
+  if (JSON.stringify(was) === JSON.stringify(r.value)) return { change: null };
+  const change = { target: 'category', entity_id: c.id, location_id: null, op: 'update', after: { menu_keys: r.value }, before: { menu_keys: liveC ? liveC.menu_keys ?? null : null } };
+  return { change, label: c.label, words: `${c.label} is now on ${menuKeysWords(r.value || [MAIN_MENU], menu)}.` };
+}
+
+// ── "Shows on" for a whole category (5.12.116, lib/soldAs.js) ───────────────
+// Peter, 26 Nov 2026: "I dont want certain categories to show at all ... the less menus the
+// better". The rule is on each product; a category row sets it for every product in it at once.
+
+/** The products a category row speaks for: in it or under it, sold on their own, not sizes. */
+export function categoryProducts(central, categoryId) {
+  const cats = listOf(central?.categories);
+  const inside = new Set([categoryId]);
+  let grew = true;
+  while (grew) { grew = false; for (const c of cats) if (c && c.parent_id && inside.has(c.parent_id) && !inside.has(c.id)) { inside.add(c.id); grew = true; } }
+  return listOf(central?.products).filter((p) => p && !p.archived && !p.parent_product_id && inside.has(p.category_id) && !isOptionOnlyItem(p));
+}
+
+/** Where a category's products show: { pos: 'on' | 'off' | 'mixed', ... } and how many products. */
+export function categoryShownOn(central, categoryId) {
+  const list = categoryProducts(central, categoryId);
+  const out = { count: list.length };
+  for (const k of SHOWN_ON_KEYS) {
+    const hidden = list.filter((p) => notShownOn(p).includes(k)).length;
+    out[k] = !list.length || hidden === 0 ? 'on' : hidden === list.length ? 'off' : 'mixed';
+  }
+  return out;
+}
+
+/** Hide (or show again) every product of a category in one place. Returns { changes, count, words }. */
+export function categoryShownOnChanges(ctx, categoryId, key, shown) {
+  if (!SHOWN_ON_KEYS.includes(key)) return { words: 'That is not somewhere a product shows.' };
+  const c = findCategory(ctx.eff, categoryId);
+  if (!c) return { words: 'That category is not in the group menu.' };
+  const list = categoryProducts(ctx.eff, categoryId);
+  if (!list.length) return { words: `${c.label} has no products yet.` };
+  const changes = [];
+  for (const p of list) {
+    const r = productUpdate(ctx, p.id, { visibility: toggleShownOn(p.visibility ?? null, key, shown) ?? {} });
+    if (r.change) changes.push(r.change);
+  }
+  const where = SHOWN_ON_WORDS[key];
+  const n = changes.length;
+  return { changes, count: n, words: shown ? `${c.label}: ${plural(n, 'product')} ${n === 1 ? 'shows' : 'show'} on ${where} again.` : `${c.label}: ${plural(n, 'product')} ${n === 1 ? 'is' : 'are'} hidden on ${where}.` };
+}
+
+/** Where one of the group's other menus is at a site, in words, for Menu details. */
+export function menuAtSiteWords(extra, locationId, venueMenus) {
+  const at = extraMenuAt(extra, locationId, venueMenus);
+  const nameOf = (id) => (venueMenus && typeof venueMenus.get === 'function' ? venueMenus.get(id)?.name : null) || 'its own';
+  if (at.off) return 'Not at this site';
+  if (at.how === 'matched') return `Uses the site's own ${nameOf(at.id)} menu`;
+  if (at.how === 'made') return `Uses the ${nameOf(at.id)} menu publish made here`;
+  return 'A menu is made here on the first publish that needs it';
+}
+
+/** The database's words from before 20261214a ran, turned into what to do about it. */
+export function menusGuardWords(words) {
+  const w = String(words || '');
+  if (/cannot be changed here: (extra_menus|menu_keys)/.test(w)) return 'More than one menu needs one database update that has not been run yet (SQL 20261214a). Nothing was changed. Ask ServOS to run it.';
+  return w;
 }
 
 /**

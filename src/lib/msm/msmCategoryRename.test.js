@@ -56,7 +56,8 @@ test('the same name stages nothing; a blank, a long or a taken name is refused i
 });
 
 test('the rule: the name is allowed, the place and the colour still are not', () => {
-  assert.deepEqual([...CATEGORY_UPDATE_FIELDS], ['archived', 'route_like_id', 'label']);
+  // 5.12.116: and which of the group's menus it is on (menu_keys, 20261214a).
+  assert.deepEqual([...CATEGORY_UPDATE_FIELDS], ['archived', 'route_like_id', 'label', 'menu_keys']);
   const ch = (after) => ({ target: 'category', entity_id: 'aaaaaaaa-0000-4000-8000-00000000c001', location_id: null, op: 'update', after });
   assert.equal(categoryUpdateWords(ch({ label: 'Soups' })), '');
   assert.match(categoryUpdateWords(ch({ color: '#000000' })), /place and colour stay as each site has them/);
@@ -96,7 +97,8 @@ test('20261211a holds the rule as it is now: the same list and the same words as
   const rb = read('../../../supabase/migrations/20261211a_OPS_multi_site_menu_category_rename_ROLLBACK.sql');
   const m = /if new\.target = 'category' and new\.op <> 'create' and jsonb_typeof\(new\.after\) = 'object'\s+and exists \(select 1 from jsonb_object_keys\(new\.after\) k where k <> all \(array\[([^\]]+)\]\)\) then/.exec(sql);
   assert.ok(m, 'refuses other fields on a category that is not new');
-  assert.deepEqual([...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]), [...CATEGORY_UPDATE_FIELDS]);
+  // 20261211a is the file as Ops ran it: 20261214a adds menu_keys (src/lib/msm/msmSeveralMenus.test.js).
+  assert.deepEqual([...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]), CATEGORY_UPDATE_FIELDS.filter((k) => k !== 'menu_keys'));
   const words = categoryUpdateWords({ target: 'category', op: 'update', after: { color: 'x' } });
   assert.ok(sql.includes(`raise exception '${words.replace(/'/g, "''")}' using errcode = '22023'`), 'the database says what the screen says');
   // One function replaced, nothing else: no table, no venue row, no grant.

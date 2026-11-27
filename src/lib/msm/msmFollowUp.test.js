@@ -254,7 +254,7 @@ test('follow up 5: a size with no VAT rate turned on where its product has order
 
 // ── 6. A category the group menu already has ────────────────────────────────
 test('follow up 6: a category the group menu already has takes only "send like", removed or back and (5.12.110) its name; a new one takes everything', () => {
-  assert.deepEqual([...(model.CATEGORY_UPDATE_FIELDS || [])], ['archived', 'route_like_id', 'label']);
+  assert.deepEqual([...(model.CATEGORY_UPDATE_FIELDS || [])], ['archived', 'route_like_id', 'label', 'menu_keys']);   // 5.12.116: its menus
   const k = 'aaaaaaaa-0000-4000-8000-00000000c001';
   const refused = mergeStaged(null, { target: 'category', entity_id: k, location_id: null, op: 'update', after: { label: 'Hot', color: '#000000' } });
   assert.equal(refused.action, 'none');

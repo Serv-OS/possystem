@@ -45,6 +45,7 @@ import KioskCategoryTile from './kiosk/KioskCategoryTile';
 // laid over the products, and the venue's Show calories setting (Ops locations.pos_settings).
 import { withFacts, showCalories as venueShowsCalories } from '../lib/menuStockFacts';
 import { kioskLineSlot } from '../lib/channelMenu';
+import { isSoldAs } from '../lib/soldAs';
 // v5.11.81 (channel parity round 2): the venue's menu words in the customer's language on the
 // classic kiosk too (the new design has had them since v5.8.82). Shown only: the order keeps English.
 import { useClassicKioskMenuWords, shownItemName, shownItemDescription } from './kiosk/kioskMenuWords';
@@ -814,9 +815,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
       // variant children (the modal handles the size), visibility.kiosk false stays hidden, and
       // a sub item that is only sold as an option ("No Ice") is never a card, like the till.
       .filter(kioskCardEligible)
+      // 5.12.115 (lib/soldAs.js): not sold on the order type picked (eat in or take away): not shown.
+      .filter(i => isSoldAs(i, orderType, items))
       .filter(i => itemInCategory(i, selectedCategoryId))
       .sort(compareMenuItems);   // v5.11.111: position, then creation order, like the till and online
-  }, [items, selectedCategoryId]);
+  }, [items, selectedCategoryId, orderType]);
 
   // Today's kiosk side list: a category that only held option sub items is left out, since
   // it has nothing to order now (lib/kioskMenu.js kioskLegacyCategoryShown). The new design
@@ -1016,6 +1019,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
       if (maxAdd <= 0) return; // fully sold out
       qty = Math.min(qty, maxAdd);
     }
+    // 5.12.115 (lib/soldAs.js): never added to an order of a type it is not sold on, whichever
+    // card, search or shortcut asked for it (both kiosk designs add through here).
+    if (!isSoldAs(variantItem || item, orderType, items) || !isSoldAs(item, orderType, items)) { console.warn('[kiosk] not added: not sold on', orderType, (variantItem || item)?.name); return; }
     const linePrice = priceEachOverride ?? resolvePrice(item, orderType, activeMenuId);
     // v5.11.81: a row with no price set is never sold for 0.00 (the till's rule, menuPricing).
     if (refusesNoPriceLine(variantItem || item, orderType, activeMenuId, linePrice)) { console.warn('[kiosk] not added: no price set for', (variantItem || item)?.name); return; }
@@ -1062,7 +1068,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       }];
     });
     resetIdle();
-  }, [orderType, activeMenuId, resetIdle, dailyCounts, cartItemUsage]);
+  }, [orderType, activeMenuId, resetIdle, dailyCounts, cartItemUsage, items]);
 
   const updateCartQty = useCallback((key, delta) => {
     setCart(prev => prev

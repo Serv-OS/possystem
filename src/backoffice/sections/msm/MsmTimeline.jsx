@@ -10,6 +10,7 @@
 // (msmDiff.undoChanges: a new product is turned off, never deleted) and opens it in Publish, so the
 // same preview and health check show before anything moves.
 
+import { groupMenus } from '../../../../supabase/functions/_shared/msmMenus.js';
 import { useEffect, useMemo, useState } from 'react';
 import { undoChanges, applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { overlaps, whenText, clockText } from '../../../../supabase/functions/_shared/msmSchedule.js';
@@ -34,6 +35,7 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
     products: new Map((live?.products || []).map((p) => [p.id, p.menu_name || p.name])),
     categories: new Map((live?.categories || []).map((c) => [c.id, c.label])),
     sites: new Map(sites.map((s) => [s.id, s.name])),
+    menus: new Map(groupMenus(live?.menu).map((m) => [m.key, m.name])),
   }), [live, sites]);
 
   // Coming up, and each set's changes for the overlap words.

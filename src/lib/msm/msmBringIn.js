@@ -30,6 +30,7 @@
 
 import { planSite, touchedFromChanges, groupOptionRows } from '../../../supabase/functions/_shared/msmPlan.js';
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
+import { MAIN_MENU, extraMenus, extraMenuAt, menuKeysValue } from '../../../supabase/functions/_shared/msmMenus.js';
 import { touchEverything } from '../../../supabase/functions/_shared/msmImport.js';
 import { importTaxByType, sizeKeptTax, mapRateDescriptor } from '../../../supabase/functions/_shared/msmTax.js';
 import {
@@ -49,11 +50,15 @@ const defaultUuid = () => {
 
 // The venue categories in the venue menu the group menu writes into (by menu_id or a link), with
 // their parents: a product of a site's second menu (catering, say) is never offered.
-function categoriesInMenu(raw, venueMenuId) {
+// 5.12.116: with several menus in the group menu, every menu it manages at the site counts (its
+// main one and its other menus there), so a product of the site's Catering menu IS offered once
+// the group menu has a Catering menu matched to it.
+function categoriesInMenu(raw, venueMenuId, alsoMenuIds = []) {
   const cats = listOf(raw?.categories);
-  const linked = new Set(listOf(raw?.links).filter((l) => l.menu_id === venueMenuId).map((l) => l.category_id));
+  const mine = new Set([venueMenuId, ...listOf(alsoMenuIds)].filter(Boolean));
+  const linked = new Set(listOf(raw?.links).filter((l) => mine.has(l.menu_id)).map((l) => l.category_id));
   const byId = new Map(cats.map((c) => [c.id, c]));
-  const out = new Set(cats.filter((c) => c.menu_id === venueMenuId || linked.has(c.id)).map((c) => c.id));
+  const out = new Set(cats.filter((c) => mine.has(c.menu_id) || linked.has(c.id)).map((c) => c.id));
   for (const id of [...out]) { let p = byId.get(id)?.parent_id, n = 0; while (p && byId.has(p) && n++ < 20) { out.add(p); p = byId.get(p).parent_id; } }
   return { inMenu: out, known: new Set(cats.map((c) => c.id)) };
 }
@@ -69,7 +74,7 @@ function categoriesInMenu(raw, venueMenuId) {
 export function ownProducts(central, locationId, raw) {
   const managed = new Set(listOf(central?.productSites).filter((ps) => ps.location_id === locationId).map((ps) => ps.venue_item_id));
   const site = listOf(central?.sites).find((s) => s.location_id === locationId);
-  const { inMenu, known } = categoriesInMenu(raw, site?.venue_menu_id || null);
+  const { inMenu, known } = categoriesInMenu(raw, site?.venue_menu_id || null, extraMenusHere(central, locationId, raw).map((x) => x.venueMenuId));
   const items = listOf(raw?.items).filter(Boolean);
   const groupName = new Map(listOf(raw?.groups).map((g) => [g.id, g.name || 'Options']));
   const out = [];
@@ -89,6 +94,12 @@ export function ownProducts(central, locationId, raw) {
 
 // "Looks like Latte in the group menu": the same shared family, else the same normalised name and
 // type, among products not at this site yet (a product has one row per site).
+/** The group menu's other menus that are at this site: [{ id, venueMenuId }] (5.12.116). */
+function extraMenusHere(central, loc, raw) {
+  const menus = new Map(listOf(raw?.menus).filter(Boolean).map((m) => [m.id, m]));
+  return extraMenus(central?.menu).map((m) => ({ id: m.id, venueMenuId: extraMenuAt(m, loc, menus).id })).filter((x) => x.venueMenuId);
+}
+
 function matchFor(central, loc, row) {
   const here = new Set(listOf(central?.productSites).filter((ps) => ps.location_id === loc).map((ps) => ps.product_id));
   const free = listOf(central?.products).filter((p) => p && !p.archived && !p.parent_product_id && !here.has(p.id));
@@ -256,6 +267,17 @@ function bringMachinery(ctx) {
   // In 2 and 3 publish maps it to the site's own category (msmPlan ensureCategory takes it, it does
   // not make a second one), so nothing is written at the site.
   const vCats = new Map(listOf(raw?.categories).filter(Boolean).map((c) => [c.id, c]));
+  // The group menu's menus a site's category is on (null = the main menu only, or no other menus).
+  const menuKeysAtSite = (v) => {
+    const extras = extraMenusHere(C, loc, raw);
+    if (!extras.length) return null;
+    const mainVid = listOf(C.sites).find((x) => x.location_id === loc)?.venue_menu_id || null;
+    const on = (mid) => !!mid && (v.menu_id === mid || listOf(raw?.links).some((l) => l.menu_id === mid && l.category_id === v.id));
+    const keys = [];
+    if (on(mainVid)) keys.push(MAIN_MENU);
+    for (const x of extras) if (on(x.venueMenuId)) keys.push(x.id);
+    return menuKeysValue(keys, C.menu);
+  };
   const catOf = (vcat, depth = 0) => {
     if (!vcat) return null;
     const mapped = listOf(C.catSites).find((cs) => cs.location_id === loc && cs.venue_category_id === vcat)?.category_id || null;
@@ -276,6 +298,12 @@ function bringMachinery(ctx) {
       accounting_group: v.accounting_group ?? '', default_course: v.default_course ?? 1, sort_order: v.sort_order ?? 0,
       image: v.image ?? null, archived: false,
     };
+    // 5.12.116: a top category comes in on the menus the site has it on (its Catering menu, say),
+    // so publish finds the site's own category there and writes nothing.
+    if (!parentId) {
+      const keys = menuKeysAtSite(v);
+      if (keys) after.menu_keys = keys;
+    }
     changes.push({ target: 'category', entity_id: id, location_id: null, op: 'create', after, before: {} });
     C.categories = [...listOf(C.categories), { id, ...after }];
     words.push(`The category "${label}" comes into the group menu with it. ${siteName} keeps its own "${label}": nothing changes there.`);

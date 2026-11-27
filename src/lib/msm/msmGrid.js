@@ -15,6 +15,7 @@
 // (supabase/functions/_shared/msmPrice.js): a site's own channel price, else the group's channel
 // price, else the site's In store price, else the group's In store price.
 
+import { productMenuKeys } from '../../../supabase/functions/_shared/msmMenus.js';
 import { CHANNELS, toPence, fromPence, normName, has, channelFallback, NO_PRICE, noPriceAt, pricedBySizes } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 
@@ -243,6 +244,8 @@ export function buildGridRows(central, opts = {}) {
     const optionOnly = isOptionOnlyItem(p);
     if (show === 'subs' ? !optionOnly : (optionOnly && show !== 'everything' && show !== 'staged' && show !== 'archived')) return false;
     if (inCat && !inCat.has(p.category_id) && !listOf(p.extra_category_ids).some((c) => inCat.has(c))) return false;
+    // 5.12.116: only the products on one of the group's menus (through a category; a size follows its product).
+    if (opts.menuKey && !productMenuKeys(p.parent_product_id ? (ix.products.get(p.parent_product_id) || p) : p, ix.categories, opts.menu).includes(opts.menuKey)) return false;
     if (q) {
       const hay = normName([p.name, p.menu_name, p.receipt_name, p.item_code].filter(Boolean).join(' '));
       if (!hay.includes(q)) return false;

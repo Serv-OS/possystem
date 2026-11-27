@@ -28,6 +28,7 @@ import { WarningIcon } from './KioskIcons';
 import KioskCategoryTile from './KioskCategoryTile';
 import KioskItemCard from './KioskItemCard';
 import KioskOrderBar from './KioskOrderBar';
+import { isSoldAs } from '../../lib/soldAs';
 
 /**
  * The hero banner at the top of the menu (v5.8.77): the venue's Menu screen banner, the same shape
@@ -56,11 +57,15 @@ export default function KioskMenuScreen({
   onBack, onCancel, onOpenAllergens, onOpenItem, onQuickAdd, onOpenBasket, onReview,
 }) {
   const {
-    items, visibleCategories, railCategories, activeMenuId, eightySixIds, dailyCounts,
+    visibleCategories, railCategories, activeMenuId, eightySixIds, dailyCounts,
     orderType, tableNumber, selectedCategoryId, setSelectedCategoryId, allergenFilter,
     cartItemCount, subtotal, categoryPhotos, categoryPhotoOrigin, menuBanner,
   } = engine;
 
+  // 5.12.115 (lib/soldAs.js): a product not sold on the order type the customer picked (eat in or
+  // take away) is not on the kiosk for this order. `allItems` keeps every row for look ups.
+  const allItems = engine.items;
+  const items = useMemo(() => (allItems || []).filter(i => isSoldAs(i, orderType, allItems)), [allItems, orderType]);
   const roots = useMemo(() => kioskRailRoots(visibleCategories, items), [visibleCategories, items]);
   // Only the venue's top level categories decide photo or text tiles, so photos on sub
   // categories never switch the rail to photo tiles with every slot blank.

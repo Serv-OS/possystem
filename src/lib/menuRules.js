@@ -192,7 +192,11 @@ export function subitemNameIndex(items, { soldAloneOnly = false } = {}) {
  * Returns the Set of category ids to leave out. Reads camelCase and snake_case shapes, items in
  * a category through cat or cats. Archived rows and size rows (a parent id) are not counted.
  */
-export function optionOnlyCategoryIds(categories, items) {
+// 5.12.116: opts.hiddenOn names a "Visible on" switch ('pos'). A product with that switch off is
+// not on that screen, so it counts like an option only row: a category whose every product is
+// hidden on the POS (head office's Shows on, or the site's own switch) is left off the POS too,
+// as the kiosk and online already leave it off. No opts: exactly as before.
+export function optionOnlyCategoryIds(categories, items, opts = {}) {
   const cats = (Array.isArray(categories) ? categories : []).filter(Boolean);
   const rows = new Map();   // category id -> { all, sellable }
   const bump = (id, sellable) => {
@@ -204,7 +208,7 @@ export function optionOnlyCategoryIds(categories, items) {
   };
   for (const it of (Array.isArray(items) ? items : [])) {
     if (!it || it.archived || field(it, 'parentId', 'parent_id')) continue;
-    const sellable = !isOptionOnlyItem(it);
+    const sellable = !isOptionOnlyItem(it) && !(opts && opts.hiddenOn && it.visibility && typeof it.visibility === 'object' && it.visibility[opts.hiddenOn] === false);
     const seen = new Set();
     for (const id of [it.cat, ...(Array.isArray(it.cats) ? it.cats : [])]) {
       if (id == null || seen.has(id)) continue;

@@ -1,5 +1,31 @@
 export const CHANGELOG = [
   {
+    v: '5.12.116',
+    date: '26 Nov 2026',
+    items: [
+      'Multi site menu, new: "Shows on". Head office can hide a product, or a whole category, on the POS, the Kiosk, Online or Delivery at every site (Peter, 26 Nov 2026: "the menu built is for instore and online but unlike the POS I dont want certain categories to show at all. The less menus the better"). One menu, no second menu needed.',
+      'Set it on the category row on the Products tab (Shows on: POS, Kiosk, Online, Delivery; one tap does every product in it), or on one product on its sheet. A new product takes the rules the rest of its category has.',
+      'A site cannot turn a place head office hid back on. Its other "Visible on" switches stay its own. A category whose every product is hidden on the POS is left off the POS; the kiosk and online already leave an empty one off.',
+      'Multi site menu, new: more than one menu in the group menu, for a menu that sells different products, like Catering (Peter: "I like the different menus but need to be able to manage centrally in multi site"). Add it on Menu details, Menus.',
+      'One list of products underneath. A category is ticked into the menus it is on (On menus, on its row), and a product is on a menu through its category or an "Also in" category. The grid can list one menu at a time.',
+      'Publishing uses the menu of that name a site already has (Catering at a site that has a Catering menu), or makes one there. It is never made the default menu. A site can be left out of a menu.',
+      'A site with no default menu gets its main menu made the default the first time another menu gets a category there, so a POS, kiosk or online page with no menu picked stays on the main menu.',
+      'Which menu a POS, a kiosk, the online page and catering use is still picked at each site. Needs one database update on Ops first: 20261214a.',
+    ],
+  },
+  {
+    v: '5.12.115',
+    date: '26 Nov 2026',
+    items: [
+      'New: "Sold as". A product can be set as not sold on some order types, like wine that is dine in only (Peter, 26 Nov 2026: "we also need to be able to say if a product can be sold as that order type").',
+      'Set it on the product: Menu Manager, Details, Sold as. In the Multi site menu it is on the product sheet and goes to every site when published. Untick the order types it is not sold on. "Use this for all other products in the category" sets a whole category in one tap.',
+      'POS and phone POS: the product is greyed out on those order types and a tap says "not available for Takeaway". An order cannot be switched to an order type one of its lines is not sold on: it names the lines to take off first.',
+      'Kiosk, online ordering and QR: the product is not shown for those order types and can never be added. A QR order at a table and a bar tab count as dine in. Delivery platforms never get a product not sold for delivery.',
+      'A size follows its product. Nothing changes for any product until a box is unticked.',
+      'At a site in a group menu the boxes are head office\'s: Menu Manager shows them locked. The site\'s own "where it shows" switches are left exactly as they are.',
+    ],
+  },
+  {
     v: '5.12.114',
     date: '26 Nov 2026',
     items: [

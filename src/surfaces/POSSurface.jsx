@@ -30,6 +30,7 @@ import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
+import { isSoldAs, notSoldAsWords, linesNotSoldAs, switchBlockedWords, soldAsKey, SOLD_AS_WORDS } from '../lib/soldAs';
 import CheckoutModal from './CheckoutModal';
 import CustomerModal from '../components/CustomerModal';
 import LinkMemberModal from '../components/LinkMemberModal';
@@ -714,7 +715,7 @@ export default function POSSurface() {
   // was handed MENU_ITEMS, which has ALREADY had the option only sub items taken out (rule 1,
   // above). So it saw a category with nothing in it at all, which it leaves alone, and never hid
   // one on this screen. It must be handed the store's own rows (rawItems), as the bar and phone are.
-  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, rawItems), [menuCategories, rawItems]);
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, rawItems, { hiddenOn: 'pos' }), [menuCategories, rawItems]);
 
   // Find subcategories of the active category
   const subCategories = useMemo(() =>
@@ -768,20 +769,28 @@ export default function POSSurface() {
   const courseNums = Object.keys(byCourse).map(Number).sort();
   const nextToFire = courseNums.find(c=>c>1&&!firedCourses.includes(c)&&(firedCourses.includes(c-1)||firedCourses.includes(1)));
 
+  // 5.12.115 (lib/soldAs.js): an order cannot become an order type one of its lines is not sold
+  // on (wine on a takeaway). The switch is refused with the names, and the caller is told (false).
   const handleTypeChange = (t) => {
+    const stuck = linesNotSoldAs(items, t, rawItems);
+    if (stuck.length) { showToast(switchBlockedWords(stuck, t), 'error'); return false; }
     if (t!=='dine-in') {
       // v5.5.799: quick-service venues — 'Not needed' skips the customer prompt on
       // takeaway/collection entirely; the order carries its short ref like an unnamed walk-in.
       // Drive thru follows takeaway here (16 Sep 2026). 30 Sep 2026: the rule lives in
       // lib/customerDetailsRule.js, the same one the customer form and Send read.
-      if (!promptsOnTypeChange({ orderType: t, mode: takeawayCustomerDetails })) { setOrderType(t); return; }
+      if (!promptsOnTypeChange({ orderType: t, mode: takeawayCustomerDetails })) { setOrderType(t); return true; }
       setPendingOrderType(t); setShowCustomerModal(true);
     }
     else { setOrderType('dine-in'); clearCustomer(); }
+    return true;
   };
 
   const handleItemTap = (item) => {
     if (eightySixIds.includes(item.id)) { showToast(`${item.name} is 86'd`,'error'); return; }
+    // 5.12.115 (Peter, 26 Nov 2026: "grey it out and say not available for X order type when
+    // clicked"): the tile is greyed, and a tap says why. Nothing is added.
+    if (!isSoldAs(item, orderType, rawItems)) { showToast(notSoldAsWords(item, orderType), 'error'); return; }
     // v5.5.311: also block when this item's tracked stock is exhausted, even if
     // it isn't (yet) in eightySixIds. Guards the cross-device oversell window
     // where another terminal sold the last unit (dailyCounts arrives via
@@ -959,7 +968,9 @@ export default function POSSurface() {
     setDetailsFor(null);
     setWalkInOrderDetails(answers);
     if (answers.orderType && answers.orderType !== orderType) {
-      handleTypeChange(answers.orderType);
+      // A line on the order is not sold on that order type: the switch was refused and said so.
+      // Stop here, or the order would be sent or paid on the old order type.
+      if (handleTypeChange(answers.orderType) === false) return;
       if (promptsOnTypeChange({ orderType: answers.orderType, mode: takeawayCustomerDetails })) return;
     }
     const fresh = useStore.getState();
@@ -2201,6 +2212,8 @@ export default function POSSurface() {
 
                   const tileImage = productImage(item, defaultProductImage);
                   const hasImg = showItemImages && tileImage && !is86;
+                  // 5.12.115 (lib/soldAs.js): not sold on this order's order type: greyed, and it says so.
+                  const notForType = !is86 && !isSoldAs(item, orderType, rawItems);
 
                   return(
                     <button key={item.id}
@@ -2211,8 +2224,11 @@ export default function POSSurface() {
                       onTouchStart={handlePressStart}
                       onTouchEnd={handlePressEnd}
                       className={`prod-card${is86?' prod-card--disabled':''}${lastAddedUid===item.id?' add-pulse':''}`}
+                      data-not-sold-as={notForType ? soldAsKey(orderType) : undefined}
+                      aria-disabled={notForType || undefined}
                       style={{
                         minHeight:108,
+                        ...(notForType ? { opacity:.42, filter:'grayscale(.85)' } : {}),
                         ...(hasImg ? {
                           backgroundImage: `url(${tileImage})`,
                           backgroundSize: 'cover',
@@ -2247,6 +2263,11 @@ export default function POSSurface() {
                     )}
                           {hasImg && <span/>}
                           <div style={{display:'flex',gap:3,flexDirection:'column',alignItems:'flex-end'}}>
+                            {notForType&&(
+                              <span data-testid="pos-not-sold-as" style={{fontSize:9,fontWeight:800,padding:'2px 6px',borderRadius:4,background:hasImg?'rgba(0,0,0,.6)':'var(--bg4)',color:hasImg?'#fff':'var(--t2)',border:'none',textAlign:'right'}}>
+                                Not for {SOLD_AS_WORDS[soldAsKey(orderType)] || 'this order'}
+                              </span>
+                            )}
                             {count&&!is86&&(
                               <span style={{fontSize:9,fontWeight:800,padding:'2px 6px',borderRadius:4,
                                 background:hasImg?(isLow?'rgba(232,160,32,.85)':'rgba(34,197,94,.85)'):(isLow?'rgba(232,160,32,.2)':'rgba(34,197,94,.15)'),

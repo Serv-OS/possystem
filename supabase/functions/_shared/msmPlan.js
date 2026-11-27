@@ -71,7 +71,9 @@ import {
   newCategoryId, newMenuId, newGroupId, longCategoryId, longMenuId, longGroupId, newOptionId, longOptionId,
   newItemId, freeId, money2, toPence, KEPT_COLUMNS, pctText, NO_PRICE, keepsNoPrice, pricedBySizes, normName,
 } from './msmModel.js';
+import { MAIN_MENU, MAIN_MENU_WORDS, allExtraMenus, menuKeysOf, extraMenuAt, extraVenueMenuId, longExtraVenueMenuId } from './msmMenus.js';
 import { mapRateDescriptor, effectiveTaxByType, venueProfileIsMirror, TAX_KEY_LABEL } from './msmTax.js';
+import { notSoldAs, withNotSoldAs, sameSoldAs, soldAsSummary, notShownOn, applyNotShownOn, holdsNotShownOn, shownOnSummary } from './soldAs.js';
 
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 const listOf = (v) => (Array.isArray(v) ? v : []);
@@ -370,6 +372,54 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     }
   }
 
+  // ── 2b. The group menu's OTHER menus at this site (5.12.116, _shared/msmMenus.js) ──
+  // Peter, 26 Nov 2026: "each site has multiple menus, they have online, instore ... catering
+  // menus ... I like the different menus but need to be able to manage centrally in multi site".
+  // A group menu with no other menu (every one before this) has an empty list here, and every
+  // line below that reads it does exactly what it did before.
+  const extrasAll = allExtraMenus(C.menu);
+  const extraVenue = new Map();             // extra menu id -> this site's menu id (null = not here)
+  let putOnExtra = false;                   // this plan put a category on one of the other menus
+  // The site's menu an extra menu is. make: publish makes it when the site has none yet.
+  function extraVenueId(m, make) {
+    if (extraVenue.has(m.id) && (extraVenue.get(m.id) || !make)) return extraVenue.get(m.id);
+    const at = extraMenuAt(m, loc, menuById);
+    if (at.off) { extraVenue.set(m.id, null); return null; }
+    if (at.id) { extraVenue.set(m.id, at.id); return at.id; }
+    if (!make || m.archived) return null;
+    const id = freeId(extraVenueMenuId(m.id, loc), longExtraVenueMenuId(m.id, loc), (x) => menuById.has(x));
+    if (!id) { problem('id_taken', 'block', `The id for this site's new "${m.name}" menu is already taken. Nothing was changed.`); extraVenue.set(m.id, null); return null; }
+    // Never the default menu, and last in the site's list: a POS with no menu picked stays where it is.
+    const row = { id, name: m.name, description: '', is_default: false, is_active: true, sort_order: applied.menus.length, scope: 'local', org_id: orgId };
+    W.menus.insert.push(row);
+    const vrow = { ...row, location_id: loc };
+    applied.menus.push(vrow);
+    menuById.set(id, vrow);
+    lines.push({ table: 'menus', id, column: '(new)', before: null, after: row.name, extraMenuId: m.id });
+    extraVenue.set(m.id, id);
+    return id;
+  }
+  // Every menu at this site the group menu manages: the main one and the other menus that are here.
+  const managedMenuIds = () => {
+    const out = new Set([venueMenuId]);
+    for (const m of extrasAll) { const id = extraVenueId(m, false); if (id) out.add(id); }
+    return out;
+  };
+  // The site's menus a group category belongs on, main first: [{ id, name, main }]. A menu the site
+  // does not have yet is made when make is true.
+  function wantedMenus(c, make) {
+    if (!c || c.archived) return [];
+    const keys = menuKeysOf(c, catById, C.menu);
+    const out = [];
+    if (keys.includes(MAIN_MENU)) out.push({ id: venueMenuId, name: null, main: true });
+    for (const m of extrasAll) {
+      if (m.archived || !keys.includes(m.id)) continue;
+      const id = extraVenueId(m, make);
+      if (id) out.push({ id, name: m.name, main: false });
+    }
+    return out;
+  }
+
   // ── Category helpers ──────────────────────────────────────────────────────
   const parentOf = () => new Map(applied.categories.map((c) => [c.id, c.parent_id || null]));
   // The site's own category a group category can take as its own here: the same name (as
@@ -379,7 +429,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const want = normName(c.label);
     if (!want) return null;
     const taken = new Set([...catSite.values()].map((r) => r.venue_category_id).filter(Boolean));
-    const onMenu = (v) => v.menu_id === venueMenuId || applied.links.some((l) => l.menu_id === venueMenuId && l.category_id === v.id);
+    // 5.12.116: with other menus, the site's own category on ANY menu this group category belongs
+    // on (a Catering only category takes the site's own one on its Catering menu).
+    const mine = extrasAll.length ? new Set(wantedMenus(c, false).map((x) => x.id)) : new Set([venueMenuId]);
+    const onMenu = (v) => mine.has(v.menu_id) || applied.links.some((l) => mine.has(l.menu_id) && l.category_id === v.id);
     const fits = applied.categories.filter((v) => v && !taken.has(v.id) && normName(v.label) === want
       && (v.parent_id || null) === (parentVid || null) && onMenu(v));
     fits.sort((a, b) => ((Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)) || String(a.id).localeCompare(String(b.id)));
@@ -414,8 +467,13 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     }
     const id = cs?.venue_category_id || freeId(newCategoryId(cid, loc), longCategoryId(cid, loc), (x) => vCatById.has(x));
     if (!id) { problem('id_taken', 'block', `The id for new category "${c.label}" is already taken at this site.`, { categoryId: cid }); ensuring.delete(cid); return null; }
+    // 5.12.116: its home menu. The main menu as always, unless the group says this category is
+    // only on its other menus: then the first of those (made here if the site has none yet), or no
+    // menu at all when this site has none of them.
+    const homes = extrasAll.length ? wantedMenus(c, true) : [{ id: venueMenuId, name: null, main: true }];
+    const home = homes[0] || null;
     const row = {
-      id, menu_id: venueMenuId, parent_id: parentVid, label: c.label || 'Category', icon: c.icon ?? '🍽',
+      id, menu_id: home ? home.id : null, parent_id: parentVid, label: c.label || 'Category', icon: c.icon ?? '🍽',
       color: c.color ?? '#3b82f6', accounting_group: c.accounting_group ?? '', sort_order: c.sort_order ?? 0,
       default_course: c.default_course ?? 1, image: c.image ?? null, scope: 'local', org_id: orgId,
     };
@@ -423,8 +481,11 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const vrow = { ...row, location_id: loc };
     applied.categories.push(vrow);
     vCatById.set(id, vrow);
-    W.links.insert.push({ menu_id: venueMenuId, category_id: id, sort_order: row.sort_order });
-    applied.links.push({ menu_id: venueMenuId, category_id: id, sort_order: row.sort_order });
+    for (const h of (c.parent_id ? homes.slice(0, 1) : homes)) {
+      W.links.insert.push({ menu_id: h.id, category_id: id, sort_order: row.sort_order });
+      applied.links.push({ menu_id: h.id, category_id: id, sort_order: row.sort_order });
+      if (!h.main) putOnExtra = true;
+    }
     if (!cs) W.maps.categories.push({ category_id: cid, venue_category_id: id });
     catSite.set(cid, { category_id: cid, location_id: loc, venue_category_id: id });
     newCategories.push({ categoryId: cid, venueCategoryId: id, label: row.label, why });
@@ -442,11 +503,12 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   const rowOnMenu = (row) => {
     const cats = [row?.cat, ...listOf(row?.cats)].filter(Boolean);
     if (!cats.length) return true;
-    const linked = new Set(applied.links.filter((l) => l.menu_id === venueMenuId).map((l) => l.category_id));
+    const menusHere = managedMenuIds();     // 5.12.116: the main menu and the group's other menus here
+    const linked = new Set(applied.links.filter((l) => menusHere.has(l.menu_id)).map((l) => l.category_id));
     const on = (id, n = 0) => {
       const c = vCatById.get(id);
       if (!c || n > 20) return false;
-      if (c.menu_id === venueMenuId || linked.has(id)) return true;
+      if (menusHere.has(c.menu_id) || linked.has(id)) return true;
       return c.parent_id ? on(c.parent_id, n + 1) : false;
     };
     return cats.some((id) => on(id));
@@ -461,7 +523,13 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   // Where a product SOLD at a site shows when publish makes or promotes its row: the group menu's
   // value, unless it shows nowhere (a sub item made sold on its own keeps the hidden value it was
   // made with), then everywhere, as the normal menu builder does for a new product.
-  const soldVisibility = (p) => (p.visibility && typeof p.visibility === 'object' && Object.values(p.visibility).some((v) => v === true) ? p.visibility : SHOWN);
+  // 5.12.115: the order types it is not sold on (visibility.notSoldAs, src/lib/soldAs.js) always go
+  // with it, also when the row gets the default switches.
+  // 5.12.116: and where head office hides it (visibility.notShownOn): those switches off, the list kept.
+  const soldVisibility = (p) => {
+    const base = withNotSoldAs(p.visibility && typeof p.visibility === 'object' && Object.values(p.visibility).some((v) => v === true) ? p.visibility : SHOWN, notSoldAs(p));
+    return notShownOn(p).length ? applyNotShownOn(base, notShownOn(p)) : base;
+  };
   const basePrice = (p, ps) => (ps && ps.price != null ? Number(ps.price) : (p.default_price == null ? null : Number(p.default_price)));
   const channelPrice = (p, ps, k) => {
     const own = ps?.channel_prices && ps.channel_prices[k] != null ? ps.channel_prices[k] : null;
@@ -928,7 +996,24 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const col of cols) {
       // Where a product shows (till, kiosk, online, delivery) stays the site's own, as the normal
       // menu builder leaves it (Peter, 17 Oct 2026, UI issue 2). A new row still gets one.
-      if (col === 'visibility' && !promoting) continue;
+      if (col === 'visibility' && !promoting) {
+        // 5.12.115 "Sold as" (src/lib/soldAs.js; Peter, 26 Nov 2026: wine is dine in only). The
+        // switches for WHERE it shows stay the site's, exactly as before. The order types it is
+        // sold on are head office's: that one key is written, beside whatever the site has.
+        if (!sameSoldAs(p, vrow)) {
+          const want = notSoldAs(p);
+          setCol('items', vrow, 'visibility', withNotSoldAs(vrow.visibility ?? null, want) ?? {}, { ...meta, soldAs: soldAsSummary({ visibility: { notSoldAs: want } }) || 'sold on every order type' });
+        }
+        // 5.12.116 "Shows on" (Peter, 26 Nov 2026: "I dont want certain categories to show at all
+        // ... the less menus the better"). Where head office hides a product is the second thing
+        // written here: each switch it names goes off, one it stopped naming comes back on, the
+        // site's other switches stay as they are.
+        const hide = notShownOn(p);
+        if (!holdsNotShownOn(vrow, hide)) {
+          setCol('items', vrow, 'visibility', applyNotShownOn(vrow.visibility ?? null, hide), { ...meta, shownOn: shownOnSummary({ visibility: { notShownOn: hide } }) || 'shown everywhere' });
+        }
+        continue;
+      }
       // 5.12.114 (Peter, 26 Nov 2026, Mozz: "36 changes were made at" each of four sites nobody had
       // touched). A sub item that is only an option is on no menu, so WHERE it sits at a site is
       // never the group menu's to write or to compare. ensureSubItem (above) makes it at a site
@@ -988,6 +1073,65 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (taxKeys.size) planTypeVat(p, ps, vrow, [...taxKeys].filter((k) => ORDER_TYPE_TAX_KEYS.includes(k)), meta, w);
   }
 
+  // ── 4a. Which menus a category is on, when the group menu has more than one (5.12.116) ──
+  // A group category is on a site's menu by its home menu (menu_id) or a link row, exactly as the
+  // POS reads it (lib/menuMembership.js). Among the menus the group menu manages here (its main
+  // one and its other menus), the category goes on the ones the group says and comes off the rest.
+  // A menu the site has on its own is never touched, nor is a link to it.
+  function placeCategory(cid) {
+    const c = catById.get(cid);
+    const vid = venueCatOf(cid);
+    if (!c || !vid) return;
+    const vrow = vCatById.get(vid);
+    const meta = { categoryId: cid };
+    const want = wantedMenus(c, true);
+    const wantIds = new Set(want.map((x) => x.id));
+    const linkedTo = (mid) => applied.links.some((l) => l.menu_id === mid && l.category_id === vid);
+    const mainName = menuById.get(venueMenuId)?.name || MAIN_MENU_WORDS;
+    const nameOfMenu = (mid) => (mid === venueMenuId ? mainName : (extrasAll.find((m) => extraVenue.get(m.id) === mid)?.name || menuById.get(mid)?.name || 'menu'));
+    // Off every managed menu it does not belong on.
+    for (const mid of managedMenuIds()) {
+      if (wantIds.has(mid)) continue;
+      if (vrow.menu_id === mid) setCol('categories', vrow, 'menu_id', want[0] ? want[0].id : null, { ...meta, menuName: want[0] ? nameOfMenu(want[0].id) : nameOfMenu(mid), several: true });
+      if (linkedTo(mid)) {
+        W.links.delete.push({ menu_id: mid, category_id: vid });
+        applied.links = applied.links.filter((l) => !(l.menu_id === mid && l.category_id === vid));
+        lines.push({ table: 'links', id: vid, column: '(off menu)', before: mid, after: null, menuName: nameOfMenu(mid), ...meta });
+      }
+    }
+    // On every menu it belongs on: its home when it has none (or just lost it), else a link.
+    // A sub category needs no link of its own: it is on a menu because its top category is
+    // (lib/menuMembership.js), so only its home is ever moved, above.
+    for (const w of (c.parent_id ? [] : want)) {
+      if (vrow.menu_id === w.id || linkedTo(w.id)) continue;
+      if (!vrow.menu_id) {
+        setCol('categories', vrow, 'menu_id', w.id, { ...meta, menuName: nameOfMenu(w.id), several: true });
+      } else {
+        const link = { menu_id: w.id, category_id: vid, sort_order: c.sort_order ?? 0 };
+        W.links.insert.push(link);
+        applied.links.push({ ...link });
+        lines.push({ table: 'links', id: vid, column: '(on menu)', before: null, after: w.id, menuName: nameOfMenu(w.id), ...meta });
+      }
+      if (!w.main) putOnExtra = true;
+    }
+  }
+  const placed = new Set();
+  if (extrasAll.length) {
+    const toPlace = new Set();
+    const kidsOf = (id) => listOf(C.categories).filter((x) => x && x.parent_id === id).map((x) => x.id);
+    const withKids = (id, n = 0) => { if (toPlace.has(id) || n > 25) return; toPlace.add(id); for (const k of kidsOf(id)) withKids(k, n + 1); };
+    // The list of menus changed (one added, removed, matched to a site's menu, or a site left out):
+    // every category is looked at. Else the ones whose menus, or on and off, the set touched.
+    if (T.menu.has('extra_menus')) for (const c of listOf(C.categories)) toPlace.add(c.id);
+    for (const [cid, t] of T.categories) if (t.op === 'remove' || t.fields.has('menu_keys') || t.fields.has('archived') || t.fields.has('parent_id')) withKids(cid);
+    for (const cid of toPlace) {
+      if (adoptedCategories.some((a) => a.categoryId === cid)) continue;
+      if (newCategories.some((n) => n.categoryId === cid)) continue;      // made by this plan, already placed
+      placeCategory(cid);
+      placed.add(cid);
+    }
+  }
+
   // ── 4. Categories the set touched ─────────────────────────────────────────
   for (const [cid, t] of T.categories) {
     const c = catById.get(cid);
@@ -999,6 +1143,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     // 5.12.102: a category this plan just mapped to the site's own keeps the site's name, place and
     // colour (only a NEW category takes the group's): taking it writes nothing at the site.
     if (adoptedCategories.some((a) => a.categoryId === cid)) continue;
+    // 5.12.116: with several menus, 4a has already put it on and off the right ones.
+    if (placed.has(cid) && (t.op === 'remove' || (t.fields.has('archived') && c.archived))) continue;
     if (t.op === 'remove' || (t.fields.has('archived') && c.archived)) {
       if (vrow.menu_id === venueMenuId) setCol('categories', vrow, 'menu_id', null, meta);
       const had = applied.links.filter((l) => l.menu_id === venueMenuId && l.category_id === vid);
@@ -1013,7 +1159,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     // so its products show on the tills again (design 1.9: removal is reversible).
     // Already on the venue menu by its menu id (18 Oct follow up): nothing to bring back. A link
     // there would only be a second record of the same thing (menuMembership reads either).
-    if (t.fields.has('archived') && !c.archived && vrow.menu_id !== venueMenuId) {
+    if (!placed.has(cid) && t.fields.has('archived') && !c.archived && vrow.menu_id !== venueMenuId) {
       setCol('categories', vrow, 'menu_id', venueMenuId, meta);
       if (!applied.links.some((l) => l.menu_id === venueMenuId && l.category_id === vid)) {
         const link = { menu_id: venueMenuId, category_id: vid, sort_order: c.sort_order ?? 0 };
@@ -1023,7 +1169,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       }
     }
     for (const f of t.fields) {
-      if (f === 'route_like_id' || f === 'archived') continue;
+      if (f === 'route_like_id' || f === 'archived' || f === 'menu_keys') continue;
       if (f === 'parent_id') {
         const pv = c.parent_id ? (venueCatOf(c.parent_id) || ensureCategory(c.parent_id, c.label)) : null;
         if (pv === vid) continue;
@@ -1235,6 +1381,19 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     }
   }
 
+  // ── 8. A site with no default menu, once one of the other menus has a category (5.12.116) ──
+  // A POS, kiosk or online page with no menu picked shows the default menu, else whichever of the
+  // site's always on menus comes first (lib/menus/resolveActiveMenu.js). So the first time this
+  // group menu puts a category on one of its other menus at a site that has NO default menu, its
+  // main menu becomes the default there: nothing a guest or a server sees may switch to Catering.
+  // A site that has a default menu (its own choice) is never touched.
+  if (putOnExtra && !applied.menus.some((m) => m && m.is_active !== false && m.is_default === true)) {
+    const mainRow = menuById.get(venueMenuId);
+    const fresh = W.menus.insert.find((r) => r.id === venueMenuId);
+    if (fresh) { fresh.is_default = true; if (mainRow) mainRow.is_default = true; }
+    else if (mainRow && mainRow.is_active !== false) setCol('menus', mainRow, 'is_default', true, { defaultGuard: true });
+  }
+
   return finish(false);
 
   function finish(noSite) {
@@ -1248,6 +1407,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     return {
       locationId: loc, notAtSite: noSite, writes: W, applied, lines, problems, counts, newCategories, adoptedCategories,
       insertedItemIds: [...insertedItems], writtenItemIds: [...writtenItems], writtenGroupIds: [...writtenGroups], venueMenuId, empty,
+      // 5.12.116: every menu at this site the group menu manages (its main one, its other menus here).
+      menuIds: noSite || !venueMenuId ? [] : [...managedMenuIds()],
       managedItemIds: [...psBy.values()].map((x) => x.venue_item_id).filter(Boolean),
     };
   }
@@ -1342,12 +1503,14 @@ export function lineWords(line, names = {}) {
     const nm = line.parentName ? `${line.parentName}, ${line.after}` : line.after;
     return `${nm}: new here${line.price != null ? ` at ${money2(line.price)}` : ''}`;
   }
-  if (line.column === '(off menu)') return `${names[line.categoryId] || 'A category'}: taken off the menu`;
-  if (line.column === '(on menu)') return `${names[line.categoryId] || 'A category'}: back on the menu`;
+  if (line.column === '(off menu)') return `${names[line.categoryId] || 'A category'}: taken off the ${line.menuName ? `${line.menuName} menu` : 'menu'}`;
+  if (line.column === '(on menu)') return `${names[line.categoryId] || 'A category'}: ${line.menuName ? `now on the ${line.menuName} menu` : 'back on the menu'}`;
+  if (line.table === 'menus' && line.column === 'is_default') return `${names[line.id] || 'The main menu'}: now this site's default menu, so a POS with no menu picked stays on it`;
   if (line.table === 'categories') {
     const c = `Category ${names[line.categoryId] || names[line.id] || ''}`.trim();
     if (line.column === 'label') return `Category ${line.before || names[line.categoryId] || ''}: renamed to ${quoteText(line.after)}`;
     if (line.column === 'parent_id') return line.after ? `${c}: now under ${names[line.after] || 'another category'}` : `${c}: now a top level category`;
+    if (line.column === 'menu_id' && line.several) return `${c}: ${line.after ? `now on the ${line.menuName || 'other'} menu` : `taken off the ${line.menuName || ''} menu`.replace('  ', ' ')}`;
     if (line.column === 'menu_id') return `${c}: ${line.after ? 'back on the menu' : 'taken off the menu'}`;
     if (line.column === 'sort_order') return `${c}: moves in the menu`;
     const w = { color: 'colour', icon: 'icon', image: 'photo', accounting_group: 'accounting group', default_course: 'course' }[line.column];
@@ -1395,6 +1558,8 @@ export function lineWords(line, names = {}) {
   if (col === 'sold_alone') return `${who}: ${line.after ? 'now also sold on its own' : 'now only used as an option'}`;
   if (col === 'allergens') return `${who}: allergens change`;
   if (col === 'tags') return `${who}: dietary tags change`;
+  if (col === 'visibility' && line.shownOn) return `${who}: ${line.shownOn === 'shown everywhere' ? 'no longer hidden by head office' : `now ${line.shownOn.charAt(0).toLowerCase()}${line.shownOn.slice(1)}`}`;
+  if (col === 'visibility' && line.soldAs) return `${who}: ${line.soldAs === 'sold on every order type' ? 'now sold on every order type' : `now ${line.soldAs.charAt(0).toLowerCase()}${line.soldAs.slice(1)}`}`;
   if (col === 'visibility') return `${who}: where it shows changes`;
   if (col === 'assigned_modifier_groups') {
     const b = groupIdsOf(line.before), a = groupIdsOf(line.after);
