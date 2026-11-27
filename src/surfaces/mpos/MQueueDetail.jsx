@@ -10,6 +10,8 @@ import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
 import { Icon } from '../../components/ServOSIcons';
 import { orderPaymentState, paymentStatusLabel, paymentShortLine } from '../../lib/orderPayment';
+// 5.12.123: a Combo reads as its own line with its picks under it, never a 0.00 pick (lib/combo.js).
+import { displayOrder, lineShow } from '../../lib/combo.js';
 
 const FLOW = ['received', 'prep', 'ready', 'collected'];
 
@@ -123,14 +125,15 @@ export default function MQueueDetail({ order, onBack }) {
           <div style={{ fontSize:11, fontWeight:800, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>
             {items.length} item{items.length === 1 ? '' : 's'}
           </div>
-          {items.map((it, i) => {
+          {displayOrder(items).map((it, i) => {
             const lineTotal = (Number(it.price) || 0) * (Number(it.qty) || 0);
+            const show = lineShow(it, lineTotal);
             // v5.5.965: one list in LINE order (instructions accent-coloured in place)
             const lineOptions = (it.mods || [])
               .map(m => ({ label: (m?._instruction ? (m?.label || m?.name) : (m?.name || m?.label)) || (typeof m === 'string' ? m : null), inst: !!m?._instruction }))
               .filter(o => o.label);
             return (
-              <div key={i} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)', marginBottom:6, display:'flex', gap:10 }}>
+              <div key={it.uid || i} data-combo-pick={show.pick ? '1' : undefined} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:11, border:'1px solid var(--bdr)', marginBottom:6, marginLeft: show.pick ? 18 : 0, display:'flex', gap:10 }}>
                 <div style={{ fontSize:12, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:24, paddingTop:1 }}>
                   {it.qty}×
                 </div>
@@ -148,7 +151,7 @@ export default function MQueueDetail({ order, onBack }) {
                   )}
                 </div>
                 <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
-                  {money(lineTotal)}
+                  {show.showAmount ? money(lineTotal) : ''}
                 </div>
               </div>
             );

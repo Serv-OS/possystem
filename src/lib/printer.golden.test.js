@@ -79,6 +79,54 @@ test('customer receipts are byte identical (UK VAT, US exclusive tax, delivery c
   });
 });
 
+// 5.12.123 Combos (Peter, 27 Nov 2026: "this all needs to link correctly ... through the entire
+// system"). Scenario A, Build Your Own Package at 149.00: the Combo prints with its set price, the
+// picks sit under it, set in, and a pick prints an amount only when it adds one (an extra, or its
+// own price in a step that keeps prices). Never a 0.00 line. The bytes are pinned like the others.
+test('a Combo receipt: the Combo and its price, its picks under it, an amount only where a pick adds one', () => {
+  withFrozenClock(() => {
+    const doc = buildCustomerReceiptDoc(INPUTS.receipt_combo, { cols: 42 });
+    assert.equal(encode(doc), GOLDEN.receipt_combo);
+    const text = latin(encodeEscPos(doc, ESCPOS_80));
+    const row = (l, r = '') => l + ' '.repeat(42 - l.length - r.length) + r;
+    for (const want of [
+      row('Build Your Own Package', '$149.00'),
+      row('  Margherita', '$1.50'), '    Extra cheese\n',
+      row('  Margherita'),                               // the second one adds nothing: no amount
+      row('  2x Pepperoni'),                             // two the same inside ONE Combo print once
+      row('  BBQ Chicken'),                              // its receipt name, as any line
+      row('  Garlic bread'), row('  Cheese bread'),
+      row('  Caesar Salad Catering Size', '$8.00'), '    Chicken\n', '    Note: Dressing on the side\n',
+      row('  Soda Six Pack', '$20.00'),                  // a step that keeps prices: its own price
+      row('Pepperoni', '$15.00'),                        // sold on its own: never merged into the Combo
+    ]) assert.ok(text.includes(want), `the Combo receipt should print: ${JSON.stringify(want)}`);
+    assert.ok(!text.includes('$0.00'), 'no 0.00 line under a Combo');
+    // In order: the Combo, then its picks, then the line that is not part of it.
+    const at = (s2) => text.indexOf(s2);
+    assert.ok(at('Build Your Own Package') < at('  Margherita') && at('  Soda Six Pack') < at(row('Pepperoni', '$15.00')));
+    // What the receipt prints for the Combo adds up to what it was sold for: 149 + 1.50 + 8 + 20.
+    const amounts = [...text.slice(at('ITEMS'), at('Subtotal')).matchAll(/\$(\d+\.\d\d)/g)].map((m) => Number(m[1]));
+    assert.deepEqual(amounts, [149, 1.5, 8, 20, 15]);
+    assert.equal(amounts.reduce((a2, n) => a2 + n, 0), INPUTS.receipt_combo.totals.subtotal);
+  });
+});
+
+test('a Combo in the kitchen: its picks print as ordinary items, its own line never prints', () => {
+  withFrozenClock(() => {
+    const items = [
+      { name: 'Build Your Own Package', qty: 1, course: 0, noKitchen: true, comboId: 'c1', comboRole: 'parent' },
+      { name: 'Margherita', kitchenName: 'MARG', qty: 1, course: 1, fired: true, mods: ['Extra cheese'], comboId: 'c1', comboRole: 'pick' },
+      { name: 'Pepperoni', kitchenName: 'PEPPERONI', qty: 1, course: 1, fired: true, comboId: 'c1', comboRole: 'pick' },
+    ];
+    const text = latin(encodeEscPos(buildKitchenTicketDoc({ ...INPUTS.kitchen, items }, { cols: 42 }), ESCPOS_80));
+    assert.ok(text.includes('MARG') && text.includes('Extra cheese') && text.includes('PEPPERONI'));
+    assert.ok(!text.includes('Build Your Own'), 'the Combo line is on no kitchen docket');
+    // And the picks print exactly as the same two products rung up on their own would.
+    const plain = items.slice(1).map((i) => { const c = { ...i }; delete c.comboId; delete c.comboRole; return c; });
+    assert.equal(text, latin(encodeEscPos(buildKitchenTicketDoc({ ...INPUTS.kitchen, items: plain }, { cols: 42 }), ESCPOS_80)));
+  });
+});
+
 test('merchant tip slip is byte identical', () => {
   withFrozenClock(() => {
     assert.equal(encode(buildMerchantTipSlipDoc(INPUTS.tip_slip, { cols: 42 })), usDated(GOLDEN.tip_slip));

@@ -121,6 +121,16 @@ const TOOL = {
   },
 };
 
+// 5.12.123: a product of type 'combo' whose `combo` field holds at least one step. The same reading
+// as src/lib/combo.js comboHasSteps (comboSurfaces.test.js keeps the two in step); this route is
+// deployed on its own and imports nothing from src.
+export function comboWithSteps(m) {
+  if (!m || m.type !== 'combo') return false;
+  const v = m.combo;
+  const steps = Array.isArray(v) ? v : (v && typeof v === 'object' && Array.isArray(v.steps) ? v.steps : []);
+  return steps.some((s) => !!s && typeof s === 'object' && !Array.isArray(s));
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -147,6 +157,10 @@ export default async function handler(req, res) {
   const sellable = menu.filter(m => {
     const t = m.type || 'simple';
     if (t === 'variants') return false;          // never sell the parent
+    // 5.12.123: a Combo built from steps is rung up on the POS menu, where its steps are asked. It
+    // is never offered to the parser (src/lib/combo.js comboPosOnly; the phone POS would refuse
+    // to add it anyway). A Combo with no steps is an ordinary product and stays.
+    if (comboWithSteps(m)) return false;
     if (m.parentId && !ids.has(m.parentId)) {
       // orphaned variant — keep, defensive
       return true;

@@ -155,6 +155,11 @@ export const mapMenuItemRow = (item) => {
     // item_code is CONDITIONAL: before 20260917_OPS_menu_item_code.sql the column is not in
     // the row, and the item must then carry no field (the write leaves the column alone).
     ...(item.item_code !== undefined ? { itemCode: item.item_code ?? null } : {}),
+    // 5.12.123: a Combo's steps (menu_items.combo, lib/combo.js). One spelling in the database and
+    // in the store, so the spread above already carries it. CONDITIONAL like item_code: before
+    // 20261215a_OPS_menu_item_combo_steps.sql the column is not in the row, and the item must then
+    // carry no field (a save leaves the column alone, and the Steps tab says the update is needed).
+    ...(item.combo !== undefined ? { combo: item.combo ?? null } : {}),
     scope:        item.scope         ?? 'local',
     orgId:        item.org_id        ?? item.orgId        ?? null,
     masterId:     item.master_id     ?? item.masterId     ?? null,

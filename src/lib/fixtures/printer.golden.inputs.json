@@ -55,5 +55,23 @@
   },
   "fire_course": { "table": "T7", "courseNum": 2, "centreName": "Main Kitchen", "sentAt": 1789570351722 },
   "transfer": { "fromTable": "T7", "toTable": "T12", "centreName": "Main Kitchen", "server": "Jane", "sentAt": 1789570351722,
-    "items": [ { "name": "Fish & Chips", "qty": 2, "mods": ["Mushy peas", { "label": "No salt" }] }, { "name": "Lager", "qty": 1 } ] }
+    "items": [ { "name": "Fish & Chips", "qty": 2, "mods": ["Mushy peas", { "label": "No salt" }] }, { "name": "Lager", "qty": 1 } ] },
+  "receipt_combo": {
+    "location": {"id": "loc-sandy", "name": "Mozz Pizza Sandy", "address": "9400 S 700 E, Sandy UT", "currency": "USD"},
+    "check": {"ref": "R77", "server": "Jane", "covers": 1, "tableLabel": "Collection", "method": "card"},
+    "items": [
+      {"uid": "cl-0", "name": "Build Your Own Package", "price": 149, "qty": 1, "comboId": "cmb-golden1", "comboRole": "parent", "noKitchen": true, "mods": []},
+      {"qty": 1, "price": 1.5, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [{"label": "Extra cheese", "price": 1.5}], "uid": "cl-1", "name": "Margherita", "comboStepName": "Pick 5 pizzas"},
+      {"qty": 1, "price": 0, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [], "uid": "cl-2", "name": "Margherita", "comboStepName": "Pick 5 pizzas"},
+      {"qty": 1, "price": 0, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [], "uid": "cl-3", "name": "Pepperoni", "comboStepName": "Pick 5 pizzas"},
+      {"qty": 1, "price": 0, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [], "uid": "cl-4", "name": "Pepperoni", "comboStepName": "Pick 5 pizzas"},
+      {"qty": 1, "price": 0, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [], "uid": "cl-5", "name": "BBQ chicken pizza", "receiptName": "BBQ Chicken", "comboStepName": "Pick 5 pizzas"},
+      {"qty": 1, "price": 0, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [], "uid": "cl-6", "name": "Garlic bread", "comboStepName": "Pick 2 breads"},
+      {"qty": 1, "price": 0, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [], "uid": "cl-7", "name": "Cheese bread", "comboStepName": "Pick 2 breads"},
+      {"qty": 1, "price": 8, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [{"label": "Chicken", "price": 8}], "uid": "cl-8", "name": "Caesar Salad Catering Size", "comboStepName": "Pick your sides", "notes": "Dressing on the side"},
+      {"qty": 1, "price": 20, "comboId": "cmb-golden1", "comboRole": "pick", "comboName": "Build Your Own Package", "mods": [], "uid": "cl-9", "name": "Soda Six Pack", "comboStepName": "Add drinks?", "comboKeepsPrice": true},
+      {"uid": "i-10", "name": "Pepperoni", "price": 15, "qty": 1, "mods": []}
+    ],
+    "totals": {"subtotal": 193.5, "service": 0, "tip": 0, "grand": 209.85, "taxBreakdown": {"hasExclusiveTax": true, "subtotal": 193.5, "breakdown": [{"name": "Prepared food", "rate": 0.0845, "tax": 16.35}], "taxV2": {"source": "profiles", "lines": [{"lineId": "p1", "name": "Prepared food", "rate": 0.0845, "mode": "exclusive", "amount": 16.35}]}}}
+  }
 }

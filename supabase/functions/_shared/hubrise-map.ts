@@ -92,6 +92,16 @@ function hubriseAllergen(raw: string): string[] {
   return MAP[k] ?? [];
 }
 
+// 5.12.123: a product of type 'combo' whose `combo` column holds at least one step (the object
+// { v, steps: [...] }, or a bare list of steps). The same reading as src/lib/combo.js comboHasSteps,
+// which this function cannot import (an Edge Function bundles only supabase/functions).
+export function comboWithSteps(it: any): boolean {
+  if (!it || it.type !== 'combo') return false;
+  const v = it.combo;
+  const steps = Array.isArray(v) ? v : (v && typeof v === 'object' && Array.isArray(v.steps) ? v.steps : []);
+  return steps.some((s: any) => !!s && typeof s === 'object' && !Array.isArray(s));
+}
+
 export function buildCatalog(opts: {
   categories: any[];
   items: any[];
@@ -146,6 +156,10 @@ export function buildCatalog(opts: {
     // 5.12.115 "Sold as" (src/lib/soldAs.js): a product not sold for delivery never goes to a
     // delivery platform. The list sits beside the Visible on switches (visibility.notSoldAs).
     !(Array.isArray(it.visibility?.notSoldAs) && it.visibility.notSoldAs.includes('delivery')) &&
+    // 5.12.123 Combos (src/lib/combo.js comboPosOnly; comboSurfaces.test.js keeps the two in step):
+    // a Combo built from steps is rung up on the POS only for now. A delivery platform cannot ask
+    // its steps, so it never goes into the catalogue. A Combo with no steps publishes as before.
+    !comboWithSteps(it) &&
     (!publishIds || publishIds.has(String(it.id)));
 
   const childrenOf = (parentId: string) =>

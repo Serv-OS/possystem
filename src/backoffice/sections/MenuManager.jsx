@@ -52,6 +52,8 @@ import { getLocationConfig } from '../../lib/locationTime';
 import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuOnePrice from './MenuOnePrice';
 import MenuNameBox from './MenuNameBox';
+import ComboStepsTab from './ComboStepsTab';   // 5.12.123: the Steps tab of a Combo product
+import { comboHasSteps, comboSteps, COMBO_WORDS } from '../../lib/combo.js';
 import MenuItemFactsPanel from './stock/MenuItemFactsPanel';   // v5.11.93 (multi site stock Drop 2): 'From the recipe at this site'
 import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
@@ -2763,7 +2765,7 @@ function SoldAloneNote({ item, style }) {
 }
 
 function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose, is86, onToggle86, menuItems, addMenuItem, updateMenuItem, markBOChange, showToast }) {
-  const { modifierGroupDefs, instructionGroupDefs } = useStore();
+  const { modifierGroupDefs, instructionGroupDefs, eightySixIds } = useStore();
   // Multi site menu (design 3.2): fields head office owns are read only here (the store refuses
   // them too); a field this site keeps as its own stays editable. null = not managed.
   const msmLock  = itemLock(useMsmLockState(), item.id);
@@ -2775,7 +2777,10 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const rootCats = allCategories.filter(c => !c.parentId);
   const subCats  = allCategories.filter(c =>  c.parentId);
 
-  const [sec, setSec]             = useState('details');  // always open on Details (was 'flow' for products)
+  const [secPicked, setSec]       = useState('details');  // always open on Details (was 'flow' for products)
+  // 5.12.123: the Steps tab exists only while the product is a Combo. Changing its type away shows
+  // Details again (the steps stay saved, and do nothing until it is a Combo again).
+  const sec = (secPicked === 'steps' && item.type !== 'combo') ? 'details' : secPicked;
   // 5.12.57: the allergen tick boxes and their heading follow the venue's country (FDA 9 at a US venue).
   const allergenOpts = allergenOptionsFor();
   const allergenWordsNow = foodLawWords();
@@ -2930,11 +2935,19 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     (instSearch==='' || (g.name||'').toLowerCase().includes(instSearch.toLowerCase()))
   );
 
+  // 5.12.123 (Combo products, lib/combo.js): a product of type Combo has a Steps tab. Once it HAS
+  // steps, its own Flow, Sizes and Modifiers tabs are not offered: the Combo's line never reaches
+  // the kitchen, so an option on the Combo itself would go nowhere (each product in a step asks its
+  // own), and a Combo with steps has one set price. A Combo with no steps keeps every tab, as today.
+  const isCombo = item.type === 'combo';
+  const hasSteps = comboHasSteps(item);
+  const stepCount = comboSteps(item).length;
   const SECS = [
     { id:'details',   label:'Details' },
-    !isSub && { id:'flow', label:`Flow${isParent?` · sizes`:''}${assignedMods.length>0?` · ${assignedMods.length} mods`:''}` },
-    !isSub && { id:'variants',  label:`Sizes${isParent?` (${variants.length})`:''}` },
-    !isSub && { id:'modifiers', label:`Modifiers${assignedMods.length>0?` (${assignedMods.length})`:''}` },
+    isCombo && { id:'steps', label:`Steps${stepCount ? ` (${stepCount})` : ''}` },
+    !isSub && !hasSteps && { id:'flow', label:`Flow${isParent?` · sizes`:''}${assignedMods.length>0?` · ${assignedMods.length} mods`:''}` },
+    !isSub && !hasSteps && { id:'variants',  label:`Sizes${isParent?` (${variants.length})`:''}` },
+    !isSub && !hasSteps && { id:'modifiers', label:`Modifiers${assignedMods.length>0?` (${assignedMods.length})`:''}` },
     { id:'pricing',   label:'Pricing' },
     { id:'tax',       label:`Tax${item.taxRateId ? ' ✓' : ''}` },
     { id:'allergens', label:`Allergens & dietary${((item.allergens||[]).length + (item.tags||[]).length)>0?` (${(item.allergens||[]).length + (item.tags||[]).length})`:''}` },
@@ -3203,6 +3216,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       // - shared↔global rescopes all sibling rows
                       // - shared/global→local just clears flags on this row
                       const prev = item.scope || 'local';
+                      // 5.12.123: a Combo with steps stays at this site for now (db.js setMenuItemScope
+                      // refuses it too): say so before anything is written.
+                      if (s.id !== 'local' && comboHasSteps(item)) { showToast(COMBO_WORDS.share, 'error'); return; }
                       // Optimistic UI update first
                       onUpdate({ scope: s.id });
                       try {
@@ -3308,8 +3324,23 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
           </div>
         )}
 
+        {/* ════ STEPS — a Combo's steps (5.12.123, its own file: ComboStepsTab.jsx) ════ */}
+        {sec==='steps' && isCombo && (
+          <ComboStepsTab
+            item={item}
+            menuItems={menuItems}
+            categories={allCategories}
+            onUpdate={onUpdate}
+            markBOChange={markBOChange}
+            managed={!!msmLock}
+            // Before 20261215a has run no row carries the column, and nothing can be saved to it.
+            columnReady={isMock || (menuItems || []).some(i => i && 'combo' in i)}
+            eightySixIds={eightySixIds || []}
+          />
+        )}
+
         {/* ════ FLOW — complete customer journey in order ══════════════════ */}
-        {sec==='flow' && !isSub && (
+        {sec==='flow' && !isSub && !hasSteps && (
           <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
 
             {/* Intro */}
@@ -3475,7 +3506,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
         )}
 
         {/* ════ SIZES / VARIANTS ══════════════════════════════════════════ */}
-        {sec==='variants' && !isSub && (
+        {sec==='variants' && !isSub && !hasSteps && (
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
 
             {/* Variant label */}
@@ -3547,7 +3578,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
         )}
 
         {/* ════ MODIFIERS ═════════════════════════════════════════════════ */}
-        {sec==='modifiers' && !isSub && (
+        {sec==='modifiers' && !isSub && !hasSteps && (
           <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
             {lockOn('assigned_modifier_groups') && (
               <div role="note" style={{ padding:'8px 10px', borderRadius:8, background:'var(--blu-d, var(--bg3))', fontSize:11, color:'var(--t2)', lineHeight:1.5 }}>

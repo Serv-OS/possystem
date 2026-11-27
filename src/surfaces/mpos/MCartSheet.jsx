@@ -18,6 +18,9 @@ import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
 import MOrderActions from './MOrderActions';
 import { Icon } from '../../components/ServOSIcons';
+// 5.12.123 Combos: a Combo rung up on the main POS can be opened here. Its lines say what they are,
+// a pick shows no 0.00, and the quantity buttons are left off (a Combo is rung up one at a time).
+import { lineShow, isComboLine, displayOrder } from '../../lib/combo.js';
 
 // 19 Oct 2026 (v5.11.78, channel parity): the cart shows, prints and MTender charges ONE bill, the
 // till's own (store.getPOSTotals, payments/checkTotals.computeCheckTotals): item discounts of
@@ -324,6 +327,8 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
   const lineOptions = (item.mods || [])
     .map(m => ({ label: (m?._instruction ? (m?.label || m?.name) : (m?.name || m?.label)) || (typeof m === 'string' ? m : null), inst: !!m?._instruction }))
     .filter(o => o.label);
+  const show = lineShow(item, lineTotal);
+  const inCombo = isComboLine(item);
   return (
     <div onClick={onActions} style={{
       padding:'12px 14px', background:'var(--bg2)', borderRadius:12,
@@ -335,6 +340,8 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:2 }}>
             <span style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>{item.name}</span>
+            {show.parent && <span data-testid="m-combo-pill" style={{ ...Sx.pill, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>Combo</span>}
+            {show.pick && <span data-testid="m-combo-pick-pill" style={{ ...Sx.pill, background:'var(--bg3)', color:'var(--t3)', border:'1px solid var(--bdr)' }}>in {item.comboName || 'a Combo'}</span>}
             {sent && <span style={{ ...Sx.pill, background:'var(--bg3)', color:'var(--t4)', border:'1px solid var(--bdr)' }}>Sent</span>}
             {!hideCourses && item.course != null && item.course > 0 && (
               <span style={{ ...Sx.pill, background:'var(--acc-d)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>C{item.course}</span>
@@ -358,7 +365,7 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
             </div>
           )}
         </div>
-        <div style={{ textAlign:'right', flexShrink:0 }}>
+        {show.showAmount && <div style={{ textAlign:'right', flexShrink:0 }}>
           {item.discount ? (
             <>
               <div style={{ fontSize:14, fontWeight:800, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{money(lineTotal)}</div>
@@ -370,12 +377,15 @@ function CartLine({ item, onRemove, onInc, onDec, onActions }) {
               <div style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{money(item.price)} ea</div>
             </>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* Qty stepper / remove — only on pending items. Buttons stop propagation
           so tapping +/− doesn't also open the actions sheet. */}
-      {!sent && (
+      {!sent && inCombo && (
+        <div style={{ fontSize:11, color:'var(--t4)', textAlign:'center' }}>A Combo is rung up as one. Tap row for ⋯</div>
+      )}
+      {!sent && !inCombo && (
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <button onClick={(e) => { e.stopPropagation(); onDec(); }} style={{ ...Sx.iconBtn, width:34, height:34, fontSize:16 }}>−</button>
           <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', minWidth:24, textAlign:'center', fontFamily:'var(--font-mono)' }}>{item.qty}</div>
@@ -400,8 +410,11 @@ function CourseGroupedItems({ items, onRemove, onInc, onDec, onActions }) {
   // v5.5.961: profile can hide course management — collapse to one flat group, no headers
   const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
   // Bucket by course
-  const byCourse = hideCourses ? { 0: items } : items.reduce((acc, it) => {
-    const c = it.course ?? 1;
+  // 5.12.123: a Combo stays together, its own line then its picks, in the first section (as the
+  // checkout bill keeps it): its picks are never spread over courses, and no course of included
+  // picks shows a 0.00 header of its own.
+  const byCourse = hideCourses ? { 0: displayOrder(items) } : displayOrder(items).reduce((acc, it) => {
+    const c = isComboLine(it) ? 0 : (it.course ?? 1);
     (acc[c] = acc[c] || []).push(it);
     return acc;
   }, {});

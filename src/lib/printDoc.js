@@ -17,6 +17,7 @@ import { money, getActiveCurrencyCode } from './currency.js';
 import { localeDateString, localeTimeString, localeString } from '../../supabase/functions/_shared/venueDates.js';
 import { v2ReceiptLines, taxLineLabel, breakdownLabel } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
+import { lineShow } from './combo.js';
 import { cardReceiptLines } from './cardReceipt.js';
 import { receiptRewardLines } from './loyaltyMultiRedeem.js';
 import { isTaxExemptLine } from './giftCardLine.js';
@@ -162,18 +163,22 @@ export function buildCustomerReceiptDoc({ location, check, items, totals }, { co
   b.divider().bold(true).line('ITEMS').bold(false);
 
   consolidateReceiptLines(items).forEach(item=>{
-    const linePrice=mny(item.price*item.qty);
+    // 5.12.123 Combos: a product picked inside a Combo prints under the Combo's line, set in, and
+    // with an amount only when it adds one (lib/combo.js lineShow). The Combo's own line carries
+    // the set price. Every other line prints exactly as before (the goldens pin that).
+    const show=lineShow(item);
+    const linePrice=show.showAmount?mny(item.price*item.qty):'';
     // Triple-naming: receipts print the item's explicit receipt name when the
     // line carries one (snapshotted at add time), else the POS line name.
     const printName=item.receiptName||item.name;
-    const nameStr=item.qty>1?`${item.qty}x ${printName}`:printName;
+    const nameStr=show.lead+(item.qty>1?`${item.qty}x ${printName}`:printName);
     b.twoColTrunc(nameStr, linePrice);
     // 29 Oct 2026 (v5.11.118): a gift card sold at the till prints as an ordinary line with a note
     // that no VAT is inside it (the 'of which VAT' lines below never include it: taxCompute).
     if (isTaxExemptLine(item)) b.fontB().line('  No VAT').fontA();
     const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
-    modLines.forEach(m => b.fontB().line(`  ${typeof m === 'string' ? m : (m.label||'')}`).fontA());
-    if(item.notes) b.fontB().line(`  Note: ${item.notes}`).fontA();
+    modLines.forEach(m => b.fontB().line(`${show.lead}  ${typeof m === 'string' ? m : (m.label||'')}`).fontA());
+    if(item.notes) b.fontB().line(`${show.lead}  Note: ${item.notes}`).fontA();
   });
 
   b.divider();

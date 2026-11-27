@@ -97,6 +97,18 @@ function itemsInMenu(raw, inMenu) {
 
 const rateOf = (raw, id) => listOf(raw.taxRates).find((r) => r.id === id) || null;
 
+// 5.12.123 Combos: a product of type 'combo' whose `combo` column holds at least one step (the
+// object { v, steps: [...] }, or a bare list of steps). The same reading as src/lib/combo.js
+// comboHasSteps (comboSurfaces.test.js keeps the two in step); this file is bundled into an Edge
+// Function, which cannot import from src. The group menu cannot hold a Combo's steps yet, so such a
+// Combo is never brought in: it stays its site's own product, exactly as it is.
+export function comboWithSteps(row) {
+  if (!row || row.type !== 'combo') return false;
+  const v = row.combo;
+  const steps = Array.isArray(v) ? v : (v && typeof v === 'object' && Array.isArray(v.steps) ? v.steps : []);
+  return steps.some((st) => !!st && typeof st === 'object' && !Array.isArray(st));
+}
+
 // ── Option groups (round 2) ─────────────────────────────────────────────────
 
 // The most common value of `vals` (by key), a tie taken by `prefer`.
@@ -344,10 +356,17 @@ export function proposeImport(sites, opts = {}) {
   // ── The rows in scope ──
   const all = [];                          // { loc, row }
   const rowAt = new Map();                 // `loc|id` -> { loc, row }
+  const combosKept = [];                   // 5.12.123: Combos built from steps, left at their site
   for (const s of S) {
     const keep = keepBySite.get(s.location_id);
     for (const row of listOf(s.raw.items)) {
       if (!row || !keep.has(row.id) || String(row.id).startsWith('demo-')) continue;
+      // A Combo built from steps is left out (comboWithSteps above): it stays the site's own, not
+      // managed, and the review says so in one line. The ones on sale are named.
+      if (comboWithSteps(row)) {
+        if (row.archived !== true) combosKept.push({ location_id: s.location_id, id: row.id, name: String(row.menu_name || row.name || '').trim() });
+        continue;
+      }
       const x = { loc: s.location_id, row };
       all.push(x);
       rowAt.set(keyOf(s.location_id, row.id), x);
@@ -643,6 +662,7 @@ export function proposeImport(sites, opts = {}) {
   const bySite = {};
   for (const x of offProducts) bySite[x.loc] = (bySite[x.loc] || 0) + 1;
   review.switchedOff = { count: offProducts.length, sizeCopies: switchedOff.length - offProducts.length, bySite };
+  if (combosKept.length) review.combosKept = combosKept;   // absent when there are none: every other review is unchanged
 
   return {
     masterSite, sites: S.map((s) => ({ location_id: s.location_id, venue_menu_id: s.venue_menu_id, name: s.name })),

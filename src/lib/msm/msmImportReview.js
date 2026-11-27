@@ -275,6 +275,21 @@ export function switchedOffWords(review) {
     : `${n} deleted or switched off products at your sites stay as they are, not in the group menu.`;
 }
 
+/**
+ * 5.12.123: "1 Combo with steps stays at its site for now, not in the group menu (Build Your Own
+ * Package)." The first import leaves a Combo built from steps where it is (msmImport.js
+ * comboWithSteps): the group menu cannot hold its steps yet. '' when there are none.
+ */
+export function combosKeptWords(review) {
+  const list = Array.isArray(review?.combosKept) ? review.combosKept : [];
+  if (!list.length) return '';
+  const names = [...new Set(list.map((c) => c?.name).filter(Boolean))];
+  const like = names.length ? ` (${names.slice(0, 3).join(', ')}${names.length > 3 ? ' and more' : ''})` : '';
+  return list.length === 1
+    ? `1 Combo with steps stays at its site for now, not in the group menu${like}.`
+    : `${list.length} Combos with steps stay at their sites for now, not in the group menu${like}.`;
+}
+
 // Every product under one of `ids` in `products` (its sizes, and theirs), closed.
 function closeOver(products, ids) {
   const out = new Set(ids);

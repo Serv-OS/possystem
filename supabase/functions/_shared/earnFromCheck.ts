@@ -47,6 +47,11 @@ export type MenuCatRow = { id: string; cat?: string | null; cats?: string[] | nu
 export type EarnItem = {
   id: string | null; name: string; qty: number; price: number; cat: string | null;
   isComp: boolean; staffDiscount: boolean; isGiftCard: boolean;
+  // 5.12.123 Combos: a product picked inside a Combo (the line carries comboId + comboRole
+  // 'pick', src/lib/combo.js). It earns no STAMP of its own: the Combo's own line is the product
+  // that was sold, and it stamps as any product does. What the pick adds to the bill (an extra,
+  // its own price where a step keeps prices) still counts towards points, as money always does.
+  noStamp?: boolean;
 };
 
 /** The ids of the menu items (and their parents) this check needs categories for. */
@@ -83,6 +88,7 @@ export function earnItemsFromCheck(check: CheckRow | null, menu: MenuCatRow[] = 
       isComp: !!(i.isComp || i.comp),
       staffDiscount: !!(i.isStaffDiscount || i.staffDiscount),
       isGiftCard: !!i.isGiftCard,
+      ...(i.comboId && i.comboRole === 'pick' ? { noStamp: true } : {}),
     });
   }
   return out;

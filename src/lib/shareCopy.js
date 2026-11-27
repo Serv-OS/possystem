@@ -48,6 +48,10 @@ export const RESEND_ONLY_FIELDS = Object.freeze(['archived', 'sort_order']);
 /** Identity and ownership. Never copied, never propagated. */
 export const NEVER_FIELDS = Object.freeze([
   'id', 'location_id', 'org_id', 'master_id', 'scope', 'created_at', 'updated_at',
+  // 5.12.123: a Combo's steps name THIS venue's products by id, and stage 1 keeps a Combo with
+  // steps at one site (lib/combo.js stepsEditBlock; db.js setMenuItemScope refuses to share one).
+  // Never copied and never propagated: the Multi site menu carries Combos in a later stage.
+  'combo',
 ]);
 
 /** A Shared peer may override these; a Global peer may not. */
@@ -276,4 +280,5 @@ export const LIVE_MENU_ITEM_COLUMNS = Object.freeze([
   'visibility', 'sold_alone', 'archived', 'created_at', 'updated_at', 'tax_rate_id', 'tax_overrides', 'centre_id',
   'image', 'scope', 'org_id', 'master_id', 'lock_pricing', 'locked_fields', 'tags', 'option_group_order',
   'tax_profile_id', 'item_code',
+  'combo',   // 5.12.123 (20261215a)
 ]);

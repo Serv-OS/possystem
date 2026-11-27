@@ -301,10 +301,12 @@ export default function CustomerDisplaySurface() {
               const line = Number(it.lineTotal != null ? it.lineTotal : (Number(it.price || 0) * qty));
               const mods = Array.isArray(it.mods) ? it.mods : [];
               return (
-                <div key={it.uid || i} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: '12px 28px', borderBottom: `1px solid ${C.hair}` }}>
-                  <div style={{ minWidth: 40, fontSize: 22, fontWeight: 800, color: brand, fontVariantNumeric: 'tabular-nums' }}>{qty}×</div>
+                // 5.12.123: a product picked inside a Combo (it.pick, lib/displayLines.js) sits under the
+                // Combo's line, set in and smaller, and shows an amount only when it adds one.
+                <div key={it.uid || i} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: it.pick ? '8px 28px 8px 60px' : '12px 28px', borderBottom: `1px solid ${C.hair}` }}>
+                  <div style={{ minWidth: it.pick ? 30 : 40, fontSize: it.pick ? 17 : 22, fontWeight: 800, color: brand, fontVariantNumeric: 'tabular-nums' }}>{qty}×</div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 22, fontWeight: 600 }}>{it.name || it.displayName || 'Item'}</div>
+                    <div style={{ fontSize: it.pick ? 18 : 22, fontWeight: it.pick ? 500 : 600 }}>{it.name || it.displayName || 'Item'}</div>
                     {mods.length > 0 && (
                       <div style={{ marginTop: 4 }}>
                         {mods.map((m, mi) => {
@@ -322,7 +324,7 @@ export default function CustomerDisplaySurface() {
                     )}
                     {it.notes && <div style={{ marginTop: 2, fontSize: 14, fontStyle: 'italic', color: C.faint }}>“{it.notes}”</div>}
                   </div>
-                  <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{money(line)}</div>
+                  <div style={{ fontSize: it.pick ? 18 : 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{it.hideAmount ? '' : money(line)}</div>
                 </div>
               );
             })}

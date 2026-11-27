@@ -21,6 +21,7 @@ import {
 import { isUnsafe } from './kioskAllergens.js';
 import { isOptionOnlyItem } from './menuRules.js';
 import { compareMenuItems } from './menuItemOrder.js';
+import { comboPosOnly } from './combo.js';
 
 const parentOf = (c) => c?.parent_id ?? c?.parentId ?? null;
 const orderOf = (c) => Number(c?.sort_order ?? c?.sortOrder ?? 0) || 0;
@@ -42,7 +43,9 @@ export function kioskOptionOnlySubitem(item) {
  * (the new design's rail and item list here, today's KioskApp visibleItems).
  */
 export function kioskCardEligible(item) {
-  return !!item && !item.parent_id && item.visibility?.kiosk !== false && !kioskOptionOnlySubitem(item);
+  // 5.12.123: a Combo with steps is rung up on the POS only for now (lib/combo.js comboPosOnly):
+  // the kiosk cannot ask its steps yet, so it is never a card, whatever its kiosk switch says.
+  return !!item && !item.parent_id && item.visibility?.kiosk !== false && !kioskOptionOnlySubitem(item) && !comboPosOnly(item);
 }
 
 /**
