@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.117',
+    date: '26 Nov 2026',
+    items: [
+      'Multi site menu, product sheet: the Try it box no longer says a site "has no tax rates set up" when that site charges through tax profiles (Peter, 26 Nov 2026, Mozz Sandy). It was a false alarm: the box only knew old style rates.',
+      'At a site on tax profiles the box now names the profile that applies and its rate, like "Cheese, takeaway at Mozz - Sandy: charged on the site\'s own tax profile, Prepared food 8.45%". It still says so in red when a site has no profile of the name the product asks for.',
+      'Nothing about how tax is charged changes. A venue on tax rates sees the box exactly as before.',
+    ],
+  },
+  {
     v: '5.12.116',
     date: '26 Nov 2026',
     items: [
