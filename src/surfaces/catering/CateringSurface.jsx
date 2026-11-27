@@ -513,7 +513,7 @@ export default function CateringSurface({ location }) {
       )}
 
       {openItem && (
-        <OnlineItemSheet item={openItem} theme={theme} allItems={items} instGroupDefs={instGroupDefs} eightySixIds={eightySix}
+        <OnlineItemSheet item={openItem} theme={theme} allItems={items} instGroupDefs={instGroupDefs} eightySixIds={eightySix} fulfilment={fulfilment}
           avoidAllergens={activeAllergens} showCalories={showKcal}
           stockLevels={stockLevels} cart={cart} priceFor={priceFor}
           onClose={() => setOpenItem(null)} onAdd={(it, mods, qty, notes) => { addToCart(it, mods, qty, notes); setOpenItem(null); }} />

@@ -221,18 +221,23 @@ export function shownOnSummary(item) {
  * off, each switch that WAS on the row's list and is no longer named back on, the list kept, every
  * other key (the site's own switches, the Sold as list) as it was.
  */
-export function applyNotShownOn(visibility, want) {
+export function applyNotShownOn(visibility, want, opts = {}) {
   const base = (visibility && typeof visibility === 'object' && !Array.isArray(visibility)) ? { ...visibility } : {};
   const now = SHOWN_ON_KEYS.filter((k) => (Array.isArray(want) ? want : []).includes(k));
-  for (const k of notShownOn({ visibility: base })) if (!now.includes(k)) base[k] = true;
-  for (const k of now) base[k] = false;
+  // 5.12.119, opts.listOnly: a sub item that is only an option keeps every switch as it is (all
+  // off, it is never a product on a screen). Only the list is written; options read the list.
+  if (!opts.listOnly) {
+    for (const k of notShownOn({ visibility: base })) if (!now.includes(k)) base[k] = true;
+    for (const k of now) base[k] = false;
+  }
   return withNotShownOn(base, now) ?? {};
 }
 
 /** Does a site row already hold head office's list, with each named switch off? */
-export function holdsNotShownOn(row, want) {
+export function holdsNotShownOn(row, want, opts = {}) {
   const now = SHOWN_ON_KEYS.filter((k) => (Array.isArray(want) ? want : []).includes(k));
   if (notShownOn(row).join('|') !== now.join('|')) return false;
+  if (opts.listOnly) return true;
   const v = visOf(row) || {};
   return now.every((k) => v[k] === false);
 }
@@ -243,4 +248,63 @@ export const sameGroupRules = (a, b) => sameSoldAs(a, b) && sameShownOn(a, b);
 /** A visibility object carrying both of head office's lists from `from` (a product), its own keys kept. */
 export function withGroupRules(visibility, from) {
   return withNotShownOn(withNotSoldAs(visibility, notSoldAs(from)), notShownOn(from));
+}
+
+// ── AN OPTION FOLLOWS "SHOWS ON" TOO (5.12.119) ──────────────────────────────────────────────
+//
+// Peter, 27 Nov 2026 (Mozz, Beverage options): "I cannot hide a subitem from options ... dine in
+// soda which needs to not show on ordering online etc but does need to show on the POS".
+//
+// THE RULE: an option that is linked to a product (opt.itemId) is left out of a screen when that
+// product's head office list (visibility.notShownOn) names the screen. Only that list counts,
+// never the plain switches: a sub item that is only an option has every switch off by design (303
+// of them live on 27 Nov 2026) and must keep showing as an option.
+
+const OPTION_SCREEN = {
+  pos: 'pos', till: 'pos', bar: 'pos', 'bar-tab': 'pos', mpos: 'pos', handheld: 'pos',
+  kiosk: 'kiosk',
+  online: 'online', qr: 'online', catering: 'online', hubrise: 'online', delivery: 'online',
+};
+
+/**
+ * Is an option linked to this product hidden on this screen?
+ *   linked      the menu row the option points at (null = a plain option: never hidden)
+ *   screen      'pos' | 'bar' | 'mpos' | 'kiosk' | 'online' | 'qr' | 'catering' | 'hubrise'
+ *   fulfilment  the order type on an online page ('delivery' also reads the Delivery tick)
+ */
+export function optionHiddenOn(linked, screen, fulfilment = null) {
+  const no = notShownOn(linked);
+  if (!no.length) return false;
+  const key = OPTION_SCREEN[screen];
+  if (!key) return false;
+  if (no.includes(key)) return true;
+  const delivery = key === 'online' && (screen === 'hubrise' || screen === 'delivery' || fulfilment === 'delivery' || soldAsKey(fulfilment) === 'delivery');
+  return delivery && no.includes('onlineDelivery');
+}
+
+/** The id of the product an option is linked to (the store's name for it, or the database's). */
+export const optionLinkId = (opt) => (opt && (opt.itemId || opt.item_id)) || null;
+
+/**
+ * Option groups with the options hidden on this screen taken out. A group left with no option at
+ * all is dropped (nothing to ask). A group nothing was taken from comes back as the same object,
+ * and when nothing changed anywhere the same list comes back, so a screen's memo stays still.
+ *   groups   [{ id, options: [...] }]
+ *   items    the venue's menu rows (a list, or a Map by id)
+ */
+export function groupsShownOn(groups, items, screen, fulfilment = null) {
+  if (!Array.isArray(groups) || !groups.length) return groups;
+  const byId = items && typeof items.get === 'function' ? items : new Map((Array.isArray(items) ? items : []).filter((r) => r && r.id != null).map((r) => [r.id, r]));
+  if (!byId.size) return groups;
+  let changed = false;
+  const out = [];
+  for (const g of groups) {
+    const opts = g && Array.isArray(g.options) ? g.options : null;
+    if (!opts) { out.push(g); continue; }
+    const kept = opts.filter((o) => { const id = optionLinkId(o); return !(id && optionHiddenOn(byId.get(id), screen, fulfilment)); });
+    if (kept.length === opts.length) { out.push(g); continue; }
+    changed = true;
+    if (kept.length) out.push({ ...g, options: kept });
+  }
+  return changed ? out : groups;
 }

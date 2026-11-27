@@ -28,7 +28,8 @@ import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { HELP, CHOICE_WORDS } from '../../../lib/msm/msmWords';
 import { whyReadOnly, draftCount } from '../../../lib/msm/msmStatus';
 import { priceInput, categoryTree } from '../../../lib/msm/msmGrid';
-import { taxChoices } from '../../../lib/msm/msmEdit';
+import { taxChoices, productUpdate } from '../../../lib/msm/msmEdit';
+import { SHOWN_ON_KEYS, SHOWN_ON_WORDS, notShownOn, toggleShownOn, shownOnSummary } from '../../../lib/soldAs';
 import { siteRateChoices, choiceToRate } from '../../../lib/msm/msmOrderTypes';
 import { isOptionOnlyItem } from '../../../lib/menuRules';
 import { Btn, Pill, Switch, Field, Notice, SummaryBox, ConfirmTicks, Popover, MenuButton, Modal } from './msmUi';
@@ -104,6 +105,14 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
 
   // ── Form helpers ─────────────────────────────────────────────────────────
   const setForm = (patch) => setDraft((d) => ({ ...d, form: { ...d.form, ...patch } }));
+  // 5.12.119: where an option shows (its sub item's "Shows on" list), staged at once.
+  const tickShownOn = async (prod, key, shown) => {
+    const visibility = toggleShownOn(prod.visibility ?? null, key, shown) ?? {};
+    const r = productUpdate(ctx, prod.id, { visibility });
+    if (!r.change) return;
+    const now = shownOnSummary({ visibility });
+    await stage([r.change], { done: `${prod.menu_name || prod.name}: ${now ? `${now.charAt(0).toLowerCase()}${now.slice(1)}` : 'shown everywhere'} as an option at every site, in the draft.`, undo: true });
+  };
   const setOpt = (i, patch) => setDraft((d) => ({ ...d, options: d.options.map((o, j) => (j === i ? { ...o, ...patch } : o)) }));
   const setOptSite = (i, loc, patch) => setDraft((d) => ({ ...d, options: d.options.map((o, j) => (j === i ? { ...o, sites: { ...o.sites, [loc]: { ...o.sites[loc], ...patch, touched: true } } } : o)) }));
   const move = (from, to) => setDraft((d) => {
@@ -334,6 +343,28 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
                             {prod && !o.newSub && <Btn small kind="link" style={{ padding: 0 }} onClick={() => openProduct(prod.id)}>Open</Btn>}
                           </div>
                         )}
+                        {/* 5.12.119 (Peter, 27 Nov 2026: "I cannot hide a subitem from options ... dine in
+                            soda which needs to not show on ordering online etc but does need to show on the
+                            POS"): where this option shows, at every site. A tick goes straight into the draft
+                            (it is the sub item's own setting, so it holds in every group that offers it). */}
+                        {prod && !o.newSub && (() => {
+                          const no = notShownOn(prod);
+                          return (
+                            <div data-testid="msm-option-row-shown-on" style={{ display: 'flex', gap: 5, alignItems: 'center', marginTop: 5, flexWrap: 'wrap' }}>
+                              <span style={{ ...ui.sub, fontSize: 11 }}>Shows on</span>
+                              {SHOWN_ON_KEYS.map((k) => {
+                                const on = !no.includes(k);
+                                return (
+                                  <button key={k} type="button" aria-pressed={on} disabled={!editable} title={on ? `Leave ${o.name || 'this option'} out on ${SHOWN_ON_WORDS[k]}, at every site` : `Show ${o.name || 'this option'} on ${SHOWN_ON_WORDS[k]} again`}
+                                    onClick={() => tickShownOn(prod, k, !on)}
+                                    style={{ padding: '2px 8px', borderRadius: 20, border: `1px solid ${on ? 'var(--grn, #2f8f4e)' : 'var(--bdr2)'}`, background: on ? 'color-mix(in srgb, var(--grn, #2f8f4e) 16%, transparent)' : 'transparent', color: on ? 'var(--t1)' : 'var(--t4)', textDecoration: on ? 'none' : 'line-through', fontSize: 11, fontWeight: 650, cursor: editable ? 'pointer' : 'default', fontFamily: 'inherit' }}>
+                                    {on ? '✓ ' : ''}{SHOWN_ON_WORDS[k]}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td style={td}>
                         <input aria-label={`Group price for ${o.name || 'this option'}`} readOnly={lock} inputMode="decimal" style={{ ...ui.input, padding: '6px 8px', textAlign: 'right', width: 84, fontWeight: 700, borderColor: pr.ok && pr.value != null ? 'var(--bdr2)' : 'var(--red)' }}

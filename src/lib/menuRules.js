@@ -280,3 +280,38 @@ export function namesPatchForRename(current, patch) {
   if (!given('receiptName') && !given('receipt_name') && mirrors(current.receiptName ?? current.receipt_name)) out.receiptName = next;
   return out;
 }
+
+/**
+ * 5.12.119: the option groups of a product (its own, its sizes', and the groups those open), with
+ * the options that are linked to a sub item (only those can be 86'd: the 86 list holds menu rows).
+ * Returns [{ id, name, options: [{ itemId, name }] }], a group once, in the order met.
+ */
+export function itemOptionGroups(item, menuItems, modifierGroupDefs) {
+  const defs = new Map((modifierGroupDefs || []).filter(Boolean).map(d => [d.id, d]));
+  const rows = new Map((menuItems || []).filter(Boolean).map(r => [r.id, r]));
+  const byName = subitemNameIndex(menuItems);
+  const owners = [item, ...(menuItems || []).filter(r => r && !r.archived && (r.parentId || r.parent_id) === item?.id)].filter(Boolean);
+  const queue = owners.flatMap(o => (o.assignedModifierGroups || o.assigned_modifier_groups || []).map(assignmentGroupId)).filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  while (queue.length) {
+    const id = queue.shift();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const def = defs.get(id);
+    if (!def) continue;
+    const options = [];
+    for (const o of (def.options || [])) {
+      if (!o) continue;
+      if (o.subGroupId) queue.push(o.subGroupId);
+      // Linked by id, else the sub item of the same name (the lookup every screen uses to grey
+      // an 86'd option, subitemNameIndex above), so what is 86'd here is what they read.
+      const linkId = o.itemId || o.item_id;
+      const row = (linkId ? rows.get(linkId) : null) || byName.get(String(o.name || o.label || '').trim().toLowerCase()) || null;
+      if (!row || row.archived || options.some(x => x.itemId === row.id)) continue;
+      options.push({ itemId: row.id, name: o.name || row.menuName || row.name || 'Option' });
+    }
+    if (options.length) out.push({ id: def.id, name: def.name || 'Options', options });
+  }
+  return out;
+}
