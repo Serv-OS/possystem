@@ -36,7 +36,7 @@ the live text) and writes the forward file and the ROLLBACK.
 node supabase/tests/combo_online/run.mjs
 ```
 
-A throwaway local PostgreSQL (initdb and pg_ctl from PATH or /opt/homebrew/bin), never Supabase. 47
+A throwaway local PostgreSQL (initdb and pg_ctl from PATH or /opt/homebrew/bin), never Supabase. 55
 checks: the gap before the file, the file twice, a basket built by the page's own code
 (`src/lib/online/comboCart.js`) valued to the penny, doctored baskets (too many picks, a product a
 step does not list, "each only once", a fake Combo, a second Combo line, odd words), an order with

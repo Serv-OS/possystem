@@ -24,7 +24,7 @@ declare
   v_md5 text;
 begin
   select md5(p.prosrc) into v_md5 from pg_proc p where p.oid = to_regprocedure('public._public_order_value(text, text, text, jsonb, text)');
-  if v_md5 not in ('93c9e815c2ecb5b2536fca05e91ab348', 'db3790dba28aaef13a346a11d0a59a36') then
+  if v_md5 not in ('e820d868e1efdc30600caf3bbbc446fe', 'db3790dba28aaef13a346a11d0a59a36') then
     raise exception '_public_order_value is neither the body 20261217a made nor the one before it (md5 %). Nothing was changed.', v_md5;
   end if;
 end $same$;

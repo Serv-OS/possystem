@@ -26,7 +26,7 @@ import {
   comboMissing, pickLineName, picksOfStep, PRICING_OWN,
 } from '../../lib/combo';
 import { pickFlowSetup } from '../../lib/comboLines';
-import { customerComboContext, stepGroupIds } from '../../lib/online/comboCart';
+import { customerComboContext, stepGroupIds, comboOwnStock, guestWords } from '../../lib/online/comboCart';
 import OnlineItemSheet from './OnlineItemSheet';
 
 let pickSeq = 0;
@@ -43,7 +43,7 @@ function contrastFg(hex) {
 export default function OnlineComboSheet({
   item, theme, rows = [], priceFor = (r) => Number(r?.pricing?.base ?? 0), eightySixIds = [], stockLevels = {},
   basket = [], orderType = null, fulfilment = null, instGroupDefs = [], defaultImage = null, avoidAllergens = [],
-  showCalories = false, initialPicks = null, addLabel = 'Add to basket', onClose, onAdd,
+  showCalories = false, initialPicks = null, addLabel = 'Add to basket', noPrice = null, onClose, onAdd,
 }) {
   useMenuText();
   const steps = useMemo(() => comboSteps(item), [item]);
@@ -63,8 +63,8 @@ export default function OnlineComboSheet({
 
   const ctx = useMemo(() => customerComboContext({
     item, rows, eightySixIds, stockLevels, basket, orderType, fulfilment,
-    modifierGroupDefs: groupDefs, instructionGroupDefs: instGroupDefs,
-  }), [item, rows, eightySixIds, stockLevels, basket, orderType, fulfilment, groupDefs, instGroupDefs]);
+    modifierGroupDefs: groupDefs, instructionGroupDefs: instGroupDefs, noPrice,
+  }), [item, rows, eightySixIds, stockLevels, basket, orderType, fulfilment, groupDefs, instGroupDefs, noPrice]);
 
   const newPick = (stepId, entryId) => ({
     key: pickKey(), stepId, entryId,
@@ -81,7 +81,11 @@ export default function OnlineComboSheet({
   const rowOfPick = (p) => ctx.rowsById.get(p.itemId ?? p.entryId) || ctx.rowsById.get(p.entryId) || null;
   const stepById = (id) => steps.find((s) => s.id === id) || null;
   const totals = comboTotal({ setPrice, steps, picks, rowsById: ctx.rowsById, priceOf: priceFor });
-  const missing = comboMissing(steps, picks, ctx);
+  // The Combo's own 86 and daily count first (the POS checks it too), then the steps; a guest never
+  // reads the POS's staff words (review of 27 Nov 2026).
+  const missing = guestWords(comboOwnStock(item, ctx) || comboMissing(steps, picks, ctx));
+  // A step that keeps prices never offers a product with no price set (it would sell for 0.00).
+  const unpriced = (step, e) => step.pricing === PRICING_OWN && typeof noPrice === 'function' && !e.sizes.length && !!noPrice(e.row);
 
   const muted = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
@@ -125,6 +129,7 @@ export default function OnlineComboSheet({
   const flash = (words) => setSay(words);
   const tap = (step, e) => {
     const already = picksOfStep(picks, step.id).some((p) => p.entryId === e.entry.itemId) && !stepRule(step).repeat;
+    if (unpriced(step, e) && !already) { flash(`${pickLineName(e.row, ctx.rowsById)} is not available right now.`); return; }
     if (e.state !== 'ok' && !already) {
       flash(e.state === 'type' ? (e.words || 'Not available for this order.') : `${pickLineName(e.row, ctx.rowsById)}: ${e.words || 'cannot be picked'}`);
       return;
@@ -219,7 +224,7 @@ export default function OnlineComboSheet({
                     const id = e.entry.itemId;
                     const count = mine.filter((p) => p.entryId === id).length;
                     const sel = count > 0;
-                    const blocked = e.state !== 'ok';
+                    const blocked = e.state !== 'ok' || unpriced(step, e);
                     const room = canPick(step, picks, id);
                     const dim = (blocked && !sel) || (!room && !sel && step.selectionType !== 'single');
                     const avoid = allergenChipLabels(unsafeAllergenIds(e.row, avoidAllergens, e.sizes)).map((r) => r.label);
@@ -241,7 +246,7 @@ export default function OnlineComboSheet({
                             {avoid.length > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626' }}>Contains {avoid.join(', ')}</span>}
                           </span>
                           <span style={{ fontSize: 13, fontWeight: 700, flexShrink: 0, color: blocked ? '#dc2626' : theme.fg }}>
-                            {blocked ? (e.state === 'type' ? ctx.notSoldShort() : (e.words === "86'd" ? 'Sold out' : e.words)) : `${wordsFor(step, e)}${e.words ? ` · ${e.words}` : ''}`}
+                            {blocked ? (e.state === 'type' ? ctx.notSoldShort() : e.state === 'ok' ? 'Not available' : (e.words === "86'd" ? 'Sold out' : e.words)) : `${wordsFor(step, e)}${e.words ? ` · ${e.words}` : ''}`}
                           </span>
                         </button>
                         {counter && !fixed && (

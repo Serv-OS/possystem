@@ -38,7 +38,7 @@ import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.
 // 5.12.125 (Combos, stage 3): a Combo's picks sit under it, count as part of it, and are never in the
 // lines deals, promo codes or a free item reward read (the POS's rule; the server's since 20261217a).
 import { displayOrder, isComboPick } from '../../lib/combo';
-import { linesWithoutPicks, basketCount, comboFieldsOf } from '../../lib/online/comboCart';
+import { linesWithoutPicks, comboFieldsOf } from '../../lib/online/comboCart';
 import { recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 // 5.12.35: the delivery address, its quote and every coverage word have one home
 // (lib/online/deliveryCoverage.js), shared with the menu page's address sheet.
@@ -1560,7 +1560,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               {step === 'pay' ? 'Payment' : step === 'rewards' ? 'Rewards' : step === 'gift' ? 'Gift Card' : 'Checkout'}
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-              {orderTypeChip(orderType, { counterLabel }).label} · {basketCount(cart)} item{basketCount(cart) === 1 ? '' : 's'} · {money(subtotal)}
+              {orderTypeChip(orderType, { counterLabel }).label} · {linesWithoutPicks(cart).length} item{linesWithoutPicks(cart).length === 1 ? '' : 's'} · {money(subtotal)}
               {autoDiscountMinor > 0 ? ` · Offers -${money((autoDiscountMinor / 100))}` : ''}
               {giftApplied ? ` · Gift card -${money((giftApplied.applied / 100))}` : ''}
               {promoApplied ? ` · ${promoApplied.code} -${money((promoAppliedMinor / 100))}` : ''}

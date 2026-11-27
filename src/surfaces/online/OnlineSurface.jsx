@@ -873,6 +873,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     if (!isSoldAs(item, priceType, items)) { alert(`Sorry, ${notSoldAsWords(item, priceType)}`); return; }
     if (refusesNoPriceLine(item, priceType, effectiveMenuId, priceFor(item))) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
     const editing = comboEdit && cart.some(l => l.comboId === comboEdit) ? comboEdit : null;
+    // Its own 86 and daily count, less the ones already in the basket (review of 27 Nov 2026).
+    const held = cart.filter(l => l.itemId === item.id && l.comboId !== editing).reduce((s, l) => s + (l.qty || 1), 0);
+    const own = stockLevels[item.id];
+    if (isItemEightySixed(item, eightySixIds) || (own && typeof own.remaining === 'number' && own.remaining - held < 1)) { alert(`Sorry, ${item.menu_name || item.name} is sold out.`); return; }
     const lines = comboCartLines({ item, picks, rows: items, priceFor, comboId: editing || newComboId(), menuId: effectiveMenuId || null });
     setCart(c => (editing ? replaceComboLines(c, editing, lines) : [...c, ...lines]));
     setComboEdit(null);
@@ -1456,6 +1460,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           avoidAllergens={activeAllergens} showCalories={showKcal}
           initialPicks={comboEdit ? comboPicksInBasket(cart, comboEdit) : null}
           addLabel={comboEdit ? 'Save changes' : 'Add to basket'}
+          noPrice={(row) => refusesNoPriceLine(row, priceType, effectiveMenuId, priceFor(row))}
           onClose={() => { setOpenItem(null); setComboEdit(null); }}
           onAdd={(picks) => addCombo(openItem, picks)}
         />

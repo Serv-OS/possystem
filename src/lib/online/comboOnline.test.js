@@ -233,3 +233,33 @@ test('7. the wiring: both pages, both checkouts, the status page and catering-re
   for (const fn of ['stepEntries', 'tapEntry', 'untapEntry', 'comboMissing', 'comboTotal', 'pickNeeds', 'startingPicks', 'pickFlowSetup', 'customerComboContext']) assert.match(sheet, new RegExp(`\\b${fn}\\(`), fn);
   assert.match(sheet, /maxHeight: 'min\(94vh, calc\(100% - 12px\)\)'/);
 });
+
+test('8. the review of 27 Nov 2026: the Combo\'s own stock, a step that keeps prices, and what a guest reads', async () => {
+  const { comboOwnStock, guestWords } = await import('./comboCart.js');
+  // The Combo's own daily count counts the ones already in the basket; its 86 stops it.
+  const inBasket = comboCartLines({ item: BOX, picks: PICKS, rows: ROWS, priceFor, comboId: 'cb-1', uid });
+  const ctx = customerComboContext({ item: BOX, rows: ROWS, stockLevels: { box: { remaining: 1 } }, basket: inBasket });
+  assert.equal(ctx.remainingOf('box'), 0);
+  assert.equal(comboOwnStock(BOX, ctx), 'Pizza party is sold out.');
+  assert.equal(comboOwnStock(BOX, customerComboContext({ item: BOX, rows: ROWS, stockLevels: { box: { remaining: 1 } } })), null);
+  assert.equal(comboOwnStock(BOX, customerComboContext({ item: BOX, rows: ROWS, eightySixIds: ['box'] })), 'Pizza party is sold out.');
+  // A step that keeps prices never sells a product with no price set for 0.00; paid options may price it.
+  const noLemonPrice = (row) => row.id === 'lemon';
+  const strict = customerComboContext({ item: BOX, rows: ROWS, noPrice: noLemonPrice });
+  const base = [pick('st-pizza', 'marg', 'marg', []), pick('st-pizza', 'pep'), pick('st-pizza', 'pep')];
+  assert.equal(guestWords(comboMissing(STEPS.steps, [...base, pick('st-drink', 'lemon')], strict)), 'Lemonade is not available right now. Pick another.');
+  assert.equal(comboMissing(STEPS.steps, [...base, pick('st-drink', 'lemon', 'lemon', [{ id: 'o-ice', price: 0.5 }])], strict), null);
+  assert.equal(comboMissing(STEPS.steps, [...base, pick('st-drink', 'cola')], strict), null);
+  assert.equal(guestWords('Pick 3 pizzas: pick 1 more'), 'Pick 3 pizzas: pick 1 more', 'every other word as it is');
+  // The pages wire it all.
+  const online = read('../../surfaces/online/OnlineSurface.jsx');
+  assert.match(online, /if \(isItemEightySixed\(item, eightySixIds\) \|\| \(own && typeof own\.remaining === 'number' && own\.remaining - held < 1\)\) \{ alert\(`Sorry, \$\{item\.menu_name \|\| item\.name\} is sold out\.`\); return; \}/);
+  assert.match(online, /noPrice=\{\(row\) => refusesNoPriceLine\(row, priceType, effectiveMenuId, priceFor\(row\)\)\}/);
+  const catering = read('../../surfaces/catering/CateringSurface.jsx');
+  assert.match(catering, /if \(is86\(item\.id\) \|\| \(own && typeof own\.remaining === 'number' && own\.remaining - held < 1\)\)/);
+  assert.match(catering, /noPrice=\{\(row\) => refusesNoPriceLine\(row, priceChannel, menuIdOf\(row\), priceFor\(row\)\)\}/);
+  const sheet = read('../../surfaces/online/OnlineComboSheet.jsx');
+  assert.match(sheet, /const missing = guestWords\(comboOwnStock\(item, ctx\) \|\| comboMissing\(steps, picks, ctx\)\);/);
+  // The checkout header counts lines as it always did (a Combo once, never its picks).
+  assert.match(read('../../surfaces/online/OnlineCheckout.jsx'), /\{linesWithoutPicks\(cart\)\.length\} item\{linesWithoutPicks\(cart\)\.length === 1 \? '' : 's'\}/);
+});

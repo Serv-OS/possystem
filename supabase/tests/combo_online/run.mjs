@@ -85,10 +85,21 @@ const ROWS = [
   row('lemon', 'Lemonade', { pricing: { base: 2.5 }, cat: 'cat-drinks' }),
   row('cake', 'Cake', { pricing: { base: 4 }, cat: 'cat-sides' }),
   row('soup', 'Soup', { pricing: { base: 5 }, cat: 'cat-sides' }),
+  row('dip', 'Dip', { pricing: { base: 0.3 }, assigned_modifier_groups: ['g-extra'], cat: 'cat-sides' }),
   row('old-box', 'Old party', { type: 'combo', archived: true, pricing: { base: 1 }, combo: STEPS }),
   row('plain-combo', 'Meal deal', { type: 'combo', pricing: { base: 7 } }),   // a Combo with no steps: a plain product
+  // Review of 27 Nov 2026: a step listing a product AND one of its sizes on their own, at different bumps.
+  row('box2', 'Calzone pair', { type: 'combo', pricing: { base: 20 }, combo: { v: 1, steps: [
+    step('st-c', 'Two calzones', 'multiple_once', 0, 2, 'set', ['calz', { itemId: 'calz-l', bump: 2 }]),
+  ] } }),
+  // Steps written by hand: no id, and two with the same id (the app reads them as step-1, x, x-2).
+  row('box3', 'Hand box', { type: 'combo', pricing: { base: 12 }, combo: { v: 1, steps: [
+    { name: 'A pizza', selectionType: 'single', min: 1, max: 1, pricing: 'set', products: ['marg'] },
+    { id: 'x', name: 'Another', selectionType: 'single', min: 1, max: 1, pricing: 'set', products: [{ itemId: 'pep', bump: 1 }] },
+    { id: 'x', name: 'A side', selectionType: 'single', min: 1, max: 1, pricing: 'set', products: ['wings'] },
+  ] } }),
 ];
-const GROUPS = [{ id: 'g-extra', location_id: LOC, options: [{ id: 'o-cheese', name: 'Extra cheese', price: 1 }, { id: 'o-basil', name: 'Basil', price: 0.5 }], max: 2, max_select: null, selection_type: 'multiple' }];
+const GROUPS = [{ id: 'g-extra', location_id: LOC, options: [{ id: 'o-cheese', name: 'Extra cheese', price: 1 }, { id: 'o-basil', name: 'Basil', price: 0.5 }, { id: 'o-nocheese', name: 'No cheese', price: -0.5 }], max: 2, max_select: null, selection_type: 'multiple' }];
 const priceFor = (r) => resolveItemPrice(r, 'collection', null);
 const goodsOf = (lines) => Math.round(lines.reduce((s, l) => s + (l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (l.qty || 1), 0) * 100);
 let uidN = 0;
@@ -232,6 +243,34 @@ try {
     sql(`insert into public.eighty_six values ('wings', ${lit(LOC)})`);
     ok(value(box([pick('st-pizza', 'marg'), pick('st-pizza', 'marg'), pick('st-pizza', 'marg'), pick('st-side', 'wings'), pick('st-drink', 'cola')])).unknown_lines === 1, 'a pick 86\'d since the page loaded is unknown, as any line');
     sql('delete from public.eighty_six');
+    // Review of 27 Nov 2026, 1: a step lists Calzone (any size, no bump) AND its Large on its own (+2.00).
+    // The guest's tap decides: Calzone then Large is 0.00, "Large" on its own is +2.00; both in one step.
+    const box2 = ROWS.find((x) => x.id === 'box2');
+    const pair = (picks) => comboCartLines({ item: box2, picks, rows: ROWS, priceFor, comboId: 'cb-p', uid });
+    for (const [label, picks] of [
+      ['Calzone then Large', [pick('st-c', 'calz', 'calz-l')]],
+      ['Large on its own', [pick('st-c', 'calz-l', 'calz-l')]],
+      ['both, each once', [pick('st-c', 'calz', 'calz-l'), pick('st-c', 'calz-l', 'calz-l')]],
+    ]) {
+      const b = pair(picks);
+      const v = value(b);
+      ok(v.goods_minor === goodsOf(b) && v.items.every((l) => 'comboRole' in l), `the entry the guest tapped decides the price: ${label} (${v.goods_minor / 100} = ${goodsOf(b) / 100})`);
+    }
+    // 2: the venue's own minus option on a 0.00 pick takes the line below zero, as on the POS and the page.
+    const noCheese = { id: 'o-nocheese', name: 'No cheese', label: 'No cheese', price: -0.5 };
+    const minus = box([pick('st-pizza', 'marg', 'marg', [noCheese]), pick('st-pizza', 'marg', 'marg', [noCheese]), pick('st-pizza', 'marg'), pick('st-drink', 'cola')]);
+    ok(value(minus).goods_minor === goodsOf(minus) && goodsOf(minus) === 3000 - 100 + 220, `a minus option on a 0.00 pick: the server agrees with the page (${goodsOf(minus) / 100})`);
+    // ...but a made up minus option never takes a penny off.
+    const fake = box([pick('st-pizza', 'marg', 'marg', [{ id: 'o-free-money', name: 'Discount', price: -5 }]), pick('st-pizza', 'marg'), pick('st-pizza', 'marg'), pick('st-drink', 'cola')]);
+    ok(value(fake).goods_minor === 3000 + 220, 'a minus option the venue does not have takes nothing off');
+    // ...and a plain line still never goes below zero.
+    const dip = [plain('dip', 1, [noCheese])];
+    ok(value(dip).goods_minor === 0 && JSON.stringify(value(dip)) === JSON.stringify(value(dip, { fn: '_pov_live' })), 'a plain line still never goes below zero, exactly as live');
+    // 5: steps written by hand are read as the app reads them (step-1, x, x-2).
+    const box3 = ROWS.find((x) => x.id === 'box3');
+    const hand = comboCartLines({ item: box3, picks: [pick('step-1', 'marg'), pick('x', 'pep'), pick('x-2', 'wings')], rows: ROWS, priceFor, comboId: 'cb-h', uid });
+    ok(hand.slice(1).map((l) => l.comboStepId).join(',') === 'step-1,x,x-2', 'the page names hand written steps step-1, x, x-2');
+    ok(value(hand).goods_minor === goodsOf(hand) && goodsOf(hand) === 1200 + 100, `hand written steps: the server reads them the same way (${value(hand).goods_minor / 100})`);
     // Junk in the Combo words never breaks the function.
     const junk = box([pick('st-pizza', 'marg'), pick('st-pizza', 'marg'), pick('st-pizza', 'marg'), pick('st-drink', 'cola')]);
     junk[1].comboStepId = 7; junk[2].comboId = ''; junk[3].comboRole = 'chief';

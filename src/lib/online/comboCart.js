@@ -50,11 +50,13 @@ const instIds = (row) => listOf(row?.assigned_instruction_groups ?? row?.assigne
  *   modifierGroupDefs   the option groups of the step products (null while they load: then any
  *                       product with an option group is asked, so nothing that must be answered is skipped)
  *   instructionGroupDefs the venue's instruction groups
+ *   noPrice             (row) => true when the row has no price set for this sale (the page's own
+ *                       refusesNoPriceLine): a step that keeps prices never sells it for 0.00
  * A product head office hides on Online (its Shows on list) is left out, as an option linked to it
  * is (lib/soldAs.js optionHiddenOn). Its "Visible on" switch is a menu card's: a product kept off the
  * menu can still be offered inside a Combo, as on the POS.
  */
-export function customerComboContext({ item = null, rows = [], eightySixIds = [], stockLevels = {}, basket = [], orderType = null, fulfilment = null, modifierGroupDefs = null, instructionGroupDefs = [] } = {}) {
+export function customerComboContext({ item = null, rows = [], eightySixIds = [], stockLevels = {}, basket = [], orderType = null, fulfilment = null, modifierGroupDefs = null, instructionGroupDefs = [], noPrice = null } = {}) {
   const list = listOf(rows).filter(Boolean);
   const rowsById = new Map(list.map((r) => [r.id, r]));
   const kids = new Map();
@@ -66,7 +68,8 @@ export function customerComboContext({ item = null, rows = [], eightySixIds = []
   }
   for (const k of kids.values()) k.sort(compareMenuItems);
   // What the basket already holds, as the daily count would count it: the row, and its product for a
-  // size, and every option linked to a product.
+  // size, and every option linked to a product. A Combo's own line counts against the Combo's own
+  // count (a venue may sell only so many packages a day), as the POS counts it (review of 27 Nov).
   const held = new Map();
   const hold = (id, n) => {
     if (id == null || !(n > 0)) return;
@@ -75,7 +78,7 @@ export function customerComboContext({ item = null, rows = [], eightySixIds = []
     if (p != null) held.set(p, (held.get(p) || 0) + n);
   };
   for (const l of listOf(basket)) {
-    if (!l || l.noKitchen) continue;
+    if (!l) continue;
     const q = Math.max(1, Number(l.qty) || 1);
     hold(l.itemId, q);
     for (const m of listOf(l.mods)) if (m && m.itemId) hold(m.itemId, q);
@@ -112,7 +115,30 @@ export function customerComboContext({ item = null, rows = [], eightySixIds = []
     hiddenHere: (row) => optionHiddenOn(row, 'online', fulfilment),
     requiresAnswers: (row) => factsOf(row).requiresAnswers,
     hasOptions: (row) => factsOf(row).hasOptions,
+    // A pick that keeps its own price, of a product with no price set, is never sold for 0.00: its paid
+    // options may price it (the POS's rule, lib/combo.js comboMissing). Review of 27 Nov 2026.
+    ...(typeof noPrice === 'function' ? { noPriceLine: (row, extras) => !!noPrice(row) && !((Number(extras) || 0) > 0) } : {}),
   };
+}
+
+/**
+ * Can the Combo itself be sold right now (its own 86 and its own daily count, less what the basket
+ * already holds)? The words for a guest, or null. The POS checks the same (store addCombo).
+ */
+export function comboOwnStock(item, ctx) {
+  if (!item || !ctx) return null;
+  const name = item.menu_name || item.menuName || item.name || 'This';
+  if (ctx.eightySix && ctx.eightySix.has(item.id)) return `${name} is sold out.`;
+  const left = typeof ctx.remainingOf === 'function' ? ctx.remainingOf(item.id) : null;
+  if (left != null && left < 1) return `${name} is sold out.`;
+  return null;
+}
+
+/** The POS's words for a missing price are for staff; a guest is told the product is not available. */
+export function guestWords(words) {
+  const w = String(words || '');
+  const m = w.match(/^(.*) has no price set\. Set one in Back Office before selling it\.$/);
+  return m ? `${m[1]} is not available right now. Pick another.` : w;
 }
 
 /** The option group ids a Combo's step products (and their sizes) use: what the page loads to ask them. */

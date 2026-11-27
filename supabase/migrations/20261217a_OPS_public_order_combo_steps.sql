@@ -78,7 +78,7 @@ begin
     raise exception 'Run 20261215a_OPS_menu_item_combo_steps.sql first (menu_items.combo). Nothing was changed.';
   end if;
   select md5(p.prosrc) into v_md5 from pg_proc p where p.oid = to_regprocedure('public._public_order_value(text, text, text, jsonb, text)');
-  if v_md5 not in ('db3790dba28aaef13a346a11d0a59a36', '93c9e815c2ecb5b2536fca05e91ab348') then
+  if v_md5 not in ('db3790dba28aaef13a346a11d0a59a36', 'e820d868e1efdc30600caf3bbbc446fe') then
     raise exception '_public_order_value is not the body read on live on 27 Nov 2026 (md5 %). Read it again and rerun the generator. Nothing was changed.', v_md5;
   end if;
 end $same$;
@@ -157,6 +157,11 @@ declare
   v_cmax     integer;
   v_cq       integer;
   v_ckey     text;
+  v_nsteps   jsonb;
+  v_sids     text[];
+  v_sid      text;
+  v_k        integer;
+  v_m        integer;
 begin
   -- What the venue has switched off today (eighty_six: one row per 86'd item per venue, the
   -- table both storefronts read). Through to_regclass and EXECUTE, so this file still runs
@@ -237,9 +242,29 @@ begin
     continue when v_crow.id is null or coalesce(v_crow.type, '') <> 'combo' or coalesce(v_crow.archived, false)
                or jsonb_typeof(v_crow.combo -> 'steps') is distinct from 'array'
                or jsonb_array_length(v_crow.combo -> 'steps') = 0;
+    -- Each step's id as the app reads it (src/lib/combo.js comboStepsOf): its own id, else
+    -- step-N for the Nth step, and a second step with the same id gets -2, -3 (a row written by
+    -- hand; the Back Office and the Multi site menu always save them this way).
+    v_nsteps := '[]'::jsonb;
+    v_sids := '{}'::text[];
+    v_k := 0;
+    for v_step in select x from jsonb_array_elements(v_crow.combo -> 'steps') x loop
+      continue when jsonb_typeof(v_step) is distinct from 'object';
+      v_k := v_k + 1;
+      v_sid := coalesce(nullif(btrim(coalesce(v_step ->> 'id', '')), ''), 'step-' || v_k);
+      v_ckey := v_sid;
+      v_m := 2;
+      while v_sid = any(v_sids) loop
+        v_sid := v_ckey || '-' || v_m;
+        v_m := v_m + 1;
+      end loop;
+      v_sids := v_sids || v_sid;
+      v_nsteps := v_nsteps || jsonb_build_array(v_step || jsonb_build_object('id', v_sid));
+    end loop;
+    continue when jsonb_array_length(v_nsteps) = 0;
     v_q := public._fence_num(it ->> 'qty');
     v_combos := v_combos || jsonb_build_object(v_cid, jsonb_build_object(
-                  'at', v_cpos, 'steps', v_crow.combo -> 'steps',
+                  'at', v_cpos, 'steps', v_nsteps,
                   'qty', case when v_q >= 1 then least(999, ceil(v_q))::integer else 1 end));
   end loop;
 
@@ -301,12 +326,18 @@ begin
        limit 1;
       v_entry := null;
       if v_step is not null then
-        select e into v_entry
-          from jsonb_array_elements(case when jsonb_typeof(v_step -> 'products') = 'array' then v_step -> 'products' else '[]'::jsonb end) e
-         where (case when jsonb_typeof(e) = 'object' then btrim(coalesce(e ->> 'itemId', e ->> 'item_id', e ->> 'id', ''))
-                     when jsonb_typeof(e) in ('string', 'number') then btrim(e #>> '{}') end) in (r.id, coalesce(r.parent_id, r.id))
-         order by (case when jsonb_typeof(e) = 'object' then btrim(coalesce(e ->> 'itemId', e ->> 'item_id', e ->> 'id', ''))
-                        when jsonb_typeof(e) in ('string', 'number') then btrim(e #>> '{}') end) = r.id desc
+        -- The entry the guest tapped (comboEntryId) when the step lists it for this row (a step may
+        -- list a product and one of its sizes on their own); else the row itself, else its product,
+        -- the first listed (src/lib/combo.js keeps the first of a product listed twice).
+        select t.e into v_entry
+          from jsonb_array_elements(case when jsonb_typeof(v_step -> 'products') = 'array' then v_step -> 'products' else '[]'::jsonb end) with ordinality as t(e, n)
+         where (case when jsonb_typeof(t.e) = 'object' then btrim(coalesce(t.e ->> 'itemId', t.e ->> 'item_id', t.e ->> 'id', ''))
+                     when jsonb_typeof(t.e) in ('string', 'number') then btrim(t.e #>> '{}') end) in (r.id, coalesce(r.parent_id, r.id))
+         order by (case when jsonb_typeof(t.e) = 'object' then btrim(coalesce(t.e ->> 'itemId', t.e ->> 'item_id', t.e ->> 'id', ''))
+                        when jsonb_typeof(t.e) in ('string', 'number') then btrim(t.e #>> '{}') end) = btrim(coalesce(it ->> 'comboEntryId', '')) desc,
+                  (case when jsonb_typeof(t.e) = 'object' then btrim(coalesce(t.e ->> 'itemId', t.e ->> 'item_id', t.e ->> 'id', ''))
+                        when jsonb_typeof(t.e) in ('string', 'number') then btrim(t.e #>> '{}') end) = r.id desc,
+                  t.n
          limit 1;
       end if;
       if v_entry is not null then
@@ -447,7 +478,12 @@ begin
 
     v_q := public._fence_num(it ->> 'qty');
     v_qty := case when v_q >= 1 then least(999, ceil(v_q))::integer else 1 end;
-    v_unit := greatest(0, v_item + v_modsum);
+    -- 20261217a (5.12.125): a real pick of a Combo is 0.00 or its bump, so the venue's own minus
+    -- option ("No cheese, minus 0.50") can take its line below zero, as on the POS and the page
+    -- (lib/combo.js pickPrice). Only options this function matched to the product, within their
+    -- group's limits, can do that: one it cannot match never takes a penny off. Every other line
+    -- is never below zero, as before.
+    v_unit := case when v_cpick then v_item + v_modsum else greatest(0, v_item + v_modsum) end;
     -- 20261020a (v5.11.81): a row with NO price set (pricing.base null, no price for this order
     -- type or menu: the multi site menu's "no price") never sells for 0.00. It was valued free like
     -- a real 0.00 (tap water, base 0). Paid options can still price it; a line that comes to
@@ -505,8 +541,10 @@ begin
         it := (it - 'receipt_name') || jsonb_build_object('receiptName', v_r_menu);
       end if;
       -- 20261217a (5.12.125): a pick of a Combo is part of the Combo. The Combo's own line takes
-      -- part in deals and rewards at its set price; its picks never do (the POS's rule,
-      -- lib/discountEngine.js and lib/combo.js linesForPromo).
+      -- part in deals, promo codes and rewards at its set price; its picks never do: the POS's
+      -- rule for deals and a free item (lib/discountEngine.js, lib/combo.js linesForPromo). The
+      -- online page and the catering link leave picks out of a promo code's lines too, so the
+      -- page and this function always agree (the POS still counts what picks add there).
       if v_sell and v_floor is not null and not v_cpick then
         -- Only a line the storefront really sells, at the server's own price, takes part in
         -- the venue's automatic discounts or can be what a free item loyalty reward makes
@@ -551,7 +589,7 @@ grant execute on function public.public_order_features() to anon, authenticated,
 
 do $done$
 begin
-  if (select md5(p.prosrc) from pg_proc p where p.oid = to_regprocedure('public._public_order_value(text, text, text, jsonb, text)')) <> '93c9e815c2ecb5b2536fca05e91ab348' then
+  if (select md5(p.prosrc) from pg_proc p where p.oid = to_regprocedure('public._public_order_value(text, text, text, jsonb, text)')) <> 'e820d868e1efdc30600caf3bbbc446fe' then
     raise exception '_public_order_value is not the body this file makes. Nothing was changed.';
   end if;
 end $done$;
@@ -563,6 +601,6 @@ notify pgrst, 'reload schema';
 
 -- The check: every value true.
 select
-  (select md5(p.prosrc) = '93c9e815c2ecb5b2536fca05e91ab348' from pg_proc p where p.oid = to_regprocedure('public._public_order_value(text, text, text, jsonb, text)')) as pricer_knows_combos,
+  (select md5(p.prosrc) = 'e820d868e1efdc30600caf3bbbc446fe' from pg_proc p where p.oid = to_regprocedure('public._public_order_value(text, text, text, jsonb, text)')) as pricer_knows_combos,
   (select public.public_order_features() ->> 'combo_steps' = 'true') as pages_can_offer_combos,
   has_function_privilege('anon', 'public.public_order_features()', 'execute') as guests_can_ask;
