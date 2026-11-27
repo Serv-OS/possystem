@@ -145,7 +145,8 @@ function importCommit({ p_payload: p }, db) {
   db.msm_category_sites = p.categories.flatMap((c) => c.sites.map((s) => ({ category_id: c.id, ...s })));
   db.msm_modifier_groups = p.groups.map((g) => ({ ...noSites(g), menu_id: menuId }));
   db.msm_modifier_group_sites = p.groups.flatMap((g) => g.sites.map((s) => ({ group_id: g.id, ...s })));
-  db.msm_products = p.products.map((x) => ({ ...noSites(x), menu_id: menuId, archived: false }));
+  // 5.12.124: every row carries the steps column, as the database does once 20261216a has run.
+  db.msm_products = p.products.map((x) => ({ ...noSites(x), menu_id: menuId, archived: false, combo: x.combo ?? null }));
   db.msm_product_sites = p.products.flatMap((x) => x.sites.map((s) => ({ product_id: x.id, ...s })));
   db.msm_modifier_options = (p.options || []).map((o) => ({ ...noSites(o), menu_id: menuId, archived: !!o.archived }));
   db.msm_modifier_option_sites = (p.options || []).flatMap((o) => (o.sites || []).map((s) => ({ option_id: o.id, ...s })));

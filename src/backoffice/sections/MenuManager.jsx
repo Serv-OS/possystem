@@ -3326,17 +3326,22 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
         {/* ════ STEPS — a Combo's steps (5.12.123, its own file: ComboStepsTab.jsx) ════ */}
         {sec==='steps' && isCombo && (
-          <ComboStepsTab
-            item={item}
-            menuItems={menuItems}
-            categories={allCategories}
-            onUpdate={onUpdate}
-            markBOChange={markBOChange}
-            managed={!!msmLock}
-            // Before 20261215a has run no row carries the column, and nothing can be saved to it.
-            columnReady={isMock || (menuItems || []).some(i => i && 'combo' in i)}
-            eightySixIds={eightySixIds || []}
-          />
+          // 5.12.124: a Combo the group menu manages: its steps are head office's (read only here,
+          // with the usual lock) unless this site keeps its own steps (msmLock.js, 'combo').
+          <MsmLocked on={lockOn('combo')} label="Steps">
+            <ComboStepsTab
+              item={item}
+              menuItems={menuItems}
+              categories={allCategories}
+              onUpdate={onUpdate}
+              markBOChange={markBOChange}
+              readOnly={lockOn('combo')}
+              keptSteps={!!msmLock && msmLock.kept.has('combo')}
+              // Before 20261215a has run no row carries the column, and nothing can be saved to it.
+              columnReady={isMock || (menuItems || []).some(i => i && 'combo' in i)}
+              eightySixIds={eightySixIds || []}
+            />
+          </MsmLocked>
         )}
 
         {/* ════ FLOW — complete customer journey in order ══════════════════ */}

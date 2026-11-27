@@ -184,7 +184,8 @@ test('the option only rule here is the menu rules own (lib/menuRules.js rule 1)'
 test('steps are set up only on a site\'s own Combo with no sizes', () => {
   assert.equal(stepsEditBlock(BYO), null);
   assert.match(stepsEditBlock({ ...BYO, type: 'simple' }), /Set the type to Combo/);
-  assert.match(stepsEditBlock(BYO, { managed: true }), /Head office manages/);
+  // 5.12.124: a product the Multi site menu manages is not refused (its steps are locked by the site lock instead).
+  assert.equal(stepsEditBlock(BYO, { managed: true }), null);
   assert.match(stepsEditBlock({ ...BYO, scope: 'shared' }), /shared with other sites/);
   assert.match(stepsEditBlock({ ...BYO, scope: 'local', master_id: 'm-1' }), /shared with other sites/);
   assert.match(stepsEditBlock(BYO, { sizes: 2 }), /has sizes/);

@@ -74,6 +74,9 @@ import {
 import { MAIN_MENU, MAIN_MENU_WORDS, allExtraMenus, menuKeysOf, extraMenuAt, extraVenueMenuId, longExtraVenueMenuId } from './msmMenus.js';
 import { mapRateDescriptor, effectiveTaxByType, venueProfileIsMirror, TAX_KEY_LABEL } from './msmTax.js';
 import { notSoldAs, withNotSoldAs, sameSoldAs, soldAsSummary, notShownOn, withNotShownOn, applyNotShownOn, holdsNotShownOn, shownOnSummary } from './soldAs.js';
+// 5.12.124: a Combo's steps (the same rules the POS and the site's Menu Manager read: _shared/combo.js
+// is src/lib/combo.js, pinned identical by src/lib/comboCopies.test.js).
+import { COMBO_TYPE, comboStepsOf, comboColumnValue, comboProductIds, mapStepProducts, stepsSummary } from './combo.js';
 
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 const listOf = (v) => (Array.isArray(v) ? v : []);
@@ -719,6 +722,51 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const vid = groupId ? ensureGroup(groupId) : null;
     return vid ? { ...rest, groupId: vid } : null;
   }).filter(Boolean);
+  // ── Combos (5.12.124, stage 2 of Combo products) ──────────────────────────
+  // The steps of a Combo AT THIS SITE. A step lists products of the group menu; here each becomes
+  // this site's own item of that product (its row is here already, or this same plan inserts it).
+  //   * A product not sold here is LEFT OUT of the step here (said once, when the steps are written).
+  //   * A step nobody has to answer that ends up with no product is left out here too.
+  //   * A step that MUST be answered always stays, even with too few products: the health check
+  //     (msmHealth combo_step_unmet) then holds this site back in words, and the other sites still
+  //     publish. It is never quietly made optional.
+  // A Combo never lists itself. Nothing here is read before the product loop below (stepItemAt asks
+  // willInsert, which reads `work`): finish() can run early and must never reach for it (5.12.122).
+  const comboLeft = new Map();              // product id -> [{ stepName, name }] left out here
+  const stepItemAt = (pid) => {
+    const sp = productById.get(pid);
+    const sps = psBy.get(pid);
+    if (!sp || sp.archived || !sps || !siteActive(sp, sps)) return null;
+    if (vItemById.has(sps.venue_item_id)) return sps.venue_item_id;
+    return willInsert(sp, sps) ? sps.venue_item_id : null;
+  };
+  const mapCombo = (p) => {
+    if ((p.type || 'simple') !== COMBO_TYPE) return null;
+    const steps = comboStepsOf(p.combo);
+    if (!steps.length) return null;
+    const { steps: here, left } = mapStepProducts(steps, (id) => (id === p.id ? null : stepItemAt(id)));
+    comboLeft.set(p.id, left.map((l) => {
+      const sp = productById.get(l.itemId);
+      return { stepName: l.stepName, name: sp ? (sp.menu_name || sp.name || 'A product') : null, removed: !!sp && !!sp.archived };
+    }));
+    // Every step could be skipped and none has a product here: the Combo keeps its steps (each one
+    // empty), never becoming a plain product sold at the set price with nothing picked. The health
+    // check holds the site back in words (msmHealth combo_nothing_here). Review of 27 Nov 2026.
+    if (!here.length) return comboColumnValue(steps.map((s) => ({ ...s, products: [] })));
+    return comboColumnValue(here);
+  };
+  // Said once the steps are really written here (a warning: the publish goes through).
+  const sayComboLeft = (p, meta) => {
+    const combo = p.menu_name || p.name;
+    for (const l of comboLeft.get(p.id) || []) {
+      problem('combo_pick_left_out', 'warn', !l.name
+        ? `"${l.stepName}" in "${combo}" lists a product that is no longer in the group menu. It is left out.`
+        : l.removed
+          ? `"${l.name}" was removed from the group menu, so it is left out of "${l.stepName}" in "${combo}".`
+          : `"${l.name}" is not sold at this site, so it is left out of "${l.stepName}" in "${combo}" here.`, meta);
+    }
+  };
+
   // The venue value of one column for product p at this site. undefined = cannot be worked out.
   // 5.12.30 (Peter, 2 Nov 2026: groups published onto the pizzas "are not on the POS"): the kind of
   // row a venue gets. A top level product with option groups is never written as plain 'simple',
@@ -747,6 +795,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       case 'sold_alone': return !!p.sold_alone;
       case 'item_code': return p.item_code ?? null;
       case 'assigned_modifier_groups': return mapGroups(p);
+      // null = no steps here. A product that is not a Combo leaves the site's value alone: a former
+      // Combo keeps its steps parked at the site, as Menu Manager does (review of 27 Nov 2026: the
+      // first import otherwise planned to clear them and the database refused the kept key).
+      case 'combo': return (p.type || 'simple') === COMBO_TYPE ? mapCombo(p) : undefined;
       case 'archived': return !siteActive(p, ps);
       case 'tax_rate_id': { const r = mapTax(p); return r.ok ? r.id : undefined; }
       default: return undefined;
@@ -883,6 +935,18 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (parentTypeVatAt(p.parent_product_id)) add(p.id).prodFields.add('tax_by_type');
   }
   if (T.sitesCreated.has(loc)) for (const pid of psBy.keys()) { const w = add(pid); if (!w.siteOp) w.siteOp = 'create'; }
+  // 5.12.124: a Combo's steps name other products. When one of those is touched here (made, turned
+  // on or off at this site, removed), the Combo's steps at this site are worked out again, so the
+  // product joins or leaves the step here. Nothing is written when the answer is the same.
+  // Review of 27 Nov 2026: also when the Combo is in this publish for another reason (its price, its
+  // name), or the product would join its step only after a later publish; never a removed Combo,
+  // and never one whose row the site deleted by hand (unless this publish touches it anyway).
+  for (const p of listOf(C.products)) {
+    if (!p || p.archived || (p.type || 'simple') !== COMBO_TYPE || !psBy.has(p.id)) continue;
+    if (!comboProductIds(p.combo).some((id) => work.has(id))) continue;
+    if (!work.has(p.id) && !vItemById.has(psBy.get(p.id).venue_item_id)) continue;
+    add(p.id).prodFields.add('combo');
+  }
 
   // Parents before sizes, so a new parent's id is planned before its sizes point at it.
   const order = [...work.keys()].filter((pid) => productById.has(pid) && psBy.has(pid));
@@ -910,6 +974,9 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       const pricing = { base: basePrice(p, ps) };
       // 5.12.120: a delivery price goes on a new row only when the group menu holds one.
       for (const k of PUBLISHED_CHANNELS) { if (k === 'delivery' && channelPrice(p, ps, k) == null) continue; pricing[k] = channelPrice(p, ps, k); }
+      // 5.12.124: a new Combo is born with its steps. The key is only there for a Combo that has
+      // steps here, so a publish that adds any other product sends exactly what it always did.
+      const comboHere = mapCombo(p);
       const row = {
         id: ps.venue_item_id, name: p.name, menu_name: p.menu_name ?? p.name, receipt_name: p.receipt_name ?? p.name,
         kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: venueType(p),
@@ -919,6 +986,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         tax_rate_id: tax.ok ? tax.id : null, image: p.image ?? null, scope: 'local', org_id: orgId,
         tags: listOf(p.tags), item_code: p.item_code ?? null, tax_overrides: newRowTaxOverrides(p, tax),
         ...(tax.profileId ? { tax_profile_id: tax.profileId } : {}),
+        ...(comboHere ? { combo: comboHere } : {}),
       };
       W.items.insert.push(row);
       const vr = { ...row, location_id: loc };
@@ -926,6 +994,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       vItemById.set(row.id, vr);
       insertedItems.add(row.id);
       writtenItems.add(row.id);
+      if (comboHere) sayComboLeft(p, meta);
       const parentP = p.parent_product_id ? productById.get(p.parent_product_id) : null;
       lines.push({
         table: 'items', id: row.id, column: '(new)', before: null, after: p.name, ...meta,
@@ -1085,7 +1154,12 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         setCol('items', vrow, 'tax_profile_id', null, { ...meta, profileCleared: true });
         continue;
       }
-      setCol('items', vrow, col, v, meta);
+      // Steps are compared as the POS reads them: a site value it reads as the same steps (an empty
+      // list saved by hand reads as none) is never written, and so never kept by the first import,
+      // whose database function knows no kept `combo` (found while pinning the review, 27 Nov 2026).
+      if (col === 'combo' && sameValue(comboColumnValue(comboStepsOf(vrow.combo)), v)) continue;
+      const wrote = setCol('items', vrow, col, v, meta);
+      if (wrote && col === 'combo') sayComboLeft(p, meta);
     }
     for (const k of pricingKeys) {
       if (k === 'base' && sizedParent) continue;
@@ -1497,7 +1571,7 @@ export function countsWords(counts) {
 // Plain words for the columns publish writes (17 Oct verification: never a raw column name, id,
 // web address or true/false in the preview a manager checks before publishing).
 const TEXT_WORDS = { name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', item_code: 'item code' };
-const TYPE_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with variants', subitem: 'a sub item' };
+const TYPE_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with variants', subitem: 'a sub item', combo: 'a Combo' };
 const PRICE_LABEL = { dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' };
 const quoteText = (v) => {
   const t = v == null ? '' : String(v).trim();
@@ -1602,6 +1676,8 @@ export function lineWords(line, names = {}) {
     if (gone.length) parts.push(`no longer asks ${nameList(gone, names, 'option group')}`);
     return `${who}: ${parts.length ? parts.join('; ') : 'option groups in a new order'}`;
   }
+  // 5.12.124: a Combo's steps as this site gets them.
+  if (col === 'combo') return comboStepsOf(line.after).length ? `${who}: its steps here are ${stepsSummary(line.after)}` : `${who}: its steps are taken away here`;
   return `${who}: changed`;
 }
 

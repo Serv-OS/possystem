@@ -198,13 +198,14 @@ export function stepProductBlock(row, { comboId = null } = {}) {
 
 /**
  * Why steps cannot be set up on this product, in words, or null when they can (the Steps tab shows
- * the words instead of the editor). Stage 1: a Combo with steps is one site's own product.
- *   managed   true when the Multi site menu manages the product (head office owns it)
+ * the words instead of the editor).
  *   sizes     how many live sizes the product has
+ * 5.12.124: a product the Multi site menu manages is no longer refused here. Its steps are head
+ * office's (set in the group menu, the same editor): the site's Menu Manager shows them read only
+ * with the usual lock, or editable when the site keeps its own steps (lib/msm/msmLock.js, 'combo').
  */
-export function stepsEditBlock(item, { managed = false, sizes = 0 } = {}) {
+export function stepsEditBlock(item, { sizes = 0 } = {}) {
   if (!item || item.type !== COMBO_TYPE) return 'Set the type to Combo to give this product steps.';
-  if (managed) return 'Head office manages this product in the Multi site menu. A Combo with steps is set up as a site\'s own product for now.';
   const scope = item.scope || 'local';
   if (scope !== 'local' || item.masterId || item.master_id) return 'This product is shared with other sites. A Combo with steps works at one site for now: set Sharing to This site only first.';
   if (parentIdOf(item)) return 'A size cannot be a Combo.';
@@ -227,7 +228,8 @@ export function comboWarnings(item, ctx = {}) {
   const rows = ctx.rowsById instanceof Map ? ctx.rowsById : new Map();
   const out = [];
   const off = setOf(ctx.eightySix);
-  if (ctx.noPrice) out.push({ stepId: null, level: 'stop', words: 'This Combo has no price. Set its price on Details: that is the set price.' });
+  // ctx.priceWhere: where its price is set on this screen (the group menu's sheet has no Details tab).
+  if (ctx.noPrice) out.push({ stepId: null, level: 'stop', words: `This Combo has no price. Set its price ${ctx.priceWhere || 'on Details'}: that is the set price.` });
   if (!steps.some((s) => stepRule(s).min > 0)) out.push({ stepId: null, level: 'note', words: 'Every step can be skipped. On the POS at least one thing must be picked before the Combo can be added.' });
   for (const step of steps) {
     const rule = stepRule(step);
@@ -902,7 +904,7 @@ export const COMBO_WORDS = Object.freeze({
   refundWhole: 'A Combo is refunded whole: its price and everything picked in it.',
   sentChange: 'This Combo has gone to the kitchen. Void it and ring it up again to change it.',
   noOwnOptions: 'A Combo with steps asks no options of its own: its line never reaches the kitchen. Each product in a step asks its own.',
-  share: 'A Combo with steps stays at this site for now, so it was not shared. Combos come to the Multi site menu in a later update.',
+  share: 'A Combo with steps is not shared with the Sharing switch. Put it in the Multi site menu to give it to your other sites.',
   needsUpdate: 'Steps need one database update that has not been run yet (SQL 20261215a). Nothing can be saved until then. Ask ServOS to run it.',
 });
 
@@ -920,4 +922,74 @@ export function comboNotHereWords(item) {
  */
 export function comboPosOnly(item) {
   return comboHasSteps(item);
+}
+
+// ── 12. ONE COMBO, MANY SITES (the Multi site menu, 5.12.124, stage 2) ────────
+//
+// Peter, 27 Nov 2026: "make sure its also in the multi site menu manager properly". The group menu
+// holds a Combo's steps in the SAME shape (msm_products.combo), with one difference: each itemId is
+// a product of the GROUP MENU. A publish swaps every one for that site's own item of the product,
+// and Bring in swaps a site's item ids for the group menu's products. These are the rules both
+// directions share, so a step means the same thing wherever it is read.
+
+/** Every product id a Combo's steps name, once each (the group menu's ids, or a site's item ids). */
+export function comboProductIds(value) {
+  const out = [];
+  for (const s of comboStepsOf(value)) for (const p of s.products) if (!out.includes(p.itemId)) out.push(p.itemId);
+  return out;
+}
+
+/** How many different products a step needs before anybody could answer it. 0 = it can be skipped. */
+export function stepNeeds(step) {
+  const s = normaliseStep(step);
+  if (s.min <= 0) return 0;
+  return s.selectionType === ONCE_EACH ? s.min : 1;      // only "each product once" needs more than one
+}
+
+/**
+ * The steps with every product id swapped through idOf(itemId): the id on the other side, or null
+ * when there is none (the product is not sold at that site, or is not in the group menu).
+ *   A product with no id on the other side is LEFT OUT of its step there.
+ *   A step nobody has to answer that ends with no product is left out too (an empty screen).
+ *   A step that MUST be answered is always kept, even with too few products, so whoever reads the
+ *   result can refuse it in words (unmetSteps below). It is never quietly made optional.
+ * Returns { steps, left: [{ stepId, stepName, itemId }], dropped: [{ stepId, stepName }] }.
+ */
+export function mapStepProducts(steps, idOf) {
+  const out = [];
+  const left = [];
+  const dropped = [];
+  for (const s of comboStepsOf(listOf(steps))) {
+    const products = [];
+    for (const p of s.products) {
+      const id = text(idOf(p.itemId));
+      if (!id) { left.push({ stepId: s.id, stepName: s.name, itemId: p.itemId }); continue; }
+      if (!products.some((x) => x.itemId === id)) products.push({ itemId: id, bump: p.bump });
+    }
+    if (!products.length && stepNeeds(s) === 0) { dropped.push({ stepId: s.id, stepName: s.name }); continue; }
+    out.push({ ...s, products });
+  }
+  return { steps: out, left, dropped };
+}
+
+/**
+ * The steps that cannot be answered with the products `has(itemId)` says are really there (on sale
+ * at that site). Returns [{ step, need, have }]: need different products, have of them.
+ */
+export function unmetSteps(steps, has = () => true) {
+  const out = [];
+  for (const s of comboStepsOf(listOf(steps))) {
+    const need = stepNeeds(s);
+    if (!need) continue;
+    const have = s.products.filter((p) => has(p.itemId)).length;
+    if (have < need) out.push({ step: s, need, have });
+  }
+  return out;
+}
+
+/** "Pick 5 pizzas (3 products), Pick 2 breads (2 products)": a Combo's steps in one line of words. */
+export function stepsSummary(value) {
+  const steps = comboStepsOf(value);
+  if (!steps.length) return 'no steps';
+  return steps.map((s) => `${s.name} (${s.products.length} product${s.products.length === 1 ? '' : 's'})`).join(', ');
 }

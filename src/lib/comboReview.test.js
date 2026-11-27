@@ -354,7 +354,8 @@ test('the Back Office sale detail lists a Combo with its picks under it, never a
 
 test('steps that are still live can always be taken off, even when the editor is hidden', () => {
   const tab = read('../backoffice/sections/ComboStepsTab.jsx');
-  assert.match(tab, /\{block && columnReady && comboHasSteps\(item\) && \(/);
+  // 5.12.124: never at a site where head office sets the steps (read only there).
+  assert.match(tab, /\{block && !readOnly && columnReady && comboHasSteps\(item\) && \(/);
   assert.match(tab, /data-testid="combo-steps-take-off"[^\n]*onClick=\{takeStepsOff\}>Take the steps off<\/button>/);
   assert.match(tab, /if \(!window\.confirm\(`Take the \$\{steps\.length === 1 \? 'step' : `\$\{steps\.length\} steps`\} off \$\{nameOf\(item\)\}\?[^\n]*\)\) return;\n\s+save\(\[\]\);/);
 });
