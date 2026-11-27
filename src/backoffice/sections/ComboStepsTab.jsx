@@ -63,7 +63,7 @@ function NumBox({ value, min = 1, max = 98, onCommit, label, width = 58 }) {
 //   needsUpdateWords, priceWhere   the group menu's own words for the SQL it needs and its price.
 // The group menu uses this same tab through a small adapter (msm/MsmComboSteps.jsx): its products
 // are shaped like the store's menu rows, so the rules and the words are the same in both places.
-export default function ComboStepsTab({ item, menuItems = [], categories = [], onUpdate, markBOChange, columnReady = true, eightySixIds = [], readOnly = false, keptSteps = false, posOnlyNote = true, needsUpdateWords = COMBO_WORDS.needsUpdate, priceWhere = '(the price on Details)' }) {
+export default function ComboStepsTab({ item, menuItems = [], categories = [], onUpdate, markBOChange, columnReady = true, eightySixIds = [], readOnly = false, keptSteps = false, posOnlyNote = true, needsUpdateWords = COMBO_WORDS.needsUpdate, priceWhere = '(the price on Details)', noPriceWhere = 'on Details' }) {
   const steps = comboSteps(item);
   const [open, setOpen] = useState(() => (steps.length === 1 ? steps[0].id : null));   // the step whose form is open
   const [nameDraft, setNameDraft] = useState({});       // step id -> the name being typed
@@ -89,7 +89,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
 
   const block = stepsEditBlock(item, { sizes: (sizesOf.get(item.id) || []).length });
   const warnings = comboWarnings(item, {
-    rowsById, eightySix: eightySixIds, hiddenHere: (row) => optionHiddenOn(row, 'pos'), noPrice: hasNoSellPrice(item),
+    rowsById, eightySix: eightySixIds, hiddenHere: (row) => optionHiddenOn(row, 'pos'), noPrice: hasNoSellPrice(item), priceWhere: noPriceWhere,
     // A step that keeps prices sells the product at its own price: a product with sizes has one
     // when any of its sizes does.
     noPriceRow: (row) => { const kids = sizesOf.get(row.id) || []; return kids.length ? kids.every(k => hasNoSellPrice(k)) : hasNoSellPrice(row); },

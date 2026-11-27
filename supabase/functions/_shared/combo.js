@@ -228,7 +228,8 @@ export function comboWarnings(item, ctx = {}) {
   const rows = ctx.rowsById instanceof Map ? ctx.rowsById : new Map();
   const out = [];
   const off = setOf(ctx.eightySix);
-  if (ctx.noPrice) out.push({ stepId: null, level: 'stop', words: 'This Combo has no price. Set its price on Details: that is the set price.' });
+  // ctx.priceWhere: where its price is set on this screen (the group menu's sheet has no Details tab).
+  if (ctx.noPrice) out.push({ stepId: null, level: 'stop', words: `This Combo has no price. Set its price ${ctx.priceWhere || 'on Details'}: that is the set price.` });
   if (!steps.some((s) => stepRule(s).min > 0)) out.push({ stepId: null, level: 'note', words: 'Every step can be skipped. On the POS at least one thing must be picked before the Combo can be added.' });
   for (const step of steps) {
     const rule = stepRule(step);

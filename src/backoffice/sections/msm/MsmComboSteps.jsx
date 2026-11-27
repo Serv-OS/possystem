@@ -38,6 +38,7 @@ export default function MsmComboSteps({ id, form, price, products, categories, o
         eightySixIds={[]}
         needsUpdateWords="Steps in the group menu need one database update that has not been run yet (SQL 20261216a). Nothing can be saved to them until then. Ask ServOS to run it."
         priceWhere="(the group price on this sheet)"
+        noPriceWhere="in Standard price on this sheet"
       />
     </div>
   );

@@ -1,5 +1,17 @@
 export const CHANGELOG = [
   {
+    v: '5.12.124',
+    date: '27 Nov 2026',
+    items: [
+      'Combos now work in the Multi site menu (Peter, 27 Nov 2026: "make sure its also in the multi site menu manager properly"). A group product can be a Combo with steps. Its product sheet has a new choice, A Combo (built in steps), and the same Steps editor and words as a site\'s Menu Manager. Each step lists products of the group menu.',
+      'Publishing gives each site its own copy of the steps, with that site\'s own item of every product. A product a site does not sell is left out of the step there, and the publish screen says so. A step customers must answer that a site cannot fill holds that site back, in words, while the other sites still publish.',
+      'A product turned on or off at a site joins or leaves the Combo\'s steps there in the same publish. Changing the steps writes only the steps. Site prices, on and off per site, Shows on, Sold as and several menus work for a Combo as for any product.',
+      'Bring in (Sites) brings a site\'s own Combo into the group menu WITH its steps. A product its steps need that the group menu does not have comes in with it, linked to the group product that looks like it, or new. One that cannot come in (an option only sub item, another Combo) stops it, in words, and nothing is added to the draft. Bring in all brings each product once. The first import still leaves a Combo at its site and says to bring it in from Sites once published.',
+      'At a site, the steps of a Combo the group menu manages are read only in Menu Manager, with the usual lock, unless that site keeps its own steps. The changes list, the draft summary, the publish preview and Undo say what happened to the steps in plain words.',
+      'Needs one database update before launch: SQL 20261216a (made from the functions as they are on live, and it refuses to run if they have changed since). Run 20261215a first if it has not been run. Then launch, then deploy msm-publish.',
+    ],
+  },
+  {
     v: '5.12.123',
     date: '27 Nov 2026',
     items: [
