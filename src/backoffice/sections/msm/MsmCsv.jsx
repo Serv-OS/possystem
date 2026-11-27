@@ -84,7 +84,7 @@ export default function MsmCsv({ initial = 'export', menu, live, eff, sites, row
       {mode === 'export' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <div style={{ ...ui.sub, fontSize: 13 }}>
-            One row per product: its ServOS ID, name, category, what it is a size of and the group price, then each site's own price (blank when it follows the group price) and whether it is on sale there (Yes or No).
+            One row per product: its ServOS ID, name, category, what it is a variant of and the group price, then each site's own price (blank when it follows the group price) and whether it is on sale there (Yes or No).
             <br /><br />2 Change prices or Yes and No in Excel. Leave the ServOS ID column as it is. 3 Bring the file back here. New rows are ignored: add products in the menu.
           </div>
           <div>

@@ -56,28 +56,28 @@ function invariants(b, sites, label = '') {
   for (const p of c.products) assert.ok(rowsOf(c, p.id).some((ps) => ps.active !== false), `${label}: ${p.name} is on at one site at least`);
 }
 
-test('1. no list line is a size: every line is a product', () => {
+test('1. no list line is a variant: every line is a product', () => {
   const { p, r } = setup();
   for (const e of [...r.family, ...r.name, ...r.onlyOne, ...r.differentNames]) {
-    assert.equal(p.products.find((x) => x.id === e.productId).parent_product_id, null, 'a size is never a line of its own');
+    assert.equal(p.products.find((x) => x.id === e.productId).parent_product_id, null, 'a variant is never a line of its own');
   }
 });
 
-test('2. sizes follow a name matched product: Small at both sites is one size, Large is at Site A', () => {
+test('2. variants follow a name matched product: Small at both sites is one variant, Large is at Site A', () => {
   const { p } = setup();
   const cookie = top(p.products, 'Cookie');
   const small = sizesOf(p.products, cookie).find((x) => nm(x) === 'Small');
   const large = sizesOf(p.products, cookie).find((x) => nm(x) === 'Large');
-  assert.deepEqual(locsOf(p, small.id), [A, B].sort(), 'Small and "Small " are one size');
+  assert.deepEqual(locsOf(p, small.id), [A, B].sort(), 'Small and "Small " are one variant');
   assert.deepEqual(locsOf(p, large.id), [A]);
   const l = R.nameLine(p, nameEntry(p, 'Cookie'), o);
   assert.deepEqual(l.notes, [
-    'With Same product, sizes with the same name become one size: Small (both sites), Large (Site A only).',
+    'With Same product, variants with the same name become one variant: Small (both sites), Large (Site A only).',
     'Not at Site C.',
   ]);
 });
 
-test('3. Keep separate splits the sizes with their product: each site\'s Cookie with its own sizes and price', () => {
+test('3. Keep separate splits the variants with their product: each site\'s Cookie with its own variants and price', () => {
   const { p, sites, r } = setup();
   const b = buildCentral(p, sites, { rejectName: r.name.map((e) => e.productId) });
   const c = b.central;
@@ -88,7 +88,7 @@ test('3. Keep separate splits the sizes with their product: each site\'s Cookie 
   assert.deepEqual(sizesOf(c.products, cookieB).map(nm), ['Small']);
   for (const [cookie, loc] of [[cookieA, A], [cookieB, B]]) {
     assert.deepEqual(locsOf(c, cookie.id), [loc]);
-    for (const z of sizesOf(c.products, cookie)) assert.deepEqual(locsOf(c, z.id), [loc], 'each size under the Cookie at its own site');
+    for (const z of sizesOf(c.products, cookie)) assert.deepEqual(locsOf(c, z.id), [loc], 'each variant under the Cookie at its own site');
   }
   assert.equal(cookieA.default_price, 1.5, 'its own row\'s price');
   assert.equal(cookieB.default_price, 1.5);
@@ -109,7 +109,7 @@ test('4. Same product: one Cookie, Small at both sites, Large at Site A', () => 
   invariants(b, sites, 'same product');
 });
 
-test('5. leaving out a product with sizes takes its sizes with it (Latte, and Cookie when linked)', () => {
+test('5. leaving out a product with variants takes its variants with it (Latte, and Cookie when linked)', () => {
   const { p, sites, r } = setup();
   const latte = top(p.products, 'Latte');
   const large = sizesOf(p.products, latte)[0];
@@ -124,7 +124,7 @@ test('5. leaving out a product with sizes takes its sizes with it (Latte, and Co
   invariants(b2, sites, 'leave the linked Cookie out');
 });
 
-test('6. leaving out a one site product with sizes takes them with it', () => {
+test('6. leaving out a one site product with variants takes them with it', () => {
   const v = venuesForReview();
   const pie = v[C].items.find((i) => i.id === 'l-pie-c');
   v[C].items.push({ ...pie, id: 'l-pie-c-s', name: 'Slice', menu_name: 'Slice', parent_id: 'l-pie-c', pricing: { base: 1.5 } });
@@ -138,8 +138,8 @@ test('6. leaving out a one site product with sizes takes them with it', () => {
   assert.ok(!b.central.products.some((x) => nm(x) === 'Slice'));
   invariants(b, sites, 'Pie left out');
   const l = R.onlyOneLine(p, entry, { ...o, choice: 'leave' });
-  assert.equal(l.sizes, 'Sizes: Slice £1.50');
-  assert.deepEqual(l.notes, ['Left out with its sizes: it stays Site C\'s own, exactly as today.']);
+  assert.equal(l.sizes, 'Variants: Slice £1.50');
+  assert.deepEqual(l.notes, ['Left out with its variants: it stays Site C\'s own, exactly as today.']);
 });
 
 test('7. switched off rows are in no list, never clash, have no row, and are counted once', () => {
@@ -147,7 +147,7 @@ test('7. switched off rows are in no list, never clash, have no row, and are cou
   const off = ['l-white-1', 'l-white-2', 'l-cola-old', 'l-newsize-c', 'l-old-b', 'm-latte-old', S('m-latte-l', C)];
   for (const id of off) assert.ok(!p.productSites.some((s) => s.venue_item_id === id), `${id} has no product site row`);
   const listed = [...r.family, ...r.name, ...r.onlyOne].map((e) => nm(p.products.find((x) => x.id === e.productId)));
-  for (const n of ['White', 'New size', 'Old special']) assert.ok(!listed.includes(n), `${n} is in no list`);
+  for (const n of ['White', 'New variant', 'Old special']) assert.ok(!listed.includes(n), `${n} is in no list`);
   for (const c of r.clashes) for (const x of c.copies) assert.ok(!off.includes(x.id), `${x.id} is in no clash`);
   assert.deepEqual(r.switchedOff, { count: 6, sizeCopies: 1, bySite: { [A]: 1, [B]: 4, [C]: 1 } });
   assert.equal(R.switchedOffWords(r), '6 deleted or switched off products at your sites stay as they are, not in the group menu.');
@@ -155,7 +155,7 @@ test('7. switched off rows are in no list, never clash, have no row, and are cou
   assert.equal(R.switchedOffWords({ switchedOff: { count: 0 } }), '');
 });
 
-test('7b. a switched off copy of a real product rides along off; a size copy that lost its product does not', () => {
+test('7b. a switched off copy of a real product rides along off; a variant copy that lost its product does not', () => {
   const v = venuesForReview();
   const latteA = v[A].items.find((i) => i.id === 'm-latte');
   // One family: a size under Latte at A, a product of its own at B, a switched off product copy at C.
@@ -166,7 +166,7 @@ test('7b. a switched off copy of a real product rides along off; a size copy tha
   const offCopy = p.productSites.find((s) => s.venue_item_id === S('m-shot', C));
   assert.ok(offCopy, 'it has a product site row');
   assert.equal(offCopy.active, false, 'off at that site');
-  assert.ok(!p.productSites.some((s) => s.venue_item_id === S('m-latte-l', C)), 'the orphan size copy still does not');
+  assert.ok(!p.productSites.some((s) => s.venue_item_id === S('m-latte-l', C)), 'the orphan variant copy still does not');
   assert.equal(r.switchedOff.count, 6, 'the count is unchanged');
   invariants(buildCentral(p, sites, R.toDecisions(p, R.initialChoices(p))), sites, 'rides along');
 });
@@ -265,7 +265,7 @@ test('11. One site only is never at another site; a row two shared products are 
   invariants(buildCentral(t.p, t.sites, R.toDecisions(t.p, R.initialChoices(t.p))), t.sites, 'two namesakes');
 });
 
-test('12. the words: headline, lines, mixed forms, own size prices, and never a long dash', () => {
+test('12. the words: headline, lines, mixed forms, own variant prices, and never a long dash', () => {
   const { p, r } = setup();
   assert.equal(reviewWords(r), '6 products already shared between sites, 3 set up separately at several sites, 1 with different names, 1 only at one site, 2 clashes.');
   assert.equal(reviewWords({ ...r, name: [] }), '6 products already shared between sites, 1 with different names, 1 only at one site, 2 clashes.', 'no "0 set up separately"');
@@ -274,20 +274,20 @@ test('12. the words: headline, lines, mixed forms, own size prices, and never a 
   const ls = R.sharedLine(view, latte.id, o);
   assert.deepEqual(ls, {
     title: 'Latte',
-    sub: 'Hot drinks · sold on its own at Site C; sold with sizes at Site A and Site B · group price £3.20 (1 site charges its own)',
-    sizes: 'Sizes: Large latte £3.50',
+    sub: 'Hot drinks · sold on its own at Site C; sold with variants at Site A and Site B · group price £3.20 (1 site charges its own)',
+    sizes: 'Variants: Large latte £3.50',
     notes: ['Site B charges its own price for Large latte.'],
     optionsOnly: false,
   });
-  assert.deepEqual(R.sizePriceNotes(R.productFacts(view, latte.id), siteName), ['Site B charges its own price for Large latte.'], 'names the site whose size has its own price');
+  assert.deepEqual(R.sizePriceNotes(R.productFacts(view, latte.id), siteName), ['Site B charges its own price for Large latte.'], 'names the site whose variant has its own price');
   assert.equal(R.sharedLine(view, top(p.products, 'Oat milk').id, o).sub, 'Milks · option only · on sale at Site A and Site B · group price £0.40');
   assert.ok(R.sharedLine(view, top(p.products, 'Oat milk').id, o).optionsOnly);
-  assert.deepEqual(R.sharedLine(view, latte.id, { ...o, leftOut: true }).notes.at(-1), 'Left out with its sizes: each site keeps its own as it is today, outside the group menu.');
+  assert.deepEqual(R.sharedLine(view, latte.id, { ...o, leftOut: true }).notes.at(-1), 'Left out with its variants: each site keeps its own as it is today, outside the group menu.');
   const cookie = R.nameLine(p, nameEntry(p, 'Cookie'), o);
   assert.equal(cookie.lead, 'Cookie was set up separately at 2 sites, not shared.');
-  assert.equal(cookie.choices.apart, 'Keep separate: Cookie comes into the group menu as 2 separate products, one for each site, each with its own price and sizes.');
+  assert.equal(cookie.choices.apart, 'Keep separate: Cookie comes into the group menu as 2 separate products, one for each site, each with its own price and variants.');
   assert.equal(cookie.choices.leave, 'Leave out: Cookie stays out of the group menu. Each site keeps its own Cookie, exactly as today.');
-  assert.deepEqual(cookie.rows, ['Site A: Cold drinks · sizes Small £1.20, Large £1.80', 'Site B: Cold drinks · sizes Small £1.30']);
+  assert.deepEqual(cookie.rows, ['Site A: Cold drinks · variants Small £1.20, Large £1.80', 'Site B: Cold drinks · variants Small £1.30']);
   assert.equal(cookie.footer, 'Nothing changes at any site whatever you pick.');
   const oat = R.nameLine(p, nameEntry(p, 'Oat milk'), o);
   assert.equal(oat.lead, 'Oat milk is shared at Site A and Site B. Site C set up its own Oat milk separately.');
@@ -307,9 +307,9 @@ test('12. the words: headline, lines, mixed forms, own size prices, and never a 
   const herb = top(m.p.products, 'Herbal tea');
   const hv = R.reviewView(m.p, R.initialChoices(m.p));
   const hl = R.sharedLine(hv, herb.id, o);
-  assert.ok(hl.sub.includes('sold with sizes at Site B; an option inside other products at Site A and Site C'), hl.sub);
+  assert.ok(hl.sub.includes('sold with variants at Site B; an option inside other products at Site A and Site C'), hl.sub);
   assert.ok(!hl.sub.includes(' · option only'), 'no option only tag when the forms differ');
-  assert.ok(!hl.notes.some((n) => n.includes('only at Site B')), 'no size note repeating the where words');
+  assert.ok(!hl.notes.some((n) => n.includes('only at Site B')), 'no variant note repeating the where words');
   assert.equal(hl.optionsOnly, false, 'it sorts with the products sold on their own');
   assert.ok(R.sharedLine(hv, top(m.p.products, 'Oat milk').id, o).optionsOnly, 'Oat milk goes under the options heading');
 });
@@ -406,7 +406,7 @@ test('16. the price reach words are true', () => {
   const { p } = setup();
   const e = nameEntry(p, 'Cookie');
   const same = R.nameLine(p, e, o).choices.same;
-  assert.equal(same, 'Same product: one Cookie in the group menu. A group price change reaches Site A. Site B charges its own size prices and keeps them until you change them there.');
+  assert.equal(same, 'Same product: one Cookie in the group menu. A group price change reaches Site A. Site B charges its own variant prices and keeps them until you change them there.');
   crossCheck(p, e.productId, same);
   const v = venuesForReview();
   v[B].items.find((i) => i.id === 'l-cookie-b-s').pricing = { base: 1.2 };
@@ -478,7 +478,7 @@ test('18. clash sentences never advise switching off a copy an option uses, nor 
   assert.ok(!mocha.words.includes('switch it off'), mocha.words);
   const size = r.clashes.find((c) => c.level === 'size');
   const sl = R.clashLine(size, o);
-  assert.equal(sl.title, 'Small (a size of Pie)');
+  assert.equal(sl.title, 'Small (a variant of Pie)');
   assert.equal(sl.words, 'Neither goes in the group menu, so both stay as they are at Site C. If one is an old copy that no option uses, switch it off in Site C\'s Menu Manager, then start this set up again: the other one then comes in with Pie.');
   assert.ok(!sl.words.includes('Sites tab'));
   const syrup = R.clashLine(r.clashes.find((c) => c.name === 'Syrup'), o);
@@ -508,7 +508,7 @@ test('19. a one site option says which groups use it; Clashes never says "Needs 
   invariants(buildCentral(p, sites, R.toDecisions(p, R.initialChoices(p))), sites, 'sauce');
 });
 
-test('20. Keep separate never leaves a size switched off at every site', () => {
+test('20. Keep separate never leaves a variant switched off at every site', () => {
   for (const familyLink of [false, true]) {
     const v = withJoinedMaster(venuesForReview());
     for (const [loc, id] of [[A, 'm-tea-s'], [B, S('m-tea-s', B)]]) v[loc].items.find((i) => i.id === id).archived = true;
@@ -520,10 +520,10 @@ test('20. Keep separate never leaves a size switched off at every site', () => {
     const b = buildCentral(p, sites, decide(p, R.setNameChoice(R.initialChoices(p), tea.productId, 'apart')));
     const c = b.central;
     const teaP = c.products.find((x) => x.id === tea.productId);
-    assert.deepEqual(sizesOf(c.products, teaP), [], `${familyLink}: no size of the shared Tea is left with every row off`);
+    assert.deepEqual(sizesOf(c.products, teaP), [], `${familyLink}: no variant of the shared Tea is left with every row off`);
     for (const id of ['m-tea-s', S('m-tea-s', B)]) assert.ok(!c.productSites.some((s) => s.venue_item_id === id), `${familyLink}: ${id} stays as it is`);
     assert.ok(c.productSites.some((s) => s.venue_item_id === 'l-tea-c-s' && s.active), `${familyLink}: Site C's own Small comes in under its own Tea`);
-    invariants(b, sites, `size all off ${familyLink}`);
+    invariants(b, sites, `variant all off ${familyLink}`);
   }
 });
 
@@ -551,7 +551,7 @@ test('21. productFacts through the index equals a plain filter, on every product
 // make that channel's group default empty, or the planner would write the default into it. Every
 // row that can get a site row in the product counts: its own rows, rows that joined by name, the
 // switched off copy put back, and sizes that join by name with no choice to make.
-test('22. channel prices: a joined, put back or auto joined size row with no channel price keeps the check at zero writes', () => {
+test('22. channel prices: a joined, put back or auto joined variant row with no channel price keeps the check at zero writes', () => {
   const teaCase = (variant) => {
     const v = venuesForReview();
     const at = (loc, id) => v[loc].items.find((i) => i.id === id);
@@ -591,11 +591,11 @@ test('22. channel prices: a joined, put back or auto joined size row with no cha
     const sites = importSites(v);
     const p = proposeImport(sites, { idGen: idGen() });
     const large = p.productSites.find((s) => s.venue_item_id === 'l-large-c');
-    assert.ok(large, 'the size comes in under the shared Latte');
+    assert.ok(large, 'the variant comes in under the shared Latte');
     const size = p.products.find((x) => x.id === large.product_id);
-    assert.ok(size.parent_product_id, 'as a size');
+    assert.ok(size.parent_product_id, 'as a variant');
     assert.equal(size.default_channels.dineIn, null, 'no dine in default: Site C has none');
-    invariants(buildCentral(p, sites, R.toDecisions(p, R.initialChoices(p))), sites, 'size joined with no channel price');
+    invariants(buildCentral(p, sites, R.toDecisions(p, R.initialChoices(p))), sites, 'variant joined with no channel price');
   }
 });
 

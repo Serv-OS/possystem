@@ -248,7 +248,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
           )}
           {scopeMode !== 'groups' && (
             <label style={{ ...ui.row, fontSize: 12.5, marginTop: 10, cursor: 'pointer' }}>
-              <input type="checkbox" checked={includeSizes} onChange={(e) => setIncludeSizes(e.target.checked)} /> Sizes follow their product
+              <input type="checkbox" checked={includeSizes} onChange={(e) => setIncludeSizes(e.target.checked)} /> Variants follow their product
             </label>
           )}
         </div>

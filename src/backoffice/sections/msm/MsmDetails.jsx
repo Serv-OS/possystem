@@ -26,9 +26,10 @@ import { menusReady, addMenuChanges, renameMenuChange, removeMenuChange, menuSit
 // 5.12.57 (US basics, batch 6): the words name the venue's own tax (VAT at a UK venue, unchanged).
 import { activeTaxText as tt } from '../../../lib/taxWords';
 
-// The order types a group menu can show. Delivery is a platform price (set by the menu that platform
-// uses at each site, UI issue 2), so it is not one of them; its VAT row always shows.
-const TYPE_CHOICES = ['dineIn', 'takeaway', 'collection', 'driveThru', 'bar'];
+// The order types a group menu can show. 5.12.120 (Peter, 27 Nov 2026: "I cant set a delivery price
+// in the multi site menu manager"): Delivery is one of them. It was left out on 17 Oct as "a
+// platform price"; its VAT row always showed.
+const TYPE_CHOICES = ['dineIn', 'takeaway', 'collection', 'delivery', 'driveThru', 'bar'];
 const TYPE_HELP = { ...PRICE_TYPE_HELP, bar: 'Shows a Bar tab VAT row. Bar tabs have no price of their own.' };   // taxText: read through tt() below
 
 export default function MsmDetails({ api, client, menu, live, eff, sites, stage, editable, canEdit, rows = [], setNote, reload, venueMenus }) {
@@ -103,7 +104,7 @@ export default function MsmDetails({ api, client, menu, live, eff, sites, stage,
       <div style={ui.card}>
         <div style={{ ...ui.h2, marginBottom: 4 }}>Sites</div>
         <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>Changes here go into each site's own menu named below. Times, menu prices and which menu a till or platform uses stay set at each site.</div>
-        <div style={{ ...ui.sub, marginBottom: 12 }}>Times and which menu is the default are set at each site and never changed by publishing. To price a platform such as delivery differently, use that platform's own menu at each site, as you do today.</div>
+        <div style={{ ...ui.sub, marginBottom: 12 }}>Times and which menu is the default are set at each site and never changed by publishing. A delivery price is set here like any other order type (tick Delivery under Order types). To price one delivery platform differently from another, use that platform's own menu at each site, as you do today.</div>
         {venueMenus === null && <Notice tone="bad">Could not read the sites' own menus.</Notice>}
         {venueMenus === undefined && <div style={{ ...ui.sub, marginBottom: 8 }}>Reading the sites' own menus…</div>}
         {sites.map((s) => {

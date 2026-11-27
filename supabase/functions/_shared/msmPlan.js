@@ -109,17 +109,26 @@ export function touchedFromChanges(changes) {
       if (extra.channelKeys === null || cur.channelKeys === null) cur.channelKeys = null;
       else { cur.channelKeys = cur.channelKeys || new Set(); for (const k of extra.channelKeys) cur.channelKeys.add(k); }
     }
+    // 5.12.120: the same for a product's group prices (default_channels), so a publish knows when
+    // the group's DELIVERY price itself was changed or taken away.
+    if (has(extra, 'defaultChannelKeys')) {
+      if (extra.defaultChannelKeys === null || cur.defaultChannelKeys === null) cur.defaultChannelKeys = null;
+      else { cur.defaultChannelKeys = cur.defaultChannelKeys || new Set(); for (const k of extra.defaultChannelKeys) cur.defaultChannelKeys.add(k); }
+    }
     map.set(key, cur);
   };
   // A product site's channel_prices change: only the keys whose value differs between the staged
   // before and after (Keep or Put back on Takeaway never rewrites a separate Eat in drift). With no
   // before, every key (the old rule).
-  const channelKeysOf = (c, after) => {
-    if (!has(after, 'channel_prices')) return undefined;
-    if (!c.before || typeof c.before !== 'object' || !has(c.before, 'channel_prices')) return null;
-    const b = c.before.channel_prices && typeof c.before.channel_prices === 'object' ? c.before.channel_prices : {};
-    const a = after.channel_prices && typeof after.channel_prices === 'object' ? after.channel_prices : {};
+  const channelKeysOf = (c, after, field = 'channel_prices') => {
+    if (!has(after, field)) return undefined;
+    if (!c.before || typeof c.before !== 'object' || !has(c.before, field)) return null;
+    const b = c.before[field] && typeof c.before[field] === 'object' ? c.before[field] : {};
+    const a = after[field] && typeof after[field] === 'object' ? after[field] : {};
     const keys = new Set([...Object.keys(b), ...Object.keys(a)]);
+    // A site's prices: as before. A product's group prices (5.12.120): a key that is not there and
+    // a key set to nothing are the same price, none.
+    if (field === 'default_channels') return [...keys].filter((k) => !samePrice(a[k] ?? null, b[k] ?? null));
     return [...keys].filter((k) => has(a, k) !== has(b, k) || !samePrice(a[k], b[k]));
   };
   const clearedOf = (c, after) => {
@@ -151,7 +160,10 @@ export function touchedFromChanges(changes) {
     if (c.target === 'menu') fields.forEach((f) => t.menu.add(f));
     else if (c.target === 'menu_site' && c.op === 'create') t.sitesCreated.add(c.location_id);
     else if (c.target === 'category') merge(t.categories, c.entity_id, c.op, fields);
-    else if (c.target === 'product') merge(t.products, c.entity_id, c.op, fields);
+    else if (c.target === 'product') {
+      const dk = c.op === 'update' ? channelKeysOf(c, after, 'default_channels') : undefined;
+      merge(t.products, c.entity_id, c.op, fields, dk === undefined ? {} : { defaultChannelKeys: dk });
+    }
     else if (c.target === 'product_site') {
       const ck = channelKeysOf(c, after);
       merge(t.productSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after), keptAdded: addedOf(c, after), ...(ck === undefined ? {} : { channelKeys: ck }) });
@@ -537,6 +549,14 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const def = p.default_channels && p.default_channels[k] != null ? p.default_channels[k] : null;
     return def == null ? null : Number(def);
   };
+  // 5.12.120 THE DELIVERY GUARD (msmModel PUBLISHED_CHANNELS). Delivery is written at a site only
+  // where the group menu holds a delivery price for this product there, or where this very change
+  // moved the group's or the site's delivery price (so taking one away does take it away). A
+  // delivery price the site set for itself, that the group menu never held, is left alone: an
+  // edit to Takeaway must never clear it. Every other order type is written as before.
+  const writesChannel = (p, ps, k, w) => k !== 'delivery' || channelPrice(p, ps, k) != null
+    || (w && w.defaultChannelKeys instanceof Set && w.defaultChannelKeys.has('delivery'))
+    || (w && w.channelKeys instanceof Set && w.channelKeys.has('delivery'));
   // 5.12.104 TAX PROFILES BY NAME (Peter, Mozz, 25 Nov 2026: the group menu's Tax view read "No
   // tax rate" in every box, and the product sheet offered only old style rates, while every site
   // charged through its "Prepared food" profile, 8.45% at three sites and 9.45% at two).
@@ -685,7 +705,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   const mapParent = (p) => {
     if (!p.parent_product_id) return null;
     const pps = psBy.get(p.parent_product_id);
-    if (!pps) { problem('size_parent_missing', 'block', `"${p.name}" is a size of a product that is not at this site.`, { productId: p.id }); return null; }
+    if (!pps) { problem('size_parent_missing', 'block', `"${p.name}" is a variant of a product that is not at this site.`, { productId: p.id }); return null; }
     return pps.venue_item_id;
   };
   const mapGroups = (p) => listOf(p.modifier_groups).map((g) => {
@@ -743,7 +763,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   // and the kiosk only while it has no VAT keys of its own (store addItem, kioskLineTaxRefs). Giving
   // it its product's order type keys would move its eat in VAT to the site's standard rate, so it is
   // blocked in words instead (no live size has no rate today; the product sheet refuses a new one).
-  const sizeNoRate = (p, meta) => problem('size_no_rate', 'block', `The size "${p.name}" has no VAT rate of its own at this site, so giving it its product's VAT by order type would charge its eat in VAT at the site's standard rate. Give the size its VAT in the multi site menu, then publish again. Nothing was changed.`, meta);
+  const sizeNoRate = (p, meta) => problem('size_no_rate', 'block', `The variant "${p.name}" has no VAT rate of its own at this site, so giving it its product's VAT by order type would charge its eat in VAT at the site's standard rate. Give the variant its VAT in the multi site menu, then publish again. Nothing was changed.`, meta);
   const parentRowOf = (p) => { const pps = psBy.get(p.parent_product_id); return pps ? vItemById.get(pps.venue_item_id) || null : null; };
 
   // VAT by order type for a NEW venue row: the four keys mapped; a new size takes its product's
@@ -813,7 +833,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       if (mirror === null) { problem('tax_profiles_unread', 'block', `Could not read this site's tax profiles, so VAT by order type for "${p.name}" was not checked. Try again.`, meta); return; }
       if (!mirror) {
         problem('real_tax_profile', 'block', isSize
-          ? `This site uses a tax profile on the size "${p.name}", so its VAT by order type would not change. Set its tax in Settings, Tax.`
+          ? `This site uses a tax profile on the variant "${p.name}", so its VAT by order type would not change. Set its tax in Settings, Tax.`
           : `This site uses a tax profile on "${p.name}". Set its tax in Settings, Tax.`, meta);
         return;
       }
@@ -834,7 +854,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   // ── 3. Which products this site must look at ──────────────────────────────
   const work = new Map();   // productId -> { prodOp, prodFields:Set, siteOp, siteFields:Set, keptCleared:Set, keptAdded:Set }
   const add = (pid) => { if (!work.has(pid)) work.set(pid, { prodOp: null, prodFields: new Set(), siteOp: null, siteFields: new Set(), keptCleared: new Set(), keptAdded: new Set() }); return work.get(pid); };
-  for (const [pid, t] of T.products) { const w = add(pid); w.prodOp = t.op; t.fields.forEach((f) => w.prodFields.add(f)); }
+  for (const [pid, t] of T.products) {
+    const w = add(pid); w.prodOp = t.op; t.fields.forEach((f) => w.prodFields.add(f));
+    if (t.defaultChannelKeys instanceof Set) w.defaultChannelKeys = new Set(t.defaultChannelKeys);
+  }
   for (const [key, t] of T.productSites) {
     const [pid, l] = key.split('|');
     if (l !== loc) continue;
@@ -880,8 +903,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       }
       const tax = mapTax(p);
       const pricing = { base: basePrice(p, ps) };
-      // Delivery is a platform price (set at each site by the menu its platform uses): never written.
-      for (const k of PUBLISHED_CHANNELS) pricing[k] = channelPrice(p, ps, k);
+      // 5.12.120: a delivery price goes on a new row only when the group menu holds one.
+      for (const k of PUBLISHED_CHANNELS) { if (k === 'delivery' && channelPrice(p, ps, k) == null) continue; pricing[k] = channelPrice(p, ps, k); }
       const row = {
         id: ps.venue_item_id, name: p.name, menu_name: p.menu_name ?? p.name, receipt_name: p.receipt_name ?? p.name,
         kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: venueType(p),
@@ -947,7 +970,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (w.prodOp === 'remove') cols.add('archived');
     for (const f of w.prodFields) {
       if (f === 'default_price') { if (ps.price == null) pricingKeys.add('base'); continue; }
-      if (f === 'default_channels') { PUBLISHED_CHANNELS.forEach((k) => { if (!(ps.channel_prices && ps.channel_prices[k] != null)) pricingKeys.add(k); }); continue; }
+      if (f === 'default_channels') { PUBLISHED_CHANNELS.forEach((k) => { if (!(ps.channel_prices && ps.channel_prices[k] != null) && writesChannel(p, ps, k, w)) pricingKeys.add(k); }); continue; }
       if (f === 'tax_by_type') { ORDER_TYPE_TAX_KEYS.forEach((k) => taxKeys.add(k)); continue; }
       const col = PRODUCT_COLUMN[f];
       if (col && col !== 'pricing') cols.add(col);
@@ -959,7 +982,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       else if (f === 'price') pricingKeys.add('base');
       else if (f === 'channel_prices') {
         const moved = w.channelKeys;
-        PUBLISHED_CHANNELS.forEach((k) => { if (!moved || moved.has(k)) pricingKeys.add(k); });
+        PUBLISHED_CHANNELS.forEach((k) => { if ((!moved || moved.has(k)) && writesChannel(p, ps, k, w)) pricingKeys.add(k); });
       }
     }
     // An option only row made into a product sold here (the sheet's "Also sold on its own", What is
@@ -974,7 +997,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (promoting) {
       ['type', 'sold_alone', 'cat', 'cats', 'visibility', 'tax_rate_id', 'assigned_modifier_groups', 'archived'].forEach((c) => cols.add(c));
       pricingKeys.add('base');
-      PUBLISHED_CHANNELS.forEach((k) => pricingKeys.add(k));
+      PUBLISHED_CHANNELS.forEach((k) => { if (writesChannel(p, ps, k, w)) pricingKeys.add(k); });
       if (!p.parent_product_id) ORDER_TYPE_TAX_KEYS.forEach((k) => taxKeys.add(k));
     }
     for (const k of w.keptCleared) {
@@ -1451,7 +1474,7 @@ export function countsWords(counts) {
   const n = (k, one, many) => { if (c[k]) parts.push(`${c[k]} ${c[k] === 1 ? one : many}`); };
   n('prices', 'price', 'prices');
   n('newProducts', 'new product', 'new products');
-  n('newSizes', 'new size', 'new sizes');
+  n('newSizes', 'new variant', 'new variants');
   n('subItems', 'sub item added', 'sub items added');
   n('turnedOn', 'turned on', 'turned on');
   n('turnedOff', 'turned off', 'turned off');
@@ -1469,7 +1492,7 @@ export function countsWords(counts) {
 // Plain words for the columns publish writes (17 Oct verification: never a raw column name, id,
 // web address or true/false in the preview a manager checks before publishing).
 const TEXT_WORDS = { name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', item_code: 'item code' };
-const TYPE_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with sizes', subitem: 'a sub item' };
+const TYPE_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with variants', subitem: 'a sub item' };
 const PRICE_LABEL = { dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' };
 const quoteText = (v) => {
   const t = v == null ? '' : String(v).trim();
@@ -1555,7 +1578,7 @@ export function lineWords(line, names = {}) {
   if (TEXT_WORDS[col]) return `${who}: ${TEXT_WORDS[col]} ${quoteText(line.before)} to ${quoteText(line.after)}`;
   if (col === 'cat') return line.after ? `${who}: moves to ${names[line.after] || 'another category'}` : `${who}: taken out of its category`;
   if (col === 'cats') return `${who}: extra categories change`;
-  if (col === 'parent_id') return line.after ? `${who}: now a size of ${names[line.after] || 'another product'}` : `${who}: no longer a size`;
+  if (col === 'parent_id') return line.after ? `${who}: now a variant of ${names[line.after] || 'another product'}` : `${who}: no longer a variant`;
   if (col === 'tax_rate_id') return line.after ? `${who}: VAT rate becomes ${names[line.after] || 'another rate'}` : `${who}: no VAT rate`;
   if (col === 'image') return `${who}: ${line.before == null || line.before === '' ? 'photo added' : line.after == null || line.after === '' ? 'photo removed' : 'photo changes'}`;
   if (col === 'type') return `${who}: now ${TYPE_WORDS[line.after] || 'another kind of product'}`;

@@ -42,7 +42,7 @@ function pieAtC() {
   const v = groupVenues();
   const c = v[C];
   c.groups.push(
-    { id: 'mgd-piesize', location_id: C, name: 'Pie size', min: 1, max: 1, selection_type: 'single', sort_order: 5, options: [{ id: 'opt-small', name: 'Small', price: 0, subGroupId: 'mgd-sauce' }, { id: 'opt-big', name: 'Big', price: 1 }] },
+    { id: 'mgd-piesize', location_id: C, name: 'Pie variant', min: 1, max: 1, selection_type: 'single', sort_order: 5, options: [{ id: 'opt-small', name: 'Small', price: 0, subGroupId: 'mgd-sauce' }, { id: 'opt-big', name: 'Big', price: 1 }] },
     { id: 'mgd-sauce', location_id: C, name: 'Pie sauce', min: 1, max: 1, selection_type: 'single', sort_order: 6, options: [{ id: 'opt-gravy', name: 'Gravy', price: 0 }] },
     { id: 'mgd-pieext', location_id: C, name: 'Pie extras', min: 0, max: 3, selection_type: 'multiple', sort_order: 7, options: [{ id: 'opt-peas', name: 'Peas', price: 0.5 }] },
   );
@@ -68,7 +68,7 @@ test('item 11 / finding: a product turned on where its option groups are not yet
     assert.ok(health.ok, JSON.stringify(health.blocking));
     assert.ok(!health.warnings.some((w) => w.code === 'group_empty'), JSON.stringify(health.warnings));
     const byName = (n) => plan.writes.groups.insert.find((g) => g.name === n);
-    assert.deepEqual(byName('Pie size').options.map((o) => o.name), ['Small', 'Big']);
+    assert.deepEqual(byName('Pie variant').options.map((o) => o.name), ['Small', 'Big']);
     assert.deepEqual(byName('Pie sauce').options.map((o) => o.name), ['Gravy']);
     assert.deepEqual(byName('Pie extras').options.map((o) => o.name), ['Peas']);
   }
@@ -78,7 +78,7 @@ test('item 11 / finding: a product turned on where its option groups are not yet
   assert.ok(!(off.extra || []).some((c) => c.target === 'modifier_option_site'));
 });
 
-test('sizes follow a product that has sizes even when it is not typed "variants" (a size made in the sheet)', () => {
+test('variants follow a product that has variants even when it is not typed "variants" (a variant made in the sheet)', () => {
   const live = {
     sites: [{ location_id: 'L1' }, { location_id: 'L2' }],
     products: [
@@ -92,9 +92,9 @@ test('sizes follow a product that has sizes even when it is not typed "variants"
   };
   const ctx = { live, eff: live };
   const on = siteActiveChange(ctx, 'berry', 'L2', true);
-  assert.deepEqual([on.change, ...on.extra].map((c) => `${c.entity_id}@${c.location_id}:${c.op}`), ['berry@L2:create', 'large@L2:create'], '+ Sell here brings its size');
+  assert.deepEqual([on.change, ...on.extra].map((c) => `${c.entity_id}@${c.location_id}:${c.op}`), ['berry@L2:create', 'large@L2:create'], '+ Sell here brings its variant');
   const off = siteActiveChange(ctx, 'berry', 'L1', false);
-  assert.deepEqual([off.change, ...off.extra].map((c) => `${c.entity_id}:${c.after.active}`), ['berry:false', 'large:false'], 'off takes its size too');
+  assert.deepEqual([off.change, ...off.extra].map((c) => `${c.entity_id}:${c.after.active}`), ['berry:false', 'large:false'], 'off takes its variant too');
 });
 
 test('on, then off again before publishing, where it never was: nothing is left in the draft or the summary', () => {
@@ -118,7 +118,7 @@ test('on, then off again before publishing, where it never was: nothing is left 
   assert.ok(!off2.change.dropCreate);
 });
 
-test('a new product goes last in its category, a new size last among its product\'s sizes', () => {
+test('a new product goes last in its category, a new variant last among its product\'s variants', () => {
   const v = venues();
   const central = build(v, importSites(v));
   const hot = central.products.find((p) => p.name === 'Latte').category_id;
@@ -251,7 +251,7 @@ test('the preview never shows a raw id, web address or true/false', () => {
   assert.ok(wordsB.some((w) => /^Mocha: VAT rate becomes Zero Rate \(0%\)$/.test(w)), wordsB.join(' | '));
   assert.ok(wordsB.includes('Category Hot drinks: renamed to "Hot"'), wordsB.join(' | '));
   assert.ok(wordsB.includes('Category Hot: colour changes'), wordsB.join(' | '));
-  assert.ok(wordsB.includes('Mocha: now a size of Latte'), wordsB.join(' | '));
+  assert.ok(wordsB.includes('Mocha: now a variant of Latte'), wordsB.join(' | '));
   assert.notEqual(atB.words, 'Nothing changes here');
   assert.match(atB.words, /category change/);
   assert.match(atB.words, /VAT change/);

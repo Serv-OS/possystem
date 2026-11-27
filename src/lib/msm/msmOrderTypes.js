@@ -7,8 +7,8 @@
 // WHAT THIS FILE ANSWERS
 //   * Which order type prices show (design 5.1): the menu's own list (msm_menus.order_types) when it
 //     has one, else every order type that has a price set anywhere in the group menu. Hidden ones
-//     keep their prices; "Show every order type" opens the rest. Delivery is never one of them: it is
-//     a platform price, set by the menu that platform uses at each site (Peter, UI issue 2).
+//     keep their prices; "Show every order type" opens the rest. 5.12.120: Delivery is one of them
+//     (it was left out on 17 Oct as "a platform price"; Peter, 27 Nov 2026, asked for it).
 //   * What a blank order type price falls back to, from the till's own chain
 //     (msmModel.channelFallback, the same as lib/menuPricing.js): never typed by hand.
 //   * Which VAT rows show (design 5.3): Eat in, Takeaway, Delivery, and Bar tab when the menu sells
@@ -230,14 +230,14 @@ export function vatCell(product, parent, ps, key, rates = null) {
 /**
  * The price the till charges in the VAT example for one order type at one site (round 2 review: the
  * example used the Standard price for every order type). The till's chain: the site's own box for
- * that order type, else what it falls back to (msmModel.channelFallback). Delivery is a platform
- * price set by the platform's menu: the example uses the Standard price there.
+ * that order type, else what it falls back to (msmModel.channelFallback). 5.12.120: Delivery has
+ * its own price too (blank uses the Standard price).
  *   orderType      'dine-in' | 'takeaway' | 'collection' | 'delivery' | 'drive-thru'
  *   product        the product as the sheet holds it ({ default_price, default_channels })
  *   ps             the site row as the sheet holds it ({ price, channel_prices })
  */
 export function examplePrice(orderType, product, ps) {
-  const key = { 'dine-in': 'dineIn', takeaway: 'takeaway', collection: 'collection', 'drive-thru': 'driveThru' }[orderType] || null;
+  const key = { 'dine-in': 'dineIn', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', 'drive-thru': 'driveThru' }[orderType] || null;
   const site = ps || {};
   const standard = num(site.price) ?? num(product?.default_price);
   if (!key) return standard;

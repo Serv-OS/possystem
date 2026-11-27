@@ -46,7 +46,7 @@ function withHouseRed() {
   return v;
 }
 
-test('THE REPRO: House Red and its sizes turned on at site B, a size price changed there, previewed and planned', () => {
+test('THE REPRO: House Red and its variants turned on at site B, a variant price changed there, previewed and planned', () => {
   const v = withHouseRed();
   const sites = importSites(v);
   const built = buildCentral(proposeImport(sites, { idGen: idGen() }), sites, {}, { idGen: idGen('g') });
@@ -97,7 +97,7 @@ test('THE REPRO: House Red and its sizes turned on at site B, a size price chang
   for (const w of ['House Red: new here', 'House Red, 175 ml glass: new here at 5.50', 'House Red, 250 ml glass: new here at 8.00', 'House Red, Bottle: new here at 22.00']) {
     assert.ok(words.includes(w), `"${w}" at B: ${words.join(' | ')}`);
   }
-  assert.match(atB.words, /1 new product, 3 new sizes/, 'the site tab counts the product and its sizes apart');
+  assert.match(atB.words, /1 new product, 3 new variants/, 'the site tab counts the product and its variants apart');
   const atA = preview.sites.find((s) => s.location_id === A);
   assert.equal((atA?.plan?.lines || []).length, 0, 'nothing changes at A');
 

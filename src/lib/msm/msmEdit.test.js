@@ -178,7 +178,7 @@ test('a new category: a top level one must say which category it prints like (th
   assert.match(newCategoryChange(ctx, { id: P1, label: 'X', parent_id: 'nope' }).words, /under/);
 });
 
-test('the bulk bar: on, off, one price, copy from a site, move with sizes, paste down a column', () => {
+test('the bulk bar: on, off, one price, copy from a site, move with variants, paste down a column', () => {
   const ctx = ctxOf();
   const on = activeMany(ctx, ['cola', 'pie'], [L1, L2, L3], true);
   assert.deepEqual(on.changes.map((c) => [c.target, c.entity_id, c.location_id, c.op]), [
@@ -186,7 +186,7 @@ test('the bulk bar: on, off, one price, copy from a site, move with sizes, paste
     ['product_site', 'pie', L1, 'create'], ['product', 'pie', null, 'update'], ['product_site', 'pie', L2, 'create'],
   ], 'a one site product goes on at the others too, its old mark cleared once (UI issues 8 and 11)');
   const off = activeMany(ctx, ['latte'], [L1, L2], false);
-  assert.equal(off.changes.length, 4, 'Latte and its size Large latte go off together (17 Oct: a product with sizes, typed or not)');
+  assert.equal(off.changes.length, 4, 'Latte and its variant Large latte go off together (17 Oct: a product with variants, typed or not)');
   const price = priceMany(ctxP(), ['latte', 'cola'], [L1, L2, L3], 3.2);
   assert.deepEqual(price.changes.map((c) => [c.entity_id, c.location_id, c.after.price]), [['latte', L1, 3.2], ['cola', L1, 3.2], ['cola', L2, 3.2]], 'only where sold; Latte at L2 is already 3.20');
   const copy = copyPricesMany(ctxP(), ['latte'], L2, [L1, L3]);
@@ -194,13 +194,13 @@ test('the bulk bar: on, off, one price, copy from a site, move with sizes, paste
   // 17 Oct recheck: with its size on sale, Latte is priced by its sizes: a price for it is said, never staged.
   const sized = priceMany(ctx, ['latte', 'cola'], [L1], 3.2);
   assert.deepEqual(sized.changes.map((c) => c.entity_id), ['cola']);
-  assert.match(sized.words.join(' '), /priced by its sizes/);
+  assert.match(sized.words.join(' '), /priced by its variants/);
   const move = moveMany(ctx, ['latte'], 'cold');
-  assert.deepEqual(move.changes.map((c) => c.entity_id).sort(), ['latte', 'latte-l'], 'the size moves with it');
+  assert.deepEqual(move.changes.map((c) => c.entity_id).sort(), ['latte', 'latte-l'], 'the variant moves with it');
   assert.deepEqual(moveMany(ctx, ['latte'], 'nope').words, ['Pick a category.']);
   const paste = pasteColumn(ctx, [{ productId: 'latte', value: 3.3 }, { productId: 'cola', value: null }, { productId: 'latte-l', value: 3.9 }], L1);
-  assert.deepEqual(paste.changes.map((c) => [c.entity_id, c.after.price]), [['latte-l', 3.9]], 'its size takes the price; Latte itself is priced by its sizes');
-  assert.match(paste.words.join(' '), /priced by its sizes/);
+  assert.deepEqual(paste.changes.map((c) => [c.entity_id, c.after.price]), [['latte-l', 3.9]], 'its variant takes the price; Latte itself is priced by its variants');
+  assert.match(paste.words.join(' '), /priced by its variants/);
   const pasteDefault = pasteColumn(ctx, [{ productId: 'cola', value: 2.5 }], null);
   assert.deepEqual(pasteDefault.changes[0].after, { default_price: 2.5 });
 });
@@ -236,7 +236,7 @@ test('drive thru follows takeaway before In store, like the till (one chain ever
 
 // ── Round 2 review (17 Oct 2026) ────────────────────────────────────────────
 
-test('review: "+ Sell here" on a size where its product is not on brings the product too (House Red through one cell)', async () => {
+test('review: "+ Sell here" on a variant where its product is not on brings the product too (House Red through one cell)', async () => {
   const ctx = ctxOf();
   const r = siteActiveChange(ctx, 'latte-l', L3, true);
   const all = [r.change, ...(r.extra || [])];
@@ -254,7 +254,7 @@ test('review: "+ Sell here" on a size where its product is not on brings the pro
   assert.equal(many.filter((c) => c.entity_id === 'latte-l' && c.location_id === L3).length, 1);
 });
 
-test('review: VAT by order type is never staged on a size (it uses its product\'s, and publish would never write it)', () => {
+test('review: VAT by order type is never staged on a variant (it uses its product\'s, and publish would never write it)', () => {
   const ctx = ctxOf();
   const r = productUpdate(ctx, 'latte-l', { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } });
   assert.equal(r.change, null);

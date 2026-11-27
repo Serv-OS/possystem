@@ -306,7 +306,7 @@ export function summarise(changes, central, opts = {}) {
     const phrases = tops.map((t) => {
       const sizes = rows.filter((r) => r.parentId === t.id);
       const priced = (r) => (r.price != null ? `${r.name} ${money2(r.price)}` : r.name);
-      if (sizes.length) return `${t.name} and ${sizes.length} size${sizes.length === 1 ? '' : 's'} (${sizes.map(priced).join(', ')})`;
+      if (sizes.length) return `${t.name} and ${sizes.length} variant${sizes.length === 1 ? '' : 's'} (${sizes.map(priced).join(', ')})`;
       const parent = t.parentId ? product.get(t.parentId) : null;
       const nm = parent ? `${parent.menu_name || parent.name}, ${t.name}` : t.name;
       return t.price != null ? `${nm} at ${money2(t.price)}` : nm;

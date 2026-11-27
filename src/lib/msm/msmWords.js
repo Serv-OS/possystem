@@ -80,7 +80,7 @@ export const PRICE_TYPE_HELP = Object.freeze({
   dineIn: 'Till eat in, QR and kiosk eat in. Blank uses the Standard price.',
   takeaway: 'Till and kiosk takeaway. Blank uses the Standard price.',
   collection: 'Till Collect, online collection and ezCater takeout. Blank uses the Standard price, not Takeaway. Its VAT follows Takeaway.',   // taxText: the screens read it through tt()
-  delivery: 'Online delivery and the HubRise catalogue. Blank uses the Standard price.',
+  delivery: 'Online delivery and the delivery platforms. Blank: a site keeps the delivery price it has, else it uses the Standard price.',
   driveThru: 'Drive thru. Blank uses the Takeaway price.',
 });
 
@@ -104,9 +104,9 @@ export function sizeVatWords({ size = true, product = 'its product', sizes = 0, 
   const set = Object.keys(TAX_TYPE_WORDS).filter((k) => taxByType && taxByType[k]);
   const tw = activeTaxWords();
   const list = set.map((k) => `${TAX_TYPE_WORDS[k]} ${taxByType[k].name || tw.Tax} (${pctText(taxByType[k].percent)})`).join(', ');
-  if (!size) return sizes > 0 ? `Its ${sizes === 1 ? 'size uses' : `${sizes} sizes use`} these too.` : '';
-  if (!set.length) return `This size uses its ${tw.tax} for every order type, as ${product} does. To set ${tw.tax} by order type, set it on ${product}: its sizes follow it.`;
-  return `This size follows ${product}: ${list}. To change it, change it on ${product}.`;
+  if (!size) return sizes > 0 ? `Its ${sizes === 1 ? 'variant uses' : `${sizes} variants use`} these too.` : '';
+  if (!set.length) return `This variant uses its ${tw.tax} for every order type, as ${product} does. To set ${tw.tax} by order type, set it on ${product}: its variants follow it.`;
+  return `This variant follows ${product}: ${list}. To change it, change it on ${product}.`;
 }
 
 // A site's own column names in words (one map for the product sheet, the preview and the grid).
@@ -114,7 +114,7 @@ export const COL_WORDS = Object.freeze({
   cat: 'category', cats: 'extra categories', image: 'photo', name: 'name', menu_name: 'menu name', receipt_name: 'receipt name',
   kitchen_name: 'kitchen name', description: 'description', tax_rate_id: 'VAT rate', allergens: 'allergens', tags: 'dietary tags',   // taxText: colWord
   visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code', assigned_modifier_groups: 'option groups',
-  type: 'type', parent_id: 'size of', tax_overrides: 'VAT by order type', label: 'name', sort_order: 'order',   // taxText: colWord
+  type: 'type', parent_id: 'variant of', tax_overrides: 'VAT by order type', label: 'name', sort_order: 'order',   // taxText: colWord
   min: 'choose at least', max: 'choose up to', selection_type: 'kind of choice', item_link: 'sub item link', sub_group: 'Then ask',
   // 17 Oct recheck: a site whose row has no Standard price keeps none (said as "No price at <site>").
   no_price: 'no price',
@@ -122,7 +122,7 @@ export const COL_WORDS = Object.freeze({
 /** A column in words, never the column itself ("its own setting" when the map has none). */
 export const colWord = (k) => tt(COL_WORDS[k] || 'its own setting', { mid: true });
 
-const KIND_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with sizes', subitem: 'a sub item' };
+const KIND_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with variants', subitem: 'a sub item' };
 /**
  * A value a site keeps as its own, in words (17 Oct verification: never a VAT rate id, true or
  * false, a type code or a web address).
@@ -139,7 +139,7 @@ export function keptValueWords(col, v, opts = {}) {
   }
   if (col === 'image') return v ? 'its own photo' : 'no photo';
   if (col === 'type') return KIND_WORDS[v] || 'its own kind of product';
-  if (col === 'parent_id') return v ? (opts.names?.[v] ? `a size of ${opts.names[v]}` : 'its own') : 'not a size';
+  if (col === 'parent_id') return v ? (opts.names?.[v] ? `a variant of ${opts.names[v]}` : 'its own') : 'not a variant';
   if (col === 'cat') return v ? (opts.names?.[v] || 'its own category') : 'no category';
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (v == null || v === '') return 'blank';
@@ -156,7 +156,7 @@ export const CHOICE_WORDS = Object.freeze({ single: 'One choice', multiple: 'Sev
 
 const FIELD = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
-  category_id: 'category', extra_category_ids: 'extra categories', parent_product_id: 'size of', type: 'type',
+  category_id: 'category', extra_category_ids: 'extra categories', parent_product_id: 'variant of', type: 'type',
   default_price: 'group price', default_channels: 'order type prices', tax_rate_name: 'VAT', tax_rate_percent: 'VAT',   // taxText: fieldWord
   allergens: 'allergens', tags: 'dietary tags', image: 'photo', modifier_groups: 'option groups', visibility: 'where it shows',
   sold_alone: 'sold on its own', item_code: 'item code', archived: 'removed', sort_order: 'order', label: 'name', menu_keys: 'menus', extra_menus: 'menus',

@@ -12,7 +12,7 @@
 // ROUND 2 (17 Oct 2026; Peter: "set tax and price per order type ... a bit more idiot proof"):
 //   * What is this?  A product, or a sub item (used inside option groups), with "Also sold on its
 //     own" (Menu Manager's rule: becoming a sub item turns it off, becoming a product turns it on).
-//   * Prices by order type (Eat in, Takeaway, Collection, Drive thru; Delivery is a platform price
+//   * Prices by order type (Eat in, Takeaway, Collection, Delivery since 5.12.120, Drive thru; was: Delivery is a platform price
 //     set by the platform's own menu): one box per order type the company sells, group and per site;
 //     blank shows what it falls back to, from the till's own chain (lib/msm/msmOrderTypes.js).
 //   * VAT by order type (Eat in, Takeaway, Delivery, Bar tab when sold): "Same as the product's VAT"
@@ -85,7 +85,7 @@ function withSoldVisibility(f) {
   return v && Object.values(v).some((x) => x === true) ? f : { ...f, visibility: applyNotShownOn(withNotSoldAs(ALL_ON, notSoldAs(f)), notShownOn(f)) };
 }
 
-export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, ratesByLoc = {}, profilesByLoc = {}, sales, openGroup, openProduct, onClose, onCreated }) {
+export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, variantOf = null, onAddVariant = null, ratesByLoc = {}, profilesByLoc = {}, sales, openGroup, openProduct, onClose, onCreated }) {
   const p = productId ? ix.products.get(productId) : null;
   const tree = useMemo(() => categoryTree(ix), [ix]);
   const rateChoices = useMemo(() => {
@@ -114,7 +114,11 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     image: x.image || '', item_code: x.item_code || '', sold_alone: x.type === 'subitem' ? x.sold_alone === true : x.sold_alone !== false, type: x.type || 'simple',
     default_channels: chText(x.default_channels),
   });
-  const [form, setForm] = useState(() => (p ? fromProduct(p) : withCategoryRules(ix, blank)));
+  // 5.12.120 (Peter, 27 Nov 2026: "how do I create variants ... variants are not just sizes"): a
+  // new product opened from a product's Add a variant button starts as a variant of it, in its
+  // category, on sale where it is.
+  const variantParent = create && variantOf ? ix.products.get(variantOf) || null : null;
+  const [form, setForm] = useState(() => (p ? fromProduct(p) : withCategoryRules(ix, variantParent ? { ...blank, parent_product_id: variantParent.id, category_id: variantParent.category_id || '' } : blank)));
   // The per site table starts from what the grid shows (the sheet is opened afresh per product).
   const [siteForm, setSiteForm] = useState(() => {
     const out = {};
@@ -122,7 +126,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
       const ps = p ? ix.sites.get(`${p.id}|${s.id}`) : null;
       out[s.id] = ps
         ? { exists: true, active: ps.active !== false, price: ps.price == null ? '' : price2(ps.price), channels: chText(ps.channel_prices) }
-        : { exists: false, active: !!create, price: '', channels: {} };
+        : { exists: false, active: variantParent ? (() => { const pps = ix.sites.get(`${variantParent.id}|${s.id}`); return !!pps && pps.active !== false; })() : !!create, price: '', channels: {} };
     }
     return out;
   });
@@ -372,6 +376,10 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   // Priced by its sizes: typed so, or with live sizes under it (17 Oct recheck: as Menu Manager shows
   // it and publish writes it, its own Standard price is never charged or written).
   const isVariants = form.type === 'variants' || sizesOfThis.length > 0;
+  // Add a variant: on a product already in the group menu that is not itself a variant or a sub item.
+  const addVariantBtn = (p && editable && onAddVariant && !isSizeForm && form.type !== 'subitem')
+    ? <Btn small kind="soft" data-testid="msm-add-variant" style={{ marginTop: 8 }} disabled={dirty} title={dirty ? 'Add your changes to the draft, or cancel them, first' : `A new product that is a variant of ${p.menu_name || p.name}`} onClick={() => onAddVariant(p.id)}>Add a variant</Btn>
+    : null;
   // A size's VAT example reads its product's VAT by order type (what the till charges).
   const tbt = (isSizeForm ? parentOfForm?.tax_by_type : form.tax_by_type) || {};
   const productRate = form.tax_rate_percent == null ? null : { name: form.tax_rate_name, percent: form.tax_rate_percent };
@@ -481,7 +489,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
               </div>
             )}
           </Field>
-          <Field label="Is this a size of another product?" hint="For example Large of Latte. Leave it as Not a size otherwise.">
+          <Field label="Is this a variant of another product?" hint="A variant is one version of a product with its own price: a size (Large of Latte), a flavour (Vanilla of Milkshake) or a type. Leave it as Not a variant otherwise.">
             <select style={ui.input} value={form.parent_product_id} onChange={(e) => {
               const v = e.target.value;
               set('parent_product_id', v);
@@ -489,18 +497,20 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
               // site, and publish then blocked at a site that does not sell the product).
               if (create && v) setSiteForm((m) => Object.fromEntries(Object.entries(m).map(([loc, sf]) => { const pps = ix.sites.get(`${v}|${loc}`); return [loc, { ...sf, active: !!pps && pps.active !== false }]; })));
             }}>
-              <option value="">Not a size</option>
+              <option value="">Not a variant</option>
               {sizesOf.map((x) => <option key={x.id} value={x.id}>{x.menu_name || x.name}</option>)}
             </select>
           </Field>
+          {!isVariants && addVariantBtn && <div style={{ marginTop: -4, marginBottom: 12 }}>{addVariantBtn}<div style={{ ...ui.sub, fontSize: 11.5, marginTop: 4 }}>A variant is one version with its own price: a size, a flavour or a type. With variants, this product is priced by them.</div></div>}
           {isVariants ? (
-            <Field label="Price" hint="A product with sizes is never charged itself: each size has its own price.">
-              <div style={{ ...ui.sub, fontSize: 12.5 }}>Priced by its sizes: open a size to change its price.</div>
+            <Field label="Price" hint="A product with variants is never charged itself: each variant has its own price.">
+              <div style={{ ...ui.sub, fontSize: 12.5 }}>Priced by its variants: open a variant to change its price.</div>
               {sizesOfThis.length > 0 && openProduct && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
                   {sizesOfThis.map((x) => <Btn key={x.id} small kind="soft" onClick={() => openProduct(x.id)}>{x.menu_name || x.name}</Btn>)}
                 </div>
               )}
+              {addVariantBtn}
             </Field>
           ) : (
           <Field label={isSub && !form.sold_alone ? 'Its own price' : 'Standard price'} hint={optionOnly ? 'Never charged: when picked as an option it costs what the option says.' : 'Every site charges this unless it has its own price below.'}>
