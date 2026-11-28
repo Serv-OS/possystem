@@ -48,6 +48,10 @@ import KioskDoneScreen from './KioskDoneScreen';
 import KioskIdleOverlay from './KioskIdleOverlay';
 import useKioskCheckout from './useKioskCheckout';
 import { KioskBackButton, KioskCancelPill } from './KioskChrome';
+// 5.12.128 (Peter: "yes build kiosk"): a Combo with steps opens the shared Combo sheet at kiosk size.
+import OnlineComboSheet from '../online/OnlineComboSheet';
+import { comboHasSteps } from '../../lib/combo';
+import { kioskBasketForCombo } from '../../lib/kioskCombo';
 
 const NO_DEFS = [];
 const NO_IDS = [];
@@ -190,13 +194,14 @@ export default function KioskFlowV2({
   // ── Menu ──
   const openItem = (item) => {
     engine.setSelectedItem(item);
-    setOverlay('item');
+    setOverlay(comboHasSteps(item) ? 'combo' : 'item');   // 5.12.128
   };
   const closeItem = () => {
     setOverlay(null);
     engine.setSelectedItem(null);
   };
   const quickAdd = (item) => {
+    if (comboHasSteps(item)) { openItem(item); return; }   // 5.12.128: never a plain line
     engine.addToCart(item, 1, {}, '', resolveItemPrice(item, orderType, activeMenuId), [], '', null);
   };
   const goReview = () => {
@@ -213,6 +218,9 @@ export default function KioskFlowV2({
   // Minus on the last item empties the basket, so go back to the menu with it.
   const reviewQty = (key, delta) => {
     const { cart } = engine;
+    // 5.12.128: a Combo goes whole (it has no quantity of its own).
+    const combo = cart.find((l) => l.key === key)?.comboId;
+    if (combo) { const left = cart.filter((l) => l.comboId !== combo).length; engine.removeCombo(combo); if (!left) leaveReview('menu'); return; }
     const emptying = delta < 0 && cart.length === 1 && cart[0].key === key && cart[0].qty <= 1;
     engine.updateCartQty(key, delta);
     if (emptying) leaveReview('menu');
@@ -239,6 +247,8 @@ export default function KioskFlowV2({
   // Minus on the last item closes the basket sheet with it.
   const basketQty = (key, delta) => {
     const { cart } = engine;
+    const combo = cart.find((l) => l.key === key)?.comboId;   // 5.12.128: a Combo goes whole
+    if (combo) { const left = cart.filter((l) => l.comboId !== combo).length; engine.removeCombo(combo); if (!left) setOverlay(null); return; }
     if (delta < 0 && cart.length === 1 && cart[0].key === key && cart[0].qty <= 1) setOverlay(null);
     engine.updateCartQty(key, delta);
   };
@@ -371,6 +381,11 @@ export default function KioskFlowV2({
   return (
     <>
       {body}
+      {screen === 'menu' && overlay === 'combo' && engine.selectedItem && (
+        <OnlineComboSheet size="kiosk" screen="kiosk" item={engine.selectedItem} theme={engine.comboTheme} rows={engine.items} priceFor={engine.kioskPriceFor}
+          orderType={orderType} eightySixIds={engine.eightySixIds} stockLevels={engine.dailyCounts} basket={kioskBasketForCombo(engine.cart)}
+          onClose={closeItem} onAdd={(picks) => { engine.addCombo(engine.selectedItem, picks); closeItem(); }} />
+      )}
       {screen === 'menu' && overlay === 'item' && engine.selectedItem && (
         <ItemSheet engine={engine} primary={primary} api={api} onLineAllergens={checkout.noteLineAllergens} onClose={closeItem} />
       )}

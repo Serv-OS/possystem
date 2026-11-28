@@ -44,6 +44,8 @@ export default function OnlineComboSheet({
   item, theme, rows = [], priceFor = (r) => Number(r?.pricing?.base ?? 0), eightySixIds = [], stockLevels = {},
   basket = [], orderType = null, fulfilment = null, instGroupDefs = [], defaultImage = null, avoidAllergens = [],
   showCalories = false, initialPicks = null, addLabel = 'Add to basket', noPrice = null, onClose, onAdd,
+  // 5.12.128: the kiosk (size "kiosk": a wider sheet and big touch targets; screen "kiosk": its Shows on).
+  size = null, screen = 'online',
 }) {
   useMenuText();
   const steps = useMemo(() => comboSteps(item), [item]);
@@ -63,8 +65,8 @@ export default function OnlineComboSheet({
 
   const ctx = useMemo(() => customerComboContext({
     item, rows, eightySixIds, stockLevels, basket, orderType, fulfilment,
-    modifierGroupDefs: groupDefs, instructionGroupDefs: instGroupDefs, noPrice,
-  }), [item, rows, eightySixIds, stockLevels, basket, orderType, fulfilment, groupDefs, instGroupDefs, noPrice]);
+    modifierGroupDefs: groupDefs, instructionGroupDefs: instGroupDefs, noPrice, screen,
+  }), [item, rows, eightySixIds, stockLevels, basket, orderType, fulfilment, groupDefs, instGroupDefs, noPrice, screen]);
 
   const newPick = (stepId, entryId) => ({
     key: pickKey(), stepId, entryId,
@@ -174,7 +176,7 @@ export default function OnlineComboSheet({
   return (
     <div onClick={onClose} data-testid="online-combo" style={{ position: 'fixed', inset: 0, zIndex: 30, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', animation: 'fadeIn .15s ease' }}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        width: '100%', maxWidth: 600, maxHeight: 'min(94vh, calc(100% - 12px))', overflowY: 'auto',
+        width: '100%', maxWidth: size === 'kiosk' ? 980 : 600, maxHeight: 'min(94vh, calc(100% - 12px))', overflowY: 'auto', zoom: size === 'kiosk' ? 1.35 : undefined,
         background: theme.bg, color: theme.fg, borderRadius: '18px 18px 0 0',
         display: 'flex', flexDirection: 'column', boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
       }}>

@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.128',
+    date: '27 Nov 2026',
+    items: [
+      'Combos with steps on the kiosk, both designs (Peter, 27 Nov 2026: "yes build kiosk"). Tapping a Combo opens the same steps as everywhere else at kiosk size: "Can customers change these products?" per step, a product with options shows ">" and opens them at once, Continue goes back. In the kiosk\'s colours.',
+      'The basket shows a Combo as one line with its picks under it and what it comes to; minus or Remove takes the whole Combo. A Combo counts once. A Combo that cannot be made right now shows as sold out. An order type change that does not sell one of its picks takes the whole Combo out.',
+      'The order goes to the till and the kitchen as one Combo (its own line never reaches the kitchen); picks never count for a deal, a promo code\'s free item or a free item reward. The kiosk payment code changed by ONE line (the automatic deals see which lines are a Combo\'s picks); every other line of it is byte for byte as before, and a basket with no Combo pays exactly as before.',
+      'No SQL, nothing to deploy.',
+    ],
+  },
+  {
     v: '5.12.127',
     date: '27 Nov 2026',
     items: [

@@ -8,6 +8,7 @@ import { kioskLineRoom } from '../../lib/kioskLine';
 import { KioskCloseButton } from './KioskChrome';
 import { ArrowRightIcon } from './KioskIcons';
 import KioskLineRow from './KioskLineRow';
+import { kioskBasketView } from '../../lib/kioskCombo';
 
 export default function KioskBasketSheet({ cart, cartItemCount, cartItemUsage, dailyCounts, grandTotal, primary, onQty, onClose, onPay }) {
   return (
@@ -27,7 +28,7 @@ export default function KioskBasketSheet({ cart, cartItemCount, cartItemUsage, d
           <KioskCloseButton onClick={onClose} />
         </div>
         <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0, flex: '1 1 auto' }}>
-          {cart.map((line, i) => {
+          {kioskBasketView(cart).map((line, i) => {   /* 5.12.128: a Combo is one row */
             const room = kioskLineRoom(line, dailyCounts, cartItemUsage);
             return (
               <KioskLineRow
@@ -36,7 +37,7 @@ export default function KioskBasketSheet({ cart, cartItemCount, cartItemUsage, d
                 size="sheet"
                 first={i === 0}
                 primary={primary}
-                canAdd={room === null || room > 0}
+                canAdd={!line.comboWhole && (room === null || room > 0)}
                 onLess={() => onQty(line.key, -1)}
                 onMore={() => onQty(line.key, 1)}
               />

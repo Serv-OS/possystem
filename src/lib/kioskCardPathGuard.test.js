@@ -205,8 +205,15 @@ const BLOCKS = [
     name: 'totals',
     start: 'const subtotal = useMemo(() => cart.reduce((a, l) => a + l.lineTotal, 0), [cart]);',
     end: 'const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);',
-    length: 3557,
-    sha256: '4458adca9eba347a52461ba18f6eb550b2f25a77248134569196fb61be457477',
+    // 5.12.128 (27 Nov 2026, Combos on the kiosk; Peter: "yes build kiosk", re-sign agreed through the
+    // parent session): ONE line added to the automatic deals mapping, after `name:`:
+    //   comboRole: l.comboRole, comboId: l.comboId,   // 5.12.128: a Combo's pick is never in a deal (discountEngine)
+    // so lib/discountEngine.js leaves a Combo's picks out of every deal (the POS's rule). On a line that
+    // is not a Combo's both are undefined and the engine reads the line exactly as before, so a basket
+    // with no Combo gets the very same deals; no total, tax, tip or rounding line changed. Was 3557 /
+    // 4458adca9eba347a52461ba18f6eb550b2f25a77248134569196fb61be457477.
+    length: 3673,
+    sha256: 'd37d1f8981b97828fd546dea3079de69a7697199f211bd9cdcdece9cb69912ef',
   },
   {
     name: 'updateCartQty',

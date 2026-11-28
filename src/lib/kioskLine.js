@@ -28,6 +28,7 @@
 
 import { kitchenOverride, receiptOverride } from './itemDisplay.js';
 import { sizeTaxRefs } from './taxRefs.js';
+import { comboFieldsOf } from './online/comboCart.js';   // 5.12.128: a Combo's lines stay one Combo
 
 const nameOf = (row) => row?.menuName || row?.menu_name || row?.name || '';
 
@@ -227,7 +228,12 @@ export function kioskOrderItem(l, i) {
     // lowest occupied course.
     status: 'sent',
     fired: true,
-    course: 1,
+    // 5.12.128: a Combo's own line is on no course (it never reaches the kitchen), as on the POS.
+    course: l.noKitchen ? 0 : 1,
+    // 5.12.128 (Combos on the kiosk): what makes the lines one Combo (lib/combo.js), and the row id the
+    // till, the receipt and the reports read it by. Nothing for any other line.
+    ...comboFieldsOf(l),
+    ...(l.comboId ? { itemId: v ? v.id : l.item.id } : {}),
     // v5.11.81: the line's id, the one the basket's automatic deals name (KioskApp autoDiscounts:
     // uid = the line's key, else l<position>), as every till line carries one. The saved deal then
     // finds its lines again: the daily VAT check and a refund take a deal's VAT and money off the

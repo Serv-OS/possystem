@@ -84,7 +84,11 @@ import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
-import { comboPosOnly } from '../lib/combo.js';
+import { comboPosOnly, comboHasSteps } from '../lib/combo.js';
+// 5.12.128 (Peter, 27 Nov 2026: "yes build kiosk"): a Combo with steps, built in the shared Combo sheet
+// at kiosk size, goes on the basket as its own lines (lib/kioskCombo.js).
+import OnlineComboSheet from './online/OnlineComboSheet';
+import { kioskComboLines, kioskBasketForCombo, kioskItemCount, kioskWithoutCombo, kioskBasketView } from '../lib/kioskCombo.js';
 import { setActiveMemberSession } from '../lib/memberSession.js';
 import { kioskCounterCollect } from '../lib/counterOrder';
 // v5.5.871: a kiosk card payment goes to the venue's Adyen terminal through the same "send to
@@ -852,6 +856,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       price: l.linePrice,
       qty: l.qty || 1,
       name: l.name || l.item?.name || 'Item',
+      comboRole: l.comboRole, comboId: l.comboId,   // 5.12.128: a Combo's pick is never in a deal (discountEngine)
     }));
     return evaluateAutoDiscounts(items, autoRules, 'kiosk', buildScheduleCtx(kioskTz)).map(toAppliedDiscount);
   }, [cart, autoRules, kioskTz]);
@@ -893,7 +898,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [kioskTaxLines, kioskTaxCtx, kioskTaxType, autoDiscounts, subtotal, discountedSubtotal]);
   const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
   const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);
-  const cartItemCount = useMemo(() => cart.reduce((a, l) => a + l.qty, 0), [cart]);
+  // 5.12.128: a Combo counts once, never once per pick.
+  const cartItemCount = useMemo(() => kioskItemCount(cart), [cart]);
+  // 5.12.128: a Combo with steps: its sheet, the lines it adds, and Remove for all of it.
+  const [comboItem, setComboItem] = useState(null);
+  const kioskPriceFor = (r) => resolvePrice(r, orderType, activeMenuId);
+  const addKioskCombo = (item, picks) => { setCart(c => [...c, ...kioskComboLines({ item, picks, rows: items, priceFor: kioskPriceFor })]); };
+  const removeKioskCombo = (comboId) => setCart(c => kioskWithoutCombo(c, comboId));
+  const kioskComboTheme = { accent: brandColor, bg: isLight ? '#ffffff' : '#141414', fg: isLight ? '#141414' : '#f5f5f5', isLight, name: brandName };
 
   // v5.5.285: Count total usage of each item (by itemId) across the cart,
   // including both direct item orders and modifier option picks.
@@ -1497,6 +1509,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       selectedCategoryId, setSelectedCategoryId, selectedItem, setSelectedItem,
       allergenFilter, setAllergenFilter,
       cart, setCart, addToCart, updateCartQty, cartItemCount, cartItemUsage,
+      addCombo: addKioskCombo, removeCombo: removeKioskCombo, comboTheme: kioskComboTheme, kioskPriceFor,
       subtotal, autoDiscounts, autoDiscountTotal, discountedSubtotal, taxBreakdown, exclusiveTax, taxRelief,
       total, tip, setTip,
       loyaltyRedemption, setLoyaltyRedemption, verifiedLoyalty, setVerifiedLoyalty,
@@ -1545,7 +1558,12 @@ export default function KioskApp({ kioskId, onUnpair }) {
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
       {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} tableMode={tableMode} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
-      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={legacyCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} venueRow={venueRow} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={legacyCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { if (comboHasSteps(item)) { setComboItem(item); return; } setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} venueRow={venueRow} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'menu' && comboItem && (
+        <OnlineComboSheet size="kiosk" screen="kiosk" item={comboItem} theme={kioskComboTheme} rows={items} priceFor={kioskPriceFor}
+          orderType={orderType} eightySixIds={eightySixIds} stockLevels={dailyCounts} basket={kioskBasketForCombo(cart)}
+          onClose={() => setComboItem(null)} onAdd={(picks) => { addKioskCombo(comboItem, picks); setComboItem(null); }} />
+      )}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
           defaultImage={resolveDefaultProductImage(venueRow?.pos_settings)}
@@ -1567,7 +1585,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
           onCancel={() => setScreen('menu')}
         />
       )}
-      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} exclusiveTax={exclusiveTax} cartItemCount={cartItemCount} orderType={orderType} counterPicked={counterPicked} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
+      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} exclusiveTax={exclusiveTax} cartItemCount={cartItemCount} orderType={orderType} counterPicked={counterPicked} onUpdate={updateCartQty} onRemoveCombo={removeKioskCombo} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={discountedSubtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('gift'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
       {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} goodsTotal={discountedSubtotal} dueMinor={Math.round(total * 100)} giftMinor={giftCardPayment?.applied || 0} cart={cart} categories={categories} loyaltyRedemption={loyaltyRedemption} loyaltyCredit={loyaltyCredit} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
@@ -2791,7 +2809,7 @@ function iconBtnLg() {
 // Footer: "Items total" card + brand-color totals pill with item-count
 // badge + circular back button on the left.
 // ============================================================
-function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCount, orderType, counterPicked = false, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel, dailyCounts = {} }) {
+function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCount, orderType, counterPicked = false, onUpdate, onRemoveCombo = () => {}, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel, dailyCounts = {} }) {
   // v5.11.97: Counter collect is eat in with no table, but the customer picks it up.
   const isPickup = orderType === 'takeaway' || counterPicked === true;
   const titleKey = isPickup ? 'cart.title.pickup' : 'cart.title.dineIn';
@@ -2844,9 +2862,10 @@ function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCoun
           </div>
         ) : (
           <>
-            {cart.map(l => {
+            {/* 5.12.128: a Combo is one card (its picks under its name); minus or Remove takes all of it. */}
+            {kioskBasketView(cart).map(l => {
               // v5.5.285: Stock cap for cart qty increment
-              const remaining = kioskLineRemaining(l, dailyCounts);
+              const remaining = l.comboWhole ? 0 : kioskLineRemaining(l, dailyCounts);
               const atStockLimit = remaining !== null && l.qty >= remaining;
               return (
                 <CartLineCard
@@ -2854,8 +2873,8 @@ function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCoun
                   line={l}
                   brandColor={brandColor}
                   onInc={atStockLimit ? undefined : () => onUpdate(l.key, +1)}
-                  onDec={() => onUpdate(l.key, -1)}
-                  onRemove={() => onUpdate(l.key, -l.qty)}
+                  onDec={() => (l.comboWhole ? onRemoveCombo(l.comboId) : onUpdate(l.key, -1))}
+                  onRemove={() => (l.comboWhole ? onRemoveCombo(l.comboId) : onUpdate(l.key, -l.qty))}
                   atStockLimit={atStockLimit}
                 />
               );
