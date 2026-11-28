@@ -1451,7 +1451,7 @@ function MenuTab() {
                             style={{ position:'absolute', bottom:6, right:6, fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:6, cursor:'pointer', fontFamily:'inherit',
                               background:expandedParentId===item.id?catColor+'33':'var(--bg4)', border:`1px solid ${expandedParentId===item.id?catColor+'55':'var(--bdr)'}`,
                               color:expandedParentId===item.id?catColor:'var(--t4)' }}>
-                            {expandedParentId===item.id?'▲ hide':'▼ sizes'}
+                            {expandedParentId===item.id?'▲ hide':'▼ variants'}
                           </button>
                         )}
                       </div>
@@ -1475,7 +1475,7 @@ function MenuTab() {
                               );
                             })}
                             <button onClick={e=>{e.stopPropagation();
-                              addSizeTo(item, {name:'New size', menuName:'New size', type:'simple', parentId:item.id, cat:item.cat,
+                              addSizeTo(item, {name:'New variant', menuName:'New variant', type:'simple', parentId:item.id, cat:item.cat,
                                 allergens:[], pricing:{base:0}, assignedModifierGroups:[], cats:[]}, menuItems, addMenuItem, updateMenuItem);
                               markBOChange(); showToast('Variant added','success');
                             }} style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'8px', borderRadius:10, cursor:'pointer', fontFamily:'inherit',
@@ -1582,7 +1582,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
   };
 
   const addVariant = (parentId, cat, allergens, currentCount) => {
-    addMenuItem({ name:`New size`, menuName:`New size`, receiptName:`New size`, kitchenName:`New size`,
+    addMenuItem({ name:`New variant`, menuName:`New variant`, receiptName:`New variant`, kitchenName:`New variant`,
       type:'simple', parentId, cat, allergens:[...allergens], pricing:{base:0},
       assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:currentCount });
     markBOChange();
@@ -1592,7 +1592,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
     }, 30);
   };
 
-  const typeLabel = t => ({ simple:'Simple', modifiable:'Options', variants:'Has sizes', pizza:'Pizza', combo:'Combo', subitem:'Sub item' }[t] || t);
+  const typeLabel = t => ({ simple:'Simple', modifiable:'Options', variants:'Has variants', pizza:'Pizza', combo:'Combo', subitem:'Sub item' }[t] || t);
   const typeColor = t => ({ simple:'var(--t4)', modifiable:'var(--acc)', variants:'var(--grn)', pizza:'#f97316', combo:'#8b5cf6' }[t] || 'var(--t4)');
 
   return (
@@ -1681,10 +1681,10 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                           value={v.menuName||v.name||''}
                           onClick={e=>e.stopPropagation()}
                           onChange={e=>{updateMenuItem(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value});markBOChange();}}
-                          placeholder="Size name"
+                          placeholder="Variant name"
                         />
                       </div>
-                      <span style={{ fontSize:10, color:'var(--t4)' }}>size</span>
+                      <span style={{ fontSize:10, color:'var(--t4)' }}>variant</span>
                       <div style={{ display:'flex', alignItems:'center', gap:2 }}>
                         <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>{currencySymbol()}</span>
                         <input type="number" step="0.01" min="0" {...selectOnFocus}
@@ -1701,7 +1701,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       <button
                         onClick={async e => {
                           e.stopPropagation();
-                          if (!confirm('Remove this size?')) return;
+                          if (!confirm('Remove this variant?')) return;
                           const prevParentId = v.parentId;
                           updateMenuItem(v.id, { archived:true, parentId:null });
                           markBOChange();
@@ -1710,10 +1710,10 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                             // The row is untouched in the DB — it comes straight back on
                             // the next config load and every other till is still selling it.
                             updateMenuItem(v.id, { archived:false, parentId:prevParentId });
-                            showToast(`"${v.menuName||v.name||'Size'}" was NOT removed — it is still on sale. Check you're signed in, then try again`, 'error');
+                            showToast(`"${v.menuName||v.name||'Variant'}" was NOT removed — it is still on sale. Check you're signed in, then try again`, 'error');
                             return;
                           }
-                          showToast('Size removed', 'info');
+                          showToast('Variant removed', 'info');
                         }}
                         style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                     </div>
@@ -1723,7 +1723,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                 <div style={{ padding:'5px 12px 5px 44px' }}>
                   <button onClick={e=>{e.stopPropagation();addVariant(item.id, item.cat, item.allergens||[], variants.length);if(item.type!=='variants'){updateMenuItem(item.id,{type:'variants'});markBOChange();}}}
                     style={{ fontSize:11, fontWeight:600, color:catColor, background:'none', border:`1px dashed ${catColor}55`, borderRadius:7, padding:'3px 10px', cursor:'pointer', fontFamily:'inherit' }}>
-                    + Add size
+                    + Add variant
                   </button>
                 </div>
               </div>
@@ -1734,7 +1734,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
 
       {/* Drag drop footer */}
       <div style={{ padding:'4px 12px', borderTop:'1px solid var(--bdr)', fontSize:9, color:'var(--t4)', background:'var(--bg1)' }}>
-        Drag rows to reorder · click row to edit · expand ▾ to see/edit sizes
+        Drag rows to reorder · click row to edit · expand ▾ to see/edit variants
       </div>
     </div>
   );
@@ -1858,7 +1858,7 @@ function ItemsLibrary() {
 
   const allCats = useMemo(() => menuCategories.filter(c=>!c.isSpecial), [menuCategories]);
 
-  const typeLabel = t => ({ simple:'Simple', modifiable:'Options', variants:'Has sizes', pizza:'Pizza', combo:'Combo', subitem:'Sub item' }[t]||t);
+  const typeLabel = t => ({ simple:'Simple', modifiable:'Options', variants:'Has variants', pizza:'Pizza', combo:'Combo', subitem:'Sub item' }[t]||t);
   const typeColor = t => ({ simple:'var(--t4)', modifiable:'var(--acc)', variants:'var(--grn)', pizza:'#f97316', combo:'#8b5cf6' }[t]||'var(--t4)');
 
   const archivedCount = useMemo(() => menuItems.filter(i => i.archived && !i.parentId).length, [menuItems]);
@@ -1926,7 +1926,7 @@ function ItemsLibrary() {
   };
 
   const addVariant = (parentId, cat, allergens, count) => {
-    addSizeTo((menuItems || []).find(i => i.id === parentId), { name:'New size', menuName:'New size', receiptName:'New size', kitchenName:'New size',
+    addSizeTo((menuItems || []).find(i => i.id === parentId), { name:'New variant', menuName:'New variant', receiptName:'New variant', kitchenName:'New variant',
       type:'simple', parentId, cat, allergens:[...allergens], pricing:{base:0},
       assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:count }, menuItems, addMenuItem, updateMenuItem);
     markBOChange();
@@ -1969,7 +1969,7 @@ function ItemsLibrary() {
             <option value="all">All types</option>
             <option value="simple">Simple</option>
             <option value="modifiable">Options (modifiable)</option>
-            <option value="variants">Has sizes / variants</option>
+            <option value="variants">Has variants</option>
             <option value="subitem">⊕ Sub items</option>
           </select>
           <select value={catFilter} onChange={e=>setCatFilter(e.target.value)} style={{ ...inp, width:'auto', cursor:'pointer', fontSize:11 }}>
@@ -1984,7 +1984,7 @@ function ItemsLibrary() {
 
         {/* Stats + legend (handoff B5) */}
         <div style={{ padding:'6px 12px', borderBottom:'1px solid var(--bdr)', fontSize:11, color:'var(--t3)', flexShrink:0, display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-          <span>{parents.length} items · {totalVariants} total sizes/variants</span>
+          <span>{parents.length} items · {totalVariants} total variants</span>
           <span style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:14, fontSize:10.5, color:'var(--t4)' }}>
             <span style={{ display:'inline-flex', alignItems:'center', gap:5 }}>
               <span style={{ width:8, height:8, borderRadius:2, background:'var(--acc)' }}/>POS button colour
@@ -2102,7 +2102,7 @@ function ItemsLibrary() {
             const viaMaster = plan.assign.filter(a => a.via === 'master').length;
             const masterWords = viaMaster ? `; ${viaMaster} shared product${viaMaster === 1 ? ' takes its' : 's take their'} master's rate` : '';
             const profileWords = hasProfiles ? ' A rate set here comes before this venue\'s tax profiles.' : '';
-            if (!window.confirm(`Set a tax rate on ${plan.assign.length} product${plan.assign.length === 1 ? '' : 's'} with none here? ${pick.name} for this venue's own products; sizes take their product's rate${masterWords}.${profileWords}`)) return;
+            if (!window.confirm(`Set a tax rate on ${plan.assign.length} product${plan.assign.length === 1 ? '' : 's'} with none here? ${pick.name} for this venue's own products; variants take their product's rate${masterWords}.${profileWords}`)) return;
             bulkTaxStop.current = false;
             setBulkTaxResult('');
             setBulkRun({ done: 0, total: plan.assign.length });
@@ -2255,7 +2255,7 @@ function ItemsLibrary() {
                 <span style={{ fontSize:10, color:'var(--t4)' }}>
                   {targets.length === 0
                     ? `All ${inView} in view ${inView === 1 ? 'is' : 'are'} already ${bulkScope}${bulkScope !== 'local' ? ' (tick include to re-send them)' : ''}.`
-                    : `${already ? `${already} already ${bulkScope}${bulkResend ? ', included' : ', tick include to re-send them'}. ` : ''}Sizes and sub-items follow their product.`}
+                    : `${already ? `${already} already ${bulkScope}${bulkResend ? ', included' : ', tick include to re-send them'}. ` : ''}Variants and sub-items follow their product.`}
                 </span>
               )}
             </div>
@@ -2552,7 +2552,7 @@ function ItemsLibrary() {
                             <span style={{ fontSize:10, color:'var(--t4)', flexShrink:0, lineHeight:1 }}>└</span>
                             <span title={v.menuName||v.name} style={{ fontSize:12.5, fontWeight:600, color:vSel?'var(--acc)':'var(--t2)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.menuName||v.name}</span>
                           </div>
-                          <span style={{ fontSize:10, color:'var(--t4)' }} title="A size follows its product's sharing">↳ follows</span>
+                          <span style={{ fontSize:10, color:'var(--t4)' }} title="A variant follows its product's sharing">↳ follows</span>
                           <span>
                             <span style={{ display:'inline-flex', alignItems:'center', background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t4)', borderRadius:6, padding:'1px 7px', fontSize:10, fontWeight:600 }}>size</span>
                           </span>
@@ -2568,7 +2568,7 @@ function ItemsLibrary() {
                     <div style={{ padding:'5px 12px 5px 28px', borderBottom:'1px solid var(--bdr)' }}>
                       <button onClick={e=>{e.stopPropagation();addVariant(item.id,item.cat,item.allergens||[],variants.length);if(item.type!=='variants')updateMenuItem(item.id,{type:'variants'});}}
                         style={{ fontSize:10, fontWeight:600, color, background:'none', border:`1px dashed ${color}55`, borderRadius:6, padding:'2px 10px', cursor:'pointer', fontFamily:'inherit' }}>
-                        + Add size
+                        + Add variant
                       </button>
                     </div>
                   </div>
@@ -2856,7 +2856,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const isParent = variants.length > 0;
 
   const addVariant = () => {
-    addSizeTo(item, { name:'New size', menuName:'New size', receiptName:'New size', kitchenName:'New size',
+    addSizeTo(item, { name:'New variant', menuName:'New variant', receiptName:'New variant', kitchenName:'New variant',
       type:'simple', parentId:item.id, cat:item.cat, allergens:[...item.allergens||[]],
       pricing:{ base:0, dineIn:null, takeaway:null, collection:null, delivery:null, driveThru:null },
       assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:variants.length }, menuItems, addMenuItem, updateMenuItem);
@@ -2945,8 +2945,8 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const SECS = [
     { id:'details',   label:'Details' },
     isCombo && { id:'steps', label:`Steps${stepCount ? ` (${stepCount})` : ''}` },
-    !isSub && !hasSteps && { id:'flow', label:`Flow${isParent?` · sizes`:''}${assignedMods.length>0?` · ${assignedMods.length} mods`:''}` },
-    !isSub && !hasSteps && { id:'variants',  label:`Sizes${isParent?` (${variants.length})`:''}` },
+    !isSub && !hasSteps && { id:'flow', label:`Flow${isParent?` · variants`:''}${assignedMods.length>0?` · ${assignedMods.length} mods`:''}` },
+    !isSub && !hasSteps && { id:'variants',  label:`Variants${isParent?` (${variants.length})`:''}` },
     !isSub && !hasSteps && { id:'modifiers', label:`Modifiers${assignedMods.length>0?` (${assignedMods.length})`:''}` },
     { id:'pricing',   label:'Pricing' },
     { id:'tax',       label:`Tax${item.taxRateId ? ' ✓' : ''}` },
@@ -2975,7 +2975,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             </div>
             <MsmLocked on={lockOn('type')} label="Type">
             <div style={{ display:'flex', gap:5, marginTop:4, flexWrap:'wrap' }}>
-              {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['combo','Combo'],['subitem','Sub item']].map(([v,l]) => {
+              {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has variants'],['combo','Combo'],['subitem','Sub item']].map(([v,l]) => {
                 const act = (item.type||'simple')===v || (v==='variants'&&isParent&&item.type!=='pizza');
                 return <button key={v} onClick={()=>f('type',v)} style={{ padding:'2px 7px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t4)' }}>{l}</button>;
               })}
@@ -3050,7 +3050,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             </div>
             {isParent && (
               <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)', marginTop:-6 }}>
-                This item has size variants. Each size carries its own price, set in the Sizes tab.
+                This item has variants. Each variant carries its own price, set in the Variants tab.
               </div>
             )}
 
@@ -3154,7 +3154,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             {/* v4.6.2b: visibility (POS/Kiosk/Online/Delivery) UI removed — surface targeting will move to per-menu assignment in v4.6.3+. Existing visibility data preserved on items. */}
             {/* 5.12.115 "Sold as" (lib/soldAs.js; Peter, 26 Nov 2026: "we also need to be able to say if a
                 product can be sold as that order type", wine is dine in only). Ticked = sold on that
-                order type. A size follows its product, so a size has no boxes of its own. Head office
+                order type. A variant follows its product, so a variant has no boxes of its own. Head office
                 sets it for a product the group menu manages. */}
             {!item.parentId && !isOptionOnlyItem(item) && (() => {
               const no = notSoldAs(item);
@@ -3363,7 +3363,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
                 <div style={{ paddingLeft:30 }}>
                   {variants.length === 0 && (
-                    <div style={{ padding:'10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t4)', marginBottom:8 }}>No sizes yet — click "Sizes" tab to add them</div>
+                    <div style={{ padding:'10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t4)', marginBottom:8 }}>No variants yet — click the "Variants" tab to add them</div>
                   )}
                   {variants.map((v,vi) => {
                     const vp = v.pricing || { base: v.price || 0 };
@@ -3378,7 +3378,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       </div>
                     );
                   })}
-                  <button onClick={addVariant} style={{ padding:'7px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1.5px dashed var(--bdr2)', color:'var(--t3)', fontSize:11, fontWeight:600, marginTop:2 }}>+ Add {item.variantLabel||'size'}</button>
+                  <button onClick={addVariant} style={{ padding:'7px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1.5px dashed var(--bdr2)', color:'var(--t3)', fontSize:11, fontWeight:600, marginTop:2 }}>+ Add {item.variantLabel||'variant'}</button>
                 </div>
               </div>
             )}
@@ -3390,7 +3390,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               <div style={{ padding:'12px 14px', marginBottom:14, background:'var(--acc-d)', border:'1.5px solid var(--acc-b)', borderRadius:10 }}>
                 <div style={{ fontSize:12, fontWeight:700, color:'var(--acc)', marginBottom:4 }}>These options are saved on the main product</div>
                 <div style={{ fontSize:11, color:'var(--t2)', lineHeight:1.5, marginBottom:8 }}>
-                  An item with sizes keeps its options on each size. Move them so every size without its own gets a copy. What the till, kiosk and online show stays the same.
+                  An item with variants keeps its options on each variant. Move them so every variant without its own gets a copy. What the till, kiosk and online show stays the same.
                 </div>
                 <button onClick={()=>{
                   const move = moveMainProductOptions(item, variants);
@@ -3398,8 +3398,8 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   for (const { id, patch } of move.sizePatches) updateMenuItem(id, patch);
                   onUpdate(move.mainPatch);
                   markBOChange();
-                  showToast?.('Options moved onto the sizes', 'success');
-                }} style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:11, fontWeight:700 }}>Move options onto the sizes</button>
+                  showToast?.('Options moved onto the variants', 'success');
+                }} style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:11, fontWeight:700 }}>Move options onto the variants</button>
               </div>
             )}
 
@@ -3516,7 +3516,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
             {/* Variant label */}
             <div>
-              <span style={lbl}>Size label <span style={{ fontWeight:400, textTransform:'none' }}>(shown as heading in POS picker)</span></span>
+              <span style={lbl}>Variant label <span style={{ fontWeight:400, textTransform:'none' }}>(shown as heading in POS picker)</span></span>
               <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginBottom:7 }}>
                 {['Size','Serving','Type','Cut','Style','Strength','Format','Portion','Blend','Roast','Weight'].map(l=>{
                   const act=(item.variantLabel||'Size')===l;
@@ -3537,9 +3537,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
             {/* Variants list */}
             <div>
-              <span style={lbl}>Sizes / variants <span style={{ fontWeight:400, textTransform:'none' }}>(each becomes a button on POS)</span></span>
+              <span style={lbl}>Variants <span style={{ fontWeight:400, textTransform:'none' }}>(each becomes a button on POS)</span></span>
               {variants.length === 0 && (
-                <div style={{ padding:'12px', background:'var(--bg3)', borderRadius:9, fontSize:11, color:'var(--t4)', textAlign:'center', marginBottom:8 }}>No sizes yet — click "+ Add" below</div>
+                <div style={{ padding:'12px', background:'var(--bg3)', borderRadius:9, fontSize:11, color:'var(--t4)', textAlign:'center', marginBottom:8 }}>No variants yet — click "+ Add" below</div>
               )}
               {variants.map((v,vi) => {
                 const vp = v.pricing || { base: v.price || 0 };
@@ -3556,7 +3556,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   </div>
                 );
               })}
-              <button onClick={addVariant} style={{ width:'100%', padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1.5px dashed var(--bdr2)', color:'var(--t2)', fontSize:12, fontWeight:600, marginTop:4 }}>+ Add {item.variantLabel||'size'}</button>
+              <button onClick={addVariant} style={{ width:'100%', padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1.5px dashed var(--bdr2)', color:'var(--t2)', fontSize:12, fontWeight:600, marginTop:4 }}>+ Add {item.variantLabel||'variant'}</button>
             </div>
 
             {/* POS preview for variants */}
@@ -3594,7 +3594,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             {/* Block modifiers on parent items that have variants */}
             {isParent ? (
               <div style={{ padding:'16px 18px', background:'var(--acc-d)', border:'1.5px solid var(--acc-b)', borderRadius:12 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:'var(--acc)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}><Icon name="warn" size={15} />Assign modifiers to sizes, not the parent</div>
+                <div style={{ fontSize:13, fontWeight:700, color:'var(--acc)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}><Icon name="warn" size={15} />Assign modifiers to variants, not the parent</div>
                 <div style={{ fontSize:12, color:'var(--t2)', lineHeight:1.6 }}>
                   This item has {variants.length} size{variants.length!==1?'s':''} (variants). Modifiers must be assigned to each size individually — not to the parent product. Click a size in the Flow tab to edit its modifiers.
                 </div>
@@ -3715,7 +3715,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
         {/* ════ PRICING ════════════════════════════════════════════════════ */}
         {sec==='pricing' && (
           <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-            {isParent && <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)' }}>This item has size variants — set prices on each size in the Sizes tab.</div>}
+            {isParent && <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)' }}>This item has variants — set prices on each variant in the Variants tab.</div>}
             {/* The base price is edited on the Details tab, beside the name (23 Sep 2026).
                 It is shown here as the reference every row below falls back to, so the
                 placeholders make sense, but there is one place to change it. */}
@@ -4478,7 +4478,7 @@ function ModifiersTab() {
                   </button>
                   <div style={{ fontSize:10, color:'var(--t4)', marginTop:6, lineHeight:1.5 }}>
                     Each product keeps its own settings for this group, and anything that already has it is left alone.
-                    A product with sizes goes on <strong style={{ color:'var(--t3)' }}>every size</strong>, because that is where the till reads options from. Tick a single size to do just one.
+                    A product with variants goes on <strong style={{ color:'var(--t3)' }}>every variant</strong>, because that is where the till reads options from. Tick a single variant to do just one.
                   </div>
                 </>
               )}

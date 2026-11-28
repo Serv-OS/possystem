@@ -25,7 +25,7 @@ test('a cleared base price shows empty, never a forced 0', () => {
 
 test('a sized parent gets the Sizes note instead of a base price', () => {
   assert.match(details, /\{!isParent && \(\s*<div>\s*<span style=\{lbl\}>Base price<\/span>/);
-  assert.match(details, /Each size carries its own price, set in the Sizes tab/);
+  assert.match(details, /Each variant carries its own price, set in the Variants tab/);
 });
 
 test('the Pricing tab shows the base as the reference and no longer edits it', () => {

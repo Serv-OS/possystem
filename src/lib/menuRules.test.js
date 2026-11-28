@@ -327,6 +327,8 @@ test('rule 10: a rename carries the kitchen and receipt names that only mirrored
   // A row already wrong (renamed before this rule) heals on its next rename: the placeholder is never an override.
   assert.deepEqual(namesPatchForRename(OREO_RAW, { menuName: 'Oreo Donut' }), { kitchenName: 'Oreo Donut', receiptName: 'Oreo Donut' });
   assert.deepEqual(namesPatchForRename({ ...FRESH, kitchenName: 'New item 2', receiptName: 'New size' }, { name: 'Hot' }), { kitchenName: 'Hot', receiptName: 'Hot' });
+  // 5.12.128: a variant made in the site menu editor is now called "New variant": the same rule.
+  assert.deepEqual(namesPatchForRename({ ...FRESH, kitchenName: 'New variant', receiptName: 'new variant 3' }, { name: 'Hot' }), { kitchenName: 'Hot', receiptName: 'Hot' });
 });
 
 test('rule 10: an edit that sets the names itself, or does not change the name, is left alone', () => {
