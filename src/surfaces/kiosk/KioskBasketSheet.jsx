@@ -28,7 +28,7 @@ export default function KioskBasketSheet({ cart, cartItemCount, cartItemUsage, d
           <KioskCloseButton onClick={onClose} />
         </div>
         <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0, flex: '1 1 auto' }}>
-          {kioskBasketView(cart).map((line, i) => {   /* 5.12.128: a Combo is one row */
+          {kioskBasketView(cart).map((line, i) => {   /* 5.12.129: a Combo is one row */
             const room = kioskLineRoom(line, dailyCounts, cartItemUsage);
             return (
               <KioskLineRow

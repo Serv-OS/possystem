@@ -1,4 +1,4 @@
-// kioskCombo.test.js: a Combo with steps on the kiosk, both designs (5.12.128). Peter, 27 Nov 2026:
+// kioskCombo.test.js: a Combo with steps on the kiosk, both designs (5.12.129). Peter, 27 Nov 2026:
 // "yes build kiosk". The kiosk keeps one basket line per order line, so its own totals, payment and
 // order write (fingerprinted in kioskCardPathGuard.test.js) carry a Combo as they carry any line.
 // Proven here: the lines, the money (= the POS's comboTotal), the deals, promo codes, rewards,
@@ -115,10 +115,10 @@ test('the wiring: both designs open the steps; the guarded blocks change by one 
   assert.match(app, /\{kioskBasketView\(cart\)\.map\(l => \{/);
   assert.match(app, /onRemove=\{\(\) => \(l\.comboWhole \? onRemoveCombo\(l\.comboId\) : onUpdate\(l\.key, -l\.qty\)\)\}/);
   assert.match(app, /const cartItemCount = useMemo\(\(\) => kioskItemCount\(cart\), \[cart\]\);/);
-  assert.match(app, /      comboRole: l\.comboRole, comboId: l\.comboId,   \/\/ 5\.12\.128/);
+  assert.match(app, /      comboRole: l\.comboRole, comboId: l\.comboId,   \/\/ 5\.12\.129/);
   const v2 = read('../surfaces/kiosk/KioskFlowV2.jsx');
   assert.match(v2, /setOverlay\(comboHasSteps\(item\) \? 'combo' : 'item'\);/);
   assert.match(v2, /<OnlineComboSheet size="kiosk" screen="kiosk" item=\{engine\.selectedItem\}/);
   for (const f of ['KioskBasketSheet.jsx', 'KioskReviewScreen.jsx']) assert.match(read(`../surfaces/kiosk/${f}`), /kioskBasketView\(cart\)\.map\(\(line, i\) => \{/);
-  assert.match(read('./kioskCardPathGuard.test.js'), /length: 3673,\n\s+sha256: 'd37d1f8981b97828fd546dea3079de69a7697199f211bd9cdcdece9cb69912ef',/);
+  assert.match(read('./kioskCardPathGuard.test.js'), /length: 3673,\n\s+sha256: '4590bd3f09e6772e7b5acfaf44276fca7a7ed31aae3c0aaa7dd1a26bc948bbef',/);
 });

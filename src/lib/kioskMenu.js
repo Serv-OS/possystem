@@ -43,7 +43,7 @@ export function kioskOptionOnlySubitem(item) {
  * (the new design's rail and item list here, today's KioskApp visibleItems).
  */
 export function kioskCardEligible(item) {
-  // 5.12.128 (Peter, 27 Nov 2026: "yes build kiosk"): a Combo with steps is a card like any product
+  // 5.12.129 (Peter, 27 Nov 2026: "yes build kiosk"): a Combo with steps is a card like any product
   // (5.12.123 to 5.12.127 left it off: lib/combo.js comboPosOnly); tapping it walks its steps.
   return !!item && !item.parent_id && item.visibility?.kiosk !== false && !kioskOptionOnlySubitem(item);
 }
@@ -217,7 +217,7 @@ export function kioskLowStock(item, dailyCounts) {
 export function kioskAddMode(item, ctx = {}) {
   const { items = [], eightySixIds = [], dailyCounts = {}, allergenFilter = null, instructionDefs = [], groupRules = null } = ctx;
   if (!item || kioskItemSoldOut(item, eightySixIds, dailyCounts)) return { mode: 'soldout' };
-  // 5.12.128: a Combo with steps opens its steps; one that cannot be made right now is sold out.
+  // 5.12.129: a Combo with steps opens its steps; one that cannot be made right now is sold out.
   if (comboHasSteps(item)) {
     const rows = Array.isArray(items) ? items : [];
     const cant = comboUnsellable(item, {

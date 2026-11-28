@@ -28,7 +28,7 @@
 
 import { kitchenOverride, receiptOverride } from './itemDisplay.js';
 import { sizeTaxRefs } from './taxRefs.js';
-import { comboFieldsOf } from './online/comboCart.js';   // 5.12.128: a Combo's lines stay one Combo
+import { comboFieldsOf } from './online/comboCart.js';   // 5.12.129: a Combo's lines stay one Combo
 
 const nameOf = (row) => row?.menuName || row?.menu_name || row?.name || '';
 
@@ -228,9 +228,9 @@ export function kioskOrderItem(l, i) {
     // lowest occupied course.
     status: 'sent',
     fired: true,
-    // 5.12.128: a Combo's own line is on no course (it never reaches the kitchen), as on the POS.
+    // 5.12.129: a Combo's own line is on no course (it never reaches the kitchen), as on the POS.
     course: l.noKitchen ? 0 : 1,
-    // 5.12.128 (Combos on the kiosk): what makes the lines one Combo (lib/combo.js), and the row id the
+    // 5.12.129 (Combos on the kiosk): what makes the lines one Combo (lib/combo.js), and the row id the
     // till, the receipt and the reports read it by. Nothing for any other line.
     ...comboFieldsOf(l),
     ...(l.comboId ? { itemId: v ? v.id : l.item.id } : {}),

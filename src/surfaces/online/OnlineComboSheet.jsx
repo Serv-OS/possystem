@@ -44,7 +44,7 @@ export default function OnlineComboSheet({
   item, theme, rows = [], priceFor = (r) => Number(r?.pricing?.base ?? 0), eightySixIds = [], stockLevels = {},
   basket = [], orderType = null, fulfilment = null, instGroupDefs = [], defaultImage = null, avoidAllergens = [],
   showCalories = false, initialPicks = null, addLabel = 'Add to basket', noPrice = null, onClose, onAdd,
-  // 5.12.128: the kiosk (size "kiosk": a wider sheet and big touch targets; screen "kiosk": its Shows on).
+  // 5.12.129: the kiosk (size "kiosk": a wider sheet and big touch targets; screen "kiosk": its Shows on).
   size = null, screen = 'online',
 }) {
   useMenuText();

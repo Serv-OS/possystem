@@ -44,7 +44,7 @@ export function kioskRewardMissingItems(type, value, cart = [], categories = [])
   if (type !== 'free_item') return null;
   const matcher = eligibleMatcher(value, categories);
   if (!matcher.configured) return null;
-  // 5.12.128: a Combo's pick is part of the Combo: never the item a free item reward makes free.
+  // 5.12.129: a Combo's pick is part of the Combo: never the item a free item reward makes free.
   if ((cart || []).some(l => !(l.comboRole === 'pick' && l.comboId) && lineMatches(l, matcher))) return null;
   return eligibleItemNames(value).join(', ');
 }

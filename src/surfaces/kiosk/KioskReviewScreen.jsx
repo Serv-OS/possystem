@@ -80,7 +80,7 @@ export default function KioskReviewScreen({
             <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2Ink)' }}>{tn('k2.itemsInOrder', cartItemCount)}</div>
             <KioskPillButton onClick={onAddMore}>{t('k2.review.addMore')}</KioskPillButton>
           </div>
-          {kioskBasketView(cart).map((line, i) => {   /* 5.12.128: a Combo is one row */
+          {kioskBasketView(cart).map((line, i) => {   /* 5.12.129: a Combo is one row */
             const room = kioskLineRoom(line, dailyCounts, cartItemUsage);
             return (
               <KioskLineRow

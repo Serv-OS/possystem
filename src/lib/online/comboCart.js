@@ -112,7 +112,7 @@ export function customerComboContext({ item = null, rows = [], eightySixIds = []
     soldAs: (row) => isSoldAs(row, orderType, rowsById),
     notSoldWords: (row) => notSoldAsWords(row, orderType),
     notSoldShort: () => { const k = soldAsKey(orderType); return k ? `Not for ${SOLD_AS_WORDS[k]}` : 'Not available'; },
-    hiddenHere: (row) => optionHiddenOn(row, screen, fulfilment),   // 5.12.128: the kiosk reads its own Shows on
+    hiddenHere: (row) => optionHiddenOn(row, screen, fulfilment),   // 5.12.129: the kiosk reads its own Shows on
     requiresAnswers: (row) => factsOf(row).requiresAnswers,
     hasOptions: (row) => factsOf(row).hasOptions,
     // A pick that keeps its own price, of a product with no price set, is never sold for 0.00: its paid

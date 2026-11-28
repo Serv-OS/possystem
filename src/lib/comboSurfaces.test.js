@@ -70,7 +70,7 @@ test('a Combo with no steps, and every other product, shows exactly as before', 
 });
 
 test('the kiosk and the catering page have their own card rules: both leave it out', () => {
-  // 5.12.128 (Peter: "yes build kiosk"): the kiosk shows it and walks its steps (kioskCombo.test.js).
+  // 5.12.129 (Peter: "yes build kiosk"): the kiosk shows it and walks its steps (kioskCombo.test.js).
   assert.equal(kioskCardEligible(BYO), true);
   assert.equal(kioskCardEligible({ ...BYO, visibility: { ...ALL_ON, kiosk: false } }), false, 'its own kiosk switch still counts');
   assert.equal(cateringVisible(BYO), false);

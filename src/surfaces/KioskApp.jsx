@@ -85,7 +85,7 @@ import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 import { comboPosOnly, comboHasSteps } from '../lib/combo.js';
-// 5.12.128 (Peter, 27 Nov 2026: "yes build kiosk"): a Combo with steps, built in the shared Combo sheet
+// 5.12.129 (Peter, 27 Nov 2026: "yes build kiosk"): a Combo with steps, built in the shared Combo sheet
 // at kiosk size, goes on the basket as its own lines (lib/kioskCombo.js).
 import OnlineComboSheet from './online/OnlineComboSheet';
 import { kioskComboLines, kioskBasketForCombo, kioskItemCount, kioskWithoutCombo, kioskBasketView } from '../lib/kioskCombo.js';
@@ -856,7 +856,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       price: l.linePrice,
       qty: l.qty || 1,
       name: l.name || l.item?.name || 'Item',
-      comboRole: l.comboRole, comboId: l.comboId,   // 5.12.128: a Combo's pick is never in a deal (discountEngine)
+      comboRole: l.comboRole, comboId: l.comboId,   // 5.12.129: a Combo's pick is never in a deal (discountEngine)
     }));
     return evaluateAutoDiscounts(items, autoRules, 'kiosk', buildScheduleCtx(kioskTz)).map(toAppliedDiscount);
   }, [cart, autoRules, kioskTz]);
@@ -898,9 +898,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [kioskTaxLines, kioskTaxCtx, kioskTaxType, autoDiscounts, subtotal, discountedSubtotal]);
   const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
   const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);
-  // 5.12.128: a Combo counts once, never once per pick.
+  // 5.12.129: a Combo counts once, never once per pick.
   const cartItemCount = useMemo(() => kioskItemCount(cart), [cart]);
-  // 5.12.128: a Combo with steps: its sheet, the lines it adds, and Remove for all of it.
+  // 5.12.129: a Combo with steps: its sheet, the lines it adds, and Remove for all of it.
   const [comboItem, setComboItem] = useState(null);
   const kioskPriceFor = (r) => resolvePrice(r, orderType, activeMenuId);
   const addKioskCombo = (item, picks) => { setCart(c => [...c, ...kioskComboLines({ item, picks, rows: items, priceFor: kioskPriceFor })]); };
@@ -2862,7 +2862,7 @@ function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCoun
           </div>
         ) : (
           <>
-            {/* 5.12.128: a Combo is one card (its picks under its name); minus or Remove takes all of it. */}
+            {/* 5.12.129: a Combo is one card (its picks under its name); minus or Remove takes all of it. */}
             {kioskBasketView(cart).map(l => {
               // v5.5.285: Stock cap for cart qty increment
               const remaining = l.comboWhole ? 0 : kioskLineRemaining(l, dailyCounts);

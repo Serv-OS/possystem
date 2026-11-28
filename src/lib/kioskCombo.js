@@ -1,6 +1,6 @@
 // src/lib/kioskCombo.js
 //
-// A COMBO ON THE KIOSK, BOTH DESIGNS (5.12.128). Peter, 27 Nov 2026: "yes build kiosk".
+// A COMBO ON THE KIOSK, BOTH DESIGNS (5.12.129). Peter, 27 Nov 2026: "yes build kiosk".
 //
 // The rules are the POS's own (lib/combo.js); the guest builds it in the same sheet as online
 // (surfaces/online/OnlineComboSheet.jsx, with the kiosk's theme and big touch targets). This file

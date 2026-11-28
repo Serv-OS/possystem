@@ -74,7 +74,7 @@ export function repriceKioskCart(cart, items, orderType, menuId = null) {
   // 5.12.115 (lib/soldAs.js): a line that is not sold on the new order type cannot stay in the
   // basket (wine, when eat in becomes take away). It is taken out here, the one place both kiosk
   // designs come through when the order type changes.
-  // 5.12.128: a Combo goes whole when any line of it is not sold on the new order type.
+  // 5.12.129: a Combo goes whole when any line of it is not sold on the new order type.
   const goneCombos = new Set(list.filter(line => line && line.item && line.comboId).filter(line => {
     const row = line.variant?.id ? byId.get(line.variant.id) : byId.get(line.item.id);
     return row && !isSoldAs(row, orderType, byId);
@@ -92,7 +92,7 @@ export function repriceKioskCart(cart, items, orderType, menuId = null) {
     const src = line.variant?.id ? byId.get(line.variant.id) : byId.get(line.item.id);
     if (!src) return line;
     const extras = (Array.isArray(line.modsArray) ? line.modsArray : []).reduce((s, m) => s + num(m?.price), 0);
-    // 5.12.128: a Combo's pick keeps its rule (lib/comboLines.js repricedPickLine): part of the set price
+    // 5.12.129: a Combo's pick keeps its rule (lib/comboLines.js repricedPickLine): part of the set price
     // stays its bump, one that keeps its price takes the product's price for the new order type.
     const pick = line.comboRole === 'pick' && !!line.comboId;
     const linePrice = pick

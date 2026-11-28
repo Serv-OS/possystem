@@ -1,6 +1,6 @@
 export const CHANGELOG = [
   {
-    v: '5.12.128',
+    v: '5.12.129',
     date: '27 Nov 2026',
     items: [
       'Combos with steps on the kiosk, both designs (Peter, 27 Nov 2026: "yes build kiosk"). Tapping a Combo opens the same steps as everywhere else at kiosk size: "Can customers change these products?" per step, a product with options shows ">" and opens them at once, Continue goes back. In the kiosk\'s colours.',
