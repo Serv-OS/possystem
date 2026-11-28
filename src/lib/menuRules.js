@@ -261,9 +261,9 @@ export function optionOnlyCategoryIds(categories, items, opts = {}) {
  * Returns the fields to add to the edit: { kitchenName, receiptName } (either, both or none).
  * An edit that sets a kitchen or receipt name itself, one that does not change the display
  * name, and a kitchen or receipt name that was really typed (different from the old name and
- * not the "New item" or "New size" placeholder) are left alone.
+ * not the "New item", "New size" or "New variant" placeholder) are left alone.
  */
-const PLACEHOLDER_NAME = /^new (item|size)( \d+)?$/i;
+const PLACEHOLDER_NAME = /^new (item|size|variant)( \d+)?$/i;   // 5.12.128: a new variant is "New variant"
 const cleanName = (v) => (v == null ? '' : String(v).trim());
 export function namesPatchForRename(current, patch) {
   if (!current || !patch || typeof patch !== 'object') return {};

@@ -452,7 +452,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
                 {/* 5.12.57 (US basics 9.2): the Pizza type comes with the demo venue's sample sizes, crusts and
                     toppings (priced in the demo's numbers) and no way to change them, so it is only offered on an
                     item that already is one, as Menu Manager does. */}
-                {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],...(isPizza?[['pizza','Pizza']]:[])].map(([v,l])=>{
+                {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has variants'],...(isPizza?[['pizza','Pizza']]:[])].map(([v,l])=>{
                   const act=(item.type||'simple')===v||(v==='variants'&&isParent);
                   return <button key={v} onClick={()=>f('type',v)} style={{ padding:'3px 8px',borderRadius:7,cursor:'pointer',fontFamily:'inherit',fontSize:10,fontWeight:act?700:400,border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`,background:act?'var(--acc-d)':'var(--bg3)',color:act?'var(--acc)':'var(--t4)' }}>{l}</button>;
                 })}
@@ -555,7 +555,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
                 </div>
               );
             })}
-            <button onClick={()=>{addMenuItem({name:'New size',menuName:'New size',type:'simple',parentId:item.id,cat:item.cat,allergens:[],pricing:{base:0},assignedModifierGroups:[],assignedInstructionGroups:[],sortOrder:variants.length});if(item.type!=='variants')f('type','variants');}} style={{ padding:'8px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1.5px dashed var(--bdr2)',color:'var(--t2)',fontSize:12,fontWeight:600 }}>+ Add size</button>
+            <button onClick={()=>{addMenuItem({name:'New variant',menuName:'New variant',type:'simple',parentId:item.id,cat:item.cat,allergens:[],pricing:{base:0},assignedModifierGroups:[],assignedInstructionGroups:[],sortOrder:variants.length});if(item.type!=='variants')f('type','variants');}} style={{ padding:'8px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1.5px dashed var(--bdr2)',color:'var(--t2)',fontSize:12,fontWeight:600 }}>+ Add size</button>
           </div>
         )}
 
