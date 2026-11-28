@@ -1,5 +1,14 @@
 export const CHANGELOG = [
   {
+    v: '5.12.127',
+    date: '27 Nov 2026',
+    items: [
+      'Combos, a clearer flow (Peter, 27 Nov 2026: "its not clear that change means choose extras"). In a step, a product with options shows a ">" and opens its options the moment it is tapped, headed with the Combo\'s name, with each group\'s rule; Continue goes back to the step. Tapping a pick opens its options again. There is no Change button any more. Backing out of a product just tapped leaves it unpicked. On the POS, the phone POS, the bar screen, online, the catering link and QR.',
+      'Each step now has "Can customers change these products?" (Peter: "dont allow modification of a product so like the pizzas"). No: each product goes exactly as it is, nothing asked and no note, and its required options never block it; a product with sizes still asks the size. Yes: its options are asked with their rules. Every step made before reads Yes (what it did). In the site Menu Manager and the Multi site menu product sheet; the Steps tab says when a product with options or sizes is in a step that goes as it is.',
+      'The basket\'s Change on a Combo is now Edit. No SQL. Deploy msm-publish before launch (a publish then keeps the new choice at every site).',
+    ],
+  },
+  {
     v: '5.12.126',
     date: '27 Nov 2026',
     items: [

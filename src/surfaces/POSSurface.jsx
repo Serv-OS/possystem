@@ -33,7 +33,7 @@ import InlineItemFlow from '../components/InlineItemFlow';
 // block in the order panel and moves as one.
 import ComboFlow from '../components/ComboFlow';
 import ComboOrderBlock from '../components/ComboOrderBlock';
-import { comboHasSteps, comboSteps, comboUnsellable, comboIsFixed, comboMissing, startingPicks, orderBlocks, comboLinesOf, comboLinesTotal, isComboLine, isComboPick, unitsUsed, selfPickAllergens } from '../lib/combo';
+import { comboHasSteps, comboSteps, comboUnsellable, comboIsFixed, comboMissing, startingPicks, orderBlocks, comboLinesOf, comboLinesTotal, isComboLine, isComboPick, unitsUsed, selfPickAllergens, stepAsIs } from '../lib/combo';
 import { pickFlowSetup, stepForLine, comboPosContext } from '../lib/comboLines';
 import { answersWithNote } from '../lib/optionAnswers';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
@@ -965,6 +965,11 @@ export default function POSSurface() {
   const pickCanChange = (line) => {
     if (!isComboPick(line) || line.voided) return false;
     const row = rawItems.find(r => r.id === (line.comboEntryId ?? line.itemId));
+    // 5.12.127: a pick of a step whose products go exactly as they are is never changed (Peter: "dont
+    // allow modification of a product so like the pizzas").
+    const entry = line.comboEntryId ?? line.itemId;
+    const comboRow = rawItems.find(r => comboHasSteps(r) && comboSteps(r).some(s => s.id === line.comboStepId && s.products.some(p => p.itemId === entry)));
+    if (comboRow && stepAsIs(comboSteps(comboRow).find(s => s.id === line.comboStepId))) return false;
     return !!row && !!comboOptionCtx && comboOptionCtx.hasOptions(row);
   };
   const openPickOptions = (line) => {
