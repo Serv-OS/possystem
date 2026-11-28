@@ -90,7 +90,10 @@ export function normaliseStep(raw, index = 0) {
     seen.add(e.itemId);
     products.push(e);
   }
-  return { id: text(r.id) || `step-${index + 1}`, name: text(r.name) || `Step ${index + 1}`, selectionType: kind, min, max, pricing, products };
+  // 5.12.127: asIs (Peter: "dont allow modification of a product so like the pizzas"): the products
+  // of this step go exactly as they are, no options and no note. Kept only when set, so every step
+  // saved before reads (and saves) exactly as it did: customers can change those products.
+  return { id: text(r.id) || `step-${index + 1}`, name: text(r.name) || `Step ${index + 1}`, selectionType: kind, min, max, pricing, products, ...(r.asIs === true ? { asIs: true } : {}) };
 }
 
 /** The steps held in a menu_items.combo value (the jsonb object, or a bare list of steps). */
@@ -493,6 +496,29 @@ export function pickNeeds(pick, ctx = {}) {
   return row && typeof ctx.requiresAnswers === 'function' && ctx.requiresAnswers(row) ? 'options' : null;
 }
 
+// 5.12.127 (Peter, 27 Nov 2026: "its not clear that change means choose extras", and "dont allow
+// modification of a product so like the pizzas dont let you modify them or if they have a modifiers
+// flow that shows those modifiers and the rules etc around them"). Per step:
+//   as it is (asIs)          the pick goes exactly as the product is: no options, no note, and a
+//                            required option of that product never blocks it. A size is still
+//                            chosen where the step lists a product with sizes (it is WHICH product).
+//   customers can change it  a product with options opens them the moment it is tapped, with
+//                            their rules, and tapping the pick again opens them again.
+/** True for a step whose products go exactly as they are. */
+export const stepAsIs = (step) => !!step && step.asIs === true;
+
+/** What a pick still needs in ITS step: in a step whose products go as they are, only a size. */
+export function stepPickNeeds(step, pick, ctx = {}) {
+  const needs = pickNeeds(pick, ctx);
+  return stepAsIs(step) && needs === 'options' ? null : needs;
+}
+
+/** Does tapping this product in this step open its own options (a ">" on it)? ctx.hasOptions(row). */
+export function stepOpensOptions(step, row, ctx = {}) {
+  if (!row || stepAsIs(step)) return false;
+  return typeof ctx.hasOptions === 'function' ? !!ctx.hasOptions(row) : false;
+}
+
 // ── 6. MONEY ─────────────────────────────────────────────────────────────────
 
 const modsTotal = (mods) => listOf(mods).reduce((s, m) => s + (Number(m?.price) || 0), 0);
@@ -571,7 +597,7 @@ export function comboMissing(steps, picks, ctx = {}) {
     const st = entryState(entry, ctx, []);
     if (st.state === 'gone' || st.state === 'hidden') return `${nameOf(entryRow)} cannot be picked any more`;
     if (st.state === 'type') return st.words;
-    const needs = pickNeeds(p, ctx);
+    const needs = stepPickNeeds(step, p, ctx);   // 5.12.127: never an option in a step whose products go as they are
     const row = rows.get(p.itemId ?? p.entryId) || entryRow;
     if (needs === 'size') return `${nameOf(row)}: choose a size`;
     if (needs === 'options') return `${nameOf(row)}: choose its options`;

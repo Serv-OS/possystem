@@ -51,7 +51,8 @@ const extraLabel = (n, prefix = '+') => {
 //   extraPrices     priceFor returns what is EXTRA on top of a package, so
 //                   sizes, options and the button read "+£x" or "Included"
 // All of these default to the storefront's behaviour.
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null, avoidAllergens = [], showCalories = false, fulfilment = null }) {
+// 5.12.127: contextTitle (a line above the product's name: the Combo it is picked in). Absent: as before.
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null, avoidAllergens = [], showCalories = false, fulfilment = null, contextTitle = null }) {
   useMenuText();
   const facts = item?.stockFacts || null;   // v5.11.93: the stock recipe's facts at this site, when any
   const [qty, setQty]               = useState(1);
@@ -576,6 +577,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
 
         <div style={{ padding: '20px 22px 12px', flex: 1 }}>
           <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em', marginBottom: 6 }}>
+            {contextTitle && <span data-testid="sheet-context-title" style={{ display: 'block', fontSize: 12, fontWeight: 700, opacity: 0.65, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>{contextTitle}</span>}
             {display}
           </div>
           {/* Dietary badges — GF/V/VG/DF with full labels. Selected variant's

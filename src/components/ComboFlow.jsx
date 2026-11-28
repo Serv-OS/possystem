@@ -7,8 +7,8 @@ import InlineItemFlow from './InlineItemFlow';
 import { AllergenModal } from './ProductModal';
 import {
   comboSteps, stepEntries, stepStatus, stepNeedWords, stepCountWords, stepRule, ruleWords,
-  tapEntry, untapEntry, canPick, startingPicks, fixedAnswer, pickNeeds, pickPrice, comboTotal,
-  comboMissing, pickLineName, picksOfStep, PRICING_OWN,
+  tapEntry, untapEntry, canPick, startingPicks, fixedAnswer, pickPrice, comboTotal,
+  comboMissing, pickLineName, picksOfStep, PRICING_OWN, stepPickNeeds, stepOpensOptions, stepAsIs,
 } from '../lib/combo';
 import { comboPosContext, pickFlowSetup } from '../lib/comboLines';
 
@@ -59,7 +59,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
   // The flow opens on the first step staff have something to do in: one that does not fill itself
   // (a step that can be skipped is still SHOWN, never passed over), or one whose picks still need an
   // answer. The same rule advanceFrom walks on with. Only a Combo that fills itself opens on the summary.
-  const stepOpen = (s, list) => !(fixedAnswer(s, ctx) && stepStatus(s, list).done && !picksOfStep(list, s.id).some(p => pickNeeds(p, ctx)));
+  const stepOpen = (s, list) => !(fixedAnswer(s, ctx) && stepStatus(s, list).done && !picksOfStep(list, s.id).some(p => stepPickNeeds(s, p, ctx)));
   const firstOpen = (list) => { const i = steps.findIndex(s => stepOpen(s, list)); return i < 0 ? 'summary' : i; };
   const [view, setView] = useState(() => firstOpen(initialPicks || startingPicks(steps, ctx, newPick)));
   const [configuring, setConfiguring] = useState(null);     // { key, fresh } while a pick's own options are open
@@ -97,7 +97,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
   const settle = (step, list) => {
     const index = steps.indexOf(step);
     const st = stepStatus(step, list);
-    if (st.full && !picksOfStep(list, step.id).some(p => pickNeeds(p, ctx)) && view === index) advanceFrom(index, list);
+    if (st.full && !picksOfStep(list, step.id).some(p => stepPickNeeds(step, p, ctx)) && view === index) advanceFrom(index, list);
   };
 
   const doTap = (step, e) => {
@@ -110,10 +110,11 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
     }
     setSay(null); setLeaving(false); setDirty(true);
     setPicks(next);
-    // A size to pick, or an option that must be answered: ask it now, in the product's own flow.
-    // What the step held before the tap is kept, so backing out of that flow puts it back (a one
-    // choice step swaps its pick on a tap, and must not end up empty).
-    if (made && pickNeeds(made, ctx)) { setConfiguring({ key: made.key, fresh: true, before: picks }); return; }
+    // 5.12.127 (Peter: "its not clear that change means choose extras"): a product with options, in a
+    // step customers can change, opens them the moment it is tapped (with their rules), as a size to
+    // pick does in any step. What the step held before the tap is kept, so backing out of that flow
+    // puts it back (a one choice step swaps its pick on a tap, and must not end up empty).
+    if (made && (stepOpensOptions(step, e.row, ctx) || stepPickNeeds(step, made, ctx))) { setConfiguring({ key: made.key, fresh: true, before: picks }); return; }
     settle(step, next);
   };
   const tap = (step, e) => {
@@ -143,7 +144,8 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
     });
     const close = (cancelled) => {
       // A fresh pick that still needs its size or a required answer cannot stay half made.
-      if (cancelled && configuring.fresh && pickNeeds(cfgPick, ctx)) setPicks(configuring.before || picks.filter(p => p.key !== cfgPick.key));
+      // 5.12.127: backing out of a product just tapped never leaves it picked (it was never confirmed).
+      if (cancelled && configuring.fresh) setPicks(configuring.before || picks.filter(p => p.key !== cfgPick.key));
       setConfiguring(null);
     };
     if (!setup) {
@@ -163,6 +165,8 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
         activeAllergens={activeAllergens}
         mode="edit"
         lockedQty={1}
+        heading={item.menuName || item.name}
+        confirmLabel="Continue"
         basePriceOf={setup.baseOf}
         sizePriceWords={setup.sizeWords}
         initialAnswers={setup.answers}
@@ -184,7 +188,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
       // Jump to where it is missing: the first step that is short, else the first pick that needs an answer.
       const short = steps.findIndex(s => !stepStatus(s, picks).done);
       if (short >= 0) { setView(short); return; }
-      const need = picks.find(p => pickNeeds(p, ctx));
+      const need = picks.find(p => stepPickNeeds(stepById(p.stepId), p, ctx));
       if (need) setConfiguring({ key: need.key, fresh: false });
       return;
     }
@@ -202,15 +206,20 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
     </button>
   );
 
-  // One pick as a row: its name, what it adds, its own options, Change and take off.
+  // One pick as a row: its name, what it adds, its own options. 5.12.127: tapping it opens its options
+  // again (a step customers can change, a product with options, or a size still to pick), marked ">";
+  // there is no Change or Note button any more. The cross takes it off.
   const pickRow = (p, { number = null, fixed = false } = {}) => {
     const row = rowOfPick(p);
     const price = priceOfPick(p);
-    const needs = pickNeeds(p, ctx);
+    const step = stepById(p.stepId);
+    const needs = stepPickNeeds(step, p, ctx);
     const entryRow = ctx.rowsById.get(p.entryId);
-    const canChange = !!entryRow && (ctx.hasOptions(entryRow) || (row && ctx.hasOptions(row)));
+    const opens = !!entryRow && (needs || stepOpensOptions(step, entryRow, ctx) || (row && stepOpensOptions(step, row, ctx)));
     return (
-      <div key={p.key} data-testid="combo-pick" style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'9px 12px', borderRadius:10, border:`1.5px solid ${needs ? 'var(--red-b)' : 'var(--bdr)'}`, background: needs ? 'var(--red-d)' : 'var(--bg2)' }}>
+      <div key={p.key} data-testid="combo-pick" data-opens={opens ? '1' : undefined}
+        onClick={opens ? () => setConfiguring({ key: p.key, fresh: false }) : undefined}
+        style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'9px 12px', borderRadius:10, cursor: opens ? 'pointer' : 'default', border:`1.5px solid ${needs ? 'var(--red-b)' : 'var(--bdr)'}`, background: needs ? 'var(--red-d)' : 'var(--bg2)' }}>
         {number != null && <span style={{ fontSize:11, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:16, paddingTop:2 }}>{number}</span>}
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', lineHeight:1.3 }}>{row ? pickLineName(row, ctx.rowsById) : 'Gone from the menu'}</div>
@@ -226,16 +235,9 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
         <div style={{ fontSize:13, fontWeight:800, fontFamily:'var(--font-mono)', color: price.total > 0 ? 'var(--acc)' : 'var(--t4)', flexShrink:0, paddingTop:1 }}>
           {price.total > 0 ? (price.base > 0 ? money(price.total) : `+${money(price.total)}`) : 'Included'}
         </div>
-        {/* Every pick can still be changed: its options where it has some, a note where it has none. */}
-        {!!entryRow && (
-          <button onClick={() => setConfiguring({ key: p.key, fresh: false })} data-testid="combo-pick-change"
-            style={{ height:32, padding:'0 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700, flexShrink:0,
-              border:`1px solid ${needs ? 'var(--red-b)' : 'var(--bdr2)'}`, background: needs ? 'var(--red)' : 'var(--bg3)', color: needs ? '#fff' : 'var(--t1)' }}>
-            {needs ? 'Choose' : canChange ? 'Change' : 'Note'}
-          </button>
-        )}
+        {opens && <span aria-hidden="true" style={{ fontSize:18, fontWeight:800, color: needs ? 'var(--red)' : 'var(--t3)', flexShrink:0, lineHeight:1.1 }}>›</span>}
         {!fixed && (
-          <button onClick={() => removePick(p)} aria-label="Take this pick off" title="Take this pick off"
+          <button onClick={(ev) => { ev.stopPropagation(); removePick(p); }} aria-label="Take this pick off" title="Take this pick off"
             style={{ width:32, height:32, borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:16, flexShrink:0, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t3)', display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
         )}
       </div>
@@ -258,7 +260,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
         <div style={{ display:'flex', gap:6, marginTop:10, overflowX:'auto', paddingBottom:2 }}>
           {steps.map((s, i) => {
             const st = stepStatus(s, picks);
-            const needsAnswer = picksOfStep(picks, s.id).some(p => pickNeeds(p, ctx));
+            const needsAnswer = picksOfStep(picks, s.id).some(p => stepPickNeeds(s, p, ctx));
             const done = st.done && !needsAnswer && st.count > 0;
             return chip(`${i + 1}. ${s.name}`, needsAnswer ? 'Choose options' : stepCountWords(s, picks), view === i ? 'on' : done ? 'done' : 'idle', () => goTo(i), i);
           })}
@@ -284,7 +286,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
               <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4, flexWrap:'wrap' }}>
                 <span style={{ fontSize:13, fontWeight:800, color:'var(--t1)', textTransform:'uppercase', letterSpacing:'.06em' }}>{step.name}</span>
                 <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:6, background: st.need > 0 ? 'var(--red-d)' : 'var(--bg3)', color: st.need > 0 ? 'var(--red)' : 'var(--t3)', border:`1px solid ${st.need > 0 ? 'var(--red-b)' : 'var(--bdr)'}` }}>{ruleWords(rule.min, rule.max)}</span>
-                <span style={{ fontSize:10, color:'var(--t4)' }}>{step.pricing === PRICING_OWN ? 'Each keeps its own price' : 'Part of the set price'}</span>
+                <span style={{ fontSize:10, color:'var(--t4)' }}>{step.pricing === PRICING_OWN ? 'Each keeps its own price' : 'Part of the set price'}{stepAsIs(step) ? ' · each goes as it is' : ''}</span>
                 <span data-testid="combo-step-count" style={{ fontSize:12, fontWeight:800, marginLeft:'auto', color: st.need > 0 ? 'var(--acc)' : 'var(--grn)', fontFamily:'var(--font-mono)' }}>{stepCountWords(step, picks)}</span>
               </div>
               <div data-testid="combo-step-need" style={{ fontSize:12, fontWeight:600, color: st.need > 0 ? 'var(--t2)' : 'var(--grn)', marginBottom:12 }}>{stepNeedWords(step, picks)}</div>
@@ -311,7 +313,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
                           padding:'12px 14px', paddingRight: sel && rule.repeat ? 64 : 14, borderRadius:14, cursor: dim ? 'not-allowed' : 'pointer', fontFamily:'inherit', textAlign:'left', transition:'all .1s',
                           border:`2px solid ${blocked && !sel ? 'var(--red-b)' : sel ? 'var(--acc)' : 'var(--bdr)'}`,
                           background: blocked && !sel ? 'var(--bg5)' : sel ? 'var(--acc-d)' : 'var(--bg2)', opacity: dim ? 0.45 : 1 }}>
-                        <span style={{ fontSize:14, fontWeight:700, lineHeight:1.25, wordBreak:'break-word', color: sel ? 'var(--acc)' : 'var(--t1)', textDecoration: e.state === 'out' && !sel ? 'line-through' : 'none' }}>{tileName(e.row)}</span>
+                        <span style={{ fontSize:14, fontWeight:700, lineHeight:1.25, wordBreak:'break-word', color: sel ? 'var(--acc)' : 'var(--t1)', textDecoration: e.state === 'out' && !sel ? 'line-through' : 'none' }}>{tileName(e.row)}{stepOpensOptions(step, e.row, ctx) && <span data-testid="combo-tile-opens" aria-hidden="true" style={{ marginLeft:6, color:'var(--t3)' }}>›</span>}</span>
                         <span style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
                           {words && <span style={{ fontSize:12, fontWeight:700, fontFamily:'var(--font-mono)', color: sel ? 'var(--acc)' : 'var(--t3)' }}>{words}</span>}
                           {e.words && <span data-testid="combo-tile-words" style={{ fontSize:10, fontWeight:800, padding:'1px 6px', borderRadius:5, background: blocked ? 'var(--red-d)' : 'var(--wrn-d,#fff3cd)', color: blocked ? 'var(--red)' : 'var(--wrn,#856404)', border:`1px solid ${blocked ? 'var(--red-b)' : 'var(--wrn-b,#ffc107)'}` }}>{e.state === 'type' ? ctx.notSoldShort() : e.words}</span>}
@@ -352,7 +354,7 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
                     <span style={{ fontSize:12, fontWeight:800, color:'var(--t1)', textTransform:'uppercase', letterSpacing:'.06em' }}>{s.name}</span>
                     <span style={{ fontSize:11, fontWeight:700, color: st.need > 0 ? 'var(--red)' : 'var(--t3)' }}>{st.need > 0 ? stepNeedWords(s, picks) : stepCountWords(s, picks)}</span>
-                    {!fixedAnswer(s, ctx) && <button onClick={() => goTo(i)} style={{ marginLeft:'auto', fontSize:12, fontWeight:700, color:'var(--acc)', background:'none', border:'none', cursor:'pointer', fontFamily:'inherit', padding:'6px 0', minHeight:32 }}>Change picks</button>}
+                    {!fixedAnswer(s, ctx) && <button onClick={() => goTo(i)} style={{ marginLeft:'auto', fontSize:12, fontWeight:700, color:'var(--acc)', background:'none', border:'none', cursor:'pointer', fontFamily:'inherit', padding:'6px 0', minHeight:32 }}>Edit picks</button>}
                   </div>
                   {mine.length === 0 && <div style={{ fontSize:12, color:'var(--t4)', padding:'2px 0 0' }}>{st.min > 0 ? 'Nothing picked yet' : 'None'}</div>}
                   <div style={{ display:'flex', flexDirection:'column', gap:6 }}>

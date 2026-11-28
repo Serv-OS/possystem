@@ -51,7 +51,9 @@ function resolveOptItemId(opt, menuItems) {
 //   sizePriceWords  (size row) => the words under each size button, in place of its menu price
 //   stockGiveBack   Map(id -> units) a line already on the order holds (Change): counted as free
 // Every confirm now also carries opts.answers (that record). Callers that do not read it are unchanged.
-export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId, initialAnswers = null, basePriceOf = null, sizePriceWords = null, stockGiveBack = null }) {
+// 5.12.127: heading (a line above the product's name: the Combo it is picked in) and confirmLabel (the
+// button's words, "Continue" inside a Combo). Absent: exactly as before.
+export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId, initialAnswers = null, basePriceOf = null, sizePriceWords = null, stockGiveBack = null, heading = null, confirmLabel = null }) {
   const { modifierGroupDefs: allGroupDefs, instructionGroupDefs, eightySixIds: storeEightySix, dailyCounts: storeCounts, orderType: storeOrderType, activeMenuId: storeMenuId, menuItems: storeRows } = useStore();
   // 5.12.123: stockGiveBack (Map id -> units), Change on a line already on the order: the units the
   // line holds count as free here, and what it holds is never refused for being 86'd (its own
@@ -349,6 +351,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
         <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
           <button onClick={onCancel} style={{ width:34, height:34, borderRadius:10, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t2)', cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>←</button>
           <div style={{ flex:1 }}>
+            {heading && <div data-testid="flow-heading" style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:1 }}>{heading}</div>}
             <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em' }}>{item.menuName || item.name}</div>
             {item.description && <div style={{ fontSize:12, color:'var(--t3)', marginTop:2, lineHeight:1.4 }}>{item.description}</div>}
           </div>
@@ -469,6 +472,8 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
               opacity: 1, cursor: 'pointer' }}>
             {!canAdd ? `Choose required options first`
               : stockShort ? `Only ${stockShort.have} × ${stockShort.name} left`
+              : confirmLabel
+                ? (extraCost > 0 ? `${confirmLabel} · +${money(extraCost * qty)}` : confirmLabel)
               : mode === 'edit'
                 ? (extraCost > 0 ? `Set options · +${money(extraCost * qty)}` : 'Set options')
                 : `Add to order · ${money(total)}`}

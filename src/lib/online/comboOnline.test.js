@@ -233,7 +233,7 @@ test('7. the wiring: both pages, both checkouts, the status page and catering-re
   assert.match(rel, /items: kitchenItems,/);
   // The sheet draws the shared rules, never its own.
   const sheet = read('../../surfaces/online/OnlineComboSheet.jsx');
-  for (const fn of ['stepEntries', 'tapEntry', 'untapEntry', 'comboMissing', 'comboTotal', 'pickNeeds', 'startingPicks', 'pickFlowSetup', 'customerComboContext']) assert.match(sheet, new RegExp(`\\b${fn}\\(`), fn);
+  for (const fn of ['stepEntries', 'tapEntry', 'untapEntry', 'comboMissing', 'comboTotal', 'stepPickNeeds', 'stepOpensOptions', 'startingPicks', 'pickFlowSetup', 'customerComboContext']) assert.match(sheet, new RegExp(`\\b${fn}\\(`), fn);
   assert.match(sheet, /maxHeight: 'min\(94vh, calc\(100% - 12px\)\)'/);
 });
 
