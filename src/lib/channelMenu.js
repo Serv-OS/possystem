@@ -36,12 +36,14 @@ import { comboPosOnly } from './combo.js';
 // the steps so far, so every other channel leaves such a Combo out, whatever its "Visible on"
 // switches say. Selling it without its steps would take the set price and send no food to the
 // kitchen. A Combo with no steps is an ordinary product and is never held back here.
-const SELLS_COMBO_STEPS = new Set(['pos', 'till']);
+// 5.12.126 (stage 4): the phone POS and the bar screen walk the steps too (the POS's own ComboFlow).
+const SELLS_COMBO_STEPS = new Set(['pos', 'till', 'mpos', 'bar']);
 // 5.12.125 (stage 3): the online page (and its counter mode) builds a Combo with the guest, step by
 // step, once the server values a Combo's picks (SQL 20261217a: the page asks
-// public_order_features and passes { comboSteps: true }). QR, the kiosk and the delivery platforms
-// still leave it out.
-const CUSTOMER_COMBO_STEPS = new Set(['online']);
+// public_order_features and passes { comboSteps: true }). 5.12.126 (stage 4): QR at the table too
+// (the same page, and settle_qr_tab values with the same function). The delivery platforms still
+// leave it out.
+const CUSTOMER_COMBO_STEPS = new Set(['online', 'qr']);
 
 const vis = (item) => (item && typeof item.visibility === 'object' && item.visibility) ? item.visibility : null;
 

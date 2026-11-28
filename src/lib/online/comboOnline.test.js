@@ -166,7 +166,10 @@ test('5. what can be picked on a customer page: 86, daily counts less the basket
 test('6. a Combo with steps shows on a customer page only once the server values its picks', async () => {
   assert.equal(channelVisible(BOX, 'online'), false, 'not before the page knows');
   assert.equal(channelVisible(BOX, 'online', null, { comboSteps: true }), true);
-  for (const ch of ['qr', 'kiosk', 'hubrise', 'delivery', 'bar', 'mpos']) assert.equal(channelVisible(BOX, ch, null, { comboSteps: true }), false, `${ch} has not learned it`);
+  // 5.12.126 (stage 4): QR at the table too, once the server says so; the phone POS and the bar always.
+  assert.equal(channelVisible(BOX, 'qr'), false);
+  assert.equal(channelVisible(BOX, 'qr', null, { comboSteps: true }), true);
+  for (const ch of ['kiosk', 'hubrise', 'delivery']) assert.equal(channelVisible(BOX, ch, null, { comboSteps: true }), false, `${ch} has not learned it`);
   assert.equal(channelVisible(BOX, 'pos'), true);
   assert.equal(channelVisible({ ...BOX, visibility: { online: false } }, 'online', null, { comboSteps: true }), false, 'its own switch still counts');
   assert.equal(cateringVisible(BOX, 'collection'), false);
@@ -196,7 +199,7 @@ test('6. a Combo with steps shows on a customer page only once the server values
 test('7. the wiring: both pages, both checkouts, the status page and catering-release', () => {
   const online = read('../../surfaces/online/OnlineSurface.jsx');
   assert.match(online, /combosReadyOn\(supabase\)\.then\(\(yes\) => \{ if \(alive && yes\) setCombosReady\(true\); \}\);/);
-  assert.match(online, /if \(combosReady \|\| isQr \|\| !menuHasStepCombos\(items\)\) return undefined;/, 'QR never asks (it has not learned Combos)');
+  assert.match(online, /if \(combosReady \|\| !menuHasStepCombos\(items\)\) return undefined;/, '5.12.126: QR asks too');
   assert.match(online, /\{openItem && combosReady && comboHasSteps\(openItem\) && \(\n\s+<OnlineComboSheet/);
   assert.match(online, /\{openItem && !\(combosReady && comboHasSteps\(openItem\)\) && \(\n\s+<OnlineItemSheet/);
   assert.match(online, /const removeFromCart = \(uid\) => setCart\(c => removeBasketLine\(c, uid\)\);/);

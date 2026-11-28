@@ -6,7 +6,11 @@ import InlineItemFlow from '../components/InlineItemFlow';
 import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
 import { isSoldAs, notSoldAsWords } from '../lib/soldAs';
 import { channelVisible } from '../lib/channelMenu';
-import { comboPosOnly, comboNotHereWords, displayOrder, lineShow } from '../lib/combo.js';
+import { comboPosOnly, comboNotHereWords, displayOrder, lineShow, comboHasSteps, comboSteps, comboUnsellable, comboIsFixed, startingPicks, comboMissing, isComboPick, isComboParent } from '../lib/combo.js';
+// 5.12.126 (Combos, stage 4): a Combo with steps is built for the round in the POS's own ComboFlow,
+// priced as a bar tab on the bar's menu, and goes on the round as its own line plus one line per pick.
+import ComboFlow from '../components/ComboFlow';
+import { comboOrderLines, comboPosContext } from '../lib/comboLines';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
@@ -193,6 +197,7 @@ export default function BarSurface() {
   const [cat, setCat]                       = useState('all');
   const [search, setSearch]                 = useState('');
   const [roundItems, setRoundItems]         = useState([]);  // items being built for next round
+  const [barCombo, setBarCombo]             = useState(null); // 5.12.126: a Combo with steps being built for the round
   const [roundNote, setRoundNote]           = useState('');
   const [modalItem, setModalItem]           = useState(null);
   const [editingNote, setEditingNote]       = useState(false);
@@ -282,7 +287,65 @@ export default function BarSurface() {
   },[cat,search,rawItems,ITEMS,eightySixIds]);
 
   const roundTotal = roundItems.reduce((s,i)=>s+i.price*i.qty,0);
-  const roundCount = roundItems.reduce((s,i)=>s+i.qty,0);
+  const roundCount = roundItems.filter(i=>!isComboPick(i)).reduce((s,i)=>s+i.qty,0);   // 5.12.126: a Combo counts once
+
+  // 5.12.126: what the round being built holds that has not reached the daily counts yet (they come
+  // off when the round is sent), so a Combo never offers the last pizza twice.
+  const roundHeld = useMemo(() => {
+    const rows = new Map((storeMenuItems || []).map(r => [r.id, r]));
+    const held = new Map();
+    const hold = (id, n) => {
+      if (id == null || !(n > 0)) return;
+      held.set(id, (held.get(id) || 0) + n);
+      const p = rows.get(id)?.parentId ?? rows.get(id)?.parent_id;
+      if (p != null) held.set(p, (held.get(p) || 0) + n);
+    };
+    for (const l of roundItems) { const q = Math.max(1, Number(l.qty) || 1); hold(l.itemId, q); for (const m of (l.mods || [])) if (m && m.itemId) hold(m.itemId, q); }
+    return held;
+  }, [roundItems, storeMenuItems]);
+  const barPriceOf = (row) => tillLineUnitPrice(row, 'bar-tab', barMenuId, null, 1);
+  const barComboCtx = (item) => {
+    const st = useStore.getState();
+    return comboPosContext({
+      item, menuItems: st.menuItems || [], eightySixIds: st.eightySixIds || [], dailyCounts: st.dailyCounts || {}, orderType: 'bar-tab',
+      modifierGroupDefs: st.modifierGroupDefs || [], instructionGroupDefs: st.instructionGroupDefs || [], held: roundHeld,
+      noPriceLine: (row, extras) => refusesNoPriceLine(row, 'bar-tab', barMenuId, barPriceOf(row) + (Number(extras) || 0)),
+    });
+  };
+  // The store's own rules for a Combo (store addCombo), on the bar's terms: every line or none.
+  const addBarCombo = (item, picks) => {
+    const st = useStore.getState();
+    const name = item.menuName || item.name || 'This Combo';
+    const ctx = barComboCtx(item);
+    const missing = comboMissing(comboSteps(item), picks, ctx);
+    if (missing) { showToast(missing, 'error'); return false; }
+    const setPrice = barPriceOf(item);
+    if (refusesNoPriceLine(item, 'bar-tab', barMenuId, setPrice)) { showToast(`${name} has no price set. Set one in Back Office before selling it.`, 'error'); return false; }
+    const own = st.dailyCounts?.[item.id];
+    if ((st.eightySixIds || []).includes(item.id) || (own && typeof own.remaining === 'number' && own.remaining - (roundHeld.get(item.id) || 0) < 1)) { showToast(`${name} is sold out`, 'error'); return false; }
+    const comboId = `cb-bar-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    let n = 0;
+    const { lines } = comboOrderLines({ item, comboId, picks, setPrice, priceOf: barPriceOf, uid: () => `${comboId}-${++n}`, menuItems: st.menuItems || [], menuCategories: st.menuCategories || [], taxRates: st.taxRates || [] });
+    // A round line carries no POS order state (status, seat, course): the round is sent as one.
+    const roundLine = (l) => { const o = { ...l }; delete o.status; delete o.seat; delete o.fired; delete o.course; delete o.pizzaConfig; return o; };
+    setRoundItems(prev => [...prev, ...lines.map(roundLine)]);
+    showToast(`${name} added to round`, 'success');
+    return true;
+  };
+  // As the POS opens it: it cannot be made now, say why; every step fills itself, add it; else the steps.
+  const openBarCombo = (item) => {
+    const ctx = barComboCtx(item);
+    const cant = comboUnsellable(item, ctx);
+    if (cant) { showToast(cant, 'error'); return; }
+    const steps = comboSteps(item);
+    if (comboIsFixed(steps, ctx)) {
+      let n = 0;
+      const picks = startingPicks(steps, ctx, (stepId, entryId) => ({ key: `fx-${++n}`, stepId, entryId, itemId: ctx.sizesOf(entryId).length ? null : entryId, mods: [], notes: '', answers: null, configured: false }));
+      if (!comboMissing(steps, picks, ctx)) { addBarCombo(item, picks); return; }
+    }
+    setModalItem(null);
+    setBarCombo(item);
+  };
 
   const addToRound = (item, mods=[], opts={}) => {
     // 19 Oct 2026 (v5.11.78, channel parity): the till's own line rules (lib/tillLine.js, the
@@ -322,8 +385,9 @@ export default function BarSurface() {
     showToast(`${name} added to round`,'success');
   };
 
-  const removeFromRound = (uid) => setRoundItems(p=>p.filter(r=>r.uid!==uid));
-  const updateRoundQty  = (uid,d) => setRoundItems(p=>p.map(r=>r.uid===uid?{...r,qty:Math.max(1,r.qty+d)}:r));
+  // 5.12.126: Remove on a Combo takes all of it; a Combo has no quantity of its own (add it again).
+  const removeFromRound = (uid) => setRoundItems(p=>{ const line=p.find(r=>r.uid===uid); return line?.comboId ? p.filter(r=>r.comboId!==line.comboId) : p.filter(r=>r.uid!==uid); });
+  const updateRoundQty  = (uid,d) => setRoundItems(p=>p.map(r=>r.uid===uid&&!r.comboId?{...r,qty:Math.max(1,r.qty+d)}:r));
 
   // v5.5.791: detect a just-added round line (new uid) OR a qty merge onto an
   // existing line (addToRound increments qty for same item+mods), then scroll
@@ -364,6 +428,7 @@ export default function BarSurface() {
   };
 
   const openItemFlow = (item) => {
+    if (comboHasSteps(item)) { openBarCombo(item); return; }   // 5.12.126
     // Treat null/undefined type as simple — Supabase items may not have type set
     const isSimple = !item.type || item.type==='simple';
     if (isSimple) addToRound(item,[],{displayName: item.menuName||item.menu_name||item.name||item.kitchen_name||item.kitchenName});
@@ -774,11 +839,17 @@ export default function BarSurface() {
                     <span style={{ fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>{money(roundTotal)}</span>
                   </div>
                   <div style={{ padding:'8px 12px' }}>
-                    {roundItems.map(item=>(
-                      <RoundItem key={item.uid} item={item} flash={flashRoundUid===item.uid}
+                    {/* 5.12.126: a Combo is one row (Remove takes all of it), its picks under it. */}
+                    {displayOrder(roundItems).map(item=>(isComboPick(item) ? (
+                      <div key={item.uid} data-line-uid={item.uid} data-combo-pick="1" style={{ display:'flex',justifyContent:'space-between',gap:8,fontSize:11,color:'var(--t2)',padding:'0 0 5px 14px' }}>
+                        <span>{item.name}{item.mods?.length>0?` (${item.mods.map(m=>m.label).join(', ')})`:''}</span>
+                        {lineShow(item).showAmount&&<span style={{ fontFamily:'DM Mono,monospace',color:'var(--t3)' }}>{money(((item.price||0)*(item.qty||1)))}</span>}
+                      </div>
+                    ) : (
+                      <RoundItem key={item.uid} item={item} flash={flashRoundUid===item.uid} combo={isComboParent(item)}
                         onQty={d=>updateRoundQty(item.uid,d)}
                         onRemove={()=>removeFromRound(item.uid)}/>
-                    ))}
+                    )))}
                     <div style={{ marginTop:8 }}>
                       <input value={roundNote} onChange={e=>setRoundNote(e.target.value)} placeholder="Round note (e.g. extra ice on the Negroni)..." style={{ width:'100%',background:'var(--bg3)',border:'1px solid var(--bdr2)',borderRadius:8,padding:'7px 10px',color:'var(--t1)',fontSize:12,fontFamily:'inherit',outline:'none' }}/>
                     </div>
@@ -822,7 +893,7 @@ export default function BarSurface() {
             {/* Footer actions */}
             <div style={{ padding:'10px 12px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', flexShrink:0 }}>
               <div style={{ display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:2 }}>
-                <span>{activeTab.rounds.length} rounds · {activeTab.rounds.reduce((s,r)=>s+r.items.reduce((s2,i)=>s2+i.qty,0),0)} items</span>
+                <span>{activeTab.rounds.length} rounds · {activeTab.rounds.reduce((s,r)=>s+r.items.filter(i=>!isComboPick(i)).reduce((s2,i)=>s2+i.qty,0),0)} items</span>
                 <span style={{ fontFamily:'DM Mono,monospace' }}>{activeTab.rounds.length>0?`Avg round ${money(((activeTab.total||0)/(activeTab.rounds.length||1)))}`:'No rounds yet'}</span>
               </div>
               <div style={{ display:'flex',justifyContent:'space-between',fontSize:19,fontWeight:800,marginBottom:10,paddingTop:8,borderTop:'1px solid var(--bdr3)' }}>
@@ -894,8 +965,23 @@ export default function BarSurface() {
           </div>
         </div>
 
+        {/* 5.12.126: a Combo with steps, built here for the round (the POS's own ComboFlow, as a bar tab). */}
+        {barCombo && (
+          <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column' }} data-testid="bar-combo">
+            <ComboFlow
+              key={`bar-combo-${barCombo.id}`}
+              item={barCombo}
+              menuItems={(storeMenuItems || MENU_ITEMS).map(r => ({ ...r, name: r.menuName || r.name }))}
+              activeAllergens={allergens}
+              orderType="bar-tab" priceOf={barPriceOf} held={roundHeld}
+              addLabel="Add to round"
+              onAdd={(picks) => { if (addBarCombo(barCombo, picks)) setBarCombo(null); }}
+              onCancel={() => setBarCombo(null)}
+            />
+          </div>
+        )}
         {/* Items */}
-        <div style={{ flex:1, overflowY:'auto', padding:12 }}>
+        <div style={{ flex:1, overflowY:'auto', padding:12, display: barCombo ? 'none' : undefined }}>
           {!activeTab&&(
             <div style={{ margin:'0 0 14px', padding:'12px 16px', background:'rgba(232,160,32,.08)', border:'1px solid var(--acc-b)', borderRadius:12, fontSize:13, color:'var(--acc)' }}>
               Select a tab or open a new one to start adding items
@@ -907,7 +993,7 @@ export default function BarSurface() {
               const is86=eightySixIds.includes(item.id);
               // 19 Oct 2026 (v5.11.78): the tile shows the price the tab charges (the till's helpers).
               const fromPrice = variantFromPrice(item, storeMenuItems || MENU_ITEMS, 'bar-tab', barMenuId) ?? resolveItemPrice(item, 'bar-tab', barMenuId);
-              const inRound=roundItems.filter(r=>r.itemId===item.id).reduce((s,r)=>s+r.qty,0);
+              const inRound=roundItems.filter(r=>r.itemId===item.id&&!isComboPick(r)).reduce((s,r)=>s+r.qty,0);
               return(
                 <button key={item.id} onClick={()=>handleItemTap(item)} style={{
                   display:'flex',flexDirection:'column',padding:0,overflow:'hidden',
@@ -1088,7 +1174,7 @@ export default function BarSurface() {
 }
 
 // ─── Round Item Row ──────────────────────────────────────────────────────────
-function RoundItem({ item, onQty, onRemove, flash=false }) {
+function RoundItem({ item, onQty, onRemove, flash=false, combo=false }) {
   const [editNote, setEditNote] = useState(false);
   const [note, setNote] = useState(item.notes||'');
   return (
@@ -1105,12 +1191,15 @@ function RoundItem({ item, onQty, onRemove, flash=false }) {
         <div style={{ fontSize:12,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace',whiteSpace:'nowrap' }}>{money(((item.price||0)*(item.qty||1)))}</div>
       </div>
       <div style={{ display:'flex',alignItems:'center',gap:8,marginTop:4 }}>
+        {/* 5.12.126: a Combo has no quantity or note of its own (its picks are the food). */}
+        {combo ? <span style={{ fontSize:10,fontWeight:700,color:'var(--t3)' }}>Combo</span> : <>
         <div style={{ display:'flex',alignItems:'center',gap:1,background:'var(--bg4)',border:'1px solid var(--bdr)',borderRadius:6,overflow:'hidden' }}>
           <button onClick={()=>onQty(-1)} style={{ width:22,height:20,background:'transparent',border:'none',color:'var(--t2)',fontSize:14,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center' }}>−</button>
           <div style={{ width:22,height:20,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:'var(--t1)' }}>{item.qty}</div>
           <button onClick={()=>onQty(1)} style={{ width:22,height:20,background:'transparent',border:'none',color:'var(--t2)',fontSize:14,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center' }}>+</button>
         </div>
         <button onClick={()=>{setEditNote(true);setNote(item.notes||'');}} style={{ fontSize:10,color:item.notes?'#f97316':'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',display:'inline-flex',alignItems:'center',gap:4 }}><Icon name="note" size={11} />{item.notes?'Edit note':'Add note'}</button>
+        </>}
         <button onClick={onRemove} style={{ marginLeft:'auto',fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit' }}>Remove</button>
       </div>
     </div>

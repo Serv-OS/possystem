@@ -23,7 +23,10 @@ import { comboPosContext, pickFlowSetup } from '../lib/comboLines';
 let _pickSeq = 0;
 const pickKey = () => `pk-${Date.now().toString(36)}-${++_pickSeq}`;
 
-export default function ComboFlow({ item, menuItems, activeAllergens = [], initialPicks = null, giveBack = null, addLabel = 'Add to order', onAdd, onCancel }) {
+// 5.12.126 (stage 4): a screen that sells on its own terms passes them: orderType (the bar sells as a
+// bar tab), priceOf (its own price rule) and held (what it holds that has not reached the daily counts:
+// the bar's round being built). The POS passes none of them and nothing changes there.
+export default function ComboFlow({ item, menuItems, activeAllergens = [], initialPicks = null, giveBack = null, addLabel = 'Add to order', onAdd, onCancel, orderType: orderTypeOverride = null, priceOf: priceOfOverride = null, held = null }) {
   const storeRows = useStore(s => s.menuItems);
   const eightySixIds = useStore(s => s.eightySixIds);
   const dailyCounts = useStore(s => s.dailyCounts);
@@ -39,10 +42,10 @@ export default function ComboFlow({ item, menuItems, activeAllergens = [], initi
   // head office, required options), so this screen and addCombo can never disagree.
   const ctx = useMemo(() => comboPosContext({
     item, menuItems: storeRows || [], eightySixIds: eightySixIds || [], dailyCounts: dailyCounts || {},
-    orderType: activeTableId ? 'dine-in' : orderType,
-    modifierGroupDefs: modifierGroupDefs || [], instructionGroupDefs: instructionGroupDefs || [], giveBack,
-  }), [item, storeRows, eightySixIds, dailyCounts, orderType, activeTableId, modifierGroupDefs, instructionGroupDefs, giveBack]);
-  const priceOf = (row) => (getItemPrice ? getItemPrice(row, orderType, activeMenuId) : (row?.pricing?.base ?? row?.price ?? 0));
+    orderType: orderTypeOverride || (activeTableId ? 'dine-in' : orderType),
+    modifierGroupDefs: modifierGroupDefs || [], instructionGroupDefs: instructionGroupDefs || [], giveBack, held,
+  }), [item, storeRows, eightySixIds, dailyCounts, orderType, activeTableId, modifierGroupDefs, instructionGroupDefs, giveBack, orderTypeOverride, held]);
+  const priceOf = priceOfOverride || ((row) => (getItemPrice ? getItemPrice(row, orderType, activeMenuId) : (row?.pricing?.base ?? row?.price ?? 0)));
   const setPrice = priceOf(item);
 
   const newPick = (stepId, entryId) => ({

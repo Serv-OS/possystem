@@ -73,7 +73,8 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
     }
     return walkInOrder?.items || [];
   }, [activeTableId, tables, walkInOrder]);
-  const cartCount = activeItems.reduce((s, i) => s + (i.qty || 0), 0);
+  // 5.12.126: a Combo counts once, never once per pick.
+  const cartCount = activeItems.filter(i => !(i.comboRole === 'pick' && i.comboId)).reduce((s, i) => s + (i.qty || 0), 0);
   const cartSubtotal = activeItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
 
   const linkedCatIds = useMemo(() => effectiveMenuId
