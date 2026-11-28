@@ -44,7 +44,8 @@ export function kioskRewardMissingItems(type, value, cart = [], categories = [])
   if (type !== 'free_item') return null;
   const matcher = eligibleMatcher(value, categories);
   if (!matcher.configured) return null;
-  if ((cart || []).some(l => lineMatches(l, matcher))) return null;
+  // 5.12.129: a Combo's pick is part of the Combo: never the item a free item reward makes free.
+  if ((cart || []).some(l => !(l.comboRole === 'pick' && l.comboId) && lineMatches(l, matcher))) return null;
   return eligibleItemNames(value).join(', ');
 }
 
@@ -69,7 +70,7 @@ export function kioskRewardDiscountMinor(type, value, { cart = [], goodsMinor = 
     off = Math.round(goods * pct / 100);
   } else if (type === 'free_item') {
     const matcher = eligibleMatcher(rv, categories);
-    const matching = matcher.configured ? (cart || []).filter(l => lineMatches(l, matcher) && (l.qty || 0) > 0) : [];
+    const matching = matcher.configured ? (cart || []).filter(l => !(l.comboRole === 'pick' && l.comboId) && lineMatches(l, matcher) && (l.qty || 0) > 0) : [];
     if (matching.length) off = Math.min(...matching.map(l => toMinor(l.linePrice)));
   }
   return Math.max(0, Math.min(off, goods));

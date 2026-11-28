@@ -86,8 +86,10 @@ test('1 a free item code: the same, and a code with a category rule still counts
   const only = promoDiscountForBasket(offer, basket(BYO));
   assert.equal(only.missing, true);                       // "add it first", not "valid, 0.00 off"
   assert.equal(only.amount, 0);
-  // Before the fix the basket named the pick, and the cheapest "Margherita" was its 0.00.
-  assert.equal(promoDiscountForBasket(offer, { subtotal: 190.5, lines: promoBasketLines([...BYO, MARG]) }).amount, 0);
+  // Before the fix the basket named the pick, and the cheapest "Margherita" was its 0.00. Since 5.12.129
+  // promoBasketLines blanks a pick itself (the kiosk sends its lines as they are), so even the raw lines
+  // make the real Margherita free.
+  assert.equal(promoDiscountForBasket(offer, { subtotal: 190.5, lines: promoBasketLines([...BYO, MARG]) }).amount, 17);
   // The lines keep their money and category: 20% off pizzas takes it off the 1.50 a pizza pick adds too.
   const lines = promoBasketLines(linesForPromo([...BYO, MARG]));
   assert.equal(lines.length, 6);
