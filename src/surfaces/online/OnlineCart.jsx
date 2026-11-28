@@ -99,7 +99,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxC
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                       {onEditCombo && (
-                        <button onClick={() => onEditCombo(block.comboId)} data-testid="basket-combo-edit" style={{ background: 'transparent', color: theme.fg, border: 'none', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 }}>Change</button>
+                        <button onClick={() => onEditCombo(block.comboId)} data-testid="basket-combo-edit" style={{ background: 'transparent', color: theme.fg, border: 'none', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 }}>Edit</button>
                       )}
                       <button onClick={() => onRemove(parent.uid)} style={{ marginLeft: 'auto', background: 'transparent', color: muted, border: 'none', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline' }}>Remove</button>
                     </div>

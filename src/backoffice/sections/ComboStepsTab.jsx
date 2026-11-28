@@ -229,7 +229,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
                   <span style={{ width:22, height:22, borderRadius:'50%', background:'var(--acc)', color:'#0b0c10', fontSize:11, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>{si + 1}</span>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.name}</div>
-                    <div style={{ fontSize:10.5, color:'var(--t4)', marginTop:1 }}>{STEP_KIND_WORDS[s.selectionType]} · {s.products.length} product{s.products.length === 1 ? '' : 's'} · {PRICING_WORDS[s.pricing]}</div>
+                    <div style={{ fontSize:10.5, color:'var(--t4)', marginTop:1 }}>{STEP_KIND_WORDS[s.selectionType]} · {s.products.length} product{s.products.length === 1 ? '' : 's'} · {PRICING_WORDS[s.pricing]}{s.asIs ? ' · goes as it is' : ''}</div>
                   </div>
                   <div style={{ display:'flex', gap:3, flexShrink:0 }} onClick={e => e.stopPropagation()}>
                     <button onClick={() => moveStep(si, si - 1)} disabled={si === 0} aria-label="Move this step up" style={{ width:26, height:26, borderRadius:6, border:'1px solid var(--bdr)', background:'var(--bg3)', color: si === 0 ? 'var(--t4)' : 'var(--t2)', cursor: si === 0 ? 'default' : 'pointer', fontSize:11, opacity: si === 0 ? .4 : 1 }}>▲</button>
@@ -310,6 +310,40 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
                           );
                         })}
                       </div>
+                    </div>
+
+                    {/* 5.12.127 (Peter, 27 Nov 2026): can customers change the products of this step? No (his
+                        example: the pizzas): each goes exactly as it is, nothing asked, no note. Yes: each
+                        product with options opens them the moment it is picked, with their rules. A step saved
+                        before this choice existed reads Yes (what it did). */}
+                    <div style={{ marginTop:12 }}>
+                      <span style={lbl}>Can customers change these products?</span>
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+                        {[[false, 'Yes, they choose its options', 'Each product with options opens them when it is picked, with their rules.'], [true, 'No, it goes as it is', 'Nothing is asked and no note: the product exactly as it is.']].map(([asIs, title, hint]) => {
+                          const on = !!s.asIs === asIs;
+                          return (
+                            <button key={String(asIs)} type="button" data-testid={`combo-asis-${asIs ? 'on' : 'off'}`} disabled={readOnly} onClick={() => { if (!on) setStep(s.id, x => { const n = { ...x }; if (asIs) n.asIs = true; else delete n.asIs; return n; }); }}
+                              style={{ padding:'8px 9px 7px', borderRadius:9, cursor: readOnly ? 'default' : 'pointer', fontFamily:'inherit', textAlign:'left', border:`2px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--bg3)' }}>
+                              <div style={{ fontSize:11.5, fontWeight:700, color: on ? 'var(--acc)' : 'var(--t2)' }}>{title}</div>
+                              <div style={{ fontSize:9.5, color:'var(--t4)', lineHeight:1.35, marginTop:2 }}>{hint}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {s.asIs && (() => {
+                        const rowsOf = (menuItems || []);
+                        const named = s.products.map(p => rowsOf.find(r => r && r.id === p.itemId)).filter(Boolean);
+                        const groupsOf = (r) => (r.assignedModifierGroups ?? r.assigned_modifier_groups ?? r.modifier_groups ?? []);
+                        const withOptions = named.filter(r => Array.isArray(groupsOf(r)) && groupsOf(r).length > 0).map(r => r.menuName || r.menu_name || r.name);
+                        const withSizes = named.filter(r => rowsOf.some(k => k && !k.archived && (k.parentId ?? k.parent_id) === r.id)).map(r => r.menuName || r.menu_name || r.name);
+                        const list = (names) => names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`;
+                        return (
+                          <>
+                            {withOptions.length > 0 && note('info', `${list(withOptions)} ${withOptions.length === 1 ? 'has' : 'have'} options. In this step ${withOptions.length === 1 ? 'it goes' : 'they go'} as ${withOptions.length === 1 ? 'it is' : 'they are'}: nothing is asked, required options included.`, 'asis-options')}
+                            {withSizes.length > 0 && note('info', `${list(withSizes)} ${withSizes.length === 1 ? 'has' : 'have'} sizes: customers still choose the size. To fix the size, put that size in the step on its own.`, 'asis-sizes')}
+                          </>
+                        );
+                      })()}
                     </div>
 
                     {/* The products of this step */}

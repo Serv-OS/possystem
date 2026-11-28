@@ -446,7 +446,7 @@ test('B4 a booking package never seats a Combo with steps as one bare line, and 
 
 test('B5 B6 the flow opens on the first step with something to do, and a size listed on its own reads in full', () => {
   const flow = read('../components/ComboFlow.jsx');
-  assert.match(flow, /const stepOpen = \(s, list\) => !\(fixedAnswer\(s, ctx\) && stepStatus\(s, list\)\.done && !picksOfStep\(list, s\.id\)\.some\(p => pickNeeds\(p, ctx\)\)\);/);
+  assert.match(flow, /const stepOpen = \(s, list\) => !\(fixedAnswer\(s, ctx\) && stepStatus\(s, list\)\.done && !picksOfStep\(list, s\.id\)\.some\(p => stepPickNeeds\(s, p, ctx\)\)\);/);
   assert.match(flow, /const firstOpen = \(list\) => \{ const i = steps\.findIndex\(s => stepOpen\(s, list\)\); return i < 0 \? 'summary' : i; \};/);
   assert.match(flow, /for \(let i = index \+ 1; i < steps\.length; i\+\+\) if \(stepOpen\(steps\[i\], list\)\) \{ goTo\(i\); return; \}/);
   assert.ok(!/steps\.findIndex\(s => !stepStatus\(s, list\)\.done/.test(flow), 'an optional step is never passed over');

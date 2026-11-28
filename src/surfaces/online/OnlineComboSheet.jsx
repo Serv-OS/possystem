@@ -22,8 +22,8 @@ import { groupsShownOn } from '../../lib/soldAs';
 import AllergenChips, { allergenPaletteFromTheme, allergenChipLabels } from '../../components/AllergenChips.js';
 import {
   comboSteps, stepEntries, stepStatus, stepNeedWords, stepCountWords, stepRule, ruleWords,
-  tapEntry, untapEntry, canPick, startingPicks, fixedAnswer, pickNeeds, pickPrice, comboTotal,
-  comboMissing, pickLineName, picksOfStep, PRICING_OWN,
+  tapEntry, untapEntry, canPick, startingPicks, fixedAnswer, pickPrice, comboTotal,
+  comboMissing, pickLineName, picksOfStep, PRICING_OWN, stepPickNeeds, stepOpensOptions, stepAsIs,
 } from '../../lib/combo';
 import { pickFlowSetup } from '../../lib/comboLines';
 import { customerComboContext, stepGroupIds, comboOwnStock, guestWords } from '../../lib/online/comboCart';
@@ -101,8 +101,8 @@ export default function OnlineComboSheet({
       picks: picks.filter((p) => p.key !== cfgPick.key), menuItems: rows, priceOf: priceFor, money,
     }) : null;
     const close = () => {
-      // A fresh pick that still needs its size or an answer cannot stay half made.
-      if (configuring.fresh && pickNeeds(cfgPick, ctx)) setPicks(configuring.before || picks.filter((p) => p.key !== cfgPick.key));
+      // 5.12.127: backing out of a product just tapped never leaves it picked (it was never confirmed).
+      if (configuring.fresh) setPicks(configuring.before || picks.filter((p) => p.key !== cfgPick.key));
       setConfiguring(null);
     };
     if (setup) {
@@ -114,7 +114,7 @@ export default function OnlineComboSheet({
           item={setup.flowItem} theme={theme} allItems={setup.flowMenu} instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds} stockLevels={stockLevels} cart={held}
           priceFor={setup.baseOf} lockQty strictRequired extraPrices={step.pricing !== PRICING_OWN}
-          addLabel={configuring.fresh ? `Add to ${step.name}` : 'Save'} defaultImage={defaultImage}
+          addLabel="Continue" contextTitle={tItemName(item) || item.menu_name || item.name} defaultImage={defaultImage}
           avoidAllergens={avoidAllergens} showCalories={showCalories} fulfilment={fulfilment}
           onClose={close}
           onAdd={(finalItem, mods, _qty, notes) => {
@@ -143,8 +143,9 @@ export default function OnlineComboSheet({
     }
     setSay(null);
     setPicks(next);
-    // A size to pick, or an option that must be answered: its own sheet opens now.
-    if (made && pickNeeds(made, ctx)) setConfiguring({ key: made.key, fresh: true, before: picks });
+    // 5.12.127 (Peter, with Toast's catering package): a product with options, in a step customers can
+    // change, opens them the moment it is tapped, as a size to pick does in any step.
+    if (made && (stepOpensOptions(step, e.row, ctx) || stepPickNeeds(step, made, ctx))) setConfiguring({ key: made.key, fresh: true, before: picks });
   };
   const untap = (step, entryId) => { setSay(null); setPicks(untapEntry(step, picks, entryId)); };
   const removePick = (p) => { setSay(null); setPicks(picks.filter((x) => x.key !== p.key)); };
@@ -154,7 +155,7 @@ export default function OnlineComboSheet({
       setTried(true);
       flash(missing);
       const short = steps.findIndex((s) => !stepStatus(s, picks).done);
-      const need = picks.find((p) => pickNeeds(p, ctx));
+      const need = picks.find((p) => stepPickNeeds(stepById(p.stepId), p, ctx));
       if (short >= 0) stepRefs.current[short]?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
       else if (need) setConfiguring({ key: need.key, fresh: false });
       return;
@@ -205,7 +206,8 @@ export default function OnlineComboSheet({
             const short = tried && !st.done;
             // The picks listed under the step: any whose product has a size or options (so each can be
             // changed on its own), or any that still needs an answer.
-            const listed = mine.filter((p) => { const er = ctx.rowsById.get(p.entryId); return pickNeeds(p, ctx) || (er && (ctx.hasOptions(er) || ctx.sizesOf(er.id).length > 0)); });
+            // 5.12.127: only the picks that open again (options in a step customers can change, or a size).
+            const listed = mine.filter((p) => { const er = ctx.rowsById.get(p.entryId); return stepPickNeeds(step, p, ctx) || (er && (stepOpensOptions(step, er, ctx) || ctx.sizesOf(er.id).length > 0)); });
             return (
               <div key={step.id} ref={(el) => { stepRefs.current[i] = el; }} data-testid="online-combo-step" style={{ paddingTop: 18 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -216,7 +218,7 @@ export default function OnlineComboSheet({
                   <div data-testid="online-combo-count" style={{ fontSize: 13, fontWeight: 800, color: st.need > 0 ? theme.fg : '#16a34a' }}>{stepCountWords(step, picks)}</div>
                 </div>
                 <div style={{ fontSize: 13, color: short ? '#dc2626' : muted, fontWeight: short ? 700 : 500, margin: '2px 0 10px' }}>
-                  {stepNeedWords(step, picks)}{step.pricing === PRICING_OWN ? ' · each at its own price' : ''}
+                  {stepNeedWords(step, picks)}{step.pricing === PRICING_OWN ? ' · each at its own price' : ''}{stepAsIs(step) ? ' · each as it comes' : ''}
                 </div>
                 {shown.length === 0 && <div style={{ fontSize: 13, color: muted, padding: '8px 0' }}>Nothing here can be picked right now.</div>}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -241,7 +243,7 @@ export default function OnlineComboSheet({
                           {!counter && <Indicator checked={sel} round={step.selectionType === 'single'} accent={theme.accent} cardBdr={cardBdr}/>}
                           {img && <img src={img} alt="" loading="lazy" style={{ width: 46, height: 46, borderRadius: 9, objectFit: 'cover', flexShrink: 0 }}/>}
                           <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                            <span style={{ fontSize: 14, fontWeight: sel ? 800 : 600, overflowWrap: 'anywhere', textDecoration: e.state === 'out' && !sel ? 'line-through' : 'none' }}>{tItemName(e.row) || pickLineName(e.row, ctx.rowsById)}</span>
+                            <span style={{ fontSize: 14, fontWeight: sel ? 800 : 600, overflowWrap: 'anywhere', textDecoration: e.state === 'out' && !sel ? 'line-through' : 'none' }}>{tItemName(e.row) || pickLineName(e.row, ctx.rowsById)}{stepOpensOptions(step, e.row, ctx) && <span data-testid="online-combo-opens" aria-hidden="true" style={{ marginLeft: 6, opacity: 0.6 }}>›</span>}</span>
                             <AllergenChips ids={e.row.allergens} size="card" palette={palette}/>
                             {avoid.length > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626' }}>Contains {avoid.join(', ')}</span>}
                           </span>
@@ -265,10 +267,10 @@ export default function OnlineComboSheet({
                   <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {listed.map((p, n) => {
                       const row = rowOfPick(p);
-                      const needs = pickNeeds(p, ctx);
+                      const needs = stepPickNeeds(step, p, ctx);
                       const price = row ? pickPrice({ step, entryId: p.entryId, mods: p.mods, ownPrice: priceFor(row) }) : { total: 0, base: 0 };
                       return (
-                        <div key={p.key} data-testid="online-combo-pick" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 12px', borderRadius: 10, border: `1.5px solid ${needs ? '#ef4444' : cardBdr}`, background: needs ? 'rgba(239,68,68,0.08)' : 'transparent' }}>
+                        <div key={p.key} data-testid="online-combo-pick" onClick={() => setConfiguring({ key: p.key, fresh: false })} style={{ cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 12px', borderRadius: 10, border: `1.5px solid ${needs ? '#ef4444' : cardBdr}`, background: needs ? 'rgba(239,68,68,0.08)' : 'transparent' }}>
                           <span style={{ fontSize: 12, fontWeight: 800, color: muted, minWidth: 14, paddingTop: 2 }}>{n + 1}</span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, fontWeight: 700 }}>{row ? pickLineName(row, ctx.rowsById) : ''}</div>
@@ -277,8 +279,8 @@ export default function OnlineComboSheet({
                             {needs && <div style={{ fontSize: 12, fontWeight: 700, color: '#dc2626' }}>{needs === 'size' ? 'Choose a size' : 'Choose its options'}</div>}
                           </div>
                           <span style={{ fontSize: 13, fontWeight: 700, color: muted, paddingTop: 1 }}>{price.total > 0 ? (price.base > 0 ? money(price.total) : `+${money(price.total)}`) : 'Included'}</span>
-                          <button onClick={() => setConfiguring({ key: p.key, fresh: false })} style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${needs ? '#ef4444' : cardBdr}`, background: needs ? '#ef4444' : inputBg, color: needs ? '#fff' : theme.fg, fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>{needs ? 'Choose' : 'Change'}</button>
-                          {!fixed && <button onClick={() => removePick(p)} aria-label="Take this one off" style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${cardBdr}`, background: inputBg, color: muted, fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' }}>×</button>}
+                          <span aria-hidden="true" style={{ fontSize: 18, fontWeight: 800, color: needs ? '#dc2626' : muted, lineHeight: 1.1 }}>›</span>
+                          {!fixed && <button onClick={(ev) => { ev.stopPropagation(); removePick(p); }} aria-label="Take this one off" style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${cardBdr}`, background: inputBg, color: muted, fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' }}>×</button>}
                         </div>
                       );
                     })}
