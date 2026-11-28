@@ -7,11 +7,15 @@ import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5
 import { money } from '../../lib/currency';
 import { orderTypeChip } from '../../lib/counterOrder';
 import { Icon } from '../../components/ServOSIcons';
+import { basketBlocks } from '../../lib/online/comboCart';
 
 // checkoutDisabledReason (v5.5.802): when set, the Checkout button is disabled and
 // the reason shows above the CTAs — used while the venue is closed with no
 // order-ahead available (browse-only mode).
-export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxCtx = null, onClose, onRemove, onUpdateQty, onCheckout, checkoutDisabledReason = null }) {
+// 5.12.125: a Combo is ONE block (its name and what it comes to, its picks under it), with Change
+// (onEditCombo, when the page offers it) and Remove for the whole Combo. It is never more than one:
+// another one is added again from the menu, as on the POS.
+export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxCtx = null, onClose, onRemove, onUpdateQty, onCheckout, onEditCombo = null, checkoutDisabledReason = null }) {
   const subtotal = cart.reduce((s, l) => {
     const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
     return s + unit * (l.qty || 1);
@@ -73,7 +77,38 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxC
               <div style={{ fontSize: 14 }}>Your basket is empty.</div>
             </div>
           )}
-          {cart.map(line => {
+          {basketBlocks(cart).map(block => {
+            if (block.kind === 'combo') {
+              const parent = block.parent;
+              return (
+                <div key={parent.uid} data-testid="basket-combo" style={{ padding: '14px 0', borderBottom: `1px solid ${cardBdr}`, display: 'flex', gap: 14 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 2 }}>{parent.name}</div>
+                    <div style={{ fontSize: 12, color: muted, marginBottom: 6 }}>{money(Number(parent.price) || 0)}{block.extras > 0 ? ` + extras ${money(block.extras)}` : ''}</div>
+                    <div style={{ fontSize: 12, color: muted, lineHeight: 1.55, marginBottom: 8, paddingLeft: 10, borderLeft: `2px solid ${cardBdr}` }}>
+                      {block.picks.map(p => {
+                        const adds = (Number(p.price) || 0) * (p.qty || 1);
+                        return (
+                          <div key={p.uid} data-testid="basket-combo-pick">
+                            <div style={{ color: theme.fg, fontWeight: 600 }}>{p.name}{adds > 0 ? ` (+${money(adds)})` : ''}</div>
+                            {(p.mods || []).map((m, i) => <div key={i}>· {m.name || m.label}{m.price > 0 ? ` (+${money(Number(m.price))})` : ''}</div>)}
+                            {p.notes ? <div style={{ fontStyle: 'italic' }}>{p.notes}</div> : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                      {onEditCombo && (
+                        <button onClick={() => onEditCombo(block.comboId)} data-testid="basket-combo-edit" style={{ background: 'transparent', color: theme.fg, border: 'none', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 }}>Change</button>
+                      )}
+                      <button onClick={() => onRemove(parent.uid)} style={{ marginLeft: 'auto', background: 'transparent', color: muted, border: 'none', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline' }}>Remove</button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 800, alignSelf: 'flex-start' }}>{money(block.total)}</div>
+                </div>
+              );
+            }
+            const line = block.line;
             const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
             const lineTotal = unit * (line.qty || 1);
             return (

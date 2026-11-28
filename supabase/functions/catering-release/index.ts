@@ -88,11 +88,15 @@ Deno.serve(async (req) => {
     // An ezCater order shows ezCater and ezCater's own order number (customer.channel).
     const ez = isEzcaterOrder(row);
     const ezNo = ez ? ezcaterOrderNumber(row) : null;
+    // 5.12.125 (Combos, stage 3): a line marked noKitchen (a Combo's own line: its set price, while
+    // its picks are the food) never reaches the kitchen, the rule the POS routing has always kept
+    // (store routeKioskOrderPrints). Every other line goes on the ticket as before.
+    const kitchenItems = (Array.isArray(row.items) ? row.items : []).filter((i: any) => !(i && typeof i === 'object' && i.noKitchen));
     const ticket = {
       id: `kds-cat-${row.ref}`,
       location_id: row.location_id,
       table_label: `Catering ${ezNo || row.ref}`,
-      items: row.items || [],
+      items: kitchenItems,
       status: 'pending', course: 'main', centre_id: null,
       server: who, covers: 1,
       sent_at: new Date().toISOString(),

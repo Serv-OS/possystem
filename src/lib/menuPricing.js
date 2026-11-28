@@ -226,6 +226,10 @@ export function planCartLine(item, channel, menuId, { modSurcharge = 0, qty = 1 
 // changes (the till's setOrderType rule: a timed menu flip never moves a line already in the basket;
 // lib/channelMenu.js). With { stampMenu: true } every line also records the menu it is now priced on
 // (line.menuId), so the server values it on that menu (_public_order_value, migration 20261020a).
+// 5.12.125: a Combo's pick keeps its own rule (lib/combo.js), as on the till (comboLines.js
+// repricedPickLine): part of the set price stays its price bump whatever the order type; one that
+// keeps its price takes the product's price for the new order type, as any line. Its options stay in
+// l.mods. The Combo's own line reprices as any line (the set price for the new order type).
 export function repriceCartLines(cart, items, channel, menuId = null, { stampMenu = false } = {}) {
   const rows = Array.isArray(items) ? items : [];
   const stamp = stampMenu && typeof menuId !== 'function';
@@ -233,7 +237,10 @@ export function repriceCartLines(cart, items, channel, menuId = null, { stampMen
     if (!l || l.itemId == null) return l;
     const src = rows.find(i => i && i.id === l.itemId);
     if (!src) return l;
-    const price = resolveItemPrice(src, channel, typeof menuId === 'function' ? menuId(src) : menuId);
+    const own = resolveItemPrice(src, channel, typeof menuId === 'function' ? menuId(src) : menuId);
+    const pick = l.comboRole === 'pick' && !!l.comboId;
+    const bump = pick ? Math.max(0, Math.round((Number(l.comboBump) || 0) * 100) / 100) : 0;
+    const price = pick ? Math.round(((l.comboKeepsPrice ? own : 0) + bump) * 100) / 100 : own;
     if (stamp && (l.menuId ?? null) !== (menuId ?? null)) return { ...l, price, menuId: menuId ?? null };
     return price === l.price ? l : { ...l, price };
   });

@@ -64,7 +64,7 @@ const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto
   : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)));
 
 const EXAMPLE_TYPES = [['dine-in', 'Eat in'], ['takeaway', 'Takeaway'], ['collection', 'Collection'], ['delivery', 'Delivery']];
-const COMBO_HINT = 'One product at a set price, built from real products in steps. Each pick goes to the kitchen as its own item. Sold on the POS only for now.';
+const COMBO_HINT = 'One product at a set price, built from real products in steps. Each pick goes to the kitchen as its own item. Sold on the POS, online ordering and the catering link.';
 const gidOf = (a) => (typeof a === 'string' ? a : a?.groupId ?? a?.id ?? null);
 const chText = (obj) => Object.fromEntries(Object.entries(obj || {}).filter(([, v]) => v != null).map(([k, v]) => [k, price2(v)]));
 
