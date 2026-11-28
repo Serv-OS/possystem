@@ -1,5 +1,28 @@
 export const CHANGELOG = [
   {
+    v: '5.12.126',
+    date: '27 Nov 2026',
+    items: [
+      'Combos with steps now order on QR at the table, the phone POS and the bar screen too (Peter, 27 Nov 2026: "make it so it works across all ordering platforms").',
+      'QR at the table: the same Combo sheet and basket as the online page, in the venue\'s colours. The checkout sends the Combo as one Combo (its own line never reaches the kitchen) and picks never count for a deal. Tab rounds and paying a tab are valued by the same server check (SQL 20261217a). The tab screens count a Combo once.',
+      'Phone POS: tapping a Combo opens the same steps as the POS, full screen, and adds it with every POS rule (86, daily counts, Sold as, required options). A Combo counts once in the basket and on Send.',
+      'Bar screen: a Combo opens its steps in the product panel and goes on the round as one Combo, priced as a bar tab on the bar\'s menu. Remove takes the whole Combo; it has no quantity of its own. What the round being built already holds counts against the daily counts, so the last one is never offered twice.',
+      'Still left off: the kiosk and the delivery apps. Needs SQL 20261217a (from 5.12.125) for QR. No new SQL.',
+    ],
+  },
+  {
+    v: '5.12.125',
+    date: '27 Nov 2026',
+    items: [
+      'Customers can build a Combo on the online ordering page and the catering link (Peter, 27 Nov 2026: "this is just a combo product so yes is the answer thats what we are building these features for"). The same steps, rules and words as the POS: every step on one page, how many are picked against each rule, what is still missing, then Add to basket. In the venue\'s own colours.',
+      'A product with a size to pick, or an option that must be answered, opens its own sheet as it is picked, with only the sizes that can be picked and their prices as the step sets them (Included, +1.50, or its own price). Sold out, 86\'d and not sold for this order type are greyed with the words; a product head office hides online is left out.',
+      'The basket shows a Combo as one item with its picks under it, and what it comes to. Change opens it again with its picks; Remove takes the whole Combo. A Combo counts as one item. An order type that does not sell one of its picks takes the whole Combo out, and says so.',
+      'Picks are part of their Combo: they never count for automatic deals, a promo code\'s items or a free item reward, on the page and on the server alike (the POS rule). The kitchen gets the picks as normal items; the Combo\'s own line never reaches it (catering-release now leaves it off the ticket too). The order screen, the status page and the catering confirmation show the picks under their Combo.',
+      'The server checks every Combo itself (SQL 20261217a): a pick counts only when its step lists it and has room, and is worth its price bump, or its own price where the step keeps prices. A page that says otherwise is charged the full price for that line. An order with no Combo is valued exactly as before.',
+      'Needs one database update before launch: SQL 20261217a (made from the live function, and it refuses to run if that has changed). Then deploy catering-release, then launch. Until the SQL has run the pages leave Combos with steps off, as before (they ask the server first).',
+    ],
+  },
+  {
     v: '5.12.124',
     date: '27 Nov 2026',
     items: [

@@ -336,8 +336,10 @@ test('promo code: an offer for some categories, a free item, free delivery and b
   assert.match(readRepo('src/surfaces/KioskApp.jsx'), /promoLines=\{promoBasketLines\(cart\)\}/);
   assert.match(between(readRepo('src/surfaces/KioskApp.jsx'), 'const submitOrder = useCallback(', 'tableNumber, resetSession]);'), /basketLines: promoBasketLines\(cart\),/);
   assert.match(readRepo('src/surfaces/kiosk/useKioskCheckout.js'), /const promoLines = useMemo\(\(\) => promoBasketLines\(cart\), \[cart\]\);/);
-  assert.equal((readRepo('src/surfaces/online/OnlineCheckout.jsx').match(/promoBasketLines\(cart, \{ modsInPrice: false \}\)/g) || []).length, 2);
-  assert.equal((readRepo('src/surfaces/catering/CateringCheckout.jsx').match(/promoBasketLines\(cart, \{ modsInPrice: false \}\)/g) || []).length, 2);
+  // 5.12.125: online and catering send every line but a Combo's picks (a pick is part of its Combo: the
+  // POS's rule, and the server's since 20261217a). A basket with no Combo is the very same lines.
+  assert.equal((readRepo('src/surfaces/online/OnlineCheckout.jsx').match(/promoBasketLines\(linesWithoutPicks\(cart\), \{ modsInPrice: false \}\)/g) || []).length, 2);
+  assert.equal((readRepo('src/surfaces/catering/CateringCheckout.jsx').match(/promoBasketLines\(linesWithoutPicks\(cart\), \{ modsInPrice: false \}\)/g) || []).length, 2);
   assert.match(readRepo('src/store/index.js'), /basketLines: Array\.isArray\(promo\.basketLines\) \? promo\.basketLines : null,/);
   const fn = readRepo('supabase/functions/promo-redeem/index.ts');
   assert.match(fn, /const discount = computeDiscountForBasket\(offer, \{/);

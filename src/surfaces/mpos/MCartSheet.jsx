@@ -168,9 +168,11 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   const taxExclusive = !!taxResult?.hasExclusiveTax;
   // The bill before any added on tax (the "Subtotal" a US cart shows), else the whole bill.
   const subtotal = Math.max(0, (Number(bill?.total) || 0) - taxAdded);
-  const cartCount = items.reduce((s, i) => s + (i.qty || 0), 0);
-  const sentCount = items.filter(i => i.status === 'sent').length;
-  const pendingCount = items.length - sentCount;
+  // 5.12.126: a Combo counts once (its own line), never once per pick.
+  const counted = items.filter(i => !(i.comboRole === 'pick' && i.comboId));
+  const cartCount = counted.reduce((s, i) => s + (i.qty || 0), 0);
+  const sentCount = counted.filter(i => i.status === 'sent').length;
+  const pendingCount = counted.length - sentCount;
 
   const isWalkIn = sourceData.kind === 'walkin';
   const sendLabel = pendingCount > 0

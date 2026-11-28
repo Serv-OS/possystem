@@ -76,7 +76,8 @@ export function addToRoundLines(prev, line) {
   const list = Array.isArray(prev) ? prev : [];
   const qty = Number(line?.qty) > 0 ? Number(line.qty) : 1;
   const mods = JSON.stringify(line?.mods || []);
-  const idx = line?.notes ? -1 : list.findIndex((r) => r && r.itemId === line?.itemId
+  // 5.12.126: a Combo's own line and its picks are never joined by a plain line (nor joined at all).
+  const idx = line?.notes || line?.comboId ? -1 : list.findIndex((r) => r && !r.comboId && r.itemId === line?.itemId
     && JSON.stringify(r.mods || []) === mods && !r.notes && Number(r.price) === Number(line?.price));
   if (idx >= 0) return list.map((r, i) => (i === idx ? { ...r, qty: (Number(r.qty) || 0) + qty } : r));
   return [...list, { ...line, qty }];

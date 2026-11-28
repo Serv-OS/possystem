@@ -27,7 +27,9 @@ const BYO = { id: 'm-byo', name: 'Build Your Own Package', type: 'combo', cat: '
 const PLAIN = { id: 'm-deal', name: 'Meal Deal', type: 'combo', cat: 'c', pricing: { base: 9 }, combo: null, visibility: { ...ALL_ON } };
 const OLD = { id: 'm-old', name: 'Old Combo', type: 'combo', cat: 'c', pricing: { base: 9 }, visibility: { ...ALL_ON } };   // a row from before the column
 const PIZZA = { id: 'm-marg', name: 'Margherita', type: 'modifiable', cat: 'c', pricing: { base: 13 }, visibility: { ...ALL_ON } };
-const NOT_POS = ['bar', 'bar-tab', 'mpos', 'handheld', 'kiosk', 'online', 'qr', 'catering', 'hubrise', 'delivery'];
+// 5.12.126 (stage 4): the phone POS ('mpos') and the bar screen ('bar') walk the steps too; online, QR and
+// catering show it once the server values picks (comboOnline.test.js, comboEverywhere.test.js).
+const NOT_POS = ['bar-tab', 'handheld', 'kiosk', 'online', 'qr', 'catering', 'hubrise', 'delivery'];
 
 test('which product is held back: a Combo with steps, and nothing else', () => {
   assert.equal(comboPosOnly(BYO), true);
@@ -47,12 +49,16 @@ test('every channel but the POS leaves a Combo with steps out, whatever its swit
   // The POS shows it, by its own POS switch as any product.
   assert.equal(channelVisible(BYO, 'pos'), true);
   assert.equal(channelVisible(BYO, 'till'), true);
+  // 5.12.126: the phone POS and the bar screen, by the POS switch as any product.
+  assert.equal(channelVisible(BYO, 'mpos'), true);
+  assert.equal(channelVisible(BYO, 'bar'), true);
+  assert.equal(channelVisible({ ...BYO, visibility: { ...ALL_ON, pos: false } }, 'bar'), false);
   assert.equal(channelVisible({ ...BYO, visibility: { ...ALL_ON, pos: false } }, 'pos'), false);
 });
 
 test('a Combo with no steps, and every other product, shows exactly as before', () => {
   for (const row of [PLAIN, OLD, PIZZA]) {
-    for (const ch of [...NOT_POS, 'pos', 'till']) assert.equal(channelVisible(row, ch), true, `${row.name} on ${ch}`);
+    for (const ch of [...NOT_POS, 'pos', 'till', 'mpos', 'bar']) assert.equal(channelVisible(row, ch), true, `${row.name} on ${ch}`);
     assert.equal(channelVisible({ ...row, visibility: { ...ALL_ON, online: false } }, 'online'), false);
     assert.equal(channelVisible({ ...row, visibility: { ...ALL_ON, kiosk: false } }, 'kiosk'), false);
     assert.equal(channelVisible({ ...row, visibility: { ...ALL_ON, onlineDelivery: false } }, 'online', 'delivery'), false);
@@ -99,12 +105,18 @@ test('the three copies of "a Combo with steps" outside src read it exactly as th
 test('every door onto an order is closed to it, and says so where a person is asking', () => {
   // The lists.
   const online = read('../surfaces/online/OnlineSurface.jsx');
-  assert.match(online, /if \(!channelVisible\(i, visibleChannel, priceType\)\) return false;/);
-  assert.match(online, /if \(!channelVisible\(item, visibleChannel, priceType\) \|\|[^\n]*\n\s+alert\(`Sorry, \$\{item\.menu_name \|\| item\.name\} cannot be ordered here\.`\); return;/);
+  // 5.12.125 (stage 3): online ordering and the catering link show a Combo with steps only once the
+  // server values its picks (combosReady, asked of public_order_features: SQL 20261217a); until then
+  // these are the very same doors, closed (comboOnline.test.js pins the rest).
+  assert.match(online, /if \(!channelVisible\(i, visibleChannel, priceType, \{ comboSteps: combosReady \}\)\) return false;/);
+  assert.match(online, /if \(!channelVisible\(item, visibleChannel, priceType, \{ comboSteps: combosReady \}\) \|\|[^\n]*\n\s+alert\(`Sorry, \$\{item\.menu_name \|\| item\.name\} cannot be ordered here\.`\); return;/);
+  // 5.12.126: the bar screen and the phone POS list it now (the same rule), and open its steps.
   assert.match(read('../surfaces/BarSurface.jsx'), /if \(!channelVisible\(i, 'bar'\)\) return false;/);
+  assert.match(read('../surfaces/BarSurface.jsx'), /if \(comboHasSteps\(item\)\) \{ openBarCombo\(item\); return; \}/);
+  assert.match(read('../surfaces/MPOSSurface.jsx'), /if \(comboHasSteps\(item\)\) \{ openCombo\(item\); return; \}/);
   assert.match(read('../surfaces/mpos/MMenu.jsx'), /channelVisible\(i, 'mpos'\)/);
   assert.match(read('../surfaces/KioskApp.jsx'), /\.filter\(kioskCardEligible\)/);
-  assert.match(read('../surfaces/catering/CateringSurface.jsx'), /cateringVisible\(i, fulfilment\)/);
+  assert.match(read('../surfaces/catering/CateringSurface.jsx'), /cateringVisible\(i, fulfilment, \{ comboSteps: combosReady \}\)/);
   // The add doors behind the lists.
   assert.match(read('../surfaces/KioskApp.jsx'), /if \(comboPosOnly\(item\)\) \{ console\.warn\('\[kiosk\] not added: a Combo with steps is rung up on the POS', item\?\.name\); return; \}/);
   assert.match(read('../surfaces/catering/CateringSurface.jsx'), /if \(comboPosOnly\(item\)\) \{ alert\(`Sorry, \$\{item\.menu_name \|\| item\.name\} cannot be ordered here yet\. Please call us to order it\.`\); return; \}/);
@@ -124,5 +136,7 @@ test('every door onto an order is closed to it, and says so where a person is as
 
 test('the Back Office says where it is sold, in words', () => {
   const tab = read('../backoffice/sections/ComboStepsTab.jsx');
-  assert.match(tab, /COMBO_WORDS\.posOnly \+ ' It is left off the kiosk, online ordering, QR, catering, the phone POS and the delivery apps until they learn it\.'/);
+  // 5.12.125: online ordering and the catering link sell it too (once SQL 20261217a has run).
+  assert.match(tab, /export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, the phone POS, the bar screen, online ordering, QR at the table and the catering link\. It is left off the kiosk and the delivery apps until they learn it\.';/);
+  assert.match(tab, /note\('info', COMBO_SOLD_WHERE, 'pos'\)/);
 });

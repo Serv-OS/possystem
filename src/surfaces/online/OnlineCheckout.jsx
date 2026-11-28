@@ -35,6 +35,10 @@ import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
+// 5.12.125 (Combos, stage 3): a Combo's picks sit under it, count as part of it, and are never in the
+// lines deals, promo codes or a free item reward read (the POS's rule; the server's since 20261217a).
+import { displayOrder, isComboPick } from '../../lib/combo';
+import { linesWithoutPicks, comboFieldsOf } from '../../lib/online/comboCart';
 import { recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 // 5.12.35: the delivery address, its quote and every coverage word have one home
 // (lib/online/deliveryCoverage.js), shared with the menu page's address sheet.
@@ -274,7 +278,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   }, [opsLocationId]);
 
   const autoDiscounts = useMemo(() => {
-    const items = cart.map((l, i) => ({
+    const items = linesWithoutPicks(cart).map((l, i) => ({
       uid: l.uid || l.key || l.id || `l${i}`,
       cat: l.cat || null,
       cats: l.cats || null,
@@ -519,7 +523,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       receiptName: l.receiptName || null,
       status: 'sent',
       fired: true,
-      course: 1,
+      // 5.12.125: a Combo's own line is on no course (it never reaches the kitchen), as on the POS.
+      course: l.noKitchen ? 0 : 1,
+      ...comboFieldsOf(l),
     }));
     return { ref, checkId, collectionAt, sentAt, customer, items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -668,7 +674,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           customer_id: memberCustomerId,
           // v5.11.81: with the basket's lines and delivery fee (_shared/promoMath.js): the offer's
           // category rules, a free item and free delivery; the server values the order the same way.
-          basket: { subtotal: discountedSubtotalMinor / 100, lines: promoBasketLines(cart, { modsInPrice: false }), delivery_fee: deliveryFeeMinor / 100 },
+          basket: { subtotal: discountedSubtotalMinor / 100, lines: promoBasketLines(linesWithoutPicks(cart), { modsInPrice: false }), delivery_fee: deliveryFeeMinor / 100 },
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -914,7 +920,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           discountMinor = Math.round(cheapest.price * 100);
         } else {
           // No eligible items configured — fallback to cheapest in cart
-          const cheapest = [...cart].sort((a, b) => a.price - b.price)[0];
+          const cheapest = [...linesWithoutPicks(cart)].sort((a, b) => a.price - b.price)[0];
           discountMinor = cheapest ? Math.round(cheapest.price * 100) : 0;
         }
       }
@@ -972,7 +978,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       channel: 'online',
       code: promoApplied.code,
       basketValue: discountedSubtotalMinor / 100,
-      basketLines: promoBasketLines(cart, { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
+      basketLines: promoBasketLines(linesWithoutPicks(cart), { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
       deliveryFee: deliveryFeeMinor / 100,
     }, { functionsUrl: FUNCTIONS_URL, token: await getAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
@@ -1554,7 +1560,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               {step === 'pay' ? 'Payment' : step === 'rewards' ? 'Rewards' : step === 'gift' ? 'Gift Card' : 'Checkout'}
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-              {orderTypeChip(orderType, { counterLabel }).label} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(subtotal)}
+              {orderTypeChip(orderType, { counterLabel }).label} · {linesWithoutPicks(cart).length} item{linesWithoutPicks(cart).length === 1 ? '' : 's'} · {money(subtotal)}
               {autoDiscountMinor > 0 ? ` · Offers -${money((autoDiscountMinor / 100))}` : ''}
               {giftApplied ? ` · Gift card -${money((giftApplied.applied / 100))}` : ''}
               {promoApplied ? ` · ${promoApplied.code} -${money((promoAppliedMinor / 100))}` : ''}
@@ -1735,15 +1741,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           {/* Order summary */}
           <SectionTitle>Order summary</SectionTitle>
           <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
-            {cart.map(line => {
+            {displayOrder(cart).map(line => {
               const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+              const pick = isComboPick(line);   // 5.12.125: under its Combo, with an amount only when it adds one
               return (
-                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
+                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: pick ? '2px 0 2px 14px' : '6px 0', fontSize: pick ? 12 : 13, color: pick ? `${theme.fg}b3` : undefined }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    {line.qty || 1} × {line.name}
+                    {pick ? line.name : <>{line.qty || 1} × {line.name}</>}
                     {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}><Icon name="note" size={12} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />{line.notes}</span> : null}
                   </span>
-                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
+                  <span style={{ fontWeight: 700 }}>{pick ? (unit > 0 ? `+${money(unit * (line.qty || 1))}` : '') : money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}
@@ -1873,15 +1880,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           {/* Order summary */}
           <SectionTitle>Order summary</SectionTitle>
           <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
-            {cart.map(line => {
+            {displayOrder(cart).map(line => {
               const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+              const pick = isComboPick(line);   // 5.12.125: under its Combo, with an amount only when it adds one
               return (
-                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
+                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: pick ? '2px 0 2px 14px' : '6px 0', fontSize: pick ? 12 : 13, color: pick ? `${theme.fg}b3` : undefined }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    {line.qty || 1} × {line.name}
+                    {pick ? line.name : <>{line.qty || 1} × {line.name}</>}
                     {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}><Icon name="note" size={12} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />{line.notes}</span> : null}
                   </span>
-                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
+                  <span style={{ fontWeight: 700 }}>{pick ? (unit > 0 ? `+${money(unit * (line.qty || 1))}` : '') : money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}
@@ -2032,15 +2040,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           {/* 3. Summary */}
           <SectionTitle>Order summary</SectionTitle>
           <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
-            {cart.map(line => {
+            {displayOrder(cart).map(line => {
               const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+              const pick = isComboPick(line);   // 5.12.125: under its Combo, with an amount only when it adds one
               return (
-                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
+                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: pick ? '2px 0 2px 14px' : '6px 0', fontSize: pick ? 12 : 13, color: pick ? `${theme.fg}b3` : undefined }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    {line.qty || 1} × {line.name}
+                    {pick ? line.name : <>{line.qty || 1} × {line.name}</>}
                     {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}><Icon name="note" size={12} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />{line.notes}</span> : null}
                   </span>
-                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
+                  <span style={{ fontWeight: 700 }}>{pick ? (unit > 0 ? `+${money(unit * (line.qty || 1))}` : '') : money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}

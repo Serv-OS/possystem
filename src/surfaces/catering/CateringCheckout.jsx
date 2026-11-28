@@ -21,6 +21,10 @@ import { postcodeLabel, addressCountry } from '../../lib/online/deliveryCoverage
 import { regionOf } from '../../lib/regionPack';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
+// 5.12.125 (Combos, stage 3): a Combo's lines go with what makes them one Combo; its picks sit under it
+// and are never in a promo code's lines (the POS's rule; the server's since 20261217a).
+import { displayOrder, isComboPick } from '../../lib/combo';
+import { linesWithoutPicks, basketCount, comboFieldsOf } from '../../lib/online/comboCart';
 import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 import { wallTimeToInstantMs, cateringPrepMinutes, cateringFireMs } from '../../lib/cateringRules';
 import { tender, finishTenders } from '../../lib/accounting/tenders';
@@ -137,7 +141,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   // 19 Oct 2026 (v5.11.78, channel parity): each line keeps the tax references it was added with
   // (the till's size rule, lib/taxRefs.js), so a pay later order paid at the till books the same
   // VAT as pay now (the till taxed a zero rated line at the default: 10.00 against 0).
-  const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, receiptName: l.receiptName || null, taxRateId: l.taxRateId || null, taxOverrides: l.taxOverrides || {}, taxProfileId: l.taxProfileId || null, status: 'received', fired: false, course: 1 }));
+  const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, receiptName: l.receiptName || null, taxRateId: l.taxRateId || null, taxOverrides: l.taxOverrides || {}, taxProfileId: l.taxProfileId || null, status: 'received', fired: false, course: l.noKitchen ? 0 : 1, ...comboFieldsOf(l) }));
   const buildCustomer = (pay) => ({
     name: name.trim(), phone: phone.replace(/\s+/g, ''), email: email.trim() || null,
     ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
@@ -154,7 +158,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     setPromoBusy(true); setPromoErr(''); setPromoApplied(null);
     try {
       // v5.11.81: with the basket's lines and delivery fee (_shared/promoMath.js): category rules, a free item, free delivery.
-      const { data, error } = await supabase.functions.invoke('promo-redeem', { body: { action: 'validate', code, location_id: opsId, basket: { subtotal, lines: promoBasketLines(cart, { modsInPrice: false }), delivery_fee: Number(deliveryFee) || 0 } } });
+      const { data, error } = await supabase.functions.invoke('promo-redeem', { body: { action: 'validate', code, location_id: opsId, basket: { subtotal, lines: promoBasketLines(linesWithoutPicks(cart), { modsInPrice: false }), delivery_fee: Number(deliveryFee) || 0 } } });
       if (error) throw new Error(error.message);
       if (!data?.valid) { setPromoErr(promoReason(data?.reason, data?.min_spend)); return; }
       setPromoApplied({ code: code.toUpperCase(), amount: Number(data.discount?.amount || 0), name: data.offer?.name || 'Promo' });
@@ -184,7 +188,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       channel: 'catering',
       code: promoApplied.code,
       basketValue: subtotal,
-      basketLines: promoBasketLines(cart, { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
+      basketLines: promoBasketLines(linesWithoutPicks(cart), { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
       deliveryFee: Number(deliveryFee) || 0,
     }, { functionsUrl: FUNCTIONS_URL, token: await ensureAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
@@ -401,16 +405,17 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
 
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, color: '#0f172a' }}>
             <div style={{ fontWeight: 800, marginBottom: 10 }}>Your order</div>
-            {P.items.map((it, i) => {
+            {displayOrder(P.items).map((it, i) => {
               const mods = (it.mods || []).map((m) => m?.name || m?.label || m).filter(Boolean);
+              const pick = isComboPick(it);   // 5.12.125: under its Combo, with an amount only when it adds one
               return (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '5px 0', fontSize: 13.5, borderBottom: '1px solid #f1f5f9' }}>
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: pick ? '2px 0 2px 14px' : '5px 0', fontSize: pick ? 12.5 : 13.5, borderBottom: pick ? 'none' : '1px solid #f1f5f9', color: pick ? '#475569' : undefined }}>
                   <div>
                     <div>{(it.qty || 1) > 1 ? <b>{it.qty}× </b> : null}{it.name}</div>
                     {mods.length > 0 && <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>+ {mods.join(' · ')}</div>}
                     {it.notes ? <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, fontStyle: 'italic' }}>{it.notes}</div> : null}
                   </div>
-                  <div style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>{money(lineTotal(it), cur)}</div>
+                  <div style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>{pick ? (lineTotal(it) > 0 ? `+${money(lineTotal(it), cur)}` : '') : money(lineTotal(it), cur)}</div>
                 </div>
               );
             })}
@@ -448,7 +453,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       <div style={{ ...center, paddingTop: 16 }}>
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, marginBottom: 14 }}>
           <div style={{ fontWeight: 800, marginBottom: 4 }}>{isDelivery ? 'Delivery' : 'Collection'} · {eventDate} at {eventTime}</div>
-          <div style={{ fontSize: 13, color: '#475569' }}>{cart.reduce((n, l) => n + (l.qty || 1), 0)} items · subtotal {money(subtotal, cur)}{exclusiveTax ? ` · tax ${money(exclusiveTax, cur)}` : ''}{deliveryFee ? ` · delivery ${money(deliveryFee, cur)}` : ''}{tip ? ` · tip ${money(tip, cur)}` : ''}{discount ? ` · promo −${money(discount, cur)}` : ''} · <b>total {money(total, cur)}</b></div>
+          <div style={{ fontSize: 13, color: '#475569' }}>{basketCount(cart)} items · subtotal {money(subtotal, cur)}{exclusiveTax ? ` · tax ${money(exclusiveTax, cur)}` : ''}{deliveryFee ? ` · delivery ${money(deliveryFee, cur)}` : ''}{tip ? ` · tip ${money(tip, cur)}` : ''}{discount ? ` · promo −${money(discount, cur)}` : ''} · <b>total {money(total, cur)}</b></div>
           {isDelivery && (
             <div style={{ fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px', marginTop: 10, lineHeight: 1.5 }}>
               <Icon name="clock" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} /><b>{eventTime}</b> is when your order is ready to leave the kitchen. Delivery adds travel time on top — please choose a time that allows for the courier to reach you.

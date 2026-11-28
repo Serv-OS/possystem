@@ -83,8 +83,9 @@ test('visibility: the Back Office "Visible on" switches mean the same on every c
 test('visibility: every channel\'s menu reads the one rule (online, QR, bar tab, handheld; kiosk and till already did)', () => {
   const online = readRepo('src/surfaces/online/OnlineSurface.jsx');
   assert.match(online, /const visibleChannel = isQr \? 'qr' : 'online';/);
-  assert.match(between(online, 'const itemsForCat = (catId) =>', 'const unsafeFor'), /if \(!channelVisible\(i, visibleChannel, priceType\)\) return false;/);
-  assert.match(between(online, 'const addToCart = (item, mods, qty', 'setCart(c => [...c'), /if \(!channelVisible\(item, visibleChannel, priceType\)/, 'a hidden product is never added');
+  // 5.12.125: { comboSteps: combosReady } lets a Combo with steps show once the server values its picks.
+  assert.match(between(online, 'const itemsForCat = (catId) =>', 'const unsafeFor'), /if \(!channelVisible\(i, visibleChannel, priceType, \{ comboSteps: combosReady \}\)\) return false;/);
+  assert.match(between(online, 'const addToCart = (item, mods, qty', 'setCart(c => [...c'), /if \(!channelVisible\(item, visibleChannel, priceType, \{ comboSteps: combosReady \}\)/, 'a hidden product is never added');
   assert.match(readRepo('src/surfaces/BarSurface.jsx'), /if \(!channelVisible\(i, 'bar'\)\) return false;/);
   assert.match(readRepo('src/surfaces/mpos/MMenu.jsx'), /const onPhone = \(i\) => !!i && !i\.hidden && !i\.parentId && !i\.archived && !isOptionOnlyItem\(i\) && channelVisible\(i, 'mpos'\);/);
   assert.match(readRepo('src/surfaces/POSSurface.jsx'), /i\.visibility\?\.pos === false/, 'the till (reference)');

@@ -36,6 +36,10 @@ import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as cal
 import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { Icon } from '../../components/ServOSIcons';
+// 5.12.126 (Combos, stage 4): a Combo's lines go with what makes them one Combo; its picks sit under
+// it and never count for a deal (the POS's rule; the server's since 20261217a).
+import { displayOrder, isComboPick } from '../../lib/combo';
+import { linesWithoutPicks, comboFieldsOf } from '../../lib/online/comboCart';
 import { activeCountry, activeRegionPack } from '../../lib/regionPack';   // 5.12.57: phone example follows the venue
 
 // vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
@@ -150,7 +154,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   }, [opsLocationId]);
 
   const autoDiscounts = useMemo(() => {
-    const items = cart.map((l, i) => ({
+    const items = linesWithoutPicks(cart).map((l, i) => ({
       uid: l.key || l.uid || l.id || `l${i}`,
       cat: l.cat || null,
       cats: l.cats || null,
@@ -291,7 +295,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // OnlineCheckout does for paid online orders.
       status: 'sent',
       fired: true,
-      course: 1,
+      // 5.12.126: a Combo's own line is on no course (it never reaches the kitchen), as on the POS.
+      course: l.noKitchen ? 0 : 1,
+      ...comboFieldsOf(l),
     }));
     return { ref, customer, items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -702,12 +708,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: muted, marginBottom: 8 }}>
                 This round
               </div>
-              {cart.map(line => {
+              {displayOrder(cart).map(line => {
                 const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+                const pick = isComboPick(line);   // 5.12.126: under its Combo, with an amount only when it adds one
                 return (
-                  <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
-                    <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                    <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
+                  <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: pick ? '2px 0 2px 14px' : '6px 0', fontSize: pick ? 12 : 13, color: pick ? muted : undefined }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>{pick ? line.name : `${line.qty || 1} × ${line.name}`}</span>
+                    <span style={{ fontWeight: 700 }}>{pick ? (unit > 0 ? `+${money(unit * (line.qty || 1))}` : '') : money((unit * (line.qty || 1)))}</span>
                   </div>
                 );
               })}
@@ -791,7 +798,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               {step === 'pay' ? 'Payment' : 'Checkout'}
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-              Table {tableLabel || tableId || '?'} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(total)}
+              Table {tableLabel || tableId || '?'} · {linesWithoutPicks(cart).length} item{linesWithoutPicks(cart).length === 1 ? '' : 's'} · {money(total)}
             </div>
           </div>
           <button onClick={step === 'pay' ? () => { setStep('details'); setError(''); } : onClose}
@@ -874,12 +881,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
 
           <SectionTitle>Order summary</SectionTitle>
           <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
-            {cart.map(line => {
+            {displayOrder(cart).map(line => {
               const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
+              const pick = isComboPick(line);   // 5.12.126: under its Combo, with an amount only when it adds one
               return (
-                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                  <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
+                <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: pick ? '2px 0 2px 14px' : '6px 0', fontSize: pick ? 12 : 13, color: pick ? muted : undefined }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>{pick ? line.name : `${line.qty || 1} × ${line.name}`}</span>
+                  <span style={{ fontWeight: 700 }}>{pick ? (unit > 0 ? `+${money(unit * (line.qty || 1))}` : '') : money((unit * (line.qty || 1)))}</span>
                 </div>
               );
             })}

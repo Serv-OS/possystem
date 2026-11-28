@@ -211,10 +211,12 @@ export function pickBaseOf(line, item, ownPrice = 0) {
  *   orderType   the order type the Combo is sold on ('dine-in' on a table, whatever the POS says)
  *   giveBack    Map(id -> units) to count as still free: the units a Combo already on the order
  *               holds, when that Combo is being changed
+ *   held        Map(id -> units) to count as already taken: what a screen holds that has not reached
+ *               the daily counts yet (the bar's round being built, 5.12.126)
  * 86, daily counts and Sold as are the POS's own rules; a product head office hides on the POS
  * (its Shows on list) is left out, as an option linked to it would be.
  */
-export function comboPosContext({ item = null, menuItems = [], eightySixIds = [], dailyCounts = {}, orderType = null, modifierGroupDefs = [], instructionGroupDefs = [], giveBack = null, noPriceLine = null } = {}) {
+export function comboPosContext({ item = null, menuItems = [], eightySixIds = [], dailyCounts = {}, orderType = null, modifierGroupDefs = [], instructionGroupDefs = [], giveBack = null, noPriceLine = null, held = null } = {}) {
   const rows = listOf(menuItems).filter(Boolean);
   const rowsById = new Map(rows.map((r) => [r.id, r]));
   const kids = new Map();
@@ -233,6 +235,7 @@ export function comboPosContext({ item = null, menuItems = [], eightySixIds = []
     return facts.get(row.id);
   };
   const back = giveBack instanceof Map ? giveBack : new Map();
+  const taken = held instanceof Map ? held : new Map();
   return {
     comboId: item?.id ?? null,
     rowsById,
@@ -243,7 +246,7 @@ export function comboPosContext({ item = null, menuItems = [], eightySixIds = []
     remainingOf: (id) => {
       const c = dailyCounts ? dailyCounts[id] : null;
       if (!c || typeof c.remaining !== 'number') return null;
-      return c.remaining + (back.get(id) || 0);
+      return c.remaining + (back.get(id) || 0) - (taken.get(id) || 0);
     },
     soldAs: (row) => isSoldAs(row, orderType, rowsById),
     notSoldWords: (row) => notSoldAsWords(row, orderType),
