@@ -10,6 +10,13 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.12.128',
+    date: '27 Nov 2026',
+    items: [
+      'The site menu editor now says variant, not size, the same word as the Multi site menu (Peter, 27 Nov 2026: "we renamed size to variant in the multi site menu but not on the normal menu builder"). The Variants tab, Has variants, Variant label, + Add variant, New variant, and the Combo steps words. Words only: nothing saved changes, and the POS heading is still the label you pick.',
+    ],
+  },
+  {
     v: '5.12.127',
     date: '27 Nov 2026',
     items: [
