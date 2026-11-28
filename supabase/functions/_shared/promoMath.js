@@ -109,9 +109,13 @@ export function promoBasketLines(lines, { modsInPrice = true } = {}) {
     .map((l) => {
       const mods = !modsInPrice && Array.isArray(l.mods)
         ? l.mods.reduce((s, m) => s + num(m?.price) * Math.max(1, Math.round(num(m?.qty) || 1)), 0) : 0;
+      // 5.12.129: a Combo's pick keeps its money and its category, but is never THE product a free
+      // item code makes free (lib/combo.js linesForPromo, the POS's rule): the kiosk sends its lines as
+      // they are. The POS already blanks them and online drops them, so they are unchanged.
+      const pick = l.comboRole === 'pick' && !!l.comboId;
       return {
-        itemId: l.itemId ?? l.item_id ?? l.variant?.id ?? l.item?.id ?? l.id ?? null,
-        parentId: l.parentId ?? l.parent_id ?? (l.variant ? (l.item?.id ?? null) : null),
+        itemId: pick ? null : (l.itemId ?? l.item_id ?? l.variant?.id ?? l.item?.id ?? l.id ?? null),
+        parentId: pick ? null : (l.parentId ?? l.parent_id ?? (l.variant ? (l.item?.id ?? null) : null)),
         cat: l.cat ?? l.item?.cat ?? null,
         cats: Array.isArray(l.cats) ? l.cats : (Array.isArray(l.item?.cats) ? l.item.cats : null),
         price: Math.round((num(l.price ?? l.linePrice) + mods) * 100) / 100,

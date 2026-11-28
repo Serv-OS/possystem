@@ -65,7 +65,7 @@ function NumBox({ value, min = 1, max = 98, onCommit, label, width = 58 }) {
 // are shaped like the store's menu rows, so the rules and the words are the same in both places.
 // 5.12.125 (stage 3): where a Combo with steps is sold. Online ordering and the catering link offer it
 // once their one database update has run (SQL 20261217a: until then they still leave it off).
-export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, the phone POS, the bar screen, online ordering, QR at the table and the catering link. It is left off the kiosk and the delivery apps until they learn it.';
+export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, the phone POS, the bar screen, the kiosk, online ordering, QR at the table and the catering link. It is left off the delivery apps until they learn it.';
 
 export default function ComboStepsTab({ item, menuItems = [], categories = [], onUpdate, markBOChange, columnReady = true, eightySixIds = [], readOnly = false, keptSteps = false, posOnlyNote = true, needsUpdateWords = COMBO_WORDS.needsUpdate, priceWhere = '(the price on Details)', noPriceWhere = 'on Details' }) {
   const steps = comboSteps(item);
@@ -340,7 +340,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
                         return (
                           <>
                             {withOptions.length > 0 && note('info', `${list(withOptions)} ${withOptions.length === 1 ? 'has' : 'have'} options. In this step ${withOptions.length === 1 ? 'it goes' : 'they go'} as ${withOptions.length === 1 ? 'it is' : 'they are'}: nothing is asked, required options included.`, 'asis-options')}
-                            {withSizes.length > 0 && note('info', `${list(withSizes)} ${withSizes.length === 1 ? 'has' : 'have'} sizes: customers still choose the size. To fix the size, put that size in the step on its own.`, 'asis-sizes')}
+                            {withSizes.length > 0 && note('info', `${list(withSizes)} ${withSizes.length === 1 ? 'has' : 'have'} variants: customers still choose the variant. To fix the variant, put that variant in the step on its own.`, 'asis-sizes')}
                           </>
                         );
                       })()}
@@ -368,7 +368,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
                               <div style={{ fontSize:12, fontWeight:600, color: gone ? 'var(--red)' : 'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', textDecoration: gone ? 'line-through' : 'none' }}>
                                 {row ? (parent ? `${nameOf(parent)}, ${nameOf(row)}` : nameOf(row)) : 'Not on the menu any more'}
                               </div>
-                              {row && !gone && <div style={{ fontSize:10, color:'var(--t4)' }}>{(sizesOf.get(row.id) || []).length ? 'Any size, asked on the POS · ' : ''}{priceWords(row)} on its own</div>}
+                              {row && !gone && <div style={{ fontSize:10, color:'var(--t4)' }}>{(sizesOf.get(row.id) || []).length ? 'Any variant, asked on the POS · ' : ''}{priceWords(row)} on its own</div>}
                             </div>
                             {s.pricing === PRICING_SET ? (
                               <div style={{ position:'relative' }} title="Price bump: added to the set price when this product is picked. Blank = none.">
@@ -401,7 +401,7 @@ export default function ComboStepsTab({ item, menuItems = [], categories = [], o
                               <div key={c.row.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 8px', paddingLeft: c.size ? 22 : 8, borderRadius:7 }}>
                                 <div style={{ flex:1, minWidth:0 }}>
                                   <div style={{ fontSize:12, fontWeight: c.size ? 500 : 600, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.size ? `↳ ${nameOf(c.row)} only` : nameOf(c.row)}</div>
-                                  {!c.size && <div style={{ fontSize:10, color:'var(--t4)' }}>{catName.get(c.row.cat) || 'No category'} · {priceWords(c.row)}{(sizesOf.get(c.row.id) || []).length ? ' · any size' : ''}</div>}
+                                  {!c.size && <div style={{ fontSize:10, color:'var(--t4)' }}>{catName.get(c.row.cat) || 'No category'} · {priceWords(c.row)}{(sizesOf.get(c.row.id) || []).length ? ' · any variant' : ''}</div>}
                                 </div>
                                 <button disabled={has} data-testid="combo-add-product" onClick={() => setStep(s.id, x => ({ ...x, products: [...x.products, { itemId: c.row.id, bump: 0 }] }))}
                                   style={{ height:28, padding:'0 12px', borderRadius:7, cursor: has ? 'default' : 'pointer', fontFamily:'inherit', fontSize:11, fontWeight:800, flexShrink:0,

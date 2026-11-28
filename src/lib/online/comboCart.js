@@ -56,7 +56,7 @@ const instIds = (row) => listOf(row?.assigned_instruction_groups ?? row?.assigne
  * is (lib/soldAs.js optionHiddenOn). Its "Visible on" switch is a menu card's: a product kept off the
  * menu can still be offered inside a Combo, as on the POS.
  */
-export function customerComboContext({ item = null, rows = [], eightySixIds = [], stockLevels = {}, basket = [], orderType = null, fulfilment = null, modifierGroupDefs = null, instructionGroupDefs = [], noPrice = null } = {}) {
+export function customerComboContext({ item = null, rows = [], eightySixIds = [], stockLevels = {}, basket = [], orderType = null, fulfilment = null, modifierGroupDefs = null, instructionGroupDefs = [], noPrice = null, screen = 'online' } = {}) {
   const list = listOf(rows).filter(Boolean);
   const rowsById = new Map(list.map((r) => [r.id, r]));
   const kids = new Map();
@@ -112,7 +112,7 @@ export function customerComboContext({ item = null, rows = [], eightySixIds = []
     soldAs: (row) => isSoldAs(row, orderType, rowsById),
     notSoldWords: (row) => notSoldAsWords(row, orderType),
     notSoldShort: () => { const k = soldAsKey(orderType); return k ? `Not for ${SOLD_AS_WORDS[k]}` : 'Not available'; },
-    hiddenHere: (row) => optionHiddenOn(row, 'online', fulfilment),
+    hiddenHere: (row) => optionHiddenOn(row, screen, fulfilment),   // 5.12.129: the kiosk reads its own Shows on
     requiresAnswers: (row) => factsOf(row).requiresAnswers,
     hasOptions: (row) => factsOf(row).hasOptions,
     // A pick that keeps its own price, of a product with no price set, is never sold for 0.00: its paid

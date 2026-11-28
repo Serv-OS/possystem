@@ -21,7 +21,7 @@ import {
 import { isUnsafe } from './kioskAllergens.js';
 import { isOptionOnlyItem } from './menuRules.js';
 import { compareMenuItems } from './menuItemOrder.js';
-import { comboPosOnly } from './combo.js';
+import { comboHasSteps, comboUnsellable } from './combo.js';
 
 const parentOf = (c) => c?.parent_id ?? c?.parentId ?? null;
 const orderOf = (c) => Number(c?.sort_order ?? c?.sortOrder ?? 0) || 0;
@@ -43,9 +43,9 @@ export function kioskOptionOnlySubitem(item) {
  * (the new design's rail and item list here, today's KioskApp visibleItems).
  */
 export function kioskCardEligible(item) {
-  // 5.12.123: a Combo with steps is rung up on the POS only for now (lib/combo.js comboPosOnly):
-  // the kiosk cannot ask its steps yet, so it is never a card, whatever its kiosk switch says.
-  return !!item && !item.parent_id && item.visibility?.kiosk !== false && !kioskOptionOnlySubitem(item) && !comboPosOnly(item);
+  // 5.12.129 (Peter, 27 Nov 2026: "yes build kiosk"): a Combo with steps is a card like any product
+  // (5.12.123 to 5.12.127 left it off: lib/combo.js comboPosOnly); tapping it walks its steps.
+  return !!item && !item.parent_id && item.visibility?.kiosk !== false && !kioskOptionOnlySubitem(item);
 }
 
 /**
@@ -217,6 +217,17 @@ export function kioskLowStock(item, dailyCounts) {
 export function kioskAddMode(item, ctx = {}) {
   const { items = [], eightySixIds = [], dailyCounts = {}, allergenFilter = null, instructionDefs = [], groupRules = null } = ctx;
   if (!item || kioskItemSoldOut(item, eightySixIds, dailyCounts)) return { mode: 'soldout' };
+  // 5.12.129: a Combo with steps opens its steps; one that cannot be made right now is sold out.
+  if (comboHasSteps(item)) {
+    const rows = Array.isArray(items) ? items : [];
+    const cant = comboUnsellable(item, {
+      rowsById: new Map(rows.filter(Boolean).map((r) => [r.id, r])),
+      sizesOf: (id) => rows.filter((r) => r && !r.archived && r.parent_id === id),
+      eightySix: new Set(eightySixIds || []),
+      remainingOf: (id) => { const c = dailyCounts ? dailyCounts[id] : null; return c && typeof c.remaining === 'number' ? c.remaining : null; },
+    });
+    return cant ? { mode: 'soldout' } : { mode: 'combo' };
+  }
 
   if (variantChildren(item, items).length > 0) {
     // Every size gone: never add the parent on its own (it is priced 0).

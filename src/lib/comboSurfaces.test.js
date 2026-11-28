@@ -70,8 +70,9 @@ test('a Combo with no steps, and every other product, shows exactly as before', 
 });
 
 test('the kiosk and the catering page have their own card rules: both leave it out', () => {
-  assert.equal(kioskCardEligible(BYO), false);
-  assert.equal(kioskCardEligible({ ...BYO, visibility: undefined }), false);
+  // 5.12.129 (Peter: "yes build kiosk"): the kiosk shows it and walks its steps (kioskCombo.test.js).
+  assert.equal(kioskCardEligible(BYO), true);
+  assert.equal(kioskCardEligible({ ...BYO, visibility: { ...ALL_ON, kiosk: false } }), false, 'its own kiosk switch still counts');
   assert.equal(cateringVisible(BYO), false);
   assert.equal(cateringVisible(BYO, 'delivery'), false);
   assert.equal(cateringVisible({ ...BYO, visibility: undefined }), false);
@@ -137,6 +138,6 @@ test('every door onto an order is closed to it, and says so where a person is as
 test('the Back Office says where it is sold, in words', () => {
   const tab = read('../backoffice/sections/ComboStepsTab.jsx');
   // 5.12.125: online ordering and the catering link sell it too (once SQL 20261217a has run).
-  assert.match(tab, /export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, the phone POS, the bar screen, online ordering, QR at the table and the catering link\. It is left off the kiosk and the delivery apps until they learn it\.';/);
+  assert.match(tab, /export const COMBO_SOLD_WHERE = 'A Combo with steps is sold on the POS, the phone POS, the bar screen, the kiosk, online ordering, QR at the table and the catering link\. It is left off the delivery apps until they learn it\.';/);
   assert.match(tab, /note\('info', COMBO_SOLD_WHERE, 'pos'\)/);
 });

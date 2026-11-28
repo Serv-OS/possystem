@@ -28,6 +28,7 @@ import KioskTipCard from './KioskTipCard';
 import { KioskPointsRow, KioskRewardRow, KioskTextRow } from './KioskLoyaltyRows';
 import KioskCodeCard from './KioskCodeCard';
 import KioskTotalsCard from './KioskTotalsCard';
+import { kioskBasketView } from '../../lib/kioskCombo';
 
 // Every card in the scroll column keeps its natural height (flex none). Without it a card
 // with a set minHeight shrinks to that height once the column overflows.
@@ -79,7 +80,7 @@ export default function KioskReviewScreen({
             <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2Ink)' }}>{tn('k2.itemsInOrder', cartItemCount)}</div>
             <KioskPillButton onClick={onAddMore}>{t('k2.review.addMore')}</KioskPillButton>
           </div>
-          {cart.map((line, i) => {
+          {kioskBasketView(cart).map((line, i) => {   /* 5.12.129: a Combo is one row */
             const room = kioskLineRoom(line, dailyCounts, cartItemUsage);
             return (
               <KioskLineRow
@@ -88,7 +89,7 @@ export default function KioskReviewScreen({
                 size="card"
                 first={i === 0}
                 primary={primary}
-                canAdd={room === null || room > 0}
+                canAdd={!line.comboWhole && (room === null || room > 0)}
                 onLess={() => onQty(line.key, -1)}
                 onMore={() => onQty(line.key, 1)}
               />
